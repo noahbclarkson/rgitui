@@ -1,0 +1,19 @@
+[package]
+name = "rgitui_workspace"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui.workspace = true
+rgitui_theme.workspace = true
+rgitui_ui.workspace = true
+rgitui_git.workspace = true
+rgitui_graph.workspace = true
+rgitui_diff.workspace = true
+rgitui_ai.workspace = true
+rgitui_settings.workspace = true
+anyhow.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smallvec.workspace = true

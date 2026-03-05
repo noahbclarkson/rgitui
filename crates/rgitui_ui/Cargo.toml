@@ -1,0 +1,9 @@
+[package]
+name = "rgitui_ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui.workspace = true
+rgitui_theme.workspace = true
+smallvec.workspace = true

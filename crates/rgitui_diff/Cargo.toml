@@ -1,0 +1,11 @@
+[package]
+name = "rgitui_diff"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui.workspace = true
+rgitui_theme.workspace = true
+rgitui_ui.workspace = true
+rgitui_git.workspace = true
+anyhow.workspace = true

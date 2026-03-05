@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rgitui",
+    "crates/rgitui_theme",
+    "crates/rgitui_ui",
+    "crates/rgitui_workspace",
+    "crates/rgitui_git",
+    "crates/rgitui_graph",
+    "crates/rgitui_diff",
+    "crates/rgitui_ai",
+    "crates/rgitui_settings",
+]
+
+[workspace.dependencies]
+# GPUI framework (path deps to local Zed checkout)
+gpui = { path = "../zed/crates/gpui", default-features = false, features = ["wayland", "x11"] }
+gpui_platform = { path = "../zed/crates/gpui_platform", default-features = false, features = ["wayland", "x11"] }
+
+# Internal crates
+rgitui_theme = { path = "crates/rgitui_theme" }
+rgitui_ui = { path = "crates/rgitui_ui" }
+rgitui_workspace = { path = "crates/rgitui_workspace" }
+rgitui_git = { path = "crates/rgitui_git" }
+rgitui_graph = { path = "crates/rgitui_graph" }
+rgitui_diff = { path = "crates/rgitui_diff" }
+rgitui_ai = { path = "crates/rgitui_ai" }
+rgitui_settings = { path = "crates/rgitui_settings" }
+
+# Core
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+smallvec = { version = "1", features = ["union"] }
+
+# Git
+git2 = "0.19"
+
+# Async
+futures = "0.3"
+async-channel = "2"
+smol = "2"
+
+# AI / HTTP
+reqwest = { version = "0.12", features = ["json"] }
+
+# FS watching
+notify = "7"
+
+# Utils
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+calloop = { git = "https://github.com/zed-industries/calloop" }
+
+[profile.dev]
+split-debuginfo = "unpacked"
+incremental = true
+
+[profile.dev.package]
+gpui_macros = { opt-level = 3 }
+derive_refineable = { opt-level = 3 }
+taffy = { opt-level = 3 }
+resvg = { opt-level = 3 }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

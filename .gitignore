@@ -1,0 +1,22 @@
+/target
+
+# Test output (screenshots)
+test_output/
+
+# Environment variables
+.env
+
+# Spec/planning docs (not source)
+GITKRAKEN-PRODUCT-SPEC.md
+GPUI_ARCHITECTURE_REPORT.md
+IMPLEMENTATION_PLAN.md
+
+# Claude Code memory (session-specific)
+memory/
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

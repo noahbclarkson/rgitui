@@ -1,0 +1,27 @@
+[package]
+name = "rgitui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rgitui"
+path = "src/main.rs"
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+rgitui_theme.workspace = true
+rgitui_ui.workspace = true
+rgitui_workspace.workspace = true
+rgitui_git.workspace = true
+rgitui_settings.workspace = true
+rgitui_ai.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+git2.workspace = true
+
+[dev-dependencies]
+git2.workspace = true
+chrono.workspace = true
+rgitui_git.workspace = true

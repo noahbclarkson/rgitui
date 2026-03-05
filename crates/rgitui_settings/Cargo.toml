@@ -1,0 +1,11 @@
+[package]
+name = "rgitui_settings"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
