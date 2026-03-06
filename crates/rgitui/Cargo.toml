@@ -20,6 +20,9 @@ anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
 git2.workspace = true
+http_client.workspace = true
+reqwest_client.workspace = true
+rust-embed.workspace = true
 
 [dev-dependencies]
 git2.workspace = true

@@ -17,3 +17,6 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smallvec.workspace = true
+md5.workspace = true
+http_client.workspace = true
+futures.workspace = true

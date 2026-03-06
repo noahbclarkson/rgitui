@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    App, canvas, div, point, px, Bounds, ClickEvent, Context, ElementId, EventEmitter,
-    ListSizingBehavior, PathBuilder, Pixels, Render, SharedString, UniformListScrollHandle,
-    WeakEntity, Window, uniform_list,
+    App, canvas, div, img, point, px, Bounds, ClickEvent, Context, ElementId, EventEmitter,
+    ListSizingBehavior, ObjectFit, PathBuilder, Pixels, Render, SharedString,
+    UniformListScrollHandle, WeakEntity, Window, uniform_list,
 };
 use rgitui_git::{CommitInfo, GraphEdge, GraphRow, RefLabel, compute_graph};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Badge, Label, LabelSize};
+use rgitui_ui::{AvatarCache, Badge, Label, LabelSize};
 
 /// Events emitted by the graph view.
 #[derive(Debug, Clone)]
@@ -96,8 +96,6 @@ impl Render for GraphView {
         let panel_bg = colors.panel_background;
         let surface_bg = colors.surface_background;
         let border_color = colors.border_variant;
-        let text_muted = colors.text_muted;
-
         // Cheap Arc clones
         let commits = self.commits.clone();
         let graph_rows = self.graph_rows.clone();
@@ -151,7 +149,7 @@ impl Render for GraphView {
         let list = uniform_list(
             "graph-commit-list",
             commits.len(),
-            move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+            move |range: Range<usize>, _window: &mut Window, cx: &mut App| {
                 range.map(|i| {
                     let commit = commits[i].clone();
                     let graph_row = graph_rows[i].clone();
@@ -165,6 +163,17 @@ impl Render for GraphView {
 
                     let node_color = rgitui_theme::lane_color(graph_row.node_color);
                     let has_incoming = graph_row.has_incoming;
+
+                    // Author initials for avatar
+                    let initials: SharedString = commit
+                        .author
+                        .name
+                        .split_whitespace()
+                        .take(2)
+                        .filter_map(|w| w.chars().next())
+                        .collect::<String>()
+                        .to_uppercase()
+                        .into();
 
                     // Ref badges
                     let mut ref_badges: Vec<Badge> = Vec::new();
@@ -188,13 +197,14 @@ impl Render for GraphView {
 
                     let view_clone = view.clone();
 
+                    // Branch color tab: thin colored strip on left edge
+                    let lane_tab_color = gpui::Hsla { a: 0.5, ..node_color };
+
                     let mut row = div()
                         .id(ElementId::NamedInteger("commit-row".into(), i as u64))
                         .h_flex()
                         .h(px(row_height))
                         .w_full()
-                        .px_1()
-                        .gap_1()
                         .bg(bg)
                         .hover(move |s| s.bg(hover_bg))
                         .active(move |s| s.bg(active_bg))
@@ -202,11 +212,22 @@ impl Render for GraphView {
                             view_clone.update(cx, |this, cx| {
                                 this.select_index(i, cx);
                             }).ok();
-                        });
+                        })
+                        // Color tab on left edge
+                        .child(
+                            div()
+                                .w(px(3.))
+                                .h_full()
+                                .flex_shrink_0()
+                                .bg(lane_tab_color),
+                        )
+                        // Gap between color tab and graph
+                        .child(div().w(px(4.)).flex_shrink_0());
 
-                    // Graph column with canvas
+                    // Graph column with canvas + avatar overlay
                     row = row.child(
                         div()
+                            .relative()
                             .w(px(graph_width))
                             .flex_shrink_0()
                             .h_full()
@@ -253,14 +274,13 @@ impl Render for GraphView {
                                                 path.move_to(point(origin.x + from_x, start_y));
                                                 path.line_to(point(origin.x + to_x, end_y));
                                             } else {
-                                                // Angular L-curve (GitKraken style):
-                                                // Stay vertical for ~75% then curve sharply to target lane.
-                                                let turn = start_y + (end_y - start_y) * 0.75;
+                                                // Smooth S-curve: symmetric bezier with inflection at midpoint
+                                                let half_y = start_y + (end_y - start_y) / 2.0;
                                                 path.move_to(point(origin.x + from_x, start_y));
                                                 path.cubic_bezier_to(
                                                     point(origin.x + to_x, end_y),
-                                                    point(origin.x + from_x, turn),
-                                                    point(origin.x + to_x, turn),
+                                                    point(origin.x + from_x, half_y),
+                                                    point(origin.x + to_x, half_y),
                                                 );
                                             }
 
@@ -270,13 +290,13 @@ impl Render for GraphView {
                                         }
 
                                         // 3. Draw commit dot with background ring (occludes passing lines).
-                                        let r = 6.0_f32;
+                                        let r = 11.0_f32;
                                         let cx_x = origin.x + node_x_px;
                                         let cy_y = origin.y + mid_y;
-                                        let steps = 32_usize;
+                                        let steps = 48_usize;
 
                                         // Background ring to occlude lines passing behind the dot
-                                        let ring_r = r + 3.0;
+                                        let ring_r = r + 2.0;
                                         let mut ring = PathBuilder::fill();
                                         for s in 0..steps {
                                             let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
@@ -289,24 +309,69 @@ impl Render for GraphView {
                                         if let Ok(built_ring) = ring.build() {
                                             window.paint_path(built_ring, panel_bg);
                                         }
-
-                                        // Filled dot
-                                        let mut dot = PathBuilder::fill();
-                                        for s in 0..steps {
-                                            let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
-                                            let x = cx_x + px(r * angle.cos());
-                                            let y = cy_y + px(r * angle.sin());
-                                            if s == 0 { dot.move_to(point(x, y)); }
-                                            else { dot.line_to(point(x, y)); }
-                                        }
-                                        dot.close();
-                                        if let Ok(built_dot) = dot.build() {
-                                            window.paint_path(built_dot, node_color);
-                                        }
                                     },
                                 )
                                 .size_full(),
-                            ),
+                            )
+                            // Avatar overlay: resolved image or initials fallback
+                            .child({
+                                let avatar_url = cx
+                                    .try_global::<AvatarCache>()
+                                    .and_then(|cache| cache.avatar_url(&commit.author.email))
+                                    .map(|s| s.to_string());
+                                let initials_fallback = initials.clone();
+                                let fallback_color = node_color;
+
+                                let mut avatar_container = div()
+                                    .absolute()
+                                    .left(px(node_x - 11.0))
+                                    .top(px((row_height - 22.0) / 2.0))
+                                    .w(px(22.))
+                                    .h(px(22.))
+                                    .rounded_full()
+                                    .bg(panel_bg)
+                                    .border_2()
+                                    .border_color(node_color)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center();
+
+                                if let Some(url) = avatar_url {
+                                    let fb_initials = initials_fallback.clone();
+                                    let fb_color = fallback_color;
+                                    avatar_container = avatar_container.child(
+                                        img(url)
+                                            .rounded_full()
+                                            .size_full()
+                                            .object_fit(ObjectFit::Cover)
+                                            .with_fallback(move || {
+                                                div()
+                                                    .size_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        div()
+                                                            .text_color(fb_color)
+                                                            .text_xs()
+                                                            .font_weight(gpui::FontWeight::BOLD)
+                                                            .child(fb_initials.clone()),
+                                                    )
+                                                    .into_any_element()
+                                            }),
+                                    );
+                                } else {
+                                    avatar_container = avatar_container.child(
+                                        div()
+                                            .text_color(fallback_color)
+                                            .text_xs()
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child(initials_fallback),
+                                    );
+                                }
+
+                                avatar_container
+                            }),
                     );
 
                     // Hash
@@ -316,14 +381,18 @@ impl Render for GraphView {
                             .flex_shrink_0()
                             .child(
                                 Label::new(short_id)
-                                    .size(LabelSize::Small)
+                                    .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             ),
                     );
 
                     // Ref badges
-                    for badge in ref_badges {
-                        row = row.child(badge);
+                    if !ref_badges.is_empty() {
+                        let mut badges_container = div().h_flex().gap(px(4.)).flex_shrink_0().mr(px(4.));
+                        for badge in ref_badges {
+                            badges_container = badges_container.child(badge);
+                        }
+                        row = row.child(badges_container);
                     }
 
                     // Summary
@@ -331,7 +400,7 @@ impl Render for GraphView {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(Label::new(summary).size(LabelSize::Default).truncate()),
+                            .child(Label::new(summary).size(LabelSize::Small).truncate()),
                     );
 
                     // Author
@@ -352,9 +421,6 @@ impl Render for GraphView {
                                 .color(Color::Muted),
                         ),
                     );
-
-                    // Suppress unused variable warning for text_muted captured in closure
-                    let _ = text_muted;
 
                     row.into_any_element()
                 }).collect()

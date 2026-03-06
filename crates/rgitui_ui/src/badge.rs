@@ -29,25 +29,26 @@ impl RenderOnce for Badge {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let text_color = self.color.color(cx);
         let bg = gpui::Hsla {
-            a: 0.2,
+            a: 0.15,
             ..text_color
         };
         let border = gpui::Hsla {
-            a: 0.3,
+            a: 0.4,
             ..text_color
         };
 
         div()
             .h_flex()
-            .px(px(6.))
-            .py(px(1.))
-            .rounded(px(4.))
+            .px_2()
+            .py(px(2.))
+            .rounded_md()
             .bg(bg)
             .border_1()
             .border_color(border)
             .child(
                 Label::new(self.text)
                     .size(LabelSize::XSmall)
+                    .weight(gpui::FontWeight::SEMIBOLD)
                     .color(self.color),
             )
     }

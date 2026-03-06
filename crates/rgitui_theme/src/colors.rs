@@ -178,7 +178,7 @@ pub fn catppuccin_mocha_colors() -> ThemeColors {
 
     ThemeColors {
         background: crust,
-        surface_background: base,
+        surface_background: mantle,
         elevated_surface_background: surface0,
         editor_background: base,
 
@@ -438,16 +438,16 @@ pub fn one_dark_status() -> StatusColors {
 
 /// Lane colors for the commit graph. Cycles through these for branch visualization.
 pub const GRAPH_LANE_COLORS: &[fn() -> Hsla] = &[
-    || hsla(267.0, 84.0, 81.0, 1.0),  // mauve
-    || hsla(217.0, 92.0, 76.0, 1.0),  // blue
-    || hsla(115.0, 54.0, 76.0, 1.0),  // green
-    || hsla(23.0, 92.0, 75.0, 1.0),   // peach
-    || hsla(343.0, 81.0, 75.0, 1.0),  // red
-    || hsla(170.0, 57.0, 73.0, 1.0),  // teal
-    || hsla(41.0, 86.0, 83.0, 1.0),   // yellow
-    || hsla(189.0, 71.0, 73.0, 1.0),  // sapphire
-    || hsla(316.0, 72.0, 86.0, 1.0),  // pink
-    || hsla(10.0, 56.0, 91.0, 1.0),   // rosewater
+    || hsla(267.0, 84.0, 75.0, 1.0),  // mauve (boosted)
+    || hsla(217.0, 92.0, 65.0, 1.0),  // blue (boosted)
+    || hsla(115.0, 60.0, 65.0, 1.0),  // green (boosted)
+    || hsla(23.0, 92.0, 65.0, 1.0),   // peach (boosted)
+    || hsla(343.0, 81.0, 65.0, 1.0),  // red (boosted)
+    || hsla(170.0, 65.0, 60.0, 1.0),  // teal (boosted)
+    || hsla(41.0, 86.0, 70.0, 1.0),   // yellow (boosted)
+    || hsla(189.0, 75.0, 60.0, 1.0),  // sapphire (boosted)
+    || hsla(316.0, 72.0, 72.0, 1.0),  // pink (boosted)
+    || hsla(10.0, 70.0, 75.0, 1.0),   // rosewater (boosted)
 ];
 
 pub fn lane_color(index: usize) -> Hsla {

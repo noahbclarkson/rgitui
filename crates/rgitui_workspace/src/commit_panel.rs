@@ -173,10 +173,8 @@ impl Render for CommitPanel {
 
         div()
             .v_flex()
-            .w_full()
-            .bg(colors.panel_background)
-            .border_t_1()
-            .border_color(colors.border_variant)
+            .size_full()
+            .bg(colors.surface_background)
             .p_2()
             .gap_1()
             // Header row

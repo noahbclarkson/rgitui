@@ -13,6 +13,7 @@ mod tooltip;
 mod badge;
 mod stack;
 mod context_menu;
+mod avatar_cache;
 
 pub use label::*;
 pub use icon::*;
@@ -29,6 +30,7 @@ pub use tooltip::*;
 pub use badge::*;
 pub use stack::*;
 pub use context_menu::*;
+pub use avatar_cache::*;
 
 // Re-export theme helpers that UI components need
 pub use rgitui_theme::{ActiveTheme, Color, StyledExt};

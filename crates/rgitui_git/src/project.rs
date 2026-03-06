@@ -941,7 +941,6 @@ impl GitProject {
                         // Auto-commit the revert
                         let sig = repo.signature()?;
                         let msg = format!("Revert \"{}\"", commit.summary().unwrap_or(""));
-                        let index = repo.index()?;
                         let tree_id = {
                             let mut idx = repo.index()?;
                             idx.write_tree()?

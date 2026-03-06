@@ -6,6 +6,7 @@ mod title_bar;
 mod toolbar;
 mod detail_panel;
 mod command_palette;
+pub(crate) mod avatar_resolver;
 
 pub use workspace::*;
 pub use sidebar::*;

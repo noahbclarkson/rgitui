@@ -1,7 +1,7 @@
 use gpui::prelude::*;
-use gpui::{div, ClickEvent, Context, EventEmitter, Render, Window};
+use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonSize, ButtonStyle, VerticalDivider, Label, LabelSize};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, VerticalDivider};
 
 /// Events emitted by the toolbar.
 #[derive(Debug, Clone)]
@@ -56,78 +56,202 @@ impl Render for Toolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
+        let bg = colors.element_background;
+        let hover = colors.element_hover;
+        let active = colors.element_active;
+        let border = colors.border_variant;
+        let dis_bg = colors.element_disabled;
+        let dis_border = colors.border_disabled;
+
         div()
             .h_flex()
             .w_full()
-            .px_2()
-            .py_1()
-            .gap_1()
+            .h(px(44.))
+            .px_3()
+            .gap_2()
+            .items_center()
             .bg(colors.toolbar_background)
             .border_b_1()
             .border_color(colors.border_variant)
             // Fetch
             .child(
-                Button::new("fetch-btn", "Fetch")
-                    .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Outlined)
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                div()
+                    .id("tb-fetch")
+                    .h_flex()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(border)
+                    .bg(bg)
+                    .hover(move |s| s.bg(hover))
+                    .active(move |s| s.bg(active))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                         cx.emit(ToolbarEvent::Fetch);
-                    })),
+                    }))
+                    .child(Icon::new(IconName::Refresh).size(IconSize::Small))
+                    .child(Label::new("Fetch").size(LabelSize::XSmall)),
             )
             // Pull
-            .child(
-                Button::new("pull-btn", "Pull")
-                    .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Outlined)
-                    .disabled(!self.can_pull)
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                        cx.emit(ToolbarEvent::Pull);
-                    })),
-            )
+            .child({
+                let disabled = !self.can_pull;
+                let mut el = div()
+                    .id("tb-pull")
+                    .h_flex()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .border_1();
+                if disabled {
+                    el = el
+                        .border_color(dis_border)
+                        .bg(dis_bg)
+                        .child(Icon::new(IconName::ArrowDown).size(IconSize::Small).color(Color::Disabled))
+                        .child(Label::new("Pull").size(LabelSize::XSmall).color(Color::Disabled));
+                } else {
+                    el = el
+                        .border_color(border)
+                        .bg(bg)
+                        .hover(move |s| s.bg(hover))
+                        .active(move |s| s.bg(active))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::Pull);
+                        }))
+                        .child(Icon::new(IconName::ArrowDown).size(IconSize::Small))
+                        .child(Label::new("Pull").size(LabelSize::XSmall));
+                }
+                el
+            })
             // Push
-            .child(
-                Button::new("push-btn", "Push")
-                    .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Outlined)
-                    .disabled(!self.can_push)
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                        cx.emit(ToolbarEvent::Push);
-                    })),
-            )
-            // Divider
+            .child({
+                let disabled = !self.can_push;
+                let mut el = div()
+                    .id("tb-push")
+                    .h_flex()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .border_1();
+                if disabled {
+                    el = el
+                        .border_color(dis_border)
+                        .bg(dis_bg)
+                        .child(Icon::new(IconName::ArrowUp).size(IconSize::Small).color(Color::Disabled))
+                        .child(Label::new("Push").size(LabelSize::XSmall).color(Color::Disabled));
+                } else {
+                    el = el
+                        .border_color(border)
+                        .bg(bg)
+                        .hover(move |s| s.bg(hover))
+                        .active(move |s| s.bg(active))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::Push);
+                        }))
+                        .child(Icon::new(IconName::ArrowUp).size(IconSize::Small))
+                        .child(Label::new("Push").size(LabelSize::XSmall));
+                }
+                el
+            })
             .child(VerticalDivider::new())
             // Branch
             .child(
-                Button::new("branch-btn", "Branch")
-                    .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Filled)
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                div()
+                    .id("tb-branch")
+                    .h_flex()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(border)
+                    .bg(bg)
+                    .hover(move |s| s.bg(hover))
+                    .active(move |s| s.bg(active))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                         cx.emit(ToolbarEvent::Branch);
-                    })),
+                    }))
+                    .child(Icon::new(IconName::GitBranch).size(IconSize::Small))
+                    .child(Label::new("Branch").size(LabelSize::XSmall)),
             )
+            .child(VerticalDivider::new())
             // Stash
-            .child(
-                Button::new("stash-btn", "Stash")
-                    .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Outlined)
-                    .disabled(!self.has_changes)
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                        cx.emit(ToolbarEvent::StashSave);
-                    })),
-            )
-            // Pop stash
-            .child(
-                Button::new("pop-stash-btn", "Pop")
-                    .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Outlined)
-                    .disabled(!self.has_stashes)
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                        cx.emit(ToolbarEvent::StashPop);
-                    })),
-            )
-            // Spacer
+            .child({
+                let disabled = !self.has_changes;
+                let mut el = div()
+                    .id("tb-stash")
+                    .h_flex()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .border_1();
+                if disabled {
+                    el = el
+                        .border_color(dis_border)
+                        .bg(dis_bg)
+                        .child(Icon::new(IconName::Stash).size(IconSize::Small).color(Color::Disabled))
+                        .child(Label::new("Stash").size(LabelSize::XSmall).color(Color::Disabled));
+                } else {
+                    el = el
+                        .border_color(border)
+                        .bg(bg)
+                        .hover(move |s| s.bg(hover))
+                        .active(move |s| s.bg(active))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::StashSave);
+                        }))
+                        .child(Icon::new(IconName::Stash).size(IconSize::Small))
+                        .child(Label::new("Stash").size(LabelSize::XSmall));
+                }
+                el
+            })
+            // Pop
+            .child({
+                let disabled = !self.has_stashes;
+                let mut el = div()
+                    .id("tb-pop")
+                    .h_flex()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .border_1();
+                if disabled {
+                    el = el
+                        .border_color(dis_border)
+                        .bg(dis_bg)
+                        .child(Icon::new(IconName::Undo).size(IconSize::Small).color(Color::Disabled))
+                        .child(Label::new("Pop").size(LabelSize::XSmall).color(Color::Disabled));
+                } else {
+                    el = el
+                        .border_color(border)
+                        .bg(bg)
+                        .hover(move |s| s.bg(hover))
+                        .active(move |s| s.bg(active))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::StashPop);
+                        }))
+                        .child(Icon::new(IconName::Undo).size(IconSize::Small))
+                        .child(Label::new("Pop").size(LabelSize::XSmall));
+                }
+                el
+            })
             .child(div().flex_1())
-            // Status label
             .child(
                 Label::new("Ready")
                     .size(LabelSize::XSmall)

@@ -41,6 +41,14 @@ impl Render for DiffViewerResize {
     }
 }
 
+#[derive(Clone)]
+struct CommitInputResize;
+impl Render for CommitInputResize {
+    fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
 /// A single open project tab.
 struct ProjectTab {
     name: String,
@@ -69,8 +77,10 @@ pub struct Workspace {
     sidebar_width: f32,
     detail_panel_width: f32,
     diff_viewer_height: f32,
+    commit_input_height: f32,
     show_branch_creation: bool,
     content_bounds: Bounds<Pixels>,
+    right_panel_bounds: Bounds<Pixels>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -128,10 +138,12 @@ impl Workspace {
             command_palette,
             status_message: None,
             sidebar_width: 240.0,
-            detail_panel_width: 280.0,
+            detail_panel_width: 320.0,
             diff_viewer_height: 300.0,
+            commit_input_height: 200.0,
             show_branch_creation: false,
             content_bounds: Bounds::default(),
+            right_panel_bounds: Bounds::default(),
         }
     }
 
@@ -257,6 +269,14 @@ impl Workspace {
                     | GitProjectEvent::RefsChanged => {
                         // Update graph
                         let commits = project.read(cx).recent_commits().to_vec();
+                        // Resolve avatars for any new authors
+                        let mut seen = std::collections::HashSet::new();
+                        let authors: Vec<(String, String)> = commits
+                            .iter()
+                            .filter(|c| seen.insert(c.author.email.clone()))
+                            .map(|c| (c.author.name.clone(), c.author.email.clone()))
+                            .collect();
+                        crate::avatar_resolver::resolve_avatars(authors, cx);
                         graph.update(cx, |g, cx| g.set_commits(commits, cx));
 
                         // Update sidebar
@@ -554,6 +574,14 @@ impl Workspace {
         // Initial sync
         {
             let commits = project.read(cx).recent_commits().to_vec();
+            // Resolve avatars for unique authors
+            let mut seen = std::collections::HashSet::new();
+            let authors: Vec<(String, String)> = commits
+                .iter()
+                .filter(|c| seen.insert(c.author.email.clone()))
+                .map(|c| (c.author.name.clone(), c.author.email.clone()))
+                .collect();
+            crate::avatar_resolver::resolve_avatars(authors, cx);
             graph.update(cx, |g, cx| g.set_commits(commits, cx));
 
             let branches = project.read(cx).branches().to_vec();
@@ -864,7 +892,16 @@ impl Render for Workspace {
                             cx.notify();
                         },
                     ))
-                    // Left sidebar — wrapped in relative so the resize handle can overlay its edge
+                    .on_drag_move::<CommitInputResize>(cx.listener(
+                        |this, e: &DragMoveEvent<CommitInputResize>, _, cx| {
+                            let new_h =
+                                f32::from(this.right_panel_bounds.bottom() - e.event.position.y)
+                                    .clamp(100., 400.);
+                            this.commit_input_height = new_h;
+                            cx.notify();
+                        },
+                    ))
+                    // Left sidebar — branches
                     .child(
                         div()
                             .relative()
@@ -910,7 +947,7 @@ impl Render for Workspace {
                                 div()
                                     .id("diff-resize-handle")
                                     .w_full()
-                                    .h(px(5.))
+                                    .h(px(8.))
                                     .flex_shrink_0()
                                     .cursor_row_resize()
                                     .bg(colors.border_variant)
@@ -931,16 +968,66 @@ impl Render for Workspace {
                                     .child(active_tab.diff_viewer.clone()),
                             ),
                     )
-                    // Right detail panel — resize handle on its left edge
-                    .child(
+                    // Right panel: detail + resize handle + commit input
+                    .child({
+                        let commit_input_height = self.commit_input_height;
                         div()
                             .relative()
                             .w(px(self.detail_panel_width))
                             .h_full()
                             .flex_shrink_0()
+                            .v_flex()
                             .border_l_1()
                             .border_color(colors.border_variant)
-                            .child(active_tab.detail_panel.clone())
+                            // Bounds tracking canvas for commit input resize
+                            .child(
+                                canvas(
+                                    {
+                                        let entity = entity.clone();
+                                        move |bounds, _, cx| {
+                                            entity.update(cx, |this, _| this.right_panel_bounds = bounds);
+                                        }
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                            // Detail panel (commit info + file list) — takes remaining space
+                            .child(
+                                div()
+                                    .id("detail-panel-scroll")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .child(active_tab.detail_panel.clone()),
+                            )
+                            // Resize handle between detail and commit input
+                            .child(
+                                div()
+                                    .id("commit-input-resize-handle")
+                                    .w_full()
+                                    .h(px(8.))
+                                    .flex_shrink_0()
+                                    .cursor_row_resize()
+                                    .bg(colors.border_variant)
+                                    .hover(|s| s.bg(colors.border_focused))
+                                    .on_drag(CommitInputResize, |val, _, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.new(|_| val.clone())
+                                    })
+                                    .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                    }),
+                            )
+                            // Commit panel at bottom
+                            .child(
+                                div()
+                                    .h(px(commit_input_height))
+                                    .flex_shrink_0()
+                                    .child(active_tab.commit_panel.clone()),
+                            )
+                            // Width resize handle on left edge
                             .child(
                                 div()
                                     .id("detail-panel-resize-handle")
@@ -957,11 +1044,9 @@ impl Render for Workspace {
                                     .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
                                         cx.stop_propagation();
                                     }),
-                            ),
-                    )
+                            )
+                    })
             })
-            // Commit panel
-            .child(active_tab.commit_panel.clone())
             // Status bar
             .child(status_bar)
             // Command palette overlay (rendered last to be on top)
@@ -987,10 +1072,7 @@ impl Render for Workspace {
                             div()
                                 .id("branch-creation-dialog")
                                 .w(px(420.))
-                                .bg(colors.elevated_surface_background)
-                                .border_1()
-                                .border_color(colors.border)
-                                .rounded_lg()
+                                .elevation_3(cx)
                                 .p_4()
                                 .v_flex()
                                 .gap_3()

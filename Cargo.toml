@@ -14,8 +14,10 @@ members = [
 
 [workspace.dependencies]
 # GPUI framework (path deps to local Zed checkout)
-gpui = { path = "../zed/crates/gpui", default-features = false, features = ["wayland", "x11"] }
-gpui_platform = { path = "../zed/crates/gpui_platform", default-features = false, features = ["wayland", "x11"] }
+gpui = { path = "../zed/crates/gpui" }
+gpui_platform = { path = "../zed/crates/gpui_platform" }
+http_client = { path = "../zed/crates/http_client" }
+reqwest_client = { path = "../zed/crates/reqwest_client" }
 
 # Internal crates
 rgitui_theme = { path = "crates/rgitui_theme" }
@@ -38,7 +40,7 @@ parking_lot = "0.12"
 smallvec = { version = "1", features = ["union"] }
 
 # Git
-git2 = "0.19"
+git2 = "0.20"
 
 # Async
 futures = "0.3"
@@ -46,14 +48,16 @@ async-channel = "2"
 smol = "2"
 
 # AI / HTTP
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 
 # FS watching
-notify = "7"
+notify = "8"
 
 # Utils
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
+md5 = "0.7"
+rust-embed = "8"
 
 [patch.crates-io]
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }

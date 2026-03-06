@@ -9,7 +9,6 @@ pub struct TextInput {
     text: String,
     placeholder: SharedString,
     focus_handle: FocusHandle,
-    on_change: Option<Box<dyn Fn(&str, &mut Window, &mut App)>>,
 }
 
 impl TextInput {
@@ -18,7 +17,6 @@ impl TextInput {
             text: String::new(),
             placeholder: "".into(),
             focus_handle: cx.focus_handle(),
-            on_change: None,
         }
     }
 

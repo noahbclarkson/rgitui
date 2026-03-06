@@ -1,8 +1,8 @@
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, ElementId, EventEmitter, Render, SharedString, Window};
+use gpui::{div, img, px, ClickEvent, Context, ElementId, EventEmitter, ObjectFit, Render, SharedString, Window};
 use rgitui_git::{CommitDiff, CommitInfo, FileDiff};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Label, LabelSize};
+use rgitui_ui::{AvatarCache, Icon, IconName, IconSize, Label, LabelSize};
 
 /// Events from the detail panel.
 #[derive(Debug, Clone)]
@@ -64,7 +64,30 @@ impl Render for DetailPanel {
         let author_name: SharedString = commit.author.name.clone().into();
         let author_email: SharedString = format!("<{}>", commit.author.email).into();
         let date: SharedString = commit.time.format("%Y-%m-%d %H:%M:%S UTC").to_string().into();
-        let message: SharedString = commit.message.clone().into();
+
+        // Split message into summary (first line) and description (rest)
+        let (summary, description) = {
+            let msg = &commit.message;
+            match msg.find('\n') {
+                Some(idx) => (
+                    msg[..idx].trim().to_string(),
+                    msg[idx + 1..].trim().to_string(),
+                ),
+                None => (msg.trim().to_string(), String::new()),
+            }
+        };
+        let summary: SharedString = summary.into();
+
+        // Author initials for avatar
+        let initials: SharedString = commit
+            .author
+            .name
+            .split_whitespace()
+            .take(2)
+            .filter_map(|w| w.chars().next())
+            .collect::<String>()
+            .to_uppercase()
+            .into();
 
         let mut panel = div()
             .id("detail-panel")
@@ -73,118 +96,173 @@ impl Render for DetailPanel {
             .bg(colors.panel_background)
             .overflow_y_scroll();
 
-        // Commit header
-        panel = panel.child(
+        // Commit header card
+        let mut card = div()
+            .v_flex()
+            .w_full()
+            .px_3()
+            .py_3()
+            .gap_2()
+            .bg(colors.elevated_surface_background)
+            .border_b_1()
+            .border_color(colors.border_variant);
+
+        // Summary line (commit title — normal size, bold)
+        card = card.child(
+            Label::new(summary)
+                .size(LabelSize::Small)
+                .weight(gpui::FontWeight::BOLD),
+        );
+
+        // Description (if multi-line commit message)
+        if !description.is_empty() {
+            let desc: SharedString = description.into();
+            card = card.child(
+                div()
+                    .w_full()
+                    .pt_1()
+                    .border_t_1()
+                    .border_color(colors.border_variant)
+                    .child(
+                        Label::new(desc)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            );
+        }
+
+        // Author row with avatar
+        let avatar_url = cx
+            .try_global::<AvatarCache>()
+            .and_then(|cache| cache.avatar_url(&commit.author.email))
+            .map(|s| s.to_string());
+        let avatar_bg = colors.border_focused;
+        let avatar_text_color = colors.background;
+        let mut avatar_circle = div()
+            .w(px(22.))
+            .h(px(22.))
+            .rounded_full()
+            .bg(avatar_bg)
+            .flex()
+            .items_center()
+            .justify_center();
+
+        if let Some(url) = avatar_url {
+            let fb_initials = initials.clone();
+            avatar_circle = avatar_circle.child(
+                img(url)
+                    .rounded_full()
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .with_fallback(move || {
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_color(avatar_text_color)
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child(fb_initials.clone()),
+                            )
+                            .into_any_element()
+                    }),
+            );
+        } else {
+            avatar_circle = avatar_circle.child(
+                div()
+                    .text_color(avatar_text_color)
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(initials.clone()),
+            );
+        }
+
+        card = card.child(
             div()
-                .v_flex()
-                .w_full()
-                .px_3()
-                .py_2()
-                .gap_1()
-                .bg(colors.surface_background)
-                .border_b_1()
-                .border_color(colors.border_variant)
-                // SHA
+                .h_flex()
+                .gap_2()
+                .items_center()
+                .child(avatar_circle)
                 .child(
                     div()
-                        .h_flex()
-                        .gap_2()
+                        .v_flex()
                         .child(
-                            Label::new("SHA")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .weight(gpui::FontWeight::SEMIBOLD),
+                            div()
+                                .h_flex()
+                                .gap_1()
+                                .child(
+                                    Label::new(author_name)
+                                        .size(LabelSize::XSmall)
+                                        .weight(gpui::FontWeight::SEMIBOLD),
+                                )
+                                .child(
+                                    Label::new(author_email)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
                         )
                         .child(
-                            Label::new(full_sha)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Accent),
-                        ),
-                )
-                // Author
-                .child(
-                    div()
-                        .h_flex()
-                        .gap_2()
-                        .child(
-                            Label::new("Author")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .weight(gpui::FontWeight::SEMIBOLD),
-                        )
-                        .child(Label::new(author_name).size(LabelSize::XSmall))
-                        .child(
-                            Label::new(author_email)
+                            Label::new(date)
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
-                )
-                // Date
-                .child(
-                    div()
-                        .h_flex()
-                        .gap_2()
-                        .child(
-                            Label::new("Date")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .weight(gpui::FontWeight::SEMIBOLD),
-                        )
-                        .child(Label::new(date).size(LabelSize::XSmall)),
-                )
-                // Parents
-                .when(!commit.parent_oids.is_empty(), |el| {
-                    let parents_text: SharedString = commit
-                        .parent_oids
-                        .iter()
-                        .map(|oid| format!("{:.7}", oid))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                        .into();
-                    el.child(
-                        div()
-                            .h_flex()
-                            .gap_2()
-                            .child(
-                                Label::new("Parents")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted)
-                                    .weight(gpui::FontWeight::SEMIBOLD),
-                            )
-                            .child(
-                                Label::new(parents_text)
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
-                            ),
-                    )
-                }),
-        );
-
-        // Commit message
-        panel = panel.child(
-            div()
-                .w_full()
-                .px_3()
-                .py_2()
-                .border_b_1()
-                .border_color(colors.border_variant)
-                .child(
-                    Label::new(message)
-                        .size(LabelSize::Small),
                 ),
         );
 
+        // SHA row
+        card = card.child(
+            div()
+                .h_flex()
+                .gap_2()
+                .child(
+                    Label::new(full_sha)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Accent),
+                ),
+        );
+
+        // Parents
+        if !commit.parent_oids.is_empty() {
+            let parents_text: SharedString = commit
+                .parent_oids
+                .iter()
+                .map(|oid| format!("{:.7}", oid))
+                .collect::<Vec<_>>()
+                .join(", ")
+                .into();
+            card = card.child(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .child(
+                        Label::new("Parents")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    )
+                    .child(
+                        Label::new(parents_text)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            );
+        }
+
+        panel = panel.child(card);
+
         // Changed files list
         if let Some(diff) = &self.commit_diff {
-            let stats: SharedString =
-                format!(
-                    "{} file{} changed, +{} -{}",
-                    diff.files.len(),
-                    if diff.files.len() == 1 { "" } else { "s" },
-                    diff.total_additions,
-                    diff.total_deletions
-                )
-                .into();
+            let stats: SharedString = format!(
+                "{} file{} changed, +{} -{}",
+                diff.files.len(),
+                if diff.files.len() == 1 { "" } else { "s" },
+                diff.total_additions,
+                diff.total_deletions
+            )
+            .into();
 
             panel = panel.child(
                 div()
@@ -210,12 +288,20 @@ impl Render for DetailPanel {
                 let file_diff = file.clone();
                 let path_for_event = path_str.clone();
 
+                let (icon_name, icon_color) = if file.deletions == 0 && file.additions > 0 {
+                    (IconName::FileAdded, Color::Added)
+                } else if file.additions == 0 && file.deletions > 0 {
+                    (IconName::FileDeleted, Color::Deleted)
+                } else {
+                    (IconName::FileModified, Color::Modified)
+                };
+
                 panel = panel.child(
                     div()
                         .id(ElementId::NamedInteger("detail-file".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(24.))
+                        .h(px(28.))
                         .px_3()
                         .gap_2()
                         .items_center()
@@ -230,6 +316,11 @@ impl Render for DetailPanel {
                             ));
                             cx.notify();
                         }))
+                        .child(
+                            Icon::new(icon_name)
+                                .size(IconSize::Small)
+                                .color(icon_color),
+                        )
                         .child(
                             Label::new(path_label)
                                 .size(LabelSize::XSmall)
@@ -248,3 +339,4 @@ impl Render for DetailPanel {
         panel.into_any_element()
     }
 }
+

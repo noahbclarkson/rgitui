@@ -207,10 +207,11 @@ impl Render for Sidebar {
                         Label::new(name)
                             .size(LabelSize::XSmall)
                             .color(Color::Accent)
-                            .weight(gpui::FontWeight::BOLD),
+                            .weight(gpui::FontWeight::BOLD)
+                            .truncate(),
                     );
                 } else {
-                    item = item.child(Label::new(name).size(LabelSize::XSmall));
+                    item = item.child(Label::new(name).size(LabelSize::XSmall).truncate());
                 }
 
                 if branch.ahead > 0 || branch.behind > 0 {
@@ -296,7 +297,8 @@ impl Render for Sidebar {
                         .child(
                             Label::new(name)
                                 .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                                .color(Color::Muted)
+                                .truncate(),
                         ),
                 );
             }

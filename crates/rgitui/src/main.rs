@@ -1,15 +1,46 @@
 use gpui::*;
+use rust_embed::RustEmbed;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+#[derive(RustEmbed)]
+#[folder = "../../assets"]
+#[include = "icons/**/*"]
+struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        Self::get(path)
+            .map(|f| Some(f.data))
+            .ok_or_else(|| anyhow::anyhow!("asset not found: {path}"))
+    }
+
+    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+        Ok(Self::iter()
+            .filter_map(|p| {
+                if p.starts_with(path) {
+                    Some(SharedString::from(p.into_owned()))
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+}
 
 fn main() {
     env_logger::init();
 
-    let app = Application::with_platform(gpui_platform::current_platform(false));
+    let http_client = Arc::new(reqwest_client::ReqwestClient::new());
+    let app = Application::with_platform(gpui_platform::current_platform(false))
+        .with_http_client(http_client)
+        .with_assets(Assets);
 
     app.run(move |cx| {
         // Initialize subsystems
         rgitui_theme::init(cx);
         rgitui_settings::init(cx);
+        cx.set_global(rgitui_ui::AvatarCache::new());
 
         // Determine which repo to open — resolve to actual git root
         let raw_path = std::env::args()
