@@ -4,9 +4,9 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     App, canvas, div, img, point, px, Bounds, ClickEvent, Context, ElementId, EventEmitter,
-    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, ObjectFit, PathBuilder, Pixels,
-    Point, Render, ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
-    uniform_list,
+    FocusHandle, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, ObjectFit,
+    PathBuilder, Pixels, Point, Render, ScrollStrategy, SharedString, UniformListScrollHandle,
+    WeakEntity, Window, uniform_list,
 };
 use rgitui_git::{CommitInfo, GraphEdge, GraphRow, RefLabel, compute_graph};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
@@ -47,23 +47,29 @@ pub struct GraphView {
     filter_matches: Vec<usize>,
     /// Index into `filter_matches` for the current highlighted match.
     current_match: usize,
+    /// Focus handle for the search input.
+    search_focus: FocusHandle,
+    /// Cursor position within the search query (byte offset).
+    search_cursor_pos: usize,
 }
 
 impl EventEmitter<GraphViewEvent> for GraphView {}
 
 impl GraphView {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             commits: Arc::new(Vec::new()),
             graph_rows: Arc::new(Vec::new()),
             selected_index: None,
-            row_height: 34.0,
+            row_height: 38.0,
             scroll_handle: UniformListScrollHandle::new(),
             context_menu: None,
             search_query: String::new(),
             show_search: false,
             filter_matches: Vec::new(),
             current_match: 0,
+            search_focus: cx.focus_handle(),
+            search_cursor_pos: 0,
         }
     }
 
@@ -128,6 +134,21 @@ impl GraphView {
         self.show_search = !self.show_search;
         if !self.show_search {
             self.search_query.clear();
+            self.search_cursor_pos = 0;
+            self.filter_matches.clear();
+            self.current_match = 0;
+        }
+        cx.notify();
+    }
+
+    /// Toggle search with window access (focuses the search input).
+    pub fn toggle_search_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_search = !self.show_search;
+        if self.show_search {
+            self.search_focus.focus(window, cx);
+        } else {
+            self.search_query.clear();
+            self.search_cursor_pos = 0;
             self.filter_matches.clear();
             self.current_match = 0;
         }
@@ -137,6 +158,30 @@ impl GraphView {
     /// Returns whether the search bar is currently visible.
     pub fn is_search_visible(&self) -> bool {
         self.show_search
+    }
+
+    /// Get the byte index of the start of the character before `pos`.
+    fn prev_char_boundary(s: &str, pos: usize) -> usize {
+        if pos == 0 {
+            return 0;
+        }
+        let mut p = pos - 1;
+        while p > 0 && !s.is_char_boundary(p) {
+            p -= 1;
+        }
+        p
+    }
+
+    /// Get the byte index of the start of the character after `pos`.
+    fn next_char_boundary(s: &str, pos: usize) -> usize {
+        if pos >= s.len() {
+            return s.len();
+        }
+        let mut p = pos + 1;
+        while p < s.len() && !s.is_char_boundary(p) {
+            p += 1;
+        }
+        p
     }
 
     /// Update the filter_matches list based on the current search_query.
@@ -188,74 +233,128 @@ impl GraphView {
         self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
     }
 
-    /// Handle key events when the search bar is active.
-    pub fn handle_search_key_down(
+    /// Jump to first match after updating the search filter.
+    fn jump_to_first_match(&mut self, cx: &mut Context<Self>) {
+        if !self.filter_matches.is_empty() {
+            self.current_match = 0;
+            let index = self.filter_matches[0];
+            self.select_index(index, cx);
+            self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
+        }
+    }
+
+    /// Handle key events on the focused search input.
+    fn handle_search_key_down(
         &mut self,
         event: &KeyDownEvent,
+        _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.show_search {
-            return false;
-        }
+    ) {
+        let keystroke = &event.keystroke;
+        let key = keystroke.key.as_str();
+        let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
 
-        let key = event.keystroke.key.as_str();
-        let modifiers = &event.keystroke.modifiers;
+        // Ctrl shortcuts
+        if ctrl {
+            match key {
+                "a" => {
+                    self.search_cursor_pos = self.search_query.len();
+                    cx.notify();
+                    return;
+                }
+                "v" => {
+                    if let Some(clipboard) = cx.read_from_clipboard() {
+                        if let Some(text) = clipboard.text() {
+                            // Only take the first line for search
+                            let line = text.lines().next().unwrap_or("");
+                            self.search_query.insert_str(self.search_cursor_pos, line);
+                            self.search_cursor_pos += line.len();
+                            self.update_search_filter();
+                            self.jump_to_first_match(cx);
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         match key {
             "escape" => {
                 self.show_search = false;
                 self.search_query.clear();
+                self.search_cursor_pos = 0;
                 self.filter_matches.clear();
                 self.current_match = 0;
                 cx.notify();
-                true
             }
             "enter" => {
-                if modifiers.shift {
+                if keystroke.modifiers.shift {
                     self.jump_to_prev_match(cx);
                 } else {
                     self.jump_to_next_match(cx);
                 }
-                true
             }
             "backspace" => {
-                if !self.search_query.is_empty() {
-                    self.search_query.pop();
+                if self.search_cursor_pos > 0 {
+                    let prev = Self::prev_char_boundary(&self.search_query, self.search_cursor_pos);
+                    self.search_query.drain(prev..self.search_cursor_pos);
+                    self.search_cursor_pos = prev;
                     self.update_search_filter();
-                    // Jump to first match if any
-                    if !self.filter_matches.is_empty() {
-                        self.current_match = 0;
-                        let index = self.filter_matches[0];
-                        self.select_index(index, cx);
-                        self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
-                    }
+                    self.jump_to_first_match(cx);
                     cx.notify();
                 }
-                true
+            }
+            "delete" => {
+                if self.search_cursor_pos < self.search_query.len() {
+                    let next = Self::next_char_boundary(&self.search_query, self.search_cursor_pos);
+                    self.search_query.drain(self.search_cursor_pos..next);
+                    self.update_search_filter();
+                    self.jump_to_first_match(cx);
+                    cx.notify();
+                }
+            }
+            "left" => {
+                if self.search_cursor_pos > 0 {
+                    self.search_cursor_pos = Self::prev_char_boundary(&self.search_query, self.search_cursor_pos);
+                    cx.notify();
+                }
+            }
+            "right" => {
+                if self.search_cursor_pos < self.search_query.len() {
+                    self.search_cursor_pos = Self::next_char_boundary(&self.search_query, self.search_cursor_pos);
+                    cx.notify();
+                }
+            }
+            "home" => {
+                self.search_cursor_pos = 0;
+                cx.notify();
+            }
+            "end" => {
+                self.search_cursor_pos = self.search_query.len();
+                cx.notify();
             }
             _ => {
-                // Append printable characters to the query
-                if !modifiers.control
-                    && !modifiers.platform
-                    && !modifiers.alt
-                    && key.len() == 1
-                {
-                    let ch = key.chars().next().unwrap();
-                    if ch.is_ascii_graphic() || ch == ' ' {
-                        self.search_query.push(ch);
+                // Insert printable characters
+                if !ctrl {
+                    if let Some(key_char) = &keystroke.key_char {
+                        self.search_query.insert_str(self.search_cursor_pos, key_char);
+                        self.search_cursor_pos += key_char.len();
                         self.update_search_filter();
-                        // Jump to first match if any
-                        if !self.filter_matches.is_empty() {
-                            self.current_match = 0;
-                            let index = self.filter_matches[0];
-                            self.select_index(index, cx);
-                            self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
-                        }
+                        self.jump_to_first_match(cx);
                         cx.notify();
-                        return true;
+                    } else if key.len() == 1 {
+                        let ch = key.chars().next().unwrap();
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            self.search_query.insert(self.search_cursor_pos, ch);
+                            self.search_cursor_pos += ch.len_utf8();
+                            self.update_search_filter();
+                            self.jump_to_first_match(cx);
+                            cx.notify();
+                        }
                     }
                 }
-                false
             }
         }
     }
@@ -475,6 +574,7 @@ impl Render for GraphView {
 
                     // Clone data for canvas closure
                     let edges: Vec<GraphEdge> = graph_row.edges.clone();
+                    let row_bg_for_canvas = bg;
 
                     let view_clone = view.clone();
                     let view_ctx_menu = view.clone();
@@ -591,12 +691,13 @@ impl Render for GraphView {
                                         }
 
                                         // 3. Draw commit dot with background ring (occludes passing lines).
-                                        let r = 12.0_f32;
+                                        let r = 14.0_f32;
                                         let cx_x = origin.x + node_x_px;
                                         let cy_y = origin.y + mid_y;
-                                        let steps = 24_usize;
+                                        let steps = 32_usize;
 
                                         // Background ring to occlude lines passing behind the dot
+                                        // Use the actual row background color so it blends correctly
                                         let ring_r = r + 3.0;
                                         let mut ring = PathBuilder::fill();
                                         for s in 0..steps {
@@ -608,7 +709,7 @@ impl Render for GraphView {
                                         }
                                         ring.close();
                                         if let Ok(built_ring) = ring.build() {
-                                            window.paint_path(built_ring, panel_bg);
+                                            window.paint_path(built_ring, row_bg_for_canvas);
                                         }
                                     },
                                 )
@@ -623,7 +724,7 @@ impl Render for GraphView {
                                 let initials_fallback = initials.clone();
                                 let fallback_color = node_color;
 
-                                let avatar_size = 24.0_f32;
+                                let avatar_size = 28.0_f32;
                                 let mut avatar_container = div()
                                     .absolute()
                                     .left(px(node_x - avatar_size / 2.0))
@@ -777,8 +878,18 @@ impl Render for GraphView {
 
         // Search bar (shown when search is active)
         if self.show_search {
+            let is_search_focused = self.search_focus.is_focused(_window);
             let query_display: SharedString = if self.search_query.is_empty() {
-                "Type to search...".into()
+                if is_search_focused {
+                    "|".into()
+                } else {
+                    "Type to search...".into()
+                }
+            } else if is_search_focused {
+                let mut display = self.search_query.clone();
+                let pos = self.search_cursor_pos.min(display.len());
+                display.insert(pos, '|');
+                display.into()
             } else {
                 self.search_query.clone().into()
             };
@@ -794,7 +905,7 @@ impl Render for GraphView {
                 )
                 .into()
             };
-            let query_color = if self.search_query.is_empty() {
+            let query_color = if self.search_query.is_empty() && !is_search_focused {
                 Color::Placeholder
             } else {
                 Color::Default
@@ -805,6 +916,13 @@ impl Render for GraphView {
             let has_matches = !self.filter_matches.is_empty();
 
             let search_bar = div()
+                .id("search-bar-input")
+                .track_focus(&self.search_focus)
+                .on_key_down(cx.listener(Self::handle_search_key_down))
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.search_focus.focus(window, cx);
+                    cx.notify();
+                }))
                 .h_flex()
                 .items_center()
                 .w_full()
@@ -814,6 +932,7 @@ impl Render for GraphView {
                 .bg(colors.surface_background)
                 .border_b_1()
                 .border_color(colors.border_focused)
+                .cursor_text()
                 .child(
                     Icon::new(IconName::Search)
                         .size(IconSize::Small)

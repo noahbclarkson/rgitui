@@ -23,6 +23,7 @@ pub enum SidebarEvent {
     StageAll,
     UnstageAll,
     DiscardFile(String),
+    OpenRepo,
 }
 
 /// Sidebar sections.
@@ -49,6 +50,8 @@ pub struct Sidebar {
     /// Tracks which directory groups are collapsed in the file change sections.
     /// Key is "staged:<dir>" or "unstaged:<dir>".
     collapsed_dirs: HashSet<String>,
+    /// Current repository name displayed in the sidebar header.
+    repo_name: String,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -69,7 +72,13 @@ impl Sidebar {
             unstaged: Vec::new(),
             selected_file: None,
             collapsed_dirs: HashSet::new(),
+            repo_name: String::new(),
         }
+    }
+
+    pub fn set_repo_name(&mut self, name: String, cx: &mut Context<Self>) {
+        self.repo_name = name;
+        cx.notify();
     }
 
     pub fn update_branches(&mut self, mut branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
@@ -209,6 +218,53 @@ impl Render for Sidebar {
             .border_r_1()
             .border_color(colors.border_variant)
             .overflow_y_scroll();
+
+        // -- Sidebar Header: repo name + open repo button --
+        {
+            let repo_label: SharedString = if self.repo_name.is_empty() {
+                "No Repository".into()
+            } else {
+                self.repo_name.clone().into()
+            };
+
+            panel = panel.child(
+                div()
+                    .id("sidebar-header")
+                    .h_flex()
+                    .w_full()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .bg(colors.surface_background)
+                    .border_b_1()
+                    .border_color(colors.border_variant)
+                    .child(
+                        rgitui_ui::Icon::new(IconName::Folder)
+                            .size(rgitui_ui::IconSize::Small)
+                            .color(Color::Accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                Label::new(repo_label)
+                                    .size(LabelSize::Small)
+                                    .weight(gpui::FontWeight::SEMIBOLD)
+                                    .truncate(),
+                            ),
+                    )
+                    .child(
+                        IconButton::new("sidebar-open-repo", IconName::Plus)
+                            .size(ButtonSize::Compact)
+                            .color(Color::Muted)
+                            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                cx.emit(SidebarEvent::OpenRepo);
+                            })),
+                    ),
+            );
+        }
 
         // -- Local Branches --
         let local_branches: Vec<BranchInfo> = self

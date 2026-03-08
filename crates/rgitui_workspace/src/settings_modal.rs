@@ -1246,7 +1246,10 @@ impl Render for SettingsModal {
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.dismiss(cx);
-            }));
+            }))
+            .on_scroll_wheel(|_, _, cx| {
+                cx.stop_propagation();
+            });
 
         let modal = div()
             .id("settings-modal-container")

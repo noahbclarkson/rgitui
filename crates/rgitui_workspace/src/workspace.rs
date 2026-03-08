@@ -595,12 +595,18 @@ impl Workspace {
                 .expect("Already validated path is a git repo")
         });
 
-        let graph = cx.new(|_cx| GraphView::new());
+        let graph = cx.new(|cx| GraphView::new(cx));
         let diff_viewer = cx.new(|_cx| DiffViewer::new());
         let detail_panel = cx.new(|_cx| DetailPanel::new());
         let sidebar = cx.new(|_cx| Sidebar::new());
         let commit_panel = cx.new(CommitPanel::new);
         let toolbar = cx.new(|_cx| Toolbar::new());
+
+        // Set the repo name on the sidebar header
+        let repo_display_name = project.read(cx).repo_name().to_string();
+        sidebar.update(cx, |s, cx| {
+            s.set_repo_name(repo_display_name, cx);
+        });
 
         // Set up subscriptions
 
@@ -832,6 +838,11 @@ impl Workspace {
                                 ConfirmAction::BranchDelete(name),
                                 cx,
                             );
+                        });
+                    }
+                    SidebarEvent::OpenRepo => {
+                        this.repo_opener.update(cx, |ro, cx| {
+                            ro.toggle_visible(cx);
                         });
                     }
                 }
@@ -1256,32 +1267,12 @@ impl Workspace {
             return;
         }
 
-        // Forward key events to graph search bar if it's active
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-            let graph = tab.graph.clone();
-            let handled = graph.update(cx, |g, cx| {
-                if g.is_search_visible() {
-                    // Ctrl+F while search is open toggles it off
-                    if (modifiers.control || modifiers.platform) && key == "f" {
-                        g.toggle_search(cx);
-                        return true;
-                    }
-                    g.handle_search_key_down(event, cx)
-                } else {
-                    false
-                }
-            });
-            if handled {
-                return;
-            }
-        }
-
-        // Ctrl+F to open graph search
+        // Ctrl+F to toggle graph search
         if (modifiers.control || modifiers.platform) && !modifiers.shift && key == "f" {
             if let Some(tab) = self.tabs.get(self.active_tab) {
                 let graph = tab.graph.clone();
                 graph.update(cx, |g, cx| {
-                    g.toggle_search(cx);
+                    g.toggle_search_focused(window, cx);
                 });
             }
             return;
@@ -1691,6 +1682,23 @@ impl Render for Workspace {
                 }),
             );
         }
+
+        // Add "+" button to open new repo tab
+        let ws_open = workspace_handle.clone();
+        tab_bar = tab_bar.end_slot(
+            rgitui_ui::IconButton::new("tab-bar-add", rgitui_ui::IconName::Plus)
+                .size(rgitui_ui::ButtonSize::Compact)
+                .color(Color::Muted)
+                .on_click(move |_: &gpui::ClickEvent, _, cx| {
+                    ws_open
+                        .update(cx, |ws, cx| {
+                            ws.repo_opener.update(cx, |ro, cx| {
+                                ro.toggle_visible(cx);
+                            });
+                        })
+                        .ok();
+                }),
+        );
 
         // Status bar with operation message
         let status_bar = if let Some(msg) = &self.status_message {
