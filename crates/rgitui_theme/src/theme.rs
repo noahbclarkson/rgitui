@@ -7,6 +7,8 @@ use crate::colors::{
     catppuccin_mocha_colors, catppuccin_mocha_status,
     catppuccin_latte_colors, catppuccin_latte_status,
     one_dark_colors, one_dark_status,
+    github_dark_colors, github_dark_status,
+    dracula_colors, dracula_status,
 };
 
 /// Visual appearance mode.
@@ -90,6 +92,18 @@ pub fn builtin_themes() -> Vec<Arc<Theme>> {
             appearance: Appearance::Dark,
             colors: one_dark_colors(),
             status: one_dark_status(),
+        }),
+        Arc::new(Theme {
+            name: "GitHub Dark".into(),
+            appearance: Appearance::Dark,
+            colors: github_dark_colors(),
+            status: github_dark_status(),
+        }),
+        Arc::new(Theme {
+            name: "Dracula".into(),
+            appearance: Appearance::Dark,
+            colors: dracula_colors(),
+            status: dracula_status(),
         }),
     ]
 }

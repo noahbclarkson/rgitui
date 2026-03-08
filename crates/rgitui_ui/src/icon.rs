@@ -61,6 +61,7 @@ pub enum IconName {
 
     // Misc
     Dot,
+    DotOutline,
     Menu,
     MoreHorizontal,
     Maximize,
@@ -115,6 +116,7 @@ impl IconName {
             IconName::Terminal => "icons/terminal.svg",
             IconName::Sparkle => "icons/sparkle.svg",
             IconName::Dot => "icons/dot.svg",
+            IconName::DotOutline => "icons/dot-outline.svg",
             IconName::Menu => "icons/menu.svg",
             IconName::MoreHorizontal => "icons/more-horizontal.svg",
             IconName::Maximize => "icons/maximize.svg",

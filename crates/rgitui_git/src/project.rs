@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use chrono::{TimeZone, Utc};
-use git2::{DiffOptions, Repository, StatusOptions};
+use git2::{Cred, DiffOptions, FetchOptions, PushOptions, RemoteCallbacks, Repository, StatusOptions};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -9,6 +9,517 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::types::*;
+
+/// Git authentication configuration.
+#[derive(Debug, Clone, Default)]
+pub struct GitAuthConfig {
+    /// Optional personal access token for HTTPS auth.
+    pub https_token: Option<String>,
+    /// Optional custom SSH key path (overrides default key search).
+    pub ssh_key_path: Option<PathBuf>,
+    /// Optional GPG signing key ID (for signed commits).
+    pub gpg_key_id: Option<String>,
+    /// Whether to sign commits by default.
+    pub sign_commits: bool,
+}
+
+/// Load auth config from the global settings state (if available).
+fn load_auth_config() -> GitAuthConfig {
+    // Try to read from the settings file directly (we can't access GPUI globals
+    // from a background thread, so read the file).
+    let config_path = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("rgitui")
+        .join("settings.json");
+
+    if let Ok(json) = std::fs::read_to_string(&config_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+            let git = val.get("git").cloned().unwrap_or_default();
+            return GitAuthConfig {
+                https_token: git.get("https_token")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string()),
+                ssh_key_path: git.get("ssh_key_path")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(PathBuf::from),
+                gpg_key_id: git.get("gpg_key_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string()),
+                sign_commits: git.get("sign_commits")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            };
+        }
+    }
+    GitAuthConfig::default()
+}
+
+/// Create RemoteCallbacks with credential support.
+///
+/// Auth strategy (in order):
+/// 1. SSH agent (for SSH URLs)
+/// 2. Custom SSH key from settings (for SSH URLs)
+/// 3. Default SSH keys (~/.ssh/id_ed25519, id_rsa, id_ecdsa)
+/// 4. Personal access token from settings (for HTTPS URLs)
+/// 5. Git credential helper (for HTTPS URLs)
+/// 6. Anonymous access (for public HTTPS repos)
+fn make_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
+    let auth_config = load_auth_config();
+    let mut callbacks = RemoteCallbacks::new();
+    let attempts = std::cell::Cell::new(0u32);
+    let tried_anonymous = std::cell::Cell::new(false);
+
+    callbacks.credentials(move |url, username_from_url, allowed_types| {
+        let attempt = attempts.get();
+        attempts.set(attempt + 1);
+
+        // libgit2 retries credentials on failure — bail after reasonable attempts
+        if attempt > 6 {
+            return Err(git2::Error::from_str(
+                "authentication failed after multiple attempts",
+            ));
+        }
+
+        log::debug!(
+            "git auth attempt {} for url={} user={:?} types={:?}",
+            attempt, url, username_from_url, allowed_types
+        );
+
+        let user = username_from_url.unwrap_or("git");
+        let is_ssh = url.starts_with("ssh://") || url.starts_with("git@") || url.contains("@");
+
+        // ── SSH authentication ─────────────────────────────────────
+        if allowed_types.contains(git2::CredentialType::SSH_KEY) {
+            // 1. Try SSH agent first
+            if let Ok(cred) = Cred::ssh_key_from_agent(user) {
+                log::debug!("Using SSH agent credentials");
+                return Ok(cred);
+            }
+
+            // 2. Try custom SSH key from settings
+            if let Some(ref key_path) = auth_config.ssh_key_path {
+                if key_path.exists() {
+                    let pub_path = key_path.with_extension("pub");
+                    let pub_key = if pub_path.exists() {
+                        Some(pub_path.as_path())
+                    } else {
+                        None
+                    };
+                    if let Ok(cred) = Cred::ssh_key(user, pub_key, key_path, None) {
+                        log::debug!("Using custom SSH key: {}", key_path.display());
+                        return Ok(cred);
+                    }
+                }
+            }
+
+            // 3. Fallback: try common SSH key paths
+            let home = std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
+                let key_path = home.join(".ssh").join(key_name);
+                if key_path.exists() {
+                    let pub_path = home.join(".ssh").join(format!("{}.pub", key_name));
+                    let pub_key = if pub_path.exists() {
+                        Some(pub_path.as_path())
+                    } else {
+                        None
+                    };
+                    if let Ok(cred) = Cred::ssh_key(user, pub_key, &key_path, None) {
+                        log::debug!("Using SSH key: {}", key_path.display());
+                        return Ok(cred);
+                    }
+                }
+            }
+        }
+
+        // ── HTTPS authentication ───────────────────────────────────
+        if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            // 4. Try personal access token from settings
+            if let Some(ref token) = auth_config.https_token {
+                log::debug!("Using HTTPS personal access token");
+                return Cred::userpass_plaintext("x-access-token", token);
+            }
+
+            // 5. Try git credential helper
+            if let Ok(cfg) = git2::Config::open_default() {
+                if let Ok(cred) = Cred::credential_helper(&cfg, url, username_from_url) {
+                    log::debug!("Using git credential helper");
+                    return Ok(cred);
+                }
+            }
+
+            // 6. For HTTPS URLs, try anonymous access (public repos)
+            //    Only try this once to avoid infinite retry loops
+            if !is_ssh && !tried_anonymous.get() {
+                tried_anonymous.set(true);
+                log::debug!("Trying anonymous HTTPS access (public repo)");
+                return Cred::userpass_plaintext("", "");
+            }
+        }
+
+        // Username-only auth (first step of SSH negotiation)
+        if allowed_types.contains(git2::CredentialType::USERNAME) {
+            return Cred::username(user);
+        }
+
+        Err(git2::Error::from_str("no suitable authentication method found"))
+    });
+    callbacks
+}
+
+/// Create FetchOptions with auth callbacks.
+fn make_fetch_options<'a>() -> FetchOptions<'a> {
+    let mut fetch_opts = FetchOptions::new();
+    fetch_opts.remote_callbacks(make_remote_callbacks());
+    fetch_opts
+}
+
+/// Create PushOptions with auth callbacks.
+fn make_push_options<'a>() -> PushOptions<'a> {
+    let mut push_opts = PushOptions::new();
+    push_opts.remote_callbacks(make_remote_callbacks());
+    push_opts
+}
+
+/// All the data gathered during a refresh, designed to be Send so it can
+/// be computed on a background thread and then applied on the main thread.
+pub struct RefreshData {
+    pub head_branch: Option<String>,
+    pub branches: Vec<BranchInfo>,
+    pub tags: Vec<TagInfo>,
+    pub remotes: Vec<RemoteInfo>,
+    pub stashes: Vec<StashEntry>,
+    pub status: WorkingTreeStatus,
+    pub recent_commits: Vec<CommitInfo>,
+}
+
+/// Compute line-level diff stats (additions/deletions) for a single file.
+/// For staged files, diffs HEAD vs index. For unstaged files, diffs index vs workdir.
+fn compute_file_diff_stats(
+    repo: &Repository,
+    path: &Path,
+    staged: bool,
+) -> (usize, usize) {
+    let pathspec = path.to_str().unwrap_or("");
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.pathspec(pathspec);
+
+    let diff_result = if staged {
+        // Staged: diff HEAD tree vs index
+        let head_tree = repo.head().ok()
+            .and_then(|r| r.peel_to_tree().ok());
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))
+    } else {
+        // Unstaged: diff index vs workdir
+        repo.diff_index_to_workdir(None, Some(&mut diff_opts))
+    };
+
+    match diff_result {
+        Ok(diff) => {
+            let stats = diff.stats().ok();
+            match stats {
+                Some(s) => (s.insertions(), s.deletions()),
+                None => (0, 0),
+            }
+        }
+        Err(_) => (0, 0),
+    }
+}
+
+/// Gather all refresh data from a repository at the given path.
+/// This is a standalone function (no `&self`) so it can run on a background thread.
+pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
+    let repo = Repository::open(repo_path)
+        .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
+
+    // Head
+    let head_branch = repo
+        .head()
+        .ok()
+        .and_then(|r| r.shorthand().map(String::from));
+
+    // Branches
+    let mut branches = Vec::new();
+    {
+        let branch_iter = repo.branches(None)?;
+        for branch_result in branch_iter {
+            let (branch, branch_type) = branch_result?;
+            let name = branch.name()?.unwrap_or("").to_string();
+            if name.is_empty() {
+                continue;
+            }
+
+            let is_head = branch.is_head();
+            let is_remote = branch_type == git2::BranchType::Remote;
+            let tip_oid = branch.get().target();
+
+            let upstream = branch.upstream().ok().and_then(|u| {
+                u.name().ok().flatten().map(String::from)
+            });
+
+            let (ahead, behind) = if let (Some(local_oid), Ok(upstream_ref)) =
+                (tip_oid, branch.upstream())
+            {
+                if let Some(remote_oid) = upstream_ref.get().target() {
+                    repo.graph_ahead_behind(local_oid, remote_oid)
+                        .unwrap_or((0, 0))
+                } else {
+                    (0, 0)
+                }
+            } else {
+                (0, 0)
+            };
+
+            branches.push(BranchInfo {
+                name,
+                is_head,
+                is_remote,
+                upstream,
+                ahead,
+                behind,
+                tip_oid,
+            });
+        }
+
+        branches.sort_by(|a, b| {
+            b.is_head
+                .cmp(&a.is_head)
+                .then(a.is_remote.cmp(&b.is_remote))
+                .then(a.name.cmp(&b.name))
+        });
+    }
+
+    // Tags
+    let mut tags = Vec::new();
+    let _ = repo.tag_foreach(|oid, name_bytes| {
+        if let Ok(name) = std::str::from_utf8(name_bytes) {
+            let name = name.strip_prefix("refs/tags/").unwrap_or(name).to_string();
+            tags.push(TagInfo {
+                name,
+                oid,
+                message: None,
+            });
+        }
+        true
+    });
+    tags.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Remotes
+    let mut remotes = Vec::new();
+    {
+        let remote_names = repo.remotes()?;
+        for name in remote_names.iter().flatten() {
+            if let Ok(remote) = repo.find_remote(name) {
+                remotes.push(RemoteInfo {
+                    name: name.to_string(),
+                    url: remote.url().map(String::from),
+                    push_url: remote.pushurl().map(String::from),
+                });
+            }
+        }
+    }
+
+    // Stashes
+    let mut stashes = Vec::new();
+    {
+        let mut repo_mut = Repository::open(repo_path)?;
+        repo_mut.stash_foreach(|stash_index, message, oid| {
+            stashes.push(StashEntry {
+                index: stash_index,
+                message: message.to_string(),
+                oid: *oid,
+            });
+            true
+        })?;
+    }
+
+    // Status
+    let status = {
+        let mut wt_status = WorkingTreeStatus::default();
+
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_unmodified(false);
+
+        let statuses = repo.statuses(Some(&mut opts))?;
+        for entry in statuses.iter() {
+            let path = PathBuf::from(entry.path().unwrap_or(""));
+            let st = entry.status();
+
+            if st.intersects(
+                git2::Status::INDEX_NEW
+                    | git2::Status::INDEX_MODIFIED
+                    | git2::Status::INDEX_DELETED
+                    | git2::Status::INDEX_RENAMED
+                    | git2::Status::INDEX_TYPECHANGE,
+            ) {
+                let kind = if st.contains(git2::Status::INDEX_NEW) {
+                    FileChangeKind::Added
+                } else if st.contains(git2::Status::INDEX_MODIFIED) {
+                    FileChangeKind::Modified
+                } else if st.contains(git2::Status::INDEX_DELETED) {
+                    FileChangeKind::Deleted
+                } else if st.contains(git2::Status::INDEX_RENAMED) {
+                    FileChangeKind::Renamed
+                } else {
+                    FileChangeKind::TypeChange
+                };
+                let (additions, deletions) = compute_file_diff_stats(&repo, &path, true);
+                wt_status.staged.push(FileStatus {
+                    path: path.clone(),
+                    kind,
+                    old_path: None,
+                    additions,
+                    deletions,
+                });
+            }
+
+            if st.intersects(
+                git2::Status::WT_NEW
+                    | git2::Status::WT_MODIFIED
+                    | git2::Status::WT_DELETED
+                    | git2::Status::WT_RENAMED
+                    | git2::Status::WT_TYPECHANGE,
+            ) {
+                let kind = if st.contains(git2::Status::WT_NEW) {
+                    FileChangeKind::Untracked
+                } else if st.contains(git2::Status::WT_MODIFIED) {
+                    FileChangeKind::Modified
+                } else if st.contains(git2::Status::WT_DELETED) {
+                    FileChangeKind::Deleted
+                } else if st.contains(git2::Status::WT_RENAMED) {
+                    FileChangeKind::Renamed
+                } else {
+                    FileChangeKind::TypeChange
+                };
+                let (additions, deletions) = compute_file_diff_stats(&repo, &path, false);
+                wt_status.unstaged.push(FileStatus {
+                    path: path.clone(),
+                    kind,
+                    old_path: None,
+                    additions,
+                    deletions,
+                });
+            }
+
+            if st.contains(git2::Status::CONFLICTED) {
+                wt_status.unstaged.push(FileStatus {
+                    path,
+                    kind: FileChangeKind::Conflicted,
+                    old_path: None,
+                    additions: 0,
+                    deletions: 0,
+                });
+            }
+        }
+
+        wt_status
+    };
+
+    // Recent commits (uses branches and tags for ref labels)
+    let recent_commits = {
+        let limit = 200;
+        let mut commits = Vec::new();
+
+        let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
+
+        if let Ok(head) = repo.head() {
+            if let Some(oid) = head.target() {
+                ref_map.entry(oid).or_default().push(RefLabel::Head);
+            }
+        }
+
+        for branch in &branches {
+            if let Some(oid) = branch.tip_oid {
+                let label = if branch.is_remote {
+                    RefLabel::RemoteBranch(branch.name.clone())
+                } else {
+                    RefLabel::LocalBranch(branch.name.clone())
+                };
+                ref_map.entry(oid).or_default().push(label);
+            }
+        }
+
+        for tag in &tags {
+            ref_map
+                .entry(tag.oid)
+                .or_default()
+                .push(RefLabel::Tag(tag.name.clone()));
+        }
+
+        let mut revwalk = repo.revwalk()?;
+        let has_head = revwalk.push_head().is_ok();
+        for branch in &branches {
+            if let Some(oid) = branch.tip_oid {
+                revwalk.push(oid).ok();
+            }
+        }
+        if !has_head && branches.is_empty() {
+            return Ok(RefreshData {
+                head_branch,
+                branches,
+                tags,
+                remotes,
+                stashes,
+                status,
+                recent_commits: commits,
+            });
+        }
+        revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
+
+        let mut count = 0;
+        for oid_result in revwalk {
+            if count >= limit {
+                break;
+            }
+            let oid = oid_result?;
+            let commit = repo.find_commit(oid)?;
+
+            let author = commit.author();
+            let committer = commit.committer();
+            let time = Utc.timestamp_opt(commit.time().seconds(), 0).single();
+
+            let refs = ref_map.remove(&oid).unwrap_or_default();
+
+            commits.push(CommitInfo {
+                oid,
+                short_id: format!("{:.7}", oid),
+                summary: commit.summary().unwrap_or("").to_string(),
+                message: commit.message().unwrap_or("").to_string(),
+                author: Signature {
+                    name: author.name().unwrap_or("").to_string(),
+                    email: author.email().unwrap_or("").to_string(),
+                },
+                committer: Signature {
+                    name: committer.name().unwrap_or("").to_string(),
+                    email: committer.email().unwrap_or("").to_string(),
+                },
+                time: time.unwrap_or_else(Utc::now),
+                parent_oids: commit.parent_ids().collect(),
+                refs,
+            });
+
+            count += 1;
+        }
+
+        commits
+    };
+
+    Ok(RefreshData {
+        head_branch,
+        branches,
+        tags,
+        remotes,
+        stashes,
+        status,
+        recent_commits,
+    })
+}
 
 /// Events emitted by GitProject.
 #[derive(Debug, Clone)]
@@ -103,6 +614,7 @@ impl GitProject {
             self._watcher = Some(watcher);
 
             // Poll the dirty flag from async executor — never blocks the UI thread
+            let watcher_repo_path = repo_path.clone();
             cx.spawn(async move |weak, cx: &mut AsyncApp| {
                 loop {
                     // Async sleep — yields to executor, keeps UI responsive
@@ -113,9 +625,20 @@ impl GitProject {
                         smol::Timer::after(Duration::from_millis(200)).await;
                         dirty.store(false, Ordering::Relaxed);
 
+                        let path = watcher_repo_path.clone();
+                        let data = cx
+                            .background_executor()
+                            .spawn(async move { gather_refresh_data(&path) })
+                            .await;
+
+                        let data = match data {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        };
+
                         let result = cx.update(|cx| {
                             weak.update(cx, |this, cx| {
-                                let _ = this.refresh_sync();
+                                this.apply_refresh_data(data);
                                 cx.emit(GitProjectEvent::StatusChanged);
                                 cx.notify();
                             })
@@ -158,6 +681,38 @@ impl GitProject {
         &self.remotes
     }
 
+    /// Resolve a tag name to the commit OID it points to.
+    /// Handles both lightweight and annotated tags by peeling to the commit.
+    pub fn resolve_tag_to_oid(&self, tag_name: &str) -> Result<git2::Oid> {
+        let repo = self.open_repo()?;
+        let obj = repo
+            .revparse_single(&format!("refs/tags/{}", tag_name))
+            .with_context(|| format!("Failed to resolve tag '{}'", tag_name))?;
+        let commit = obj
+            .peel_to_commit()
+            .with_context(|| format!("Tag '{}' does not point to a commit", tag_name))?;
+        Ok(commit.id())
+    }
+
+    /// Resolve a branch name to the commit OID it points to.
+    /// Tries local branch first, then remote, then raw revparse.
+    pub fn resolve_branch_to_oid(&self, branch_name: &str) -> Result<git2::Oid> {
+        let repo = self.open_repo()?;
+        let refs_to_try = [
+            format!("refs/heads/{}", branch_name),
+            format!("refs/remotes/{}", branch_name),
+            branch_name.to_string(),
+        ];
+        for refspec in &refs_to_try {
+            if let Ok(obj) = repo.revparse_single(refspec) {
+                if let Ok(commit) = obj.peel_to_commit() {
+                    return Ok(commit.id());
+                }
+            }
+        }
+        anyhow::bail!("Failed to resolve branch '{}' to a commit", branch_name)
+    }
+
     pub fn stashes(&self) -> &[StashEntry] {
         &self.stashes
     }
@@ -192,15 +747,32 @@ impl GitProject {
         Ok(())
     }
 
-    /// Refresh all state asynchronously.
+    /// Apply pre-gathered refresh data to self.
+    fn apply_refresh_data(&mut self, data: RefreshData) {
+        self.head_branch = data.head_branch;
+        self.branches = data.branches;
+        self.tags = data.tags;
+        self.remotes = data.remotes;
+        self.stashes = data.stashes;
+        self.status = data.status;
+        self.recent_commits = data.recent_commits;
+    }
+
+    /// Refresh all state asynchronously on a background thread.
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+        let repo_path = self.repo_path.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let data = cx
+                .background_executor()
+                .spawn(async move { gather_refresh_data(&repo_path) })
+                .await?;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let result = this.refresh_sync();
+                    this.apply_refresh_data(data);
                     cx.emit(GitProjectEvent::StatusChanged);
                     cx.notify();
-                    result
+                    Ok(())
                 })
             })?
         })
@@ -347,10 +919,13 @@ impl GitProject {
                 } else {
                     FileChangeKind::TypeChange
                 };
+                let (additions, deletions) = compute_file_diff_stats(repo, &path, true);
                 self.status.staged.push(FileStatus {
                     path: path.clone(),
                     kind,
                     old_path: None,
+                    additions,
+                    deletions,
                 });
             }
 
@@ -373,10 +948,13 @@ impl GitProject {
                 } else {
                     FileChangeKind::TypeChange
                 };
+                let (additions, deletions) = compute_file_diff_stats(repo, &path, false);
                 self.status.unstaged.push(FileStatus {
                     path: path.clone(),
                     kind,
                     old_path: None,
+                    additions,
+                    deletions,
                 });
             }
 
@@ -386,6 +964,8 @@ impl GitProject {
                     path,
                     kind: FileChangeKind::Conflicted,
                     old_path: None,
+                    additions: 0,
+                    deletions: 0,
                 });
             }
         }
@@ -465,7 +1045,7 @@ impl GitProject {
                     name: committer.name().unwrap_or("").to_string(),
                     email: committer.email().unwrap_or("").to_string(),
                 },
-                time: time.unwrap_or_else(|| Utc::now()),
+                time: time.unwrap_or_else(Utc::now),
                 parent_oids: commit.parent_ids().collect(),
                 refs,
             });
@@ -745,6 +1325,120 @@ impl GitProject {
         })
     }
 
+    /// Get the diff for a stash entry at the given index.
+    pub fn diff_stash(&self, index: usize) -> Result<CommitDiff> {
+        let mut repo = self.open_repo()?;
+
+        // Collect stash OIDs using stash_foreach
+        let mut stash_oids: Vec<git2::Oid> = Vec::new();
+        repo.stash_foreach(|_idx, _msg, oid| {
+            stash_oids.push(*oid);
+            true
+        })?;
+
+        let oid = *stash_oids
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("Stash index {} out of range", index))?;
+
+        // A stash commit's first parent is the commit it was created on top of
+        let commit = repo.find_commit(oid)?;
+        let tree = commit.tree()?;
+
+        let parent_tree = if commit.parent_count() > 0 {
+            Some(commit.parent(0)?.tree()?)
+        } else {
+            None
+        };
+
+        let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+        let stats = diff.stats()?;
+
+        let mut files: Vec<FileDiff> = Vec::new();
+        let mut current_hunks: Vec<DiffHunk> = Vec::new();
+        let mut current_path: Option<PathBuf> = None;
+        let mut current_additions: usize = 0;
+        let mut current_deletions: usize = 0;
+
+        diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
+            let delta_path = delta
+                .new_file()
+                .path()
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+
+            if current_path.as_ref() != Some(&delta_path) {
+                if let Some(prev_path) = current_path.take() {
+                    files.push(FileDiff {
+                        path: prev_path,
+                        hunks: std::mem::take(&mut current_hunks),
+                        additions: current_additions,
+                        deletions: current_deletions,
+                    });
+                }
+                current_path = Some(delta_path);
+                current_additions = 0;
+                current_deletions = 0;
+            }
+
+            if let Some(hunk) = hunk {
+                let header = String::from_utf8_lossy(hunk.header()).to_string();
+                let expected_start = hunk.new_start();
+                let needs_new = current_hunks.last().map_or(true, |h| {
+                    h.new_start != expected_start || h.header != header
+                });
+                if needs_new {
+                    current_hunks.push(DiffHunk {
+                        old_start: hunk.old_start(),
+                        old_lines: hunk.old_lines(),
+                        new_start: hunk.new_start(),
+                        new_lines: hunk.new_lines(),
+                        header,
+                        lines: Vec::new(),
+                    });
+                }
+            }
+
+            let content = String::from_utf8_lossy(line.content()).to_string();
+            match line.origin() {
+                '+' => {
+                    if let Some(h) = current_hunks.last_mut() {
+                        h.lines.push(DiffLine::Addition(content));
+                    }
+                    current_additions += 1;
+                }
+                '-' => {
+                    if let Some(h) = current_hunks.last_mut() {
+                        h.lines.push(DiffLine::Deletion(content));
+                    }
+                    current_deletions += 1;
+                }
+                ' ' => {
+                    if let Some(h) = current_hunks.last_mut() {
+                        h.lines.push(DiffLine::Context(content));
+                    }
+                }
+                _ => {}
+            }
+
+            true
+        })?;
+
+        if let Some(path) = current_path {
+            files.push(FileDiff {
+                path,
+                hunks: current_hunks,
+                additions: current_additions,
+                deletions: current_deletions,
+            });
+        }
+
+        Ok(CommitDiff {
+            total_additions: stats.insertions(),
+            total_deletions: stats.deletions(),
+            files,
+        })
+    }
+
     /// Checkout a branch by name.
     pub fn checkout_branch(
         &mut self,
@@ -792,13 +1486,35 @@ impl GitProject {
         name: &str,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.create_branch_at(name, None, cx)
+    }
+
+    /// Create a new branch, optionally at a specific commit (SHA or ref).
+    /// If `base_ref` is None or empty, creates at HEAD.
+    pub fn create_branch_at(
+        &mut self,
+        name: &str,
+        base_ref: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let name = name.to_string();
+        let base_ref = base_ref.map(|s| s.to_string());
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     let repo = this.open_repo()?;
-                    let head = repo.head()?.peel_to_commit()?;
-                    repo.branch(&name, &head, false)?;
+                    let target = if let Some(ref r) = base_ref {
+                        if r.is_empty() {
+                            repo.head()?.peel_to_commit()?
+                        } else {
+                            let obj = repo.revparse_single(r)?;
+                            obj.peel_to_commit()
+                                .map_err(|_| anyhow::anyhow!("'{}' does not resolve to a commit", r))?
+                        }
+                    } else {
+                        repo.head()?.peel_to_commit()?
+                    };
+                    repo.branch(&name, &target, false)?;
                     this.refresh_branches(&repo)?;
                     cx.emit(GitProjectEvent::RefsChanged);
                     cx.notify();
@@ -823,6 +1539,114 @@ impl GitProject {
                     branch.delete()?;
                     this.refresh_branches(&repo)?;
                     cx.emit(GitProjectEvent::RefsChanged);
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Rename a local branch.
+    pub fn rename_branch(
+        &mut self,
+        old_name: &str,
+        new_name: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let old_name = old_name.to_string();
+        let new_name = new_name.to_string();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    let repo = this.open_repo()?;
+                    let mut branch = repo.find_branch(&old_name, git2::BranchType::Local)?;
+                    branch.rename(&new_name, false)?;
+                    this.refresh_branches(&repo)?;
+                    cx.emit(GitProjectEvent::RefsChanged);
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Create a lightweight tag at the given commit.
+    pub fn create_tag(
+        &mut self,
+        name: &str,
+        target_oid: git2::Oid,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let name = name.to_string();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    let repo = this.open_repo()?;
+                    let obj = repo.find_object(target_oid, None)?;
+                    repo.tag_lightweight(&name, &obj, false)?;
+                    this.refresh_tags(&repo)?;
+                    cx.emit(GitProjectEvent::RefsChanged);
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Delete a tag by name.
+    pub fn delete_tag(
+        &mut self,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let name = name.to_string();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    let repo = this.open_repo()?;
+                    repo.tag_delete(&name)?;
+                    this.refresh_tags(&repo)?;
+                    cx.emit(GitProjectEvent::RefsChanged);
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Drop a stash entry without applying it.
+    pub fn stash_drop(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    let mut repo = Repository::open(&this.repo_path)?;
+                    repo.stash_drop(index)?;
+                    this.refresh_sync()?;
+                    cx.emit(GitProjectEvent::StatusChanged);
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Apply a stash entry without removing it from the stash list.
+    pub fn stash_apply(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    let mut repo = Repository::open(&this.repo_path)?;
+                    repo.stash_apply(index, None)?;
+                    this.refresh_sync()?;
+                    cx.emit(GitProjectEvent::StatusChanged);
                     cx.notify();
                     Ok(())
                 })
@@ -972,6 +1796,139 @@ impl GitProject {
         })
     }
 
+    /// Cherry-pick a commit onto the current HEAD.
+    pub fn cherry_pick(
+        &mut self,
+        oid: git2::Oid,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    let result: Result<()> = (|| {
+                        let repo = this.open_repo()?;
+                        let commit = repo.find_commit(oid)?;
+                        let mut opts = git2::CherrypickOptions::new();
+                        repo.cherrypick(&commit, Some(&mut opts))?;
+                        // Auto-commit the cherry-pick
+                        let sig = repo.signature()?;
+                        let msg = format!(
+                            "Cherry-pick: {}",
+                            commit.summary().unwrap_or("")
+                        );
+                        let tree_id = {
+                            let mut idx = repo.index()?;
+                            idx.write_tree()?
+                        };
+                        let tree = repo.find_tree(tree_id)?;
+                        let head_commit = repo.head()?.peel_to_commit()?;
+                        repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&head_commit])?;
+                        repo.cleanup_state()?;
+                        this.refresh_sync()?;
+                        Ok(())
+                    })();
+                    match result {
+                        Ok(()) => {
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            cx.emit(GitProjectEvent::OperationFailed(
+                                "Cherry-pick".to_string(),
+                                e.to_string(),
+                            ));
+                        }
+                    }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Checkout a specific commit (detached HEAD).
+    pub fn checkout_commit(
+        &mut self,
+        oid: git2::Oid,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    cx.emit(GitProjectEvent::OperationStarted(
+                        format!("Checking out {}...", &oid.to_string()[..7]),
+                    ));
+                    let result: Result<()> = (|| {
+                        let repo = this.open_repo()?;
+                        let commit = repo.find_commit(oid)?;
+                        let obj = commit.into_object();
+                        let mut checkout_opts = git2::build::CheckoutBuilder::new();
+                        checkout_opts.safe();
+                        repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
+                        repo.set_head_detached(oid)?;
+                        this.refresh_sync()?;
+                        Ok(())
+                    })();
+                    match result {
+                        Ok(()) => {
+                            cx.emit(GitProjectEvent::OperationCompleted(
+                                format!("Checked out {}", &oid.to_string()[..7]),
+                            ));
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            cx.emit(GitProjectEvent::OperationFailed(
+                                "Checkout".to_string(),
+                                e.to_string(),
+                            ));
+                        }
+                    }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Remove a remote by name.
+    pub fn remove_remote(
+        &mut self,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let name = name.to_string();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    let result: Result<()> = (|| {
+                        let repo = this.open_repo()?;
+                        repo.remote_delete(&name)?;
+                        this.refresh_sync()?;
+                        Ok(())
+                    })();
+                    match result {
+                        Ok(()) => {
+                            cx.emit(GitProjectEvent::OperationCompleted(
+                                format!("Remote '{}' removed", name),
+                            ));
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            cx.emit(GitProjectEvent::OperationFailed(
+                                "Remove remote".to_string(),
+                                e.to_string(),
+                            ));
+                        }
+                    }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Fetch from a remote.
     pub fn fetch(
         &mut self,
@@ -979,16 +1936,39 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let remote_name = remote_name.to_string();
+        let repo_path = self.repo_path.clone();
+        cx.emit(GitProjectEvent::OperationStarted("Fetching...".into()));
+        cx.notify();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Run blocking git operation + refresh on background executor
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    {
+                        let repo = Repository::open(&repo_path)?;
+                        let mut remote = repo.find_remote(&remote_name)?;
+                        let mut fetch_opts = make_fetch_options();
+                        remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
+                    }
+                    let data = gather_refresh_data(&repo_path)?;
+                    anyhow::Ok(data)
+                })
+                .await;
+
+            // Update UI on main thread
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    cx.emit(GitProjectEvent::OperationStarted("Fetching...".into()));
-                    let repo = this.open_repo()?;
-                    let mut remote = repo.find_remote(&remote_name)?;
-                    remote.fetch(&[] as &[&str], None, None)?;
-                    this.refresh_sync()?;
-                    cx.emit(GitProjectEvent::OperationCompleted("Fetch complete".into()));
-                    cx.emit(GitProjectEvent::RefsChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            cx.emit(GitProjectEvent::OperationCompleted("Fetch complete".into()));
+                            cx.emit(GitProjectEvent::RefsChanged);
+                        }
+                        Err(e) => {
+                            log::error!("Fetch failed: {}", e);
+                            cx.emit(GitProjectEvent::OperationFailed("Fetch".into(), e.to_string()));
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1003,67 +1983,93 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let remote_name = remote_name.to_string();
+        let repo_path = self.repo_path.clone();
+        cx.emit(GitProjectEvent::OperationStarted("Pulling...".into()));
+        cx.notify();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Run the entire pull on a background thread
+            let result: anyhow::Result<(String, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let msg = {
+                        let repo = Repository::open(&repo_path)?;
+
+                        // Fetch first
+                        let mut remote = repo.find_remote(&remote_name)?;
+                        let mut fetch_opts = make_fetch_options();
+                        remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
+                        drop(remote);
+
+                        // Find upstream branch to merge
+                        let head = repo.head()?;
+                        let branch_name = head.shorthand().unwrap_or("main").to_string();
+                        drop(head);
+                        let fetch_head = repo.find_reference("FETCH_HEAD")?;
+                        let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
+                        drop(fetch_head);
+
+                        // Perform merge analysis
+                        let (analysis, _pref) = repo.merge_analysis(&[&fetch_commit])?;
+
+                        if analysis.is_up_to_date() {
+                            "Already up to date".to_string()
+                        } else if analysis.is_fast_forward() {
+                            let refname = format!("refs/heads/{}", branch_name);
+                            let mut reference = repo.find_reference(&refname)?;
+                            reference.set_target(fetch_commit.id(), "Fast-forward pull")?;
+                            repo.set_head(&refname)?;
+                            repo.checkout_head(Some(
+                                git2::build::CheckoutBuilder::new().force(),
+                            ))?;
+                            "Pull complete (fast-forward)".to_string()
+                        } else if analysis.is_normal() {
+                            repo.merge(&[&fetch_commit], None, None)?;
+                            let has_conflicts = repo.index()?.has_conflicts();
+                            if !has_conflicts {
+                                let sig = repo.signature()?;
+                                let mut index = repo.index()?;
+                                let tree_oid = index.write_tree()?;
+                                let tree = repo.find_tree(tree_oid)?;
+                                let head_commit = repo.head()?.peel_to_commit()?;
+                                let fetch_commit_obj = repo.find_commit(fetch_commit.id())?;
+                                repo.commit(
+                                    Some("HEAD"),
+                                    &sig,
+                                    &sig,
+                                    &format!("Merge remote-tracking branch '{}/{}'", remote_name, branch_name),
+                                    &tree,
+                                    &[&head_commit, &fetch_commit_obj],
+                                )?;
+                                repo.cleanup_state()?;
+                                "Pull complete (merge)".to_string()
+                            } else {
+                                "Pull complete (conflicts to resolve)".to_string()
+                            }
+                        } else {
+                            "Pull complete".to_string()
+                        }
+                    }; // repo dropped here
+
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((msg, data))
+                })
+                .await;
+
+            // Update UI on main thread
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    cx.emit(GitProjectEvent::OperationStarted("Pulling...".into()));
-                    let repo = this.open_repo()?;
-
-                    // Fetch first
-                    let mut remote = repo.find_remote(&remote_name)?;
-                    remote.fetch(&[] as &[&str], None, None)?;
-
-                    // Find upstream branch to merge
-                    let head = repo.head()?;
-                    let branch_name = head.shorthand().unwrap_or("main").to_string();
-                    let fetch_head = repo.find_reference("FETCH_HEAD")?;
-                    let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
-
-                    // Perform merge analysis
-                    let (analysis, _pref) = repo.merge_analysis(&[&fetch_commit])?;
-
-                    if analysis.is_up_to_date() {
-                        cx.emit(GitProjectEvent::OperationCompleted("Already up to date".into()));
-                    } else if analysis.is_fast_forward() {
-                        // Fast-forward
-                        let refname = format!("refs/heads/{}", branch_name);
-                        let mut reference = repo.find_reference(&refname)?;
-                        reference.set_target(fetch_commit.id(), "Fast-forward pull")?;
-                        repo.set_head(&refname)?;
-                        repo.checkout_head(Some(
-                            git2::build::CheckoutBuilder::new().force(),
-                        ))?;
-                        cx.emit(GitProjectEvent::OperationCompleted("Pull complete (fast-forward)".into()));
-                    } else if analysis.is_normal() {
-                        // Normal merge
-                        repo.merge(&[&fetch_commit], None, None)?;
-                        // Auto-commit if no conflicts
-                        let has_conflicts = repo.index()?.has_conflicts();
-                        if !has_conflicts {
-                            let sig = repo.signature()?;
-                            let mut index = repo.index()?;
-                            let tree_oid = index.write_tree()?;
-                            let tree = repo.find_tree(tree_oid)?;
-                            let head_commit = repo.head()?.peel_to_commit()?;
-                            let fetch_commit_obj = repo.find_commit(fetch_commit.id())?;
-                            repo.commit(
-                                Some("HEAD"),
-                                &sig,
-                                &sig,
-                                &format!("Merge remote-tracking branch '{}/{}'", remote_name, branch_name),
-                                &tree,
-                                &[&head_commit, &fetch_commit_obj],
-                            )?;
-                            repo.cleanup_state()?;
-                            cx.emit(GitProjectEvent::OperationCompleted("Pull complete (merge)".into()));
-                        } else {
-                            cx.emit(GitProjectEvent::OperationCompleted("Pull complete (conflicts to resolve)".into()));
+                    match result {
+                        Ok((msg, data)) => {
+                            this.apply_refresh_data(data);
+                            cx.emit(GitProjectEvent::OperationCompleted(msg));
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            log::error!("Pull failed: {}", e);
+                            cx.emit(GitProjectEvent::OperationFailed("Pull".into(), e.to_string()));
                         }
                     }
-
-                    this.refresh_sync()?;
-                    cx.emit(GitProjectEvent::HeadChanged);
-                    cx.emit(GitProjectEvent::StatusChanged);
                     cx.notify();
                     Ok(())
                 })
@@ -1079,25 +2085,161 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let remote_name = remote_name.to_string();
+        let repo_path = self.repo_path.clone();
+        cx.emit(GitProjectEvent::OperationStarted("Pushing...".into()));
+        cx.notify();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Run blocking push + refresh on background thread
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    {
+                        let repo = Repository::open(&repo_path)?;
+                        let head = repo.head()?;
+                        let branch_name = head.shorthand().unwrap_or("main").to_string();
+
+                        let mut remote = repo.find_remote(&remote_name)?;
+                        let refspec = if force {
+                            format!("+refs/heads/{}:refs/heads/{}", branch_name, branch_name)
+                        } else {
+                            format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name)
+                        };
+                        let mut push_opts = make_push_options();
+                        remote.push(&[&refspec], Some(&mut push_opts))?;
+                    }
+                    let data = gather_refresh_data(&repo_path)?;
+                    anyhow::Ok(data)
+                })
+                .await;
+
+            // Update UI on main thread
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    cx.emit(GitProjectEvent::OperationStarted("Pushing...".into()));
-                    let repo = this.open_repo()?;
-                    let head = repo.head()?;
-                    let branch_name = head.shorthand().unwrap_or("main").to_string();
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            cx.emit(GitProjectEvent::OperationCompleted("Push complete".into()));
+                            cx.emit(GitProjectEvent::RefsChanged);
+                        }
+                        Err(e) => {
+                            log::error!("Push failed: {}", e);
+                            cx.emit(GitProjectEvent::OperationFailed("Push".into(), e.to_string()));
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
 
-                    let mut remote = repo.find_remote(&remote_name)?;
-                    let refspec = if force {
-                        format!("+refs/heads/{}:refs/heads/{}", branch_name, branch_name)
-                    } else {
-                        format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name)
-                    };
-                    remote.push(&[&refspec], None)?;
+    /// Merge a branch into the current HEAD.
+    pub fn merge_branch(
+        &mut self,
+        branch_name: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let branch_name = branch_name.to_string();
+        let repo_path = self.repo_path.clone();
+        cx.emit(GitProjectEvent::OperationStarted(
+            format!("Merging {}...", branch_name),
+        ));
+        cx.notify();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(String, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let msg = {
+                        let repo = Repository::open(&repo_path)?;
 
-                    this.refresh_sync()?;
-                    cx.emit(GitProjectEvent::OperationCompleted("Push complete".into()));
-                    cx.emit(GitProjectEvent::RefsChanged);
+                        // Find the branch reference and its annotated commit
+                        let reference = repo
+                            .find_branch(&branch_name, git2::BranchType::Local)
+                            .or_else(|_| repo.find_branch(&branch_name, git2::BranchType::Remote))?;
+                        let annotated_commit =
+                            repo.reference_to_annotated_commit(reference.get())?;
+
+                        // Perform merge analysis
+                        let (analysis, _pref) = repo.merge_analysis(&[&annotated_commit])?;
+
+                        if analysis.is_up_to_date() {
+                            "Already up to date".to_string()
+                        } else if analysis.is_fast_forward() {
+                            let head = repo.head()?;
+                            let head_branch_name =
+                                head.shorthand().unwrap_or("HEAD").to_string();
+                            let refname = format!("refs/heads/{}", head_branch_name);
+                            let mut reference = repo.find_reference(&refname)?;
+                            reference.set_target(
+                                annotated_commit.id(),
+                                &format!("Fast-forward merge of '{}'", branch_name),
+                            )?;
+                            repo.set_head(&refname)?;
+                            repo.checkout_head(Some(
+                                git2::build::CheckoutBuilder::new().force(),
+                            ))?;
+                            format!("Merged '{}' (fast-forward)", branch_name)
+                        } else if analysis.is_normal() {
+                            repo.merge(&[&annotated_commit], None, None)?;
+
+                            let has_conflicts = repo.index()?.has_conflicts();
+                            if has_conflicts {
+                                return Err(anyhow::anyhow!(
+                                    "Merge conflicts detected. Resolve conflicts and commit manually."
+                                ));
+                            }
+
+                            let sig = repo.signature()?;
+                            let mut index = repo.index()?;
+                            let tree_oid = index.write_tree()?;
+                            let tree = repo.find_tree(tree_oid)?;
+                            let head_commit = repo.head()?.peel_to_commit()?;
+                            let merge_commit =
+                                repo.find_commit(annotated_commit.id())?;
+                            repo.commit(
+                                Some("HEAD"),
+                                &sig,
+                                &sig,
+                                &format!(
+                                    "Merge branch '{}' into {}",
+                                    branch_name,
+                                    repo.head()?
+                                        .shorthand()
+                                        .unwrap_or("HEAD")
+                                ),
+                                &tree,
+                                &[&head_commit, &merge_commit],
+                            )?;
+                            repo.cleanup_state()?;
+                            format!("Merged '{}' successfully", branch_name)
+                        } else {
+                            "Merge complete".to_string()
+                        }
+                    }; // repo dropped here
+
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((msg, data))
+                })
+                .await;
+
+            // Update UI on main thread
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok((msg, data)) => {
+                            this.apply_refresh_data(data);
+                            cx.emit(GitProjectEvent::OperationCompleted(msg));
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            cx.emit(GitProjectEvent::OperationFailed(
+                                "Merge".into(),
+                                e.to_string(),
+                            ));
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1252,7 +2394,7 @@ impl GitProject {
             } else {
                 // Check if header changed
                 let _prev_start = hunk.new_start();
-                current_hunk_idx >= 0 && patch_text.contains(&header) == false
+                current_hunk_idx >= 0 && !patch_text.contains(&header)
             };
 
             if is_new_hunk || current_hunk_idx < 0 {

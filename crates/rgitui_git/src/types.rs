@@ -113,6 +113,10 @@ pub struct FileStatus {
     pub path: PathBuf,
     pub kind: FileChangeKind,
     pub old_path: Option<PathBuf>,
+    /// Number of lines added in this file change.
+    pub additions: usize,
+    /// Number of lines deleted in this file change.
+    pub deletions: usize,
 }
 
 /// Summary of all working tree changes.

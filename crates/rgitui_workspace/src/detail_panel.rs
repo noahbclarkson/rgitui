@@ -1,13 +1,50 @@
 use gpui::prelude::*;
-use gpui::{div, img, px, ClickEvent, Context, ElementId, EventEmitter, ObjectFit, Render, SharedString, Window};
-use rgitui_git::{CommitDiff, CommitInfo, FileDiff};
+use gpui::{div, img, px, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter, ObjectFit, Render, SharedString, Window};
+use rgitui_git::{CommitDiff, CommitInfo, FileDiff, RefLabel};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{AvatarCache, Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{AvatarCache, Badge, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize};
+
+// Note: ButtonSize::Compact = small, ButtonStyle::Transparent = ghost-like
+
+/// Format a unix timestamp as a human-readable relative time.
+fn format_relative_time(timestamp: i64) -> String {
+    let now = chrono::Utc::now().timestamp();
+    let diff = now - timestamp;
+    if diff < 0 {
+        return "in the future".to_string();
+    }
+    let diff = diff as u64;
+    match diff {
+        0..=59 => "just now".to_string(),
+        60..=3599 => {
+            let mins = diff / 60;
+            format!("{} min{} ago", mins, if mins == 1 { "" } else { "s" })
+        }
+        3600..=86399 => {
+            let hours = diff / 3600;
+            format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
+        }
+        86400..=2591999 => {
+            let days = diff / 86400;
+            format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+        }
+        2592000..=31535999 => {
+            let months = diff / 2592000;
+            format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
+        }
+        _ => {
+            let years = diff / 31536000;
+            format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
+        }
+    }
+}
 
 /// Events from the detail panel.
 #[derive(Debug, Clone)]
 pub enum DetailPanelEvent {
     FileSelected(FileDiff, String),
+    CopySha(String),
+    CherryPick(String),
 }
 
 /// Displays commit metadata and changed files list.
@@ -53,17 +90,42 @@ impl Render for DetailPanel {
         let colors = cx.colors();
 
         let Some(commit) = &self.commit else {
+            // Empty state: centered message with icon
             return div()
                 .id("detail-panel")
                 .size_full()
                 .bg(colors.panel_background)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Icon::new(IconName::GitCommit)
+                                .size(IconSize::Large)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Select a commit to view details")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                )
                 .into_any_element();
         };
 
         let full_sha: SharedString = format!("{}", commit.oid).into();
+        let short_sha: SharedString = format!("{:.7}", commit.oid).into();
+        let sha_for_copy = full_sha.clone();
+        let sha_for_cherry = full_sha.clone();
         let author_name: SharedString = commit.author.name.clone().into();
         let author_email: SharedString = format!("<{}>", commit.author.email).into();
-        let date: SharedString = commit.time.format("%Y-%m-%d %H:%M:%S UTC").to_string().into();
+        let relative_time = format_relative_time(commit.time.timestamp());
+        let date: SharedString = format!("{} ({})", commit.time.format("%Y-%m-%d %H:%M"), relative_time).into();
+        let refs = commit.refs.clone();
 
         // Split message into summary (first line) and description (rest)
         let (summary, description) = {
@@ -96,23 +158,62 @@ impl Render for DetailPanel {
             .bg(colors.panel_background)
             .overflow_y_scroll();
 
-        // Commit header card
+        // Commit header card with rounded corners
         let mut card = div()
             .v_flex()
             .w_full()
+            .mx_2()
+            .mt_2()
             .px_3()
             .py_3()
             .gap_2()
             .bg(colors.elevated_surface_background)
-            .border_b_1()
+            .rounded(px(8.))
+            .border_1()
             .border_color(colors.border_variant);
 
-        // Summary line (commit title — normal size, bold)
+        // Top row: summary + cherry-pick button
         card = card.child(
-            Label::new(summary)
-                .size(LabelSize::Small)
-                .weight(gpui::FontWeight::BOLD),
+            div()
+                .h_flex()
+                .w_full()
+                .items_start()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .child(
+                            Label::new(summary)
+                                .size(LabelSize::Small)
+                                .weight(gpui::FontWeight::BOLD),
+                        ),
+                )
+                .child(
+                    IconButton::new("cherry-pick-btn", IconName::GitCommit)
+                        .size(ButtonSize::Compact)
+                        .style(ButtonStyle::Transparent)
+                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                            cx.emit(DetailPanelEvent::CherryPick(sha_for_cherry.to_string()));
+                        })),
+                ),
         );
+
+        // Ref labels (branches, tags, HEAD)
+        if !refs.is_empty() {
+            let mut refs_row = div().h_flex().gap_1().flex_wrap();
+            for ref_label in &refs {
+                let badge_color = match ref_label {
+                    RefLabel::Head => Color::Warning,
+                    RefLabel::LocalBranch(_) => Color::Accent,
+                    RefLabel::RemoteBranch(_) => Color::Info,
+                    RefLabel::Tag(_) => Color::Success,
+                };
+                let name: SharedString = ref_label.display_name().to_string().into();
+                let badge = Badge::new(name).color(badge_color).bold();
+                refs_row = refs_row.child(badge);
+            }
+            card = card.child(refs_row);
+        }
 
         // Description (if multi-line commit message)
         if !description.is_empty() {
@@ -212,15 +313,52 @@ impl Render for DetailPanel {
                 ),
         );
 
-        // SHA row
+        // SHA row with prominent short SHA + copy button
+        let sha_copy_clone = sha_for_copy.clone();
         card = card.child(
             div()
                 .h_flex()
                 .gap_2()
+                .items_center()
+                .child(
+                    Label::new("SHA")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted)
+                        .weight(gpui::FontWeight::SEMIBOLD),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .gap_1()
+                        .items_center()
+                        .px(px(6.))
+                        .py(px(2.))
+                        .bg(colors.surface_background)
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(colors.border_variant)
+                        .child(
+                            div()
+                                .font_family("monospace")
+                                .text_xs()
+                                .text_color(Color::Accent.color(cx))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .child(short_sha),
+                        )
+                        .child(
+                            IconButton::new("copy-sha-btn", IconName::Copy)
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Transparent)
+                                .on_click(cx.listener(move |_this, _: &ClickEvent, _window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(sha_copy_clone.to_string()));
+                                    cx.emit(DetailPanelEvent::CopySha(sha_copy_clone.to_string()));
+                                })),
+                        ),
+                )
                 .child(
                     Label::new(full_sha)
                         .size(LabelSize::XSmall)
-                        .color(Color::Accent),
+                        .color(Color::Muted),
                 ),
         );
 
@@ -255,26 +393,51 @@ impl Render for DetailPanel {
 
         // Changed files list
         if let Some(diff) = &self.commit_diff {
-            let stats: SharedString = format!(
-                "{} file{} changed, +{} -{}",
-                diff.files.len(),
-                if diff.files.len() == 1 { "" } else { "s" },
-                diff.total_additions,
-                diff.total_deletions
+            let file_count = diff.files.len();
+            let file_count_text: SharedString = format!(
+                "{} file{} changed",
+                file_count,
+                if file_count == 1 { "" } else { "s" },
             )
             .into();
+            let additions_text: SharedString = format!("+{}", diff.total_additions).into();
+            let deletions_text: SharedString = format!("-{}", diff.total_deletions).into();
 
+            // Section header with colored +/- stats
             panel = panel.child(
                 div()
                     .h_flex()
                     .w_full()
                     .px_3()
-                    .py_1()
+                    .py(px(6.))
+                    .mt_1()
+                    .items_center()
                     .bg(colors.surface_background)
+                    .border_b_1()
+                    .border_color(colors.border_variant)
                     .child(
-                        Label::new(stats)
+                        Label::new(file_count_text)
                             .size(LabelSize::XSmall)
+                            .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .h_flex()
+                            .gap_2()
+                            .child(
+                                Label::new(additions_text)
+                                    .size(LabelSize::XSmall)
+                                    .weight(gpui::FontWeight::SEMIBOLD)
+                                    .color(Color::Added),
+                            )
+                            .child(
+                                Label::new(deletions_text)
+                                    .size(LabelSize::XSmall)
+                                    .weight(gpui::FontWeight::SEMIBOLD)
+                                    .color(Color::Deleted),
+                            ),
                     ),
             );
 
@@ -282,16 +445,18 @@ impl Render for DetailPanel {
             for (i, file) in files.iter().enumerate() {
                 let path_str = file.path.display().to_string();
                 let path_label: SharedString = path_str.clone().into();
-                let file_stats: SharedString =
-                    format!("+{} -{}", file.additions, file.deletions).into();
+                let additions_str: SharedString = format!("+{}", file.additions).into();
+                let deletions_str: SharedString = format!("-{}", file.deletions).into();
                 let selected = self.selected_file_index == Some(i);
                 let file_diff = file.clone();
                 let path_for_event = path_str.clone();
 
-                let (icon_name, icon_color) = if file.deletions == 0 && file.additions > 0 {
+                let (icon_name, icon_color) = if file.additions > 0 && file.deletions == 0 {
                     (IconName::FileAdded, Color::Added)
-                } else if file.additions == 0 && file.deletions > 0 {
+                } else if file.deletions > 0 && file.additions == 0 {
                     (IconName::FileDeleted, Color::Deleted)
+                } else if file.additions == 0 && file.deletions == 0 {
+                    (IconName::FileRenamed, Color::Renamed)
                 } else {
                     (IconName::FileModified, Color::Modified)
                 };
@@ -328,9 +493,19 @@ impl Render for DetailPanel {
                         )
                         .child(div().flex_1())
                         .child(
-                            Label::new(file_stats)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                            div()
+                                .h_flex()
+                                .gap_1()
+                                .child(
+                                    Label::new(additions_str)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Added),
+                                )
+                                .child(
+                                    Label::new(deletions_str)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Deleted),
+                                ),
                         ),
                 );
             }

@@ -12,4 +12,6 @@ chrono.workspace = true
 parking_lot.workspace = true
 notify.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
 smol.workspace = true

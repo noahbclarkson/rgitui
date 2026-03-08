@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Label, LabelSize};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 
 /// The bottom status bar.
 #[derive(IntoElement)]
@@ -56,35 +56,95 @@ impl RenderOnce for StatusBar {
         let mut bar = div()
             .h_flex()
             .w_full()
-            .h(px(24.))
+            .h(px(26.))
             .bg(colors.status_bar_background)
             .border_t_1()
             .border_color(colors.border_variant)
-            .px_2()
-            .gap_3()
+            .px(px(12.))
+            .gap(px(12.))
             .items_center();
 
-        // Branch name
-        if !self.branch_name.is_empty() {
+        // Branch name with icon
+        let has_branch = !self.branch_name.is_empty();
+        if has_branch {
             bar = bar.child(
-                Label::new(self.branch_name)
-                    .size(LabelSize::XSmall)
-                    .color(Color::Accent),
+                div()
+                    .h_flex()
+                    .gap(px(4.))
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::GitBranch)
+                            .size(IconSize::XSmall)
+                            .color(Color::Accent),
+                    )
+                    .child(
+                        Label::new(self.branch_name)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Accent)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
             );
         }
 
-        // Ahead/behind
+        // Ahead/behind with individual indicators
         if self.ahead > 0 || self.behind > 0 {
-            let sync_text: SharedString =
-                format!("↑{} ↓{}", self.ahead, self.behind).into();
             bar = bar.child(
-                Label::new(sync_text)
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted),
+                div()
+                    .h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .when(self.ahead > 0, |el| {
+                        let ahead_text: SharedString = format!("{}", self.ahead).into();
+                        el.child(
+                            div()
+                                .h_flex()
+                                .gap(px(2.))
+                                .items_center()
+                                .child(
+                                    Icon::new(IconName::ArrowUp)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Success),
+                                )
+                                .child(
+                                    Label::new(ahead_text)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Success),
+                                ),
+                        )
+                    })
+                    .when(self.behind > 0, |el| {
+                        let behind_text: SharedString = format!("{}", self.behind).into();
+                        el.child(
+                            div()
+                                .h_flex()
+                                .gap(px(2.))
+                                .items_center()
+                                .child(
+                                    Icon::new(IconName::ArrowDown)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Warning),
+                                )
+                                .child(
+                                    Label::new(behind_text)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Warning),
+                                ),
+                        )
+                    }),
             );
         }
 
-        // Operation message (in center)
+        // Separator
+        if has_branch {
+            bar = bar.child(
+                div()
+                    .w(px(1.))
+                    .h(px(14.))
+                    .bg(colors.border_variant),
+            );
+        }
+
+        // Operation message
         if let Some(msg) = self.operation_message {
             bar = bar.child(
                 Label::new(SharedString::from(msg))
@@ -96,22 +156,61 @@ impl RenderOnce for StatusBar {
         // Spacer
         bar = bar.child(div().flex_1());
 
-        // Changes
+        // Right-aligned: Changes in pill badges
         if self.staged_count > 0 {
             let staged_text: SharedString = format!("{} staged", self.staged_count).into();
             bar = bar.child(
-                Label::new(staged_text)
-                    .size(LabelSize::XSmall)
-                    .color(Color::Added),
+                div()
+                    .h_flex()
+                    .h(px(18.))
+                    .px(px(6.))
+                    .gap(px(3.))
+                    .items_center()
+                    .rounded(px(3.))
+                    .bg(colors.ghost_element_hover)
+                    .child(
+                        Icon::new(IconName::Check)
+                            .size(IconSize::XSmall)
+                            .color(Color::Added),
+                    )
+                    .child(
+                        Label::new(staged_text)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Added),
+                    ),
             );
         }
         if self.unstaged_count > 0 {
             let unstaged_text: SharedString =
                 format!("{} changed", self.unstaged_count).into();
             bar = bar.child(
-                Label::new(unstaged_text)
+                div()
+                    .h_flex()
+                    .h(px(18.))
+                    .px(px(6.))
+                    .gap(px(3.))
+                    .items_center()
+                    .rounded(px(3.))
+                    .bg(colors.ghost_element_hover)
+                    .child(
+                        Icon::new(IconName::Edit)
+                            .size(IconSize::XSmall)
+                            .color(Color::Modified),
+                    )
+                    .child(
+                        Label::new(unstaged_text)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Modified),
+                    ),
+            );
+        }
+
+        // Clean indicator when no changes
+        if self.staged_count == 0 && self.unstaged_count == 0 && has_branch {
+            bar = bar.child(
+                Label::new("Clean")
                     .size(LabelSize::XSmall)
-                    .color(Color::Modified),
+                    .color(Color::Muted),
             );
         }
 

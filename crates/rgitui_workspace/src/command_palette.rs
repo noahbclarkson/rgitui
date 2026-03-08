@@ -38,14 +38,29 @@ impl CommandPalette {
             PaletteCommand { id: "pull", label: "Git: Pull", shortcut: None, category: "Git" },
             PaletteCommand { id: "push", label: "Git: Push", shortcut: None, category: "Git" },
             PaletteCommand { id: "commit", label: "Git: Commit", shortcut: Some("Ctrl+Enter"), category: "Git" },
-            PaletteCommand { id: "stage_all", label: "Git: Stage All", shortcut: None, category: "Git" },
-            PaletteCommand { id: "unstage_all", label: "Git: Unstage All", shortcut: None, category: "Git" },
-            PaletteCommand { id: "stash_save", label: "Git: Stash", shortcut: None, category: "Git" },
-            PaletteCommand { id: "stash_pop", label: "Git: Pop Stash", shortcut: None, category: "Git" },
-            PaletteCommand { id: "create_branch", label: "Git: Create Branch", shortcut: None, category: "Git" },
+            PaletteCommand { id: "stage_all", label: "Git: Stage All", shortcut: Some("Ctrl+S"), category: "Git" },
+            PaletteCommand { id: "unstage_all", label: "Git: Unstage All", shortcut: Some("Ctrl+Shift+S"), category: "Git" },
+            PaletteCommand { id: "stash_save", label: "Git: Stash", shortcut: Some("Ctrl+Z"), category: "Git" },
+            PaletteCommand { id: "stash_pop", label: "Git: Pop Stash", shortcut: Some("Ctrl+Shift+Z"), category: "Git" },
+            PaletteCommand { id: "create_branch", label: "Git: Create Branch", shortcut: Some("Ctrl+B"), category: "Git" },
             PaletteCommand { id: "toggle_diff_mode", label: "View: Toggle Diff Mode", shortcut: None, category: "View" },
             PaletteCommand { id: "ai_message", label: "AI: Generate Commit Message", shortcut: None, category: "AI" },
             PaletteCommand { id: "refresh", label: "Git: Refresh", shortcut: Some("F5"), category: "Git" },
+            PaletteCommand { id: "interactive_rebase", label: "Git: Interactive Rebase", shortcut: None, category: "Git" },
+            PaletteCommand { id: "settings", label: "Preferences: Open Settings", shortcut: Some("Ctrl+,"), category: "Preferences" },
+            PaletteCommand { id: "merge_branch", label: "Git: Merge Branch", shortcut: None, category: "Git" },
+            PaletteCommand { id: "delete_branch", label: "Git: Delete Branch", shortcut: None, category: "Git" },
+            PaletteCommand { id: "open_repo", label: "File: Open Repository", shortcut: Some("Ctrl+O"), category: "File" },
+            PaletteCommand { id: "shortcuts", label: "Help: Keyboard Shortcuts", shortcut: Some("?"), category: "Help" },
+            PaletteCommand { id: "search", label: "View: Search Commits", shortcut: Some("Ctrl+F"), category: "View" },
+            PaletteCommand { id: "create_tag", label: "Git: Create Tag", shortcut: None, category: "Git" },
+            PaletteCommand { id: "rename_branch", label: "Git: Rename Branch", shortcut: None, category: "Git" },
+            PaletteCommand { id: "stash_drop", label: "Git: Drop Stash", shortcut: None, category: "Git" },
+            PaletteCommand { id: "stash_apply", label: "Git: Apply Stash (keep)", shortcut: None, category: "Git" },
+            PaletteCommand { id: "cherry_pick", label: "Git: Cherry-pick Commit", shortcut: None, category: "Git" },
+            PaletteCommand { id: "revert_commit", label: "Git: Revert Commit", shortcut: None, category: "Git" },
+            PaletteCommand { id: "force_push", label: "Git: Force Push", shortcut: None, category: "Git" },
+            PaletteCommand { id: "discard_all", label: "Git: Discard All Changes", shortcut: None, category: "Git" },
         ];
 
         let filtered_indices = (0..commands.len()).collect();
@@ -212,7 +227,10 @@ impl Render for CommandPalette {
             .border_color(colors.border)
             .rounded_lg()
             .elevation_3(cx)
-            .overflow_hidden();
+            .overflow_hidden()
+            .on_click(|_: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+            });
 
         // Search input
         modal = modal.child(

@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Label, LabelSize};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 
 /// The application title bar.
 #[derive(IntoElement)]
@@ -33,19 +33,30 @@ impl RenderOnce for TitleBar {
         div()
             .h_flex()
             .w_full()
-            .h(px(38.))
+            .h(px(40.))
             .bg(colors.title_bar_background)
             .border_b_1()
             .border_color(colors.border_variant)
-            .px_3()
+            .px(px(16.))
             .gap_2()
             .items_center()
-            // App name
+            // App icon + name
             .child(
-                Label::new("rgitui")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted)
-                    .weight(gpui::FontWeight::BOLD),
+                div()
+                    .h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::GitCommit)
+                            .size(IconSize::Small)
+                            .color(Color::Accent),
+                    )
+                    .child(
+                        Label::new("rgitui")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .weight(gpui::FontWeight::BOLD),
+                    ),
             )
             // Separator
             .child(
@@ -54,17 +65,50 @@ impl RenderOnce for TitleBar {
                     .h(px(16.))
                     .bg(colors.border_variant),
             )
-            // Repo name
-            .child(Label::new(self.repo_name).size(LabelSize::Small))
-            // Branch indicator
+            // Repo icon + name
             .child(
                 div()
                     .h_flex()
-                    .gap_1()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Folder)
+                            .size(IconSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new(self.repo_name)
+                            .size(LabelSize::Small)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
+            )
+            // Separator
+            .child(
+                div()
+                    .w(px(1.))
+                    .h(px(16.))
+                    .bg(colors.border_variant),
+            )
+            // Branch indicator - pill style
+            .child(
+                div()
+                    .h_flex()
+                    .h(px(24.))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(12.))
+                    .bg(colors.ghost_element_hover)
+                    .child(
+                        Icon::new(IconName::GitBranch)
+                            .size(IconSize::Small)
+                            .color(Color::Accent),
+                    )
                     .child(
                         Label::new(self.branch_name)
                             .size(LabelSize::Small)
-                            .color(Color::Accent),
+                            .color(Color::Accent)
+                            .weight(gpui::FontWeight::SEMIBOLD),
                     )
                     .when(self.has_changes, |el| {
                         el.child(

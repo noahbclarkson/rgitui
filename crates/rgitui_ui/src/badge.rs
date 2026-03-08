@@ -9,6 +9,9 @@ use crate::{Label, LabelSize};
 pub struct Badge {
     text: SharedString,
     color: Color,
+    italic: bool,
+    bold: bool,
+    prefix: Option<SharedString>,
 }
 
 impl Badge {
@@ -16,11 +19,29 @@ impl Badge {
         Self {
             text: text.into(),
             color: Color::Accent,
+            italic: false,
+            bold: false,
+            prefix: None,
         }
     }
 
     pub fn color(mut self, color: Color) -> Self {
         self.color = color;
+        self
+    }
+
+    pub fn italic(mut self) -> Self {
+        self.italic = true;
+        self
+    }
+
+    pub fn bold(mut self) -> Self {
+        self.bold = true;
+        self
+    }
+
+    pub fn prefix(mut self, prefix: impl Into<SharedString>) -> Self {
+        self.prefix = Some(prefix.into());
         self
     }
 }
@@ -33,23 +54,43 @@ impl RenderOnce for Badge {
             ..text_color
         };
         let border = gpui::Hsla {
-            a: 0.4,
+            a: 0.3,
             ..text_color
         };
 
-        div()
+        let weight = if self.bold {
+            gpui::FontWeight::BOLD
+        } else {
+            gpui::FontWeight::SEMIBOLD
+        };
+
+        let mut label = Label::new(self.text)
+            .size(LabelSize::XSmall)
+            .weight(weight)
+            .color(self.color);
+
+        if self.italic {
+            label = label.italic();
+        }
+
+        let mut container = div()
             .h_flex()
-            .px_2()
-            .py(px(2.))
-            .rounded_md()
+            .gap(px(2.))
+            .px(px(6.))
+            .py(px(1.))
+            .rounded(px(10.))
             .bg(bg)
             .border_1()
-            .border_color(border)
-            .child(
-                Label::new(self.text)
+            .border_color(border);
+
+        if let Some(prefix_text) = self.prefix {
+            container = container.child(
+                Label::new(prefix_text)
                     .size(LabelSize::XSmall)
-                    .weight(gpui::FontWeight::SEMIBOLD)
                     .color(self.color),
-            )
+            );
+        }
+
+        container.child(label)
     }
 }

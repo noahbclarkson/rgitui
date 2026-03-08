@@ -1,7 +1,7 @@
 use anyhow::Result;
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Bounds, ClickEvent, Context, DragMoveEvent, ElementId, Entity, EventEmitter,
+    div, px, Bounds, Context, DragMoveEvent, ElementId, Entity, EventEmitter,
     KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, SharedString, Window, canvas,
 };
 use rgitui_ai::{AiEvent, AiGenerator};
@@ -9,11 +9,14 @@ use rgitui_diff::{DiffViewer, DiffViewerEvent};
 use rgitui_git::{GitProject, GitProjectEvent};
 use rgitui_graph::{GraphView, GraphViewEvent};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, Label, LabelSize, Tab, TabBar};
+use rgitui_ui::{Label, LabelSize, Tab, TabBar};
 
 use crate::{
-    CommandPalette, CommandPaletteEvent, CommitPanel, CommitPanelEvent, DetailPanel,
-    DetailPanelEvent, Sidebar, SidebarEvent, StatusBar, TitleBar, Toolbar, ToolbarEvent,
+    BranchDialog, BranchDialogEvent, CommandPalette, CommandPaletteEvent, ConfirmAction,
+    ConfirmDialog, ConfirmDialogEvent, CommitPanel, CommitPanelEvent, DetailPanel,
+    DetailPanelEvent, InteractiveRebase, InteractiveRebaseEvent, RepoOpener, RepoOpenerEvent,
+    SettingsModal, SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent,
+    StatusBar, TitleBar, Toolbar, ToolbarEvent,
 };
 
 /// Marker types for drag-resize handles — each implements Render to serve as the drag ghost view.
@@ -49,6 +52,22 @@ impl Render for CommitInputResize {
     }
 }
 
+/// The kind of toast notification.
+#[derive(Clone, Copy)]
+enum ToastKind {
+    Success,
+    Error,
+    Info,
+    Warning,
+}
+
+/// A temporary toast notification message.
+struct ToastMessage {
+    text: String,
+    kind: ToastKind,
+    created_at: std::time::Instant,
+}
+
 /// A single open project tab.
 struct ProjectTab {
     name: String,
@@ -73,14 +92,22 @@ pub struct Workspace {
     active_tab: usize,
     ai: Entity<AiGenerator>,
     command_palette: Entity<CommandPalette>,
+    interactive_rebase: Entity<InteractiveRebase>,
+    settings_modal: Entity<SettingsModal>,
     status_message: Option<String>,
+    toasts: Vec<ToastMessage>,
     sidebar_width: f32,
     detail_panel_width: f32,
     diff_viewer_height: f32,
     commit_input_height: f32,
-    show_branch_creation: bool,
+    branch_dialog: Entity<BranchDialog>,
+    confirm_dialog: Entity<ConfirmDialog>,
+    repo_opener: Entity<RepoOpener>,
+    shortcuts_help: Entity<ShortcutsHelp>,
     content_bounds: Bounds<Pixels>,
     right_panel_bounds: Bounds<Pixels>,
+    is_loading: bool,
+    loading_message: Option<String>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -88,7 +115,43 @@ impl EventEmitter<WorkspaceEvent> for Workspace {}
 impl Workspace {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let ai = cx.new(|_cx| AiGenerator::new());
-        let command_palette = cx.new(|cx| CommandPalette::new(cx));
+        let command_palette = cx.new(CommandPalette::new);
+        let interactive_rebase = cx.new(InteractiveRebase::new);
+        let settings_modal = cx.new(SettingsModal::new);
+
+        // Subscribe to settings modal events
+        cx.subscribe(
+            &settings_modal,
+            |_this, _sm, event: &SettingsModalEvent, cx| match event {
+                SettingsModalEvent::Dismissed => {
+                    cx.notify();
+                }
+                SettingsModalEvent::ThemeChanged(_name) => {
+                    cx.notify();
+                }
+                SettingsModalEvent::SettingsChanged => {
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
+        // Subscribe to interactive rebase events
+        cx.subscribe(
+            &interactive_rebase,
+            |this, _ir, event: &InteractiveRebaseEvent, cx| match event {
+                InteractiveRebaseEvent::Execute(entries) => {
+                    let count = entries.len();
+                    let msg = format!("Interactive rebase started with {} commits.", count);
+                    this.status_message = Some(msg.clone());
+                    this.show_toast(msg, ToastKind::Info, cx);
+                }
+                InteractiveRebaseEvent::Cancel => {
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
 
         // Subscribe to AI events to update commit panel when generation completes
         cx.subscribe(&ai, |this, _ai, event: &AiEvent, cx| {
@@ -104,17 +167,18 @@ impl Workspace {
                 }
                 AiEvent::GenerationFailed(err) => {
                     log::error!("AI generation failed: {}", err);
-                    this.status_message = Some(format!("AI error: {}", err));
+                    let msg = format!("AI error: {}", err);
+                    this.status_message = Some(msg.clone());
+                    this.show_toast(msg, ToastKind::Error, cx);
                     if let Some(tab) = this.tabs.get(this.active_tab) {
                         tab.commit_panel.update(cx, |cp, cx| {
                             cp.set_ai_generating(false, cx);
                         });
                     }
-                    cx.notify();
                 }
                 AiEvent::GenerationStarted => {
                     this.status_message = Some("Generating AI commit message...".into());
-                    cx.notify();
+                    this.show_toast("Generating AI commit message...", ToastKind::Info, cx);
                 }
             }
         })
@@ -131,24 +195,187 @@ impl Workspace {
         })
         .detach();
 
+        let branch_dialog = cx.new(BranchDialog::new);
+        let confirm_dialog = cx.new(ConfirmDialog::new);
+        let repo_opener = cx.new(RepoOpener::new);
+        let shortcuts_help = cx.new(ShortcutsHelp::new);
+
+        // Subscribe to branch dialog events
+        cx.subscribe(&branch_dialog, |this, _bd, event: &BranchDialogEvent, cx| {
+            match event {
+                BranchDialogEvent::CreateBranch { name, base_ref } => {
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        let project = tab.project.clone();
+                        let name = name.clone();
+                        let base = if base_ref.is_empty() { None } else { Some(base_ref.as_str()) };
+                        project.update(cx, |proj, cx| {
+                            proj.create_branch_at(&name, base, cx).detach();
+                        });
+                    }
+                    this.show_toast(format!("Branch '{}' created", name), ToastKind::Success, cx);
+                }
+                BranchDialogEvent::Dismissed => {}
+            }
+        })
+        .detach();
+
+        // Subscribe to confirm dialog events
+        cx.subscribe(&confirm_dialog, |this, _cd, event: &ConfirmDialogEvent, cx| {
+            match event {
+                ConfirmDialogEvent::Confirmed(action) => {
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        let project = tab.project.clone();
+                        match action {
+                            ConfirmAction::DiscardFile(path) => {
+                                let path_buf = std::path::PathBuf::from(path);
+                                project.update(cx, |proj, cx| {
+                                    proj.discard_changes(&[path_buf], cx).detach();
+                                });
+                            }
+                            ConfirmAction::ForcePush => {
+                                project.update(cx, |proj, cx| {
+                                    proj.push("origin", true, cx).detach();
+                                });
+                            }
+                            ConfirmAction::BranchDelete(name) => {
+                                let name = name.clone();
+                                project.update(cx, |proj, cx| {
+                                    proj.delete_branch(&name, cx).detach();
+                                });
+                            }
+                            ConfirmAction::StashDrop(index) => {
+                                let index = *index;
+                                project.update(cx, |proj, cx| {
+                                    proj.stash_drop(index, cx).detach();
+                                });
+                            }
+                            ConfirmAction::DiscardAll => {
+                                // Discard all unstaged changes
+                                let paths: Vec<std::path::PathBuf> = project.read(cx)
+                                    .status()
+                                    .unstaged
+                                    .iter()
+                                    .map(|f| f.path.clone())
+                                    .collect();
+                                if !paths.is_empty() {
+                                    project.update(cx, |proj, cx| {
+                                        proj.discard_changes(&paths, cx).detach();
+                                    });
+                                }
+                            }
+                            ConfirmAction::TagDelete(name) => {
+                                let name = name.clone();
+                                project.update(cx, |proj, cx| {
+                                    proj.delete_tag(&name, cx).detach();
+                                });
+                            }
+                            ConfirmAction::ResetHard(_target) => {
+                                project.update(cx, |proj, cx| {
+                                    proj.reset_hard(cx).detach();
+                                });
+                            }
+                            ConfirmAction::RemoveRemote(name) => {
+                                let name = name.clone();
+                                project.update(cx, |proj, cx| {
+                                    proj.remove_remote(&name, cx).detach();
+                                });
+                            }
+                        }
+                    }
+                }
+                ConfirmDialogEvent::Cancelled => {}
+            }
+        })
+        .detach();
+
+        // Subscribe to repo opener events
+        cx.subscribe(&repo_opener, |this, _ro, event: &RepoOpenerEvent, cx| {
+            match event {
+                RepoOpenerEvent::OpenRepo(path) => {
+                    if let Err(e) = this.open_repo(path.clone(), cx) {
+                        this.show_toast(format!("Failed to open: {}", e), ToastKind::Error, cx);
+                    }
+                }
+                RepoOpenerEvent::Dismissed => {}
+            }
+        })
+        .detach();
+
+        // Subscribe to shortcuts help events
+        cx.subscribe(&shortcuts_help, |_this, _sh, _event: &ShortcutsHelpEvent, _cx| {
+            // Nothing to do on dismiss
+        })
+        .detach();
+
+        // Restore layout dimensions from saved settings
+        let (sidebar_width, detail_panel_width, diff_viewer_height, commit_input_height) =
+            if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>() {
+                let layout = &state.settings().layout;
+                (
+                    layout.sidebar_width,
+                    layout.detail_panel_width,
+                    layout.diff_viewer_height,
+                    layout.commit_input_height,
+                )
+            } else {
+                (240.0, 320.0, 300.0, 200.0)
+            };
+
         Self {
             tabs: Vec::new(),
             active_tab: 0,
             ai,
             command_palette,
+            interactive_rebase,
+            settings_modal,
             status_message: None,
-            sidebar_width: 240.0,
-            detail_panel_width: 320.0,
-            diff_viewer_height: 300.0,
-            commit_input_height: 200.0,
-            show_branch_creation: false,
+            toasts: Vec::new(),
+            sidebar_width,
+            detail_panel_width,
+            diff_viewer_height,
+            commit_input_height,
+            branch_dialog,
+            confirm_dialog,
+            repo_opener,
+            shortcuts_help,
             content_bounds: Bounds::default(),
             right_panel_bounds: Bounds::default(),
+            is_loading: false,
+            loading_message: None,
         }
     }
 
     /// Execute a command by ID (from command palette or keybindings).
     fn execute_command(&mut self, cmd_id: &str, cx: &mut Context<Self>) {
+        // Commands that don't require an active tab
+        if cmd_id == "settings" {
+            self.settings_modal.update(cx, |sm, cx| {
+                sm.toggle_visible(cx);
+            });
+            return;
+        }
+
+        if cmd_id == "create_branch" {
+            self.branch_dialog.update(cx, |bd, cx| {
+                bd.show_visible(None, cx);
+            });
+            return;
+        }
+
+        if cmd_id == "open_repo" {
+            self.repo_opener.update(cx, |ro, cx| {
+                ro.toggle_visible(cx);
+            });
+            return;
+        }
+
+        if cmd_id == "shortcuts" {
+            self.shortcuts_help.update(cx, |sh, cx| {
+                sh.toggle_visible(cx);
+            });
+            return;
+        }
+
         let Some(tab) = self.tabs.get(self.active_tab) else {
             return;
         };
@@ -219,14 +446,127 @@ impl Workspace {
                     cx.emit(CommitPanelEvent::GenerateAiMessage);
                 });
             }
+            "merge_branch" => {
+                let project = tab.project.clone();
+                let head = project.read(cx).head_branch().unwrap_or("HEAD").to_string();
+                let msg = format!("Use the sidebar to merge a branch into '{}'", head);
+                self.show_toast(msg, ToastKind::Info, cx);
+            }
             "refresh" => {
                 let project = tab.project.clone();
                 project.update(cx, |proj, cx| {
                     proj.refresh(cx).detach();
                 });
             }
+            "search" => {
+                if let Some(tab) = self.tabs.get(self.active_tab) {
+                    tab.graph.update(cx, |g, cx| {
+                        g.toggle_search(cx);
+                    });
+                }
+            }
+            "interactive_rebase" => {
+                use crate::interactive_rebase::{RebaseAction, RebaseEntry};
+                let project = tab.project.read(cx);
+                let head_branch = project
+                    .head_branch()
+                    .unwrap_or("HEAD")
+                    .to_string();
+                let commits = project.recent_commits();
+                let entries: Vec<RebaseEntry> = commits
+                    .iter()
+                    .take(20)
+                    .map(|c| RebaseEntry {
+                        oid: c.oid.to_string(),
+                        original_message: c.summary.clone(),
+                        author: c.author.name.clone(),
+                        action: RebaseAction::Pick,
+                    })
+                    .collect();
+
+                if entries.is_empty() {
+                    self.status_message =
+                        Some("No commits available for interactive rebase.".into());
+                    self.show_toast("No commits available for interactive rebase.", ToastKind::Info, cx);
+                } else {
+                    let target = head_branch;
+                    self.interactive_rebase.update(cx, |ir, cx| {
+                        ir.show_visible(entries, target, cx);
+                    });
+                }
+            }
+            "stash_drop" => {
+                let project = tab.project.clone();
+                let has_stashes = !project.read(cx).stashes().is_empty();
+                if has_stashes {
+                    project.update(cx, |proj, cx| {
+                        proj.stash_drop(0, cx).detach();
+                    });
+                    self.show_toast("Stash dropped", ToastKind::Info, cx);
+                } else {
+                    self.show_toast("No stashes to drop", ToastKind::Warning, cx);
+                }
+            }
+            "stash_apply" => {
+                let project = tab.project.clone();
+                let has_stashes = !project.read(cx).stashes().is_empty();
+                if has_stashes {
+                    project.update(cx, |proj, cx| {
+                        proj.stash_apply(0, cx).detach();
+                    });
+                    self.show_toast("Stash applied", ToastKind::Info, cx);
+                } else {
+                    self.show_toast("No stashes to apply", ToastKind::Warning, cx);
+                }
+            }
+            "force_push" => {
+                self.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Force Push",
+                        "This will overwrite the remote branch. Are you sure?",
+                        ConfirmAction::ForcePush,
+                        cx,
+                    );
+                });
+            }
+            "discard_all" => {
+                self.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Discard All Changes",
+                        "This will permanently discard all uncommitted changes.",
+                        ConfirmAction::DiscardAll,
+                        cx,
+                    );
+                });
+            }
+            "create_tag" | "rename_branch" | "cherry_pick" | "revert_commit" | "delete_branch" => {
+                let msg = format!("Use the sidebar context menu for '{}'", cmd_id.replace('_', " "));
+                self.show_toast(msg, ToastKind::Info, cx);
+            }
             _ => {}
         }
+    }
+
+    /// Show a temporary toast notification.
+    fn show_toast(&mut self, text: impl Into<String>, kind: ToastKind, cx: &mut Context<Self>) {
+        self.toasts.push(ToastMessage {
+            text: text.into(),
+            kind,
+            created_at: std::time::Instant::now(),
+        });
+        cx.notify();
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(4))
+                .await;
+            this.update(cx, |this, cx| {
+                this.toasts
+                    .retain(|t| t.created_at.elapsed() < std::time::Duration::from_secs(4));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Open a repository as a new tab.
@@ -242,16 +582,24 @@ impl Workspace {
             return Ok(());
         }
 
+        // Validate that path is a valid git repository before creating the entity
+        if !path.exists() {
+            anyhow::bail!("Path does not exist: {}", path.display());
+        }
+        if git2::Repository::discover(&path).is_err() {
+            anyhow::bail!("Not a Git repository: {}", path.display());
+        }
+
         let project = cx.new(|cx| {
             GitProject::open(path.clone(), cx)
-                .unwrap_or_else(|e| panic!("Failed to open repo at {}: {}", path.display(), e))
+                .expect("Already validated path is a git repo")
         });
 
         let graph = cx.new(|_cx| GraphView::new());
         let diff_viewer = cx.new(|_cx| DiffViewer::new());
         let detail_panel = cx.new(|_cx| DetailPanel::new());
         let sidebar = cx.new(|_cx| Sidebar::new());
-        let commit_panel = cx.new(|cx| CommitPanel::new(cx));
+        let commit_panel = cx.new(CommitPanel::new);
         let toolbar = cx.new(|_cx| Toolbar::new());
 
         // Set up subscriptions
@@ -302,21 +650,56 @@ impl Workspace {
                         // Update toolbar
                         let has_stashes = !project.read(cx).stashes().is_empty();
                         let has_changes = project.read(cx).has_changes();
+                        let (ahead, behind) = project
+                            .read(cx)
+                            .branches()
+                            .iter()
+                            .find(|b| b.is_head)
+                            .map(|b| (b.ahead, b.behind))
+                            .unwrap_or((0, 0));
                         toolbar.update(cx, |tb, cx| {
                             tb.set_state(true, true, has_stashes, has_changes, cx);
+                            tb.set_ahead_behind(ahead, behind, cx);
                         });
                     }
                     GitProjectEvent::OperationStarted(msg) => {
+                        this.is_loading = true;
+                        this.loading_message = Some(msg.clone());
                         this.status_message = Some(msg.clone());
-                        cx.notify();
+                        this.show_toast(msg.clone(), ToastKind::Info, cx);
+                        // Set toolbar loading state for the specific operation
+                        toolbar.update(cx, |tb, cx| {
+                            if msg.contains("Fetch") {
+                                tb.set_fetching(true, cx);
+                            } else if msg.contains("Pull") {
+                                tb.set_pulling(true, cx);
+                            } else if msg.contains("Push") {
+                                tb.set_pushing(true, cx);
+                            }
+                        });
                     }
                     GitProjectEvent::OperationCompleted(msg) => {
+                        this.is_loading = false;
+                        this.loading_message = None;
                         this.status_message = Some(msg.clone());
-                        cx.notify();
+                        this.show_toast(msg.clone(), ToastKind::Success, cx);
+                        toolbar.update(cx, |tb, cx| {
+                            tb.set_fetching(false, cx);
+                            tb.set_pulling(false, cx);
+                            tb.set_pushing(false, cx);
+                        });
                     }
                     GitProjectEvent::OperationFailed(op, err) => {
-                        this.status_message = Some(format!("{} failed: {}", op, err));
-                        cx.notify();
+                        this.is_loading = false;
+                        this.loading_message = None;
+                        let msg = format!("{} failed: {}", op, err);
+                        this.status_message = Some(msg.clone());
+                        this.show_toast(msg, ToastKind::Error, cx);
+                        toolbar.update(cx, |tb, cx| {
+                            tb.set_fetching(false, cx);
+                            tb.set_pulling(false, cx);
+                            tb.set_pushing(false, cx);
+                        });
                     }
                 }
             }
@@ -328,7 +711,7 @@ impl Workspace {
             let project = project.clone();
             let diff_viewer = diff_viewer.clone();
             let detail_panel_ref = detail_panel.clone();
-            move |_this, _sidebar, event: &SidebarEvent, cx| {
+            move |this, _sidebar, event: &SidebarEvent, cx| {
                 match event {
                     SidebarEvent::FileSelected { path, staged } => {
                         let path_buf = std::path::PathBuf::from(path);
@@ -377,23 +760,79 @@ impl Workspace {
                         });
                     }
                     SidebarEvent::DiscardFile(path) => {
-                        let path_buf = std::path::PathBuf::from(path);
-                        project.update(cx, |proj, cx| {
-                            proj.discard_changes(&[path_buf], cx).detach();
+                        let path = path.clone();
+                        this.confirm_dialog.update(cx, |cd, cx| {
+                            cd.show_visible(
+                                "Discard Changes",
+                                format!("Are you sure you want to discard changes to {}?", path),
+                                ConfirmAction::DiscardFile(path),
+                                cx,
+                            );
                         });
                     }
                     SidebarEvent::StashSelected(index) => {
-                        log::info!("Stash {} selected", index);
-                        // TODO: show stash diff when stash diff API is available
+                        let idx = *index;
+                        let proj = project.read(cx);
+                        match proj.diff_stash(idx) {
+                            Ok(commit_diff) => {
+                                if let Some(first_file) = commit_diff.files.first() {
+                                    let path = first_file.path.display().to_string();
+                                    diff_viewer.update(cx, |dv, cx| {
+                                        dv.set_diff(first_file.clone(), path, false, cx);
+                                    });
+                                }
+                                detail_panel_ref.update(cx, |dp, cx| dp.clear(cx));
+                            }
+                            Err(e) => {
+                                log::error!("Failed to get stash diff: {}", e);
+                            }
+                        }
                     }
                     SidebarEvent::TagSelected(name) => {
-                        log::info!("Tag {} selected", name);
-                        // TODO: scroll graph to tag commit
+                        let proj = project.read(cx);
+                        if let Ok(oid) = proj.resolve_tag_to_oid(name) {
+                            if let Some(tab) = this.tabs.get(this.active_tab) {
+                                tab.graph.update(cx, |g, cx| {
+                                    g.scroll_to_commit(oid, cx);
+                                });
+                            }
+                        } else {
+                            log::warn!("Could not resolve tag '{}' to a commit", name);
+                        }
                     }
-                    SidebarEvent::BranchSelected(_)
-                    | SidebarEvent::BranchCreate
-                    | SidebarEvent::BranchDelete(_) => {
-                        // These are informational / future features
+                    SidebarEvent::BranchSelected(name) => {
+                        let proj = project.read(cx);
+                        if let Ok(oid) = proj.resolve_branch_to_oid(name) {
+                            if let Some(tab) = this.tabs.get(this.active_tab) {
+                                tab.graph.update(cx, |g, cx| {
+                                    g.scroll_to_commit(oid, cx);
+                                });
+                            }
+                        } else {
+                            log::warn!("Could not resolve branch '{}' to a commit", name);
+                        }
+                    }
+                    SidebarEvent::MergeBranch(name) => {
+                        let name = name.clone();
+                        project.update(cx, |proj, cx| {
+                            proj.merge_branch(&name, cx).detach();
+                        });
+                    }
+                    SidebarEvent::BranchCreate => {
+                        this.branch_dialog.update(cx, |bd, cx| {
+                            bd.show_visible(None, cx);
+                        });
+                    }
+                    SidebarEvent::BranchDelete(name) => {
+                        let name = name.clone();
+                        this.confirm_dialog.update(cx, |cd, cx| {
+                            cd.show_visible(
+                                "Delete Branch",
+                                format!("Are you sure you want to delete branch '{}'?", name),
+                                ConfirmAction::BranchDelete(name),
+                                cx,
+                            );
+                        });
                     }
                 }
             }
@@ -405,7 +844,7 @@ impl Workspace {
             let project = project.clone();
             let diff_viewer = diff_viewer.clone();
             let detail_panel_ref = detail_panel.clone();
-            move |_this, _graph, event: &GraphViewEvent, cx| {
+            move |this, _graph, event: &GraphViewEvent, cx| {
                 match event {
                     GraphViewEvent::CommitSelected(oid) => {
                         let proj = project.read(cx);
@@ -439,15 +878,42 @@ impl Workspace {
                             }
                         }
                     }
+                    GraphViewEvent::CherryPick(oid) => {
+                        let oid = *oid;
+                        project.update(cx, |proj, cx| {
+                            proj.cherry_pick(oid, cx).detach();
+                        });
+                    }
+                    GraphViewEvent::RevertCommit(oid) => {
+                        let oid = *oid;
+                        project.update(cx, |proj, cx| {
+                            proj.revert_commit(oid, cx).detach();
+                        });
+                    }
+                    GraphViewEvent::CreateBranchAtCommit(oid) => {
+                        let sha = oid.to_string();
+                        this.branch_dialog.update(cx, |bd, cx| {
+                            bd.show_visible(Some(sha), cx);
+                        });
+                    }
+                    GraphViewEvent::CheckoutCommit(oid) => {
+                        let oid = *oid;
+                        project.update(cx, |proj, cx| {
+                            proj.checkout_commit(oid, cx).detach();
+                        });
+                    }
+                    GraphViewEvent::CopyCommitSha(sha) => {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(sha.clone()));
+                    }
                 }
             }
         })
         .detach();
 
-        // When detail panel emits events (file selection), update diff viewer
+        // When detail panel emits events (file selection, copy sha, cherry-pick), handle them
         cx.subscribe(&detail_panel, {
             let diff_viewer = diff_viewer.clone();
-            move |_this, _dp, event: &DetailPanelEvent, cx| {
+            move |this, _dp, event: &DetailPanelEvent, cx| {
                 match event {
                     DetailPanelEvent::FileSelected(file_diff, path) => {
                         let p = path.clone();
@@ -455,6 +921,19 @@ impl Workspace {
                         diff_viewer.update(cx, |dv, cx| {
                             dv.set_diff(fd, p, false, cx);
                         });
+                    }
+                    DetailPanelEvent::CopySha(sha) => {
+                        let short = &sha[..7.min(sha.len())];
+                        this.show_toast(format!("Copied SHA: {}", short), ToastKind::Success, cx);
+                    }
+                    DetailPanelEvent::CherryPick(sha) => {
+                        if let Some(project) = this.active_project().cloned() {
+                            if let Ok(oid) = git2::Oid::from_str(sha) {
+                                project.update(cx, |proj, cx| {
+                                    proj.cherry_pick(oid, cx).detach();
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -560,8 +1039,27 @@ impl Workspace {
                         });
                     }
                     ToolbarEvent::Branch => {
-                        this.show_branch_creation = true;
-                        cx.notify();
+                        this.branch_dialog.update(cx, |bd, cx| {
+                            bd.show_visible(None, cx);
+                        });
+                    }
+                    ToolbarEvent::Refresh => {
+                        project.update(cx, |proj, cx| {
+                            proj.refresh(cx).detach();
+                        });
+                    }
+                    ToolbarEvent::Settings => {
+                        this.settings_modal.update(cx, |sm, cx| {
+                            sm.toggle_visible(cx);
+                        });
+                    }
+                    ToolbarEvent::Search => {
+                        // Toggle graph search if we have an active tab
+                        if let Some(tab) = this.tabs.get(this.active_tab) {
+                            tab.graph.update(cx, |g, cx| {
+                                g.toggle_search(cx);
+                            });
+                        }
                     }
                     ToolbarEvent::Undo | ToolbarEvent::Redo => {
                         // Not yet implemented
@@ -614,6 +1112,24 @@ impl Workspace {
             toolbar,
         });
         self.active_tab = self.tabs.len() - 1;
+
+        // Save to recent repos and persist workspace state
+        {
+            let repos: Vec<std::path::PathBuf> = self
+                .tabs
+                .iter()
+                .map(|t| t.project.read(cx).repo_path().to_path_buf())
+                .collect();
+            if cx.try_global::<rgitui_settings::SettingsState>().is_some() {
+                let settings = cx.global_mut::<rgitui_settings::SettingsState>();
+                settings.add_recent_repo(path);
+                settings.set_last_workspace(repos);
+                if let Err(e) = settings.save() {
+                    log::error!("Failed to save settings: {}", e);
+                }
+            }
+        }
+
         cx.notify();
         Ok(())
     }
@@ -624,7 +1140,62 @@ impl Workspace {
             if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
                 self.active_tab = self.tabs.len() - 1;
             }
+            self.save_workspace_state(cx);
             cx.notify();
+        }
+    }
+
+    /// Persist the current set of open repo paths and layout to settings.
+    fn save_workspace_state(&self, cx: &mut Context<Self>) {
+        self.save_layout(cx);
+        let repos: Vec<std::path::PathBuf> = self
+            .tabs
+            .iter()
+            .map(|t| t.project.read(cx).repo_path().to_path_buf())
+            .collect();
+        if cx.try_global::<rgitui_settings::SettingsState>().is_some() {
+            let settings = cx.global_mut::<rgitui_settings::SettingsState>();
+            settings.set_last_workspace(repos);
+            if let Err(e) = settings.save() {
+                log::error!("Failed to save workspace state: {}", e);
+            }
+        }
+    }
+
+    /// Schedule a debounced layout save (avoids writing to disk on every resize pixel).
+    fn schedule_layout_save(&self, cx: &mut Context<Self>) {
+        let sw = self.sidebar_width;
+        let dpw = self.detail_panel_width;
+        let dvh = self.diff_viewer_height;
+        let cih = self.commit_input_height;
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(500))
+                .await;
+            this.update(cx, |this, cx| {
+                // Only save if dimensions haven't changed (i.e., drag stopped)
+                if (this.sidebar_width - sw).abs() < 0.1
+                    && (this.detail_panel_width - dpw).abs() < 0.1
+                    && (this.diff_viewer_height - dvh).abs() < 0.1
+                    && (this.commit_input_height - cih).abs() < 0.1
+                {
+                    this.save_layout(cx);
+                }
+            }).ok();
+        }).detach();
+    }
+
+    /// Persist current layout dimensions to settings.
+    fn save_layout(&self, cx: &mut Context<Self>) {
+        if cx.try_global::<rgitui_settings::SettingsState>().is_some() {
+            let settings = cx.global_mut::<rgitui_settings::SettingsState>();
+            settings.settings_mut().layout.sidebar_width = self.sidebar_width;
+            settings.settings_mut().layout.detail_panel_width = self.detail_panel_width;
+            settings.settings_mut().layout.diff_viewer_height = self.diff_viewer_height;
+            settings.settings_mut().layout.commit_input_height = self.commit_input_height;
+            if let Err(e) = settings.save() {
+                log::error!("Failed to save layout: {}", e);
+            }
         }
     }
 
@@ -637,10 +1208,82 @@ impl Workspace {
         let key = keystroke.key.as_str();
         let modifiers = &keystroke.modifiers;
 
-        // Dismiss branch creation dialog on Escape
-        if key == "escape" && self.show_branch_creation {
-            self.show_branch_creation = false;
-            cx.notify();
+        // Dismiss settings modal on Escape
+        if key == "escape" && self.settings_modal.read(cx).is_visible() {
+            self.settings_modal.update(cx, |sm, cx| {
+                sm.dismiss(cx);
+            });
+            return;
+        }
+
+        // Dismiss interactive rebase dialog on Escape
+        if key == "escape" && self.interactive_rebase.read(cx).is_visible() {
+            self.interactive_rebase.update(cx, |ir, cx| {
+                ir.dismiss(cx);
+            });
+            return;
+        }
+
+        // Dismiss confirm dialog on Escape
+        if key == "escape" && self.confirm_dialog.read(cx).is_visible() {
+            self.confirm_dialog.update(cx, |cd, cx| {
+                cd.cancel(cx);
+            });
+            return;
+        }
+
+        // Dismiss branch dialog on Escape
+        if key == "escape" && self.branch_dialog.read(cx).is_visible() {
+            self.branch_dialog.update(cx, |bd, cx| {
+                bd.dismiss(cx);
+            });
+            return;
+        }
+
+        // Dismiss repo opener on Escape
+        if key == "escape" && self.repo_opener.read(cx).is_visible() {
+            self.repo_opener.update(cx, |ro, cx| {
+                ro.dismiss(cx);
+            });
+            return;
+        }
+
+        // Dismiss shortcuts help on Escape
+        if key == "escape" && self.shortcuts_help.read(cx).is_visible() {
+            self.shortcuts_help.update(cx, |sh, cx| {
+                sh.dismiss(cx);
+            });
+            return;
+        }
+
+        // Forward key events to graph search bar if it's active
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            let graph = tab.graph.clone();
+            let handled = graph.update(cx, |g, cx| {
+                if g.is_search_visible() {
+                    // Ctrl+F while search is open toggles it off
+                    if (modifiers.control || modifiers.platform) && key == "f" {
+                        g.toggle_search(cx);
+                        return true;
+                    }
+                    g.handle_search_key_down(event, cx)
+                } else {
+                    false
+                }
+            });
+            if handled {
+                return;
+            }
+        }
+
+        // Ctrl+F to open graph search
+        if (modifiers.control || modifiers.platform) && !modifiers.shift && key == "f" {
+            if let Some(tab) = self.tabs.get(self.active_tab) {
+                let graph = tab.graph.clone();
+                graph.update(cx, |g, cx| {
+                    g.toggle_search(cx);
+                });
+            }
             return;
         }
 
@@ -651,9 +1294,33 @@ impl Workspace {
             });
         }
 
+        // Ctrl+, to open settings
+        if (modifiers.control || modifiers.platform) && key == "," {
+            self.settings_modal.update(cx, |sm, cx| {
+                sm.toggle(window, cx);
+            });
+            return;
+        }
+
         // F5 to refresh
         if key == "f5" {
             self.execute_command("refresh", cx);
+        }
+
+        // Ctrl+O to open repo opener
+        if (modifiers.control || modifiers.platform) && key == "o" {
+            self.repo_opener.update(cx, |ro, cx| {
+                ro.toggle(window, cx);
+            });
+            return;
+        }
+
+        // ? to toggle shortcuts help (without modifiers)
+        if key == "?" && !modifiers.control && !modifiers.platform && !modifiers.alt {
+            self.shortcuts_help.update(cx, |sh, cx| {
+                sh.toggle(window, cx);
+            });
+            return;
         }
 
         // j/k vim-style navigation in the commit graph
@@ -692,28 +1359,223 @@ impl Workspace {
             match key {
                 "[" | "bracketleft" => {
                     self.detail_panel_width = (self.detail_panel_width - 20.0).max(180.0);
+                    self.schedule_layout_save(cx);
                     cx.notify();
                 }
                 "]" | "bracketright" => {
                     self.detail_panel_width = (self.detail_panel_width + 20.0).min(480.0);
+                    self.schedule_layout_save(cx);
                     cx.notify();
                 }
                 // Ctrl+Up / Ctrl+Down to resize diff viewer height
                 "up" => {
                     self.diff_viewer_height = (self.diff_viewer_height - 30.0).max(100.0);
+                    self.schedule_layout_save(cx);
                     cx.notify();
                 }
                 "down" => {
                     self.diff_viewer_height = (self.diff_viewer_height + 30.0).min(600.0);
+                    self.schedule_layout_save(cx);
                     cx.notify();
                 }
                 _ => {}
             }
         }
+
+        // Ctrl+S to stage all
+        if modifiers.control && !modifiers.shift && key == "s" {
+            self.execute_command("stage_all", cx);
+            return;
+        }
+
+        // Ctrl+Shift+S to unstage all
+        if modifiers.control && modifiers.shift && key == "s" {
+            self.execute_command("unstage_all", cx);
+            return;
+        }
+
+        // Ctrl+B to create branch
+        if modifiers.control && !modifiers.shift && key == "b" {
+            self.execute_command("create_branch", cx);
+            return;
+        }
+
+        // Ctrl+Enter to commit
+        if modifiers.control && !modifiers.shift && key == "enter" {
+            self.execute_command("commit", cx);
+            return;
+        }
+
+        // Ctrl+Z to stash save
+        if modifiers.control && !modifiers.shift && key == "z" {
+            self.execute_command("stash_save", cx);
+            return;
+        }
+
+        // Ctrl+Shift+Z to stash pop
+        if modifiers.control && modifiers.shift && key == "z" {
+            self.execute_command("stash_pop", cx);
+            return;
+        }
+
+        // Ctrl+Tab to switch to next tab
+        if modifiers.control && !modifiers.shift && key == "tab" {
+            if !self.tabs.is_empty() {
+                self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                cx.notify();
+            }
+            return;
+        }
+
+        // Ctrl+Shift+Tab to switch to previous tab
+        if modifiers.control && modifiers.shift && key == "tab" {
+            if !self.tabs.is_empty() {
+                if self.active_tab == 0 {
+                    self.active_tab = self.tabs.len() - 1;
+                } else {
+                    self.active_tab -= 1;
+                }
+                cx.notify();
+            }
+            return;
+        }
+
+        // Ctrl+W to close current tab
+        if modifiers.control && !modifiers.shift && key == "w" {
+            if !self.tabs.is_empty() {
+                self.close_tab(self.active_tab, cx);
+            }
+            return;
+        }
+
+        // (? shortcut is already handled above via shortcuts_help toggle)
     }
 
-    fn render_welcome(&self, cx: &App) -> impl IntoElement {
+    fn render_welcome_interactive(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use rgitui_ui::{Icon, IconName, IconSize};
         let colors = cx.colors();
+
+        // Get recent repos from settings
+        let recent_repos: Vec<std::path::PathBuf> = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| s.settings().last_workspace.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.exists())
+            .collect();
+
+        let mut content = div()
+            .v_flex()
+            .gap(px(16.))
+            .items_center()
+            .max_w(px(400.))
+            // Logo area
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(64.))
+                    .h(px(64.))
+                    .rounded(px(16.))
+                    .bg(colors.element_background)
+                    .child(
+                        Icon::new(IconName::GitCommit)
+                            .size(IconSize::Large)
+                            .color(Color::Accent),
+                    ),
+            )
+            .child(
+                Label::new("rgitui")
+                    .size(LabelSize::Large)
+                    .weight(gpui::FontWeight::BOLD),
+            )
+            .child(
+                Label::new("A fast, GPU-accelerated Git client")
+                    .color(Color::Muted)
+                    .size(LabelSize::Small),
+            );
+
+        // Recent repositories section
+        if !recent_repos.is_empty() {
+            let mut repos_list = div()
+                .v_flex()
+                .w_full()
+                .mt(px(8.))
+                .gap(px(4.))
+                .child(
+                    Label::new("Recent Repositories")
+                        .size(LabelSize::XSmall)
+                        .weight(gpui::FontWeight::SEMIBOLD)
+                        .color(Color::Muted),
+                );
+
+            for (i, repo_path) in recent_repos.iter().enumerate() {
+                let repo_name: SharedString = repo_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| repo_path.display().to_string())
+                    .into();
+                let repo_dir: SharedString = repo_path.display().to_string().into();
+                let path = repo_path.clone();
+
+                repos_list = repos_list.child(
+                    div()
+                        .id(ElementId::NamedInteger("recent-repo".into(), i as u64))
+                        .h_flex()
+                        .w_full()
+                        .h(px(36.))
+                        .px_3()
+                        .gap_2()
+                        .items_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(colors.ghost_element_hover))
+                        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                            if let Err(e) = this.open_repo(path.clone(), cx) {
+                                log::error!("Failed to open recent repo: {}", e);
+                            }
+                        }))
+                        .child(
+                            Icon::new(IconName::Folder)
+                                .size(IconSize::Small)
+                                .color(Color::Accent),
+                        )
+                        .child(
+                            div()
+                                .v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    Label::new(repo_name)
+                                        .size(LabelSize::Small)
+                                        .weight(gpui::FontWeight::MEDIUM),
+                                )
+                                .child(
+                                    Label::new(repo_dir)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .truncate(),
+                                ),
+                        ),
+                );
+            }
+
+            content = content.child(repos_list);
+        }
+
+        // Keyboard shortcut hints
+        content = content.child(
+            div()
+                .v_flex()
+                .gap(px(8.))
+                .mt(px(12.))
+                .w_full()
+                .items_center()
+                .child(self.shortcut_hint("Open Repository", "Ctrl+O", &colors))
+                .child(self.shortcut_hint("Command Palette", "Ctrl+Shift+P", &colors))
+                .child(self.shortcut_hint("Settings", "Ctrl+,", &colors)),
+        );
 
         div()
             .size_full()
@@ -721,26 +1583,38 @@ impl Workspace {
             .items_center()
             .justify_center()
             .bg(colors.background)
+            .child(content)
+    }
+
+
+    fn shortcut_hint(
+        &self,
+        action: &str,
+        shortcut: &str,
+        colors: &rgitui_theme::ThemeColors,
+    ) -> impl IntoElement {
+        div()
+            .h_flex()
+            .w(px(260.))
+            .justify_between()
+            .items_center()
+            .child(
+                Label::new(SharedString::from(action.to_string()))
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            )
             .child(
                 div()
-                    .v_flex()
-                    .gap_3()
+                    .h_flex()
+                    .h(px(22.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .bg(colors.element_background)
                     .items_center()
                     .child(
-                        Label::new("rgitui")
-                            .size(LabelSize::Large)
-                            .weight(gpui::FontWeight::BOLD)
-                            .color(Color::Accent),
-                    )
-                    .child(
-                        Label::new("Open a repository to get started")
-                            .color(Color::Muted)
-                            .size(LabelSize::Small),
-                    )
-                    .child(
-                        Label::new("Ctrl+Shift+P for Command Palette")
-                            .color(Color::Muted)
-                            .size(LabelSize::XSmall),
+                        Label::new(SharedString::from(shortcut.to_string()))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             )
     }
@@ -757,8 +1631,13 @@ impl Render for Workspace {
                 .size_full()
                 .bg(colors.background)
                 .on_key_down(cx.listener(Self::handle_key_down))
-                .child(self.render_welcome(cx))
+                .child(self.render_welcome_interactive(cx))
                 .child(self.command_palette.clone())
+                .child(self.interactive_rebase.clone())
+                .child(self.settings_modal.clone())
+                .child(self.branch_dialog.clone())
+                .child(self.repo_opener.clone())
+                .child(self.shortcuts_help.clone())
                 .into_any_element();
         }
 
@@ -785,7 +1664,6 @@ impl Render for Workspace {
         // Build tab bar
         let mut tab_bar = TabBar::new();
         let workspace_handle = cx.entity().downgrade();
-        let tab_count = self.tabs.len();
         for (i, tab) in self.tabs.iter().enumerate() {
             let tab_name: SharedString = tab.name.clone().into();
             let ws = workspace_handle.clone();
@@ -796,7 +1674,7 @@ impl Render for Workspace {
                     tab_name,
                 )
                 .active(i == self.active_tab)
-                .closeable(tab_count > 1)
+                .closeable(true)
                 .on_click(move |_event, _window, cx| {
                     ws.update(cx, |ws, cx| {
                         ws.active_tab = i;
@@ -871,6 +1749,7 @@ impl Render for Workspace {
                                 f32::from(e.event.position.x - this.content_bounds.left())
                                     .clamp(120., 600.);
                             this.sidebar_width = new_w;
+                            this.schedule_layout_save(cx);
                             cx.notify();
                         },
                     ))
@@ -880,6 +1759,7 @@ impl Render for Workspace {
                                 f32::from(this.content_bounds.right() - e.event.position.x)
                                     .clamp(180., 600.);
                             this.detail_panel_width = new_w;
+                            this.schedule_layout_save(cx);
                             cx.notify();
                         },
                     ))
@@ -889,6 +1769,7 @@ impl Render for Workspace {
                                 f32::from(this.content_bounds.bottom() - e.event.position.y)
                                     .clamp(60., 500.);
                             this.diff_viewer_height = new_h;
+                            this.schedule_layout_save(cx);
                             cx.notify();
                         },
                     ))
@@ -898,6 +1779,7 @@ impl Render for Workspace {
                                 f32::from(this.right_panel_bounds.bottom() - e.event.position.y)
                                     .clamp(100., 400.);
                             this.commit_input_height = new_h;
+                            this.schedule_layout_save(cx);
                             cx.notify();
                         },
                     ))
@@ -917,8 +1799,9 @@ impl Render for Workspace {
                                     .top_0()
                                     .right(px(-4.))
                                     .h_full()
-                                    .w(px(8.))
+                                    .w(px(6.))
                                     .cursor_col_resize()
+                                    .hover(|s| s.bg(colors.border_focused))
                                     .on_drag(SidebarResize, |val, _, _, cx| {
                                         cx.stop_propagation();
                                         cx.new(|_| val.clone())
@@ -928,13 +1811,42 @@ impl Render for Workspace {
                                     }),
                             ),
                     )
-                    // Center: graph (flex) + resize strip + diff viewer (fixed height)
+                    // Center: loading indicator + graph (flex) + resize strip + diff viewer (fixed height)
                     .child(
                         div()
                             .v_flex()
                             .flex_1()
                             .min_w_0()
                             .h_full()
+                            // Loading indicator
+                            .when(self.is_loading, |el| {
+                                let msg: SharedString = self.loading_message.clone().unwrap_or_default().into();
+                                el.child(
+                                    div()
+                                        .h_flex()
+                                        .w_full()
+                                        .h(px(28.))
+                                        .px_3()
+                                        .items_center()
+                                        .gap_2()
+                                        .bg(colors.surface_background)
+                                        .border_b_1()
+                                        .border_color(colors.border_variant)
+                                        .child(
+                                            // Pulsing dot indicator
+                                            div()
+                                                .w(px(8.))
+                                                .h(px(8.))
+                                                .rounded_full()
+                                                .bg(colors.border_focused)
+                                        )
+                                        .child(
+                                            Label::new(msg)
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Accent)
+                                        )
+                                )
+                            })
                             // Graph view
                             .child(
                                 div()
@@ -947,10 +1859,11 @@ impl Render for Workspace {
                                 div()
                                     .id("diff-resize-handle")
                                     .w_full()
-                                    .h(px(8.))
+                                    .h(px(4.))
                                     .flex_shrink_0()
                                     .cursor_row_resize()
-                                    .bg(colors.border_variant)
+                                    .border_t_1()
+                                    .border_color(colors.border_variant)
                                     .hover(|s| s.bg(colors.border_focused))
                                     .on_drag(DiffViewerResize, |val, _, _, cx| {
                                         cx.stop_propagation();
@@ -1007,10 +1920,11 @@ impl Render for Workspace {
                                 div()
                                     .id("commit-input-resize-handle")
                                     .w_full()
-                                    .h(px(8.))
+                                    .h(px(4.))
                                     .flex_shrink_0()
                                     .cursor_row_resize()
-                                    .bg(colors.border_variant)
+                                    .border_t_1()
+                                    .border_color(colors.border_variant)
                                     .hover(|s| s.bg(colors.border_focused))
                                     .on_drag(CommitInputResize, |val, _, _, cx| {
                                         cx.stop_propagation();
@@ -1033,10 +1947,11 @@ impl Render for Workspace {
                                     .id("detail-panel-resize-handle")
                                     .absolute()
                                     .top_0()
-                                    .left(px(-4.))
+                                    .left(px(-3.))
                                     .h_full()
-                                    .w(px(8.))
+                                    .w(px(6.))
                                     .cursor_col_resize()
+                                    .hover(|s| s.bg(colors.border_focused))
                                     .on_drag(DetailPanelResize, |val, _, _, cx| {
                                         cx.stop_propagation();
                                         cx.new(|_| val.clone())
@@ -1047,81 +1962,65 @@ impl Render for Workspace {
                             )
                     })
             })
+            // Toast notification overlay — positioned at bottom-center, above status bar
+            .when(!self.toasts.is_empty(), |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .bottom(px(32.)) // above the status bar
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .v_flex()
+                                .gap_2()
+                                .items_center()
+                                .children(self.toasts.iter().map(|toast| {
+                                    let border_color = match toast.kind {
+                                        ToastKind::Success => gpui::Hsla { h: 0.36, s: 0.7, l: 0.5, a: 1.0 },
+                                        ToastKind::Error => gpui::Hsla { h: 0.0, s: 0.7, l: 0.5, a: 1.0 },
+                                        ToastKind::Info => gpui::Hsla { h: 0.6, s: 0.7, l: 0.5, a: 1.0 },
+                                        ToastKind::Warning => gpui::Hsla { h: 0.12, s: 0.8, l: 0.55, a: 1.0 },
+                                    };
+                                    div()
+                                        .id(ElementId::NamedInteger(
+                                            "toast".into(),
+                                            toast.created_at.elapsed().as_nanos() as u64,
+                                        ))
+                                        .h_flex()
+                                        .px_3()
+                                        .py_2()
+                                        .elevation_2(cx)
+                                        .bg(colors.elevated_surface_background)
+                                        .border_l_2()
+                                        .border_color(border_color)
+                                        .rounded_md()
+                                        .child(
+                                            Label::new(toast.text.clone())
+                                                .size(LabelSize::Small)
+                                                .color(Color::Default),
+                                        )
+                                })),
+                        ),
+                )
+            })
             // Status bar
             .child(status_bar)
             // Command palette overlay (rendered last to be on top)
             .child(self.command_palette.clone())
-            // Branch creation dialog overlay
-            .when(self.show_branch_creation, |el| {
-                el.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(gpui::Hsla {
-                            h: 0.0,
-                            s: 0.0,
-                            l: 0.0,
-                            a: 0.5,
-                        })
-                        .child(
-                            div()
-                                .id("branch-creation-dialog")
-                                .w(px(420.))
-                                .elevation_3(cx)
-                                .p_4()
-                                .v_flex()
-                                .gap_3()
-                                .child(
-                                    Label::new("Create Branch")
-                                        .size(LabelSize::Large)
-                                        .weight(gpui::FontWeight::BOLD)
-                                        .color(Color::Default),
-                                )
-                                .child(
-                                    Label::new("Run the following command in your terminal:")
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                )
-                                .child(
-                                    div()
-                                        .px_3()
-                                        .py_2()
-                                        .bg(colors.editor_background)
-                                        .rounded_md()
-                                        .border_1()
-                                        .border_color(colors.border_variant)
-                                        .child(
-                                            Label::new("git checkout -b <branch-name>")
-                                                .size(LabelSize::Small)
-                                                .color(Color::Accent),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .h_flex()
-                                        .justify_end()
-                                        .gap_2()
-                                        .child(
-                                            Label::new("Press Escape or click Close to dismiss")
-                                                .size(LabelSize::XSmall)
-                                                .color(Color::Muted),
-                                        )
-                                        .child(
-                                            Button::new("close-branch-dialog", "Close")
-                                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                                    this.show_branch_creation = false;
-                                                    cx.notify();
-                                                })),
-                                        ),
-                                ),
-                        ),
-                )
-            })
+            // Interactive rebase dialog overlay
+            .child(self.interactive_rebase.clone())
+            // Settings modal overlay
+            .child(self.settings_modal.clone())
+            // Branch dialog overlay
+            .child(self.branch_dialog.clone())
+            // Repo opener overlay
+            .child(self.repo_opener.clone())
+            // Confirm dialog overlay
+            .child(self.confirm_dialog.clone())
+            // Shortcuts help overlay
+            .child(self.shortcuts_help.clone())
             .into_any_element()
     }
 }

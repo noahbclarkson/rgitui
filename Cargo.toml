@@ -15,7 +15,7 @@ members = [
 [workspace.dependencies]
 # GPUI framework (path deps to local Zed checkout)
 gpui = { path = "../zed/crates/gpui" }
-gpui_platform = { path = "../zed/crates/gpui_platform" }
+gpui_platform = { path = "../zed/crates/gpui_platform", features = ["wayland"] }
 http_client = { path = "../zed/crates/http_client" }
 reqwest_client = { path = "../zed/crates/reqwest_client" }
 

@@ -108,6 +108,12 @@ impl AiGenerator {
                 "gemini" => {
                     generate_gemini(&api_key, &model, &diff, &summary, commit_style).await
                 }
+                "openai" => {
+                    generate_openai(&api_key, &model, &diff, &summary, commit_style).await
+                }
+                "anthropic" => {
+                    generate_anthropic(&api_key, &model, &diff, &summary, commit_style).await
+                }
                 other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
             };
 
@@ -191,6 +197,105 @@ async fn generate_gemini(
         .and_then(|c| c.content.parts.first())
         .map(|p| p.text.trim().to_string())
         .context("No text in Gemini response")?;
+
+    Ok(text)
+}
+
+/// Generate a commit message using the OpenAI API.
+async fn generate_openai(
+    api_key: &Option<String>,
+    model: &str,
+    diff: &str,
+    summary: &str,
+    commit_style: CommitStyle,
+) -> Result<String> {
+    let api_key = api_key
+        .as_ref()
+        .context("OpenAI API key not configured. Set it in Settings > AI.")?;
+
+    let prompt = build_prompt(diff, summary, commit_style);
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": prompt
+        }],
+        "temperature": 0.3,
+        "max_tokens": 512
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send request to OpenAI API")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!("OpenAI API error ({}): {}", status, text);
+    }
+
+    let json: serde_json::Value = response.json().await.context("Failed to parse OpenAI response")?;
+    let text = json["choices"][0]["message"]["content"]
+        .as_str()
+        .context("No text in OpenAI response")?
+        .trim()
+        .to_string();
+
+    Ok(text)
+}
+
+/// Generate a commit message using the Anthropic API.
+async fn generate_anthropic(
+    api_key: &Option<String>,
+    model: &str,
+    diff: &str,
+    summary: &str,
+    commit_style: CommitStyle,
+) -> Result<String> {
+    let api_key = api_key
+        .as_ref()
+        .context("Anthropic API key not configured. Set it in Settings > AI.")?;
+
+    let prompt = build_prompt(diff, summary, commit_style);
+
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 512,
+        "messages": [{
+            "role": "user",
+            "content": prompt
+        }]
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .context("Failed to send request to Anthropic API")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!("Anthropic API error ({}): {}", status, text);
+    }
+
+    let json: serde_json::Value = response.json().await.context("Failed to parse Anthropic response")?;
+    let text = json["content"][0]["text"]
+        .as_str()
+        .context("No text in Anthropic response")?
+        .trim()
+        .to_string();
 
     Ok(text)
 }

@@ -4,17 +4,31 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     App, canvas, div, img, point, px, Bounds, ClickEvent, Context, ElementId, EventEmitter,
-    ListSizingBehavior, ObjectFit, PathBuilder, Pixels, Render, SharedString,
-    UniformListScrollHandle, WeakEntity, Window, uniform_list,
+    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, ObjectFit, PathBuilder, Pixels,
+    Point, Render, ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
+    uniform_list,
 };
 use rgitui_git::{CommitInfo, GraphEdge, GraphRow, RefLabel, compute_graph};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{AvatarCache, Badge, Label, LabelSize};
+use rgitui_ui::{AvatarCache, Badge, Icon, IconName, IconSize, Label, LabelSize};
 
 /// Events emitted by the graph view.
 #[derive(Debug, Clone)]
 pub enum GraphViewEvent {
     CommitSelected(git2::Oid),
+    CherryPick(git2::Oid),
+    RevertCommit(git2::Oid),
+    CreateBranchAtCommit(git2::Oid),
+    CheckoutCommit(git2::Oid),
+    CopyCommitSha(String),
+}
+
+/// State for the right-click context menu.
+struct ContextMenuState {
+    /// The index of the commit that was right-clicked.
+    commit_index: usize,
+    /// Screen position where the menu should appear.
+    position: Point<Pixels>,
 }
 
 /// The commit graph panel.
@@ -24,6 +38,15 @@ pub struct GraphView {
     selected_index: Option<usize>,
     row_height: f32,
     scroll_handle: UniformListScrollHandle,
+    context_menu: Option<ContextMenuState>,
+    /// Current search query text.
+    search_query: String,
+    /// Whether the search bar is visible.
+    show_search: bool,
+    /// Indices of commits that match the current search query.
+    filter_matches: Vec<usize>,
+    /// Index into `filter_matches` for the current highlighted match.
+    current_match: usize,
 }
 
 impl EventEmitter<GraphViewEvent> for GraphView {}
@@ -36,6 +59,11 @@ impl GraphView {
             selected_index: None,
             row_height: 34.0,
             scroll_handle: UniformListScrollHandle::new(),
+            context_menu: None,
+            search_query: String::new(),
+            show_search: false,
+            filter_matches: Vec::new(),
+            current_match: 0,
         }
     }
 
@@ -43,6 +71,9 @@ impl GraphView {
         self.graph_rows = Arc::new(compute_graph(&commits));
         self.commits = Arc::new(commits);
         self.selected_index = None;
+        if self.show_search && !self.search_query.is_empty() {
+            self.update_search_filter();
+        }
         cx.notify();
     }
 
@@ -58,6 +89,30 @@ impl GraphView {
         self.commits.len()
     }
 
+    fn dismiss_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.is_some() {
+            self.context_menu = None;
+            cx.notify();
+        }
+    }
+
+    fn show_context_menu(&mut self, index: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
+        self.context_menu = Some(ContextMenuState {
+            commit_index: index,
+            position,
+        });
+        cx.notify();
+    }
+
+    /// Scroll to the commit with the given OID, selecting it and emitting CommitSelected.
+    pub fn scroll_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) {
+        if let Some(index) = self.commits.iter().position(|c| c.oid == oid) {
+            self.select_index(index, cx);
+            self.scroll_handle
+                .scroll_to_item(index, ScrollStrategy::Top);
+        }
+    }
+
     pub fn select_index(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.commits.len() {
             self.selected_index = Some(index);
@@ -65,6 +120,143 @@ impl GraphView {
                 cx.emit(GraphViewEvent::CommitSelected(commit.oid));
             }
             cx.notify();
+        }
+    }
+
+    /// Toggle the search bar visibility. Clears query when hiding.
+    pub fn toggle_search(&mut self, cx: &mut Context<Self>) {
+        self.show_search = !self.show_search;
+        if !self.show_search {
+            self.search_query.clear();
+            self.filter_matches.clear();
+            self.current_match = 0;
+        }
+        cx.notify();
+    }
+
+    /// Returns whether the search bar is currently visible.
+    pub fn is_search_visible(&self) -> bool {
+        self.show_search
+    }
+
+    /// Update the filter_matches list based on the current search_query.
+    /// Matches case-insensitively against commit message, author name, author email, and short SHA.
+    fn update_search_filter(&mut self) {
+        self.filter_matches.clear();
+        self.current_match = 0;
+
+        if self.search_query.is_empty() {
+            return;
+        }
+
+        let query = self.search_query.to_lowercase();
+        for (i, commit) in self.commits.iter().enumerate() {
+            if commit.summary.to_lowercase().contains(&query)
+                || commit.message.to_lowercase().contains(&query)
+                || commit.author.name.to_lowercase().contains(&query)
+                || commit.author.email.to_lowercase().contains(&query)
+                || commit.short_id.to_lowercase().contains(&query)
+            {
+                self.filter_matches.push(i);
+            }
+        }
+    }
+
+    /// Jump to the next search match, selecting and scrolling to it.
+    fn jump_to_next_match(&mut self, cx: &mut Context<Self>) {
+        if self.filter_matches.is_empty() {
+            return;
+        }
+        self.current_match = (self.current_match + 1) % self.filter_matches.len();
+        let index = self.filter_matches[self.current_match];
+        self.select_index(index, cx);
+        self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
+    }
+
+    /// Jump to the previous search match.
+    fn jump_to_prev_match(&mut self, cx: &mut Context<Self>) {
+        if self.filter_matches.is_empty() {
+            return;
+        }
+        if self.current_match == 0 {
+            self.current_match = self.filter_matches.len() - 1;
+        } else {
+            self.current_match -= 1;
+        }
+        let index = self.filter_matches[self.current_match];
+        self.select_index(index, cx);
+        self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
+    }
+
+    /// Handle key events when the search bar is active.
+    pub fn handle_search_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.show_search {
+            return false;
+        }
+
+        let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
+
+        match key {
+            "escape" => {
+                self.show_search = false;
+                self.search_query.clear();
+                self.filter_matches.clear();
+                self.current_match = 0;
+                cx.notify();
+                true
+            }
+            "enter" => {
+                if modifiers.shift {
+                    self.jump_to_prev_match(cx);
+                } else {
+                    self.jump_to_next_match(cx);
+                }
+                true
+            }
+            "backspace" => {
+                if !self.search_query.is_empty() {
+                    self.search_query.pop();
+                    self.update_search_filter();
+                    // Jump to first match if any
+                    if !self.filter_matches.is_empty() {
+                        self.current_match = 0;
+                        let index = self.filter_matches[0];
+                        self.select_index(index, cx);
+                        self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
+                    }
+                    cx.notify();
+                }
+                true
+            }
+            _ => {
+                // Append printable characters to the query
+                if !modifiers.control
+                    && !modifiers.platform
+                    && !modifiers.alt
+                    && key.len() == 1
+                {
+                    let ch = key.chars().next().unwrap();
+                    if ch.is_ascii_graphic() || ch == ' ' {
+                        self.search_query.push(ch);
+                        self.update_search_filter();
+                        // Jump to first match if any
+                        if !self.filter_matches.is_empty() {
+                            self.current_match = 0;
+                            let index = self.filter_matches[0];
+                            self.select_index(index, cx);
+                            self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
+                        }
+                        cx.notify();
+                        return true;
+                    }
+                }
+                false
+            }
         }
     }
 }
@@ -90,17 +282,45 @@ impl Render for GraphView {
         }
 
         // Extract colors before closure (can't call cx inside uniform_list closure)
-        let selected_bg = colors.ghost_element_selected;
+        let selected_bg = colors.element_selected;
         let hover_bg = colors.ghost_element_hover;
         let active_bg = colors.ghost_element_active;
         let panel_bg = colors.panel_background;
         let surface_bg = colors.surface_background;
         let border_color = colors.border_variant;
+        let accent_border = colors.text_accent;
+        // Subtle zebra-stripe: derive from surface bg with tiny alpha shift
+        let zebra_bg = gpui::Hsla {
+            l: (surface_bg.l - 0.02).max(0.0),
+            a: 0.5,
+            ..surface_bg
+        };
+
+        // Search highlight colors
+        let search_match_bg = gpui::Hsla {
+            a: 0.12,
+            ..colors.text_accent
+        };
+        let search_current_bg = gpui::Hsla {
+            a: 0.28,
+            ..colors.text_accent
+        };
+
         // Cheap Arc clones
         let commits = self.commits.clone();
         let graph_rows = self.graph_rows.clone();
         let selected_index = self.selected_index;
         let view: WeakEntity<GraphView> = cx.weak_entity();
+
+        // Search state for the render closure
+        let filter_matches: Arc<Vec<usize>> = Arc::new(self.filter_matches.clone());
+        let current_match_index = if self.filter_matches.is_empty() {
+            None
+        } else {
+            Some(self.filter_matches[self.current_match])
+        };
+        let _show_search = self.show_search;
+        let has_search_query = self.show_search && !self.search_query.is_empty();
 
         let lane_width: f32 = 24.0;
         let row_height = self.row_height;
@@ -108,9 +328,11 @@ impl Render for GraphView {
         // Header row (not virtualized — always visible)
         let header = div()
             .h_flex()
+            .items_center()
             .w_full()
-            .h(px(30.))
-            .px_1()
+            .h(px(28.))
+            .pl(px(12.))
+            .pr(px(8.))
             .gap_1()
             .bg(surface_bg)
             .border_b_1()
@@ -119,30 +341,67 @@ impl Render for GraphView {
                 div()
                     .w(px(80.))
                     .flex_shrink_0()
-                    .child(Label::new("Graph").size(LabelSize::XSmall).color(Color::Muted)),
+                    .h_flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(Icon::new(IconName::GitCommit).size(IconSize::XSmall).color(Color::Muted))
+                    .child(
+                        Label::new("Graph")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
             )
             .child(
                 div()
                     .w(px(80.))
                     .flex_shrink_0()
-                    .child(Label::new("Hash").size(LabelSize::XSmall).color(Color::Muted)),
+                    .child(
+                        Label::new("Hash")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
             )
             .child(
                 div()
                     .flex_1()
-                    .child(Label::new("Message").size(LabelSize::XSmall).color(Color::Muted)),
+                    .child(
+                        Label::new("Message")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
             )
             .child(
                 div()
                     .w(px(120.))
                     .flex_shrink_0()
-                    .child(Label::new("Author").size(LabelSize::XSmall).color(Color::Muted)),
+                    .h_flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(Icon::new(IconName::User).size(IconSize::XSmall).color(Color::Muted))
+                    .child(
+                        Label::new("Author")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
             )
             .child(
                 div()
-                    .w(px(80.))
+                    .w(px(100.))
                     .flex_shrink_0()
-                    .child(Label::new("Date").size(LabelSize::XSmall).color(Color::Muted)),
+                    .h_flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(Icon::new(IconName::Clock).size(IconSize::XSmall).color(Color::Muted))
+                    .child(
+                        Label::new("Date")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
             );
 
         // The virtualized list
@@ -154,7 +413,22 @@ impl Render for GraphView {
                     let commit = commits[i].clone();
                     let graph_row = graph_rows[i].clone();
                     let selected = selected_index == Some(i);
-                    let bg = if selected { selected_bg } else { panel_bg };
+                    let is_current_match = current_match_index == Some(i);
+                    let is_any_match = has_search_query && filter_matches.contains(&i);
+                    // Alternating row background for zebra-stripe effect
+                    let row_base_bg = if i % 2 == 1 { zebra_bg } else { panel_bg };
+                    let bg = if selected {
+                        selected_bg
+                    } else if is_current_match {
+                        search_current_bg
+                    } else if is_any_match {
+                        search_match_bg
+                    } else {
+                        row_base_bg
+                    };
+                    // Don't show hover effect on already-selected rows
+                    let row_hover_bg = if selected { selected_bg } else { hover_bg };
+                    let row_active_bg = if selected { selected_bg } else { active_bg };
 
                     let max_lane = graph_row.lane_count.max(1);
                     let graph_width = (max_lane as f32 * lane_width).max(80.0);
@@ -175,16 +449,23 @@ impl Render for GraphView {
                         .to_uppercase()
                         .into();
 
-                    // Ref badges
+                    // Ref badges — distinct styling per ref type
                     let mut ref_badges: Vec<Badge> = Vec::new();
                     for r in &commit.refs {
-                        let (text, color) = match r {
-                            RefLabel::Head => ("HEAD".to_string(), Color::Accent),
-                            RefLabel::LocalBranch(name) => (name.clone(), Color::Success),
-                            RefLabel::RemoteBranch(name) => (name.clone(), Color::Info),
-                            RefLabel::Tag(name) => (name.clone(), Color::Warning),
+                        let badge = match r {
+                            RefLabel::Head => Badge::new("HEAD")
+                                .color(Color::Accent)
+                                .bold(),
+                            RefLabel::LocalBranch(name) => Badge::new(name.clone())
+                                .color(Color::Success),
+                            RefLabel::RemoteBranch(name) => Badge::new(name.clone())
+                                .color(Color::Info)
+                                .italic(),
+                            RefLabel::Tag(name) => Badge::new(name.clone())
+                                .color(Color::Warning)
+                                .prefix("tag"),
                         };
-                        ref_badges.push(Badge::new(text).color(color));
+                        ref_badges.push(badge);
                     }
 
                     let short_id: SharedString = commit.short_id.clone().into();
@@ -196,30 +477,45 @@ impl Render for GraphView {
                     let edges: Vec<GraphEdge> = graph_row.edges.clone();
 
                     let view_clone = view.clone();
+                    let view_ctx_menu = view.clone();
 
-                    // Branch color tab: thin colored strip on left edge
-                    let lane_tab_color = gpui::Hsla { a: 0.5, ..node_color };
+                    // Left edge indicator: accent border when selected, lane color otherwise
+                    let left_tab_color = if selected {
+                        accent_border
+                    } else {
+                        gpui::Hsla { a: 0.5, ..node_color }
+                    };
 
                     let mut row = div()
                         .id(ElementId::NamedInteger("commit-row".into(), i as u64))
                         .h_flex()
+                        .items_center()
                         .h(px(row_height))
                         .w_full()
                         .bg(bg)
-                        .hover(move |s| s.bg(hover_bg))
-                        .active(move |s| s.bg(active_bg))
+                        .border_l_2()
+                        .border_color(if selected { accent_border } else { gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(row_hover_bg))
+                        .active(move |s| s.bg(row_active_bg))
                         .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
                             view_clone.update(cx, |this, cx| {
+                                this.dismiss_context_menu(cx);
                                 this.select_index(i, cx);
                             }).ok();
                         })
-                        // Color tab on left edge
+                        .on_mouse_down(MouseButton::Right, move |event: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
+                            view_ctx_menu.update(cx, |this, cx| {
+                                this.show_context_menu(i, event.position, cx);
+                            }).ok();
+                        })
+                        // Color tab on left edge (after the border)
                         .child(
                             div()
                                 .w(px(3.))
                                 .h_full()
                                 .flex_shrink_0()
-                                .bg(lane_tab_color),
+                                .bg(left_tab_color),
                         )
                         // Gap between color tab and graph
                         .child(div().w(px(4.)).flex_shrink_0());
@@ -274,13 +570,18 @@ impl Render for GraphView {
                                                 path.move_to(point(origin.x + from_x, start_y));
                                                 path.line_to(point(origin.x + to_x, end_y));
                                             } else {
-                                                // Smooth S-curve: symmetric bezier with inflection at midpoint
-                                                let half_y = start_y + (end_y - start_y) / 2.0;
+                                                // Smooth S-curve: control points at 40%/60% of
+                                                // vertical span, keeping source/dest X coords.
+                                                // This departs vertically, transitions smoothly,
+                                                // and arrives vertically — a natural branch/merge curve.
+                                                let span = end_y - start_y;
+                                                let ctrl_y1 = start_y + span * 0.4;
+                                                let ctrl_y2 = start_y + span * 0.6;
                                                 path.move_to(point(origin.x + from_x, start_y));
                                                 path.cubic_bezier_to(
                                                     point(origin.x + to_x, end_y),
-                                                    point(origin.x + from_x, half_y),
-                                                    point(origin.x + to_x, half_y),
+                                                    point(origin.x + from_x, ctrl_y1),
+                                                    point(origin.x + to_x, ctrl_y2),
                                                 );
                                             }
 
@@ -290,13 +591,13 @@ impl Render for GraphView {
                                         }
 
                                         // 3. Draw commit dot with background ring (occludes passing lines).
-                                        let r = 11.0_f32;
+                                        let r = 12.0_f32;
                                         let cx_x = origin.x + node_x_px;
                                         let cy_y = origin.y + mid_y;
-                                        let steps = 48_usize;
+                                        let steps = 24_usize;
 
                                         // Background ring to occlude lines passing behind the dot
-                                        let ring_r = r + 2.0;
+                                        let ring_r = r + 3.0;
                                         let mut ring = PathBuilder::fill();
                                         for s in 0..steps {
                                             let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
@@ -322,12 +623,13 @@ impl Render for GraphView {
                                 let initials_fallback = initials.clone();
                                 let fallback_color = node_color;
 
+                                let avatar_size = 24.0_f32;
                                 let mut avatar_container = div()
                                     .absolute()
-                                    .left(px(node_x - 11.0))
-                                    .top(px((row_height - 22.0) / 2.0))
-                                    .w(px(22.))
-                                    .h(px(22.))
+                                    .left(px(node_x - avatar_size / 2.0))
+                                    .top(px((row_height - avatar_size) / 2.0))
+                                    .w(px(avatar_size))
+                                    .h(px(avatar_size))
                                     .rounded_full()
                                     .bg(panel_bg)
                                     .border_2()
@@ -374,7 +676,7 @@ impl Render for GraphView {
                             }),
                     );
 
-                    // Hash
+                    // Hash column
                     row = row.child(
                         div()
                             .w(px(80.))
@@ -382,44 +684,70 @@ impl Render for GraphView {
                             .child(
                                 Label::new(short_id)
                                     .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
+                                    .color(Color::Accent)
+                                    .weight(gpui::FontWeight::MEDIUM),
                             ),
                     );
 
-                    // Ref badges
-                    if !ref_badges.is_empty() {
-                        let mut badges_container = div().h_flex().gap(px(4.)).flex_shrink_0().mr(px(4.));
-                        for badge in ref_badges {
-                            badges_container = badges_container.child(badge);
-                        }
-                        row = row.child(badges_container);
-                    }
-
-                    // Summary
-                    row = row.child(
-                        div()
+                    // Message column — contains ref badges (inline) + summary text
+                    {
+                        let mut message_col = div()
                             .flex_1()
                             .min_w_0()
-                            .child(Label::new(summary).size(LabelSize::Small).truncate()),
-                    );
+                            .h_flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .overflow_x_hidden();
 
-                    // Author
-                    row = row.child(
-                        div().w(px(120.)).flex_shrink_0().child(
-                            Label::new(author)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
+                        // Ref badges inline before the summary
+                        if !ref_badges.is_empty() {
+                            let mut badges_container = div()
+                                .h_flex()
+                                .gap(px(3.))
+                                .flex_shrink_0()
+                                .max_w(px(300.))
+                                .overflow_x_hidden();
+                            for badge in ref_badges {
+                                badges_container = badges_container.child(badge);
+                            }
+                            message_col = message_col.child(badges_container);
+                        }
+
+                        // Summary text
+                        message_col = message_col.child(
+                            Label::new(summary)
+                                .size(LabelSize::Small)
                                 .truncate(),
-                        ),
+                        );
+
+                        row = row.child(message_col);
+                    }
+
+                    // Author column
+                    row = row.child(
+                        div()
+                            .w(px(120.))
+                            .flex_shrink_0()
+                            .px(px(4.))
+                            .child(
+                                Label::new(author)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted)
+                                    .truncate(),
+                            ),
                     );
 
-                    // Time
+                    // Date column (relative time)
                     row = row.child(
-                        div().w(px(80.)).flex_shrink_0().child(
-                            Label::new(time_str)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
-                        ),
+                        div()
+                            .w(px(100.))
+                            .flex_shrink_0()
+                            .pr(px(8.))
+                            .child(
+                                Label::new(time_str)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
                     );
 
                     row.into_any_element()
@@ -430,15 +758,273 @@ impl Render for GraphView {
         .flex_grow()
         .track_scroll(&self.scroll_handle);
 
-        div()
+        let mut container = div()
             .id("graph-view")
+            .relative()
             .v_flex()
             .size_full()
             .overflow_hidden()
             .bg(panel_bg)
-            .child(header)
-            .child(list)
-            .into_any_element()
+            .on_mouse_down(MouseButton::Left, {
+                let view_dismiss = cx.weak_entity();
+                move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                    view_dismiss.update(cx, |this: &mut GraphView, cx| {
+                        this.dismiss_context_menu(cx);
+                    }).ok();
+                }
+            })
+            .child(header);
+
+        // Search bar (shown when search is active)
+        if self.show_search {
+            let query_display: SharedString = if self.search_query.is_empty() {
+                "Type to search...".into()
+            } else {
+                self.search_query.clone().into()
+            };
+            let match_count_text: SharedString = if self.search_query.is_empty() {
+                String::new().into()
+            } else if self.filter_matches.is_empty() {
+                "No matches".into()
+            } else {
+                format!(
+                    "{}/{}",
+                    self.current_match + 1,
+                    self.filter_matches.len()
+                )
+                .into()
+            };
+            let query_color = if self.search_query.is_empty() {
+                Color::Placeholder
+            } else {
+                Color::Default
+            };
+
+            let view_prev = cx.weak_entity();
+            let view_next = cx.weak_entity();
+            let has_matches = !self.filter_matches.is_empty();
+
+            let search_bar = div()
+                .h_flex()
+                .items_center()
+                .w_full()
+                .h(px(32.))
+                .px_2()
+                .gap_2()
+                .bg(colors.surface_background)
+                .border_b_1()
+                .border_color(colors.border_focused)
+                .child(
+                    Icon::new(IconName::Search)
+                        .size(IconSize::Small)
+                        .color(Color::Muted),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .child(
+                            Label::new(query_display)
+                                .size(LabelSize::Small)
+                                .color(query_color),
+                        ),
+                )
+                .child(
+                    Label::new(match_count_text)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(
+                    div()
+                        .id("search-prev")
+                        .cursor_pointer()
+                        .rounded_sm()
+                        .p(px(2.))
+                        .hover(move |s| s.bg(if has_matches { hover_bg } else { gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } }))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_prev.update(cx, |this: &mut GraphView, cx| {
+                                this.jump_to_prev_match(cx);
+                            }).ok();
+                        })
+                        .child(
+                            Icon::new(IconName::ChevronUp)
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("search-next")
+                        .cursor_pointer()
+                        .rounded_sm()
+                        .p(px(2.))
+                        .hover(move |s| s.bg(if has_matches { active_bg } else { gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } }))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_next.update(cx, |this: &mut GraphView, cx| {
+                                this.jump_to_next_match(cx);
+                            }).ok();
+                        })
+                        .child(
+                            Icon::new(IconName::ChevronDown)
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
+                        ),
+                );
+
+            container = container.child(search_bar);
+        }
+
+        container = container.child(list);
+
+        // Context menu overlay
+        if let Some(ref menu_state) = self.context_menu {
+            if let Some(commit) = self.commits.get(menu_state.commit_index) {
+                let oid = commit.oid;
+                let sha = format!("{}", oid);
+                let pos = menu_state.position;
+                let weak = cx.weak_entity();
+                let sha_clone = sha.clone();
+
+                let menu_bg = colors.elevated_surface_background;
+                let menu_border = colors.border;
+                let menu_hover = colors.ghost_element_hover;
+                let menu_active = colors.ghost_element_active;
+
+                let menu_items: Vec<(&str, IconName)> = vec![
+                    ("Cherry-pick commit", IconName::GitCommit),
+                    ("Revert commit", IconName::Undo),
+                    ("Checkout commit", IconName::Check),
+                    ("Create branch here", IconName::GitBranch),
+                    ("Copy SHA", IconName::Copy),
+                ];
+
+                let mut menu = div()
+                    .id("graph-context-menu")
+                    .absolute()
+                    .left(pos.x)
+                    .top(pos.y)
+                    .v_flex()
+                    .min_w(px(200.))
+                    .py(px(4.))
+                    .bg(menu_bg)
+                    .border_1()
+                    .border_color(menu_border)
+                    .rounded_md()
+                    .elevation_3(cx)
+                    // Prevent left-click on menu from dismissing via container handler
+                    .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    })
+                    // Prevent right-click on menu from opening another menu
+                    .on_mouse_down(MouseButton::Right, |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    });
+
+                for (idx, (label_text, icon_name)) in menu_items.iter().enumerate() {
+                    let label: SharedString = (*label_text).into();
+                    let icon = *icon_name;
+
+                    // Add separator before "Copy SHA" (last item)
+                    if idx == 4 {
+                        menu = menu.child(
+                            div()
+                                .w_full()
+                                .h(px(1.))
+                                .my(px(2.))
+                                .mx(px(8.))
+                                .bg(colors.border_variant),
+                        );
+                    }
+
+                    let mut item = div()
+                        .id(ElementId::NamedInteger("ctx-action".into(), idx as u64))
+                        .h_flex()
+                        .w_full()
+                        .h(px(30.))
+                        .px(px(8.))
+                        .mx(px(4.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor_pointer()
+                        .rounded_sm()
+                        .hover(move |s| s.bg(menu_hover))
+                        .active(move |s| s.bg(menu_active));
+
+                    match idx {
+                        0 => {
+                            let w = weak.clone();
+                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                w.update(cx, |this: &mut GraphView, cx| {
+                                    this.context_menu = None;
+                                    cx.emit(GraphViewEvent::CherryPick(oid));
+                                    cx.notify();
+                                }).ok();
+                            });
+                        }
+                        1 => {
+                            let w = weak.clone();
+                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                w.update(cx, |this: &mut GraphView, cx| {
+                                    this.context_menu = None;
+                                    cx.emit(GraphViewEvent::RevertCommit(oid));
+                                    cx.notify();
+                                }).ok();
+                            });
+                        }
+                        2 => {
+                            let w = weak.clone();
+                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                w.update(cx, |this: &mut GraphView, cx| {
+                                    this.context_menu = None;
+                                    cx.emit(GraphViewEvent::CheckoutCommit(oid));
+                                    cx.notify();
+                                }).ok();
+                            });
+                        }
+                        3 => {
+                            let w = weak.clone();
+                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                w.update(cx, |this: &mut GraphView, cx| {
+                                    this.context_menu = None;
+                                    cx.emit(GraphViewEvent::CreateBranchAtCommit(oid));
+                                    cx.notify();
+                                }).ok();
+                            });
+                        }
+                        4 => {
+                            let w = weak.clone();
+                            let sha_for_click = sha_clone.clone();
+                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                let sha_val = sha_for_click.clone();
+                                w.update(cx, |this: &mut GraphView, cx| {
+                                    this.context_menu = None;
+                                    cx.emit(GraphViewEvent::CopyCommitSha(sha_val));
+                                    cx.notify();
+                                }).ok();
+                            });
+                        }
+                        _ => {}
+                    }
+
+                    item = item
+                        .child(
+                            Icon::new(icon)
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(label)
+                                .size(LabelSize::Small)
+                                .color(Color::Default),
+                        );
+
+                    menu = menu.child(item);
+                }
+
+                container = container.child(menu);
+            }
+        }
+
+        container.into_any_element()
     }
 }
 

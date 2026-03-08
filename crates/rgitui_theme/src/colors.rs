@@ -143,7 +143,7 @@ impl From<Hsla> for Color {
     }
 }
 
-// -- Catppuccin Mocha color definitions --
+// -- Helper functions --
 
 fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla {
@@ -152,6 +152,57 @@ fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
         l: l / 100.0,
         a,
     }
+}
+
+/// Parse a hex color string (#RRGGBB or #RRGGBBAA) into an Hsla value.
+pub fn hex_to_hsla(hex: &str) -> Hsla {
+    let hex = hex.trim_start_matches('#');
+    let (r, g, b, a) = match hex.len() {
+        6 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32 / 255.0;
+            (r, g, b, 1.0)
+        }
+        8 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32 / 255.0;
+            let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255) as f32 / 255.0;
+            (r, g, b, a)
+        }
+        _ => (0.0, 0.0, 0.0, 1.0),
+    };
+
+    // RGB to HSL conversion
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+
+    if (max - min).abs() < f32::EPSILON {
+        return Hsla { h: 0.0, s: 0.0, l, a };
+    }
+
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+
+    let h = if (max - r).abs() < f32::EPSILON {
+        let mut h = (g - b) / d;
+        if g < b {
+            h += 6.0;
+        }
+        h
+    } else if (max - g).abs() < f32::EPSILON {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+
+    Hsla { h: h / 6.0, s, l, a }
 }
 
 /// Catppuccin Mocha dark theme colors.
@@ -433,6 +484,190 @@ pub fn one_dark_status() -> StatusColors {
         info: blue,
         info_background: hsla(207.0, 82.0, 66.0, 0.15),
         hint: cyan,
+    }
+}
+
+// -- GitHub Dark theme colors --
+
+/// GitHub Dark theme colors.
+pub fn github_dark_colors() -> ThemeColors {
+    let bg = hsla(215.0, 21.0, 7.0, 1.0);              // #0d1117
+    let surface = hsla(215.0, 19.0, 11.0, 1.0);          // #161b22
+    let elevated = hsla(215.0, 15.0, 14.0, 1.0);         // #1c2128
+    let border_main = hsla(215.0, 14.0, 21.0, 1.0);      // #30363d
+    let border_sub = hsla(215.0, 14.0, 15.0, 1.0);       // #21262d
+    let text = hsla(213.0, 14.0, 80.0, 1.0);             // #c9d1d9
+    let text_muted = hsla(212.0, 9.0, 57.0, 1.0);        // #8b949e
+    let text_dim = hsla(213.0, 9.0, 46.0, 1.0);          // #6e7681
+    let text_dimmer = hsla(215.0, 10.0, 31.0, 1.0);      // #484f58
+    let accent = hsla(212.0, 100.0, 67.0, 1.0);          // #58a6ff
+    let red = hsla(2.0, 92.0, 63.0, 1.0);                // #f85149
+    let green = hsla(139.0, 66.0, 49.0, 1.0);            // #3fb950
+    let yellow = hsla(39.0, 73.0, 49.0, 1.0);            // #d29922
+    let orange = hsla(24.0, 73.0, 50.0, 1.0);            // #db6d28
+
+    ThemeColors {
+        background: bg,
+        surface_background: surface,
+        elevated_surface_background: elevated,
+        editor_background: bg,
+
+        border: border_main,
+        border_variant: border_sub,
+        border_focused: accent,
+        border_selected: accent,
+        border_disabled: border_sub,
+        border_transparent: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+
+        element_background: border_sub,
+        element_hover: border_main,
+        element_active: hsla(215.0, 10.0, 26.0, 1.0),
+        element_selected: border_main,
+        element_disabled: border_sub,
+        ghost_element_background: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        ghost_element_hover: hsla(215.0, 14.0, 15.0, 0.5),
+        ghost_element_active: hsla(215.0, 14.0, 21.0, 0.5),
+        ghost_element_selected: hsla(215.0, 14.0, 21.0, 0.7),
+
+        text,
+        text_muted,
+        text_placeholder: text_dim,
+        text_disabled: text_dimmer,
+        text_accent: accent,
+
+        icon: text,
+        icon_muted: text_muted,
+        icon_disabled: text_dimmer,
+        icon_accent: accent,
+
+        title_bar_background: surface,
+        toolbar_background: bg,
+        tab_bar_background: surface,
+        tab_active_background: bg,
+        tab_inactive_background: surface,
+        status_bar_background: surface,
+        panel_background: bg,
+        scrollbar_thumb_background: border_main,
+        scrollbar_thumb_hover_background: text_dimmer,
+
+        vc_added: green,
+        vc_modified: yellow,
+        vc_deleted: red,
+        vc_conflict: orange,
+        vc_renamed: accent,
+        vc_untracked: text_muted,
+    }
+}
+
+pub fn github_dark_status() -> StatusColors {
+    let red = hsla(2.0, 92.0, 63.0, 1.0);
+    let yellow = hsla(39.0, 73.0, 49.0, 1.0);
+    let green = hsla(139.0, 66.0, 49.0, 1.0);
+    let blue = hsla(212.0, 100.0, 67.0, 1.0);
+    let muted = hsla(212.0, 9.0, 57.0, 1.0);
+
+    StatusColors {
+        error: red,
+        error_background: hsla(2.0, 92.0, 63.0, 0.15),
+        warning: yellow,
+        warning_background: hsla(39.0, 73.0, 49.0, 0.15),
+        success: green,
+        success_background: hsla(139.0, 66.0, 49.0, 0.15),
+        info: blue,
+        info_background: hsla(212.0, 100.0, 67.0, 0.15),
+        hint: muted,
+    }
+}
+
+// -- Dracula theme colors --
+
+/// Dracula theme colors.
+pub fn dracula_colors() -> ThemeColors {
+    let bg = hsla(231.0, 15.0, 18.0, 1.0);              // #282a36
+    let bg_darker = hsla(232.0, 14.0, 15.0, 1.0);        // #21222c
+    let surface = hsla(232.0, 14.0, 24.0, 1.0);          // #343746
+    let border_main = hsla(232.0, 14.0, 31.0, 1.0);      // #44475a
+    let text = hsla(60.0, 30.0, 96.0, 1.0);              // #f8f8f2
+    let text_muted = hsla(0.0, 0.0, 75.0, 1.0);          // #bfbfbf
+    let comment = hsla(225.0, 27.0, 51.0, 1.0);          // #6272a4
+    let text_dim = hsla(232.0, 14.0, 33.0, 1.0);         // #545872
+    let purple = hsla(265.0, 89.0, 78.0, 1.0);           // #bd93f9
+    let red = hsla(0.0, 100.0, 67.0, 1.0);               // #ff5555
+    let green = hsla(135.0, 94.0, 65.0, 1.0);            // #50fa7b
+    let yellow = hsla(65.0, 92.0, 77.0, 1.0);            // #f1fa8c
+    let orange = hsla(31.0, 100.0, 71.0, 1.0);           // #ffb86c
+    let cyan = hsla(191.0, 97.0, 77.0, 1.0);             // #8be9fd
+
+    ThemeColors {
+        background: bg_darker,
+        surface_background: bg,
+        elevated_surface_background: surface,
+        editor_background: bg,
+
+        border: border_main,
+        border_variant: surface,
+        border_focused: purple,
+        border_selected: purple,
+        border_disabled: surface,
+        border_transparent: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+
+        element_background: surface,
+        element_hover: border_main,
+        element_active: hsla(232.0, 14.0, 37.0, 1.0),
+        element_selected: border_main,
+        element_disabled: surface,
+        ghost_element_background: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        ghost_element_hover: hsla(232.0, 14.0, 31.0, 0.5),
+        ghost_element_active: hsla(232.0, 14.0, 37.0, 0.5),
+        ghost_element_selected: hsla(232.0, 14.0, 31.0, 0.7),
+
+        text,
+        text_muted,
+        text_placeholder: comment,
+        text_disabled: text_dim,
+        text_accent: purple,
+
+        icon: text,
+        icon_muted: text_muted,
+        icon_disabled: text_dim,
+        icon_accent: purple,
+
+        title_bar_background: bg_darker,
+        toolbar_background: bg,
+        tab_bar_background: bg_darker,
+        tab_active_background: bg,
+        tab_inactive_background: bg_darker,
+        status_bar_background: bg_darker,
+        panel_background: bg,
+        scrollbar_thumb_background: border_main,
+        scrollbar_thumb_hover_background: hsla(232.0, 14.0, 37.0, 1.0),
+
+        vc_added: green,
+        vc_modified: yellow,
+        vc_deleted: red,
+        vc_conflict: orange,
+        vc_renamed: cyan,
+        vc_untracked: comment,
+    }
+}
+
+pub fn dracula_status() -> StatusColors {
+    let red = hsla(0.0, 100.0, 67.0, 1.0);
+    let yellow = hsla(65.0, 92.0, 77.0, 1.0);
+    let green = hsla(135.0, 94.0, 65.0, 1.0);
+    let cyan = hsla(191.0, 97.0, 77.0, 1.0);
+    let comment = hsla(225.0, 27.0, 51.0, 1.0);
+
+    StatusColors {
+        error: red,
+        error_background: hsla(0.0, 100.0, 67.0, 0.15),
+        warning: yellow,
+        warning_background: hsla(65.0, 92.0, 77.0, 0.15),
+        success: green,
+        success_background: hsla(135.0, 94.0, 65.0, 0.15),
+        info: cyan,
+        info_background: hsla(191.0, 97.0, 77.0, 0.15),
+        hint: comment,
     }
 }
 

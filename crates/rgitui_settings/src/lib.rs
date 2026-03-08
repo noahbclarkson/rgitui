@@ -8,9 +8,44 @@ use std::path::PathBuf;
 pub struct AppSettings {
     pub theme: String,
     pub ai: AiSettings,
+    #[serde(default)]
+    pub git: GitSettings,
     pub recent_repos: Vec<PathBuf>,
     #[serde(default = "default_max_recent")]
     pub max_recent_repos: usize,
+    #[serde(default)]
+    pub last_workspace: Vec<PathBuf>,
+    #[serde(default)]
+    pub layout: LayoutSettings,
+}
+
+/// Persisted layout dimensions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutSettings {
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
+    #[serde(default = "default_detail_panel_width")]
+    pub detail_panel_width: f32,
+    #[serde(default = "default_diff_viewer_height")]
+    pub diff_viewer_height: f32,
+    #[serde(default = "default_commit_input_height")]
+    pub commit_input_height: f32,
+}
+
+fn default_sidebar_width() -> f32 { 240.0 }
+fn default_detail_panel_width() -> f32 { 320.0 }
+fn default_diff_viewer_height() -> f32 { 300.0 }
+fn default_commit_input_height() -> f32 { 200.0 }
+
+impl Default for LayoutSettings {
+    fn default() -> Self {
+        Self {
+            sidebar_width: default_sidebar_width(),
+            detail_panel_width: default_detail_panel_width(),
+            diff_viewer_height: default_diff_viewer_height(),
+            commit_input_height: default_commit_input_height(),
+        }
+    }
 }
 
 fn default_max_recent() -> usize {
@@ -42,6 +77,30 @@ fn default_commit_style() -> String {
     "conventional".into()
 }
 
+/// Git authentication and signing settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitSettings {
+    #[serde(default)]
+    pub https_token: Option<String>,
+    #[serde(default)]
+    pub ssh_key_path: Option<String>,
+    #[serde(default)]
+    pub gpg_key_id: Option<String>,
+    #[serde(default)]
+    pub sign_commits: bool,
+}
+
+impl Default for GitSettings {
+    fn default() -> Self {
+        Self {
+            https_token: None,
+            ssh_key_path: None,
+            gpg_key_id: None,
+            sign_commits: false,
+        }
+    }
+}
+
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
@@ -59,8 +118,11 @@ impl Default for AppSettings {
         Self {
             theme: "Catppuccin Mocha".into(),
             ai: AiSettings::default(),
+            git: GitSettings::default(),
             recent_repos: Vec::new(),
             max_recent_repos: default_max_recent(),
+            last_workspace: Vec::new(),
+            layout: LayoutSettings::default(),
         }
     }
 }
@@ -89,6 +151,10 @@ impl SettingsState {
         let json = serde_json::to_string_pretty(&self.settings)?;
         std::fs::write(&self.config_path, json)?;
         Ok(())
+    }
+
+    pub fn set_last_workspace(&mut self, repos: Vec<PathBuf>) {
+        self.settings.last_workspace = repos;
     }
 
     pub fn add_recent_repo(&mut self, path: PathBuf) {
