@@ -618,7 +618,7 @@ impl Render for GraphView {
                                 .bg(left_tab_color),
                         )
                         // Gap between color tab and graph
-                        .child(div().w(px(4.)).flex_shrink_0());
+                        .child(div().w(px(10.)).flex_shrink_0());
 
                     // Graph column with canvas + avatar overlay
                     row = row.child(

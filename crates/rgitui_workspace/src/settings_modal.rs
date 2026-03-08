@@ -27,11 +27,25 @@ enum SettingsSection {
     General,
 }
 
+/// Which text field is currently focused for editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedField {
+    None,
+    AiApiKey,
+    GitHttpsToken,
+    GitSshKeyPath,
+    GitGpgKeyId,
+}
+
 /// The settings modal.
 pub struct SettingsModal {
     visible: bool,
     focus_handle: FocusHandle,
     active_section: SettingsSection,
+
+    // Text input state
+    focused_field: FocusedField,
+    cursor_pos: usize,
 
     // Theme state
     selected_theme: String,
@@ -73,6 +87,8 @@ impl SettingsModal {
             visible: false,
             focus_handle: cx.focus_handle(),
             active_section: SettingsSection::Theme,
+            focused_field: FocusedField::None,
+            cursor_pos: 0,
             selected_theme: settings.theme.clone(),
             available_themes,
             ai_provider: settings.ai.provider.clone(),
@@ -188,33 +204,146 @@ impl SettingsModal {
         cx.notify();
     }
 
+    /// Get a mutable reference to the currently focused text field.
+    fn focus_field(&mut self, field: FocusedField, cx: &mut Context<Self>) {
+        self.focused_field = field;
+        // Set cursor to end of the focused field
+        self.cursor_pos = match field {
+            FocusedField::None => 0,
+            FocusedField::AiApiKey => self.ai_api_key.len(),
+            FocusedField::GitHttpsToken => self.git_https_token.len(),
+            FocusedField::GitSshKeyPath => self.git_ssh_key_path.len(),
+            FocusedField::GitGpgKeyId => self.git_gpg_key_id.len(),
+        };
+        cx.notify();
+    }
+
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let key = event.keystroke.key.as_str();
-        match key {
-            "escape" => self.dismiss(cx),
-            "backspace" => {
-                if self.active_section == SettingsSection::Ai && !self.ai_api_key.is_empty() {
-                    self.ai_api_key.pop();
-                    self.save_settings(cx);
-                }
+        let keystroke = &event.keystroke;
+        let key = keystroke.key.as_str();
+        let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
+
+        if key == "escape" {
+            if self.focused_field != FocusedField::None {
+                self.focused_field = FocusedField::None;
+                cx.notify();
+            } else {
+                self.dismiss(cx);
             }
-            _ => {
-                if self.active_section == SettingsSection::Ai {
-                    if let Some(key_char) = &event.keystroke.key_char {
-                        if !event.keystroke.modifiers.control
-                            && !event.keystroke.modifiers.platform
-                        {
-                            self.ai_api_key.push_str(key_char);
+            return;
+        }
+
+        // If a text field is focused, handle text input.
+        // We use a macro to get a mutable reference to the focused field's string
+        // without borrowing all of `self`, so we can still access `self.cursor_pos`.
+        macro_rules! focused_text {
+            ($self:ident) => {
+                match $self.focused_field {
+                    FocusedField::None => None,
+                    FocusedField::AiApiKey => Some(&mut $self.ai_api_key),
+                    FocusedField::GitHttpsToken => Some(&mut $self.git_https_token),
+                    FocusedField::GitSshKeyPath => Some(&mut $self.git_ssh_key_path),
+                    FocusedField::GitGpgKeyId => Some(&mut $self.git_gpg_key_id),
+                }
+            };
+        }
+
+        if self.focused_field != FocusedField::None {
+            if ctrl {
+                match key {
+                    "a" => {
+                        if let Some(text) = focused_text!(self) {
+                            self.cursor_pos = text.len();
+                        }
+                        cx.notify();
+                        return;
+                    }
+                    "v" => {
+                        if let Some(clipboard) = cx.read_from_clipboard() {
+                            if let Some(paste) = clipboard.text() {
+                                let line = paste.lines().next().unwrap_or("");
+                                if let Some(text) = focused_text!(self) {
+                                    let pos = self.cursor_pos.min(text.len());
+                                    text.insert_str(pos, line);
+                                    self.cursor_pos = pos + line.len();
+                                }
+                                self.save_settings(cx);
+                            }
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
+            match key {
+                "backspace" => {
+                    if self.cursor_pos > 0 {
+                        if let Some(text) = focused_text!(self) {
+                            let prev = prev_char_boundary(text, self.cursor_pos);
+                            text.drain(prev..self.cursor_pos);
+                            self.cursor_pos = prev;
+                        }
+                        self.save_settings(cx);
+                    }
+                }
+                "delete" => {
+                    if let Some(text) = focused_text!(self) {
+                        if self.cursor_pos < text.len() {
+                            let next = next_char_boundary(text, self.cursor_pos);
+                            text.drain(self.cursor_pos..next);
                             self.save_settings(cx);
                         }
                     }
                 }
+                "left" => {
+                    if self.cursor_pos > 0 {
+                        if let Some(text) = focused_text!(self) {
+                            self.cursor_pos = prev_char_boundary(text, self.cursor_pos);
+                        }
+                        cx.notify();
+                    }
+                }
+                "right" => {
+                    if let Some(text) = focused_text!(self) {
+                        if self.cursor_pos < text.len() {
+                            self.cursor_pos = next_char_boundary(text, self.cursor_pos);
+                        }
+                    }
+                    cx.notify();
+                }
+                "home" => {
+                    self.cursor_pos = 0;
+                    cx.notify();
+                }
+                "end" => {
+                    if let Some(text) = focused_text!(self) {
+                        self.cursor_pos = text.len();
+                    }
+                    cx.notify();
+                }
+                "tab" | "enter" => {
+                    self.focused_field = FocusedField::None;
+                    cx.notify();
+                }
+                _ => {
+                    if let Some(key_char) = &keystroke.key_char {
+                        if let Some(text) = focused_text!(self) {
+                            let pos = self.cursor_pos.min(text.len());
+                            text.insert_str(pos, key_char);
+                            self.cursor_pos = pos + key_char.len();
+                        }
+                        self.save_settings(cx);
+                    }
+                }
             }
+            return;
         }
     }
 
@@ -343,6 +472,87 @@ impl SettingsModal {
         }
 
         row
+    }
+
+    // ── Helper: clickable text input field ─────────────────────────────
+    fn text_input(
+        &self,
+        id: &'static str,
+        field: FocusedField,
+        value: &str,
+        placeholder: &'static str,
+        masked: bool,
+        icon: IconName,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let colors = cx.colors();
+        let is_focused = self.focused_field == field;
+        let cursor_pos = self.cursor_pos;
+
+        let display: SharedString = if value.is_empty() {
+            placeholder.into()
+        } else if masked {
+            if is_focused {
+                // Show with cursor when focused
+                let mut d = value.to_string();
+                let pos = cursor_pos.min(d.len());
+                d.insert(pos, '|');
+                d.into()
+            } else {
+                let len = value.len();
+                if len > 4 {
+                    let visible = &value[len - 4..];
+                    format!("{}{}", "*".repeat(len - 4), visible).into()
+                } else {
+                    "*".repeat(len).into()
+                }
+            }
+        } else if is_focused {
+            let mut d = value.to_string();
+            let pos = cursor_pos.min(d.len());
+            d.insert(pos, '|');
+            d.into()
+        } else {
+            value.to_string().into()
+        };
+
+        let display_color = if value.is_empty() && !is_focused {
+            Color::Placeholder
+        } else {
+            Color::Default
+        };
+
+        div()
+            .id(id)
+            .h_flex()
+            .w_full()
+            .h(px(36.))
+            .px(px(12.))
+            .items_center()
+            .bg(colors.editor_background)
+            .border_1()
+            .border_color(if is_focused {
+                colors.border_focused
+            } else {
+                colors.border
+            })
+            .rounded(px(6.))
+            .cursor_text()
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.focus_field(field, cx);
+            }))
+            .child(
+                Icon::new(icon)
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            )
+            .child(
+                div().flex_1().pl(px(8.)).child(
+                    Label::new(display)
+                        .size(LabelSize::Small)
+                        .color(display_color),
+                ),
+            )
     }
 
     // ── Sidebar navigation ──────────────────────────────────────────────
@@ -550,9 +760,6 @@ impl SettingsModal {
 
     // ── AI section ──────────────────────────────────────────────────────
     fn render_ai_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let editor_bg = cx.colors().editor_background;
-        let border_color = cx.colors().border;
-
         let mut section = div().v_flex().w_full().gap(px(16.));
 
         section = section.child(Self::section_header(
@@ -617,10 +824,10 @@ impl SettingsModal {
                     this.ai_provider = value;
                     // Reset model when provider changes
                     this.ai_model = match this.ai_provider.as_str() {
-                        "gemini" => "gemini-2.0-flash".into(),
-                        "openai" => "gpt-4o".into(),
+                        "gemini" => "gemini-3-flash-preview".into(),
+                        "openai" => "gpt-5-mini".into(),
                         "anthropic" => "claude-sonnet-4-6".into(),
-                        _ => "gemini-2.0-flash".into(),
+                        _ => "gemini-3-flash-preview".into(),
                     };
                     this.save_settings(cx);
                 },
@@ -629,10 +836,10 @@ impl SettingsModal {
 
         // Model selector
         let models: Vec<&str> = match self.ai_provider.as_str() {
-            "gemini" => vec!["gemini-2.0-flash", "gemini-2.5-pro"],
-            "openai" => vec!["gpt-4o", "gpt-4o-mini"],
-            "anthropic" => vec!["claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-            _ => vec!["gemini-2.0-flash"],
+            "gemini" => vec!["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro"],
+            "openai" => vec!["gpt-5.4", "gpt-5", "gpt-5-mini", "gpt-5-nano", "o3", "o4-mini"],
+            "anthropic" => vec!["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20241022", "claude-haiku-4-5"],
+            _ => vec!["gemini-2.5-flash"],
         };
         provider_card = provider_card
             .child(Self::setting_label("Model", "Select the model to use."))
@@ -669,53 +876,21 @@ impl SettingsModal {
         section = section.child(style_card);
 
         // API Key card
-        let api_key_display: SharedString = if self.ai_api_key.is_empty() {
-            "Click here and type your API key...".into()
-        } else {
-            let masked = if self.ai_api_key.len() > 4 {
-                let visible = &self.ai_api_key[self.ai_api_key.len() - 4..];
-                format!("{}{}", "*".repeat(self.ai_api_key.len() - 4), visible)
-            } else {
-                "*".repeat(self.ai_api_key.len())
-            };
-            masked.into()
-        };
-        let api_key_color = if self.ai_api_key.is_empty() {
-            Color::Placeholder
-        } else {
-            Color::Muted
-        };
-
         let mut key_card = Self::setting_card(cx);
         key_card = key_card
             .child(Self::setting_label(
                 "API Key",
                 "Your key is stored locally in ~/.config/rgitui/settings.json",
             ))
-            .child(
-                div()
-                    .h_flex()
-                    .w_full()
-                    .h(px(36.))
-                    .px(px(12.))
-                    .items_center()
-                    .bg(editor_bg)
-                    .border_1()
-                    .border_color(border_color)
-                    .rounded(px(6.))
-                    .child(
-                        Icon::new(IconName::Eye)
-                            .size(IconSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        div().flex_1().pl(px(8.)).child(
-                            Label::new(api_key_display)
-                                .size(LabelSize::Small)
-                                .color(api_key_color),
-                        ),
-                    ),
-            );
+            .child(self.text_input(
+                "ai-api-key-input",
+                FocusedField::AiApiKey,
+                &self.ai_api_key,
+                "Click to enter API key...",
+                true,
+                IconName::Eye,
+                cx,
+            ));
         section = section.child(key_card);
 
         section
@@ -723,10 +898,6 @@ impl SettingsModal {
 
     // ── Git section ──────────────────────────────────────────────────────
     fn render_git_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
-        let editor_bg = colors.editor_background;
-        let border_color = colors.border;
-
         let mut section = div().v_flex().w_full().gap(px(16.));
 
         section = section.child(Self::section_header(
@@ -736,135 +907,43 @@ impl SettingsModal {
         ));
 
         // HTTPS Token card
-        let https_display: SharedString = if self.git_https_token.is_empty() {
-            "No token configured".into()
-        } else {
-            let len = self.git_https_token.len();
-            if len > 4 {
-                let visible = &self.git_https_token[len - 4..];
-                format!("{}{}", "*".repeat(len - 4), visible).into()
-            } else {
-                "*".repeat(len).into()
-            }
-        };
-        let https_color = if self.git_https_token.is_empty() {
-            Color::Placeholder
-        } else {
-            Color::Muted
-        };
-
         let mut https_card = Self::setting_card(cx);
         https_card = https_card
             .child(Self::setting_label(
                 "HTTPS Token / PAT",
                 "Personal access token for GitHub, GitLab, etc. Used for HTTPS remotes.",
             ))
-            .child(
-                div()
-                    .h_flex()
-                    .w_full()
-                    .h(px(36.))
-                    .px(px(12.))
-                    .items_center()
-                    .bg(editor_bg)
-                    .border_1()
-                    .border_color(border_color)
-                    .rounded(px(6.))
-                    .child(
-                        Icon::new(IconName::Eye)
-                            .size(IconSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        div().flex_1().pl(px(8.)).child(
-                            Label::new(https_display)
-                                .size(LabelSize::Small)
-                                .color(https_color),
-                        ),
-                    )
-                    .when(!self.git_https_token.is_empty(), |el| {
-                        el.child(
-                            Button::new("clear-https-token", "Clear")
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Outlined)
-                                .color(Color::Muted)
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.git_https_token.clear();
-                                    this.save_settings(cx);
-                                })),
-                        )
-                    }),
-            );
+            .child(self.text_input(
+                "git-https-token-input",
+                FocusedField::GitHttpsToken,
+                &self.git_https_token,
+                "Click to enter token...",
+                true,
+                IconName::Eye,
+                cx,
+            ));
         section = section.child(https_card);
 
         // SSH Key Path card
-        let ssh_display: SharedString = if self.git_ssh_key_path.is_empty() {
-            "Default (~/.ssh/id_ed25519, id_rsa)".into()
-        } else {
-            self.git_ssh_key_path.clone().into()
-        };
-        let ssh_color = if self.git_ssh_key_path.is_empty() {
-            Color::Placeholder
-        } else {
-            Color::Default
-        };
-
         let mut ssh_card = Self::setting_card(cx);
         ssh_card = ssh_card
             .child(Self::setting_label(
                 "SSH Key Path",
                 "Path to your SSH private key. Leave empty to use ssh-agent or default keys.",
             ))
-            .child(
-                div()
-                    .h_flex()
-                    .w_full()
-                    .h(px(36.))
-                    .px(px(12.))
-                    .items_center()
-                    .bg(editor_bg)
-                    .border_1()
-                    .border_color(border_color)
-                    .rounded(px(6.))
-                    .child(
-                        Icon::new(IconName::File)
-                            .size(IconSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        div().flex_1().pl(px(8.)).child(
-                            Label::new(ssh_display)
-                                .size(LabelSize::Small)
-                                .color(ssh_color),
-                        ),
-                    )
-                    .when(!self.git_ssh_key_path.is_empty(), |el| {
-                        el.child(
-                            Button::new("clear-ssh-path", "Clear")
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Outlined)
-                                .color(Color::Muted)
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.git_ssh_key_path.clear();
-                                    this.save_settings(cx);
-                                })),
-                        )
-                    }),
-            );
+            .child(self.text_input(
+                "git-ssh-key-input",
+                FocusedField::GitSshKeyPath,
+                &self.git_ssh_key_path,
+                "~/.ssh/id_ed25519 (default)",
+                false,
+                IconName::File,
+                cx,
+            ));
         section = section.child(ssh_card);
 
         // GPG Signing card
         let sign_commits = self.git_sign_commits;
-        let gpg_display: SharedString = if self.git_gpg_key_id.is_empty() {
-            "No GPG key configured".into()
-        } else {
-            self.git_gpg_key_id.clone().into()
-        };
-        let gpg_color = if self.git_gpg_key_id.is_empty() {
-            Color::Placeholder
-        } else {
-            Color::Default
-        };
 
         let mut gpg_card = Self::setting_card(cx);
         gpg_card = gpg_card
@@ -911,42 +990,15 @@ impl SettingsModal {
                 "GPG Key ID",
                 "The key ID to use for signing. Leave empty to use git config default.",
             ))
-            .child(
-                div()
-                    .h_flex()
-                    .w_full()
-                    .h(px(36.))
-                    .px(px(12.))
-                    .items_center()
-                    .bg(editor_bg)
-                    .border_1()
-                    .border_color(border_color)
-                    .rounded(px(6.))
-                    .child(
-                        Icon::new(IconName::Eye)
-                            .size(IconSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        div().flex_1().pl(px(8.)).child(
-                            Label::new(gpg_display)
-                                .size(LabelSize::Small)
-                                .color(gpg_color),
-                        ),
-                    )
-                    .when(!self.git_gpg_key_id.is_empty(), |el| {
-                        el.child(
-                            Button::new("clear-gpg-key", "Clear")
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Outlined)
-                                .color(Color::Muted)
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.git_gpg_key_id.clear();
-                                    this.save_settings(cx);
-                                })),
-                        )
-                    }),
-            );
+            .child(self.text_input(
+                "git-gpg-key-input",
+                FocusedField::GitGpgKeyId,
+                &self.git_gpg_key_id,
+                "No GPG key configured",
+                false,
+                IconName::Eye,
+                cx,
+            ));
         section = section.child(gpg_card);
 
         // Info card about auth strategy
@@ -1170,7 +1222,9 @@ impl SettingsModal {
                 .child(self.render_shortcut_row("Command Palette", "Ctrl+Shift+P"))
                 .child(self.render_shortcut_row("Search Commits", "Ctrl+F"))
                 .child(self.render_shortcut_row("Stage All", "Ctrl+S"))
-                .child(self.render_shortcut_row("Commit", "Ctrl+Enter"))
+                .child(self.render_shortcut_row("Unstage All", "Ctrl+Shift+S"))
+                .child(self.render_shortcut_row("Commit", "Ctrl+Enter (in message)"))
+                .child(self.render_shortcut_row("Open Repository", "Ctrl+O"))
                 .child(self.render_shortcut_row("Refresh", "F5"))
                 .child(self.render_shortcut_row("Settings", "Ctrl+,")),
         );
@@ -1256,8 +1310,8 @@ impl Render for SettingsModal {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .h_flex()
-            .w(px(640.))
-            .h(px(500.))
+            .w(px(760.))
+            .h(px(580.))
             .bg(colors.elevated_surface_background)
             .border_1()
             .border_color(colors.border)
@@ -1276,11 +1330,35 @@ impl Render for SettingsModal {
                     .v_flex()
                     .flex_1()
                     .h_full()
+                    .min_w_0()
                     .p(px(20.))
                     .overflow_y_scroll()
+                    .overflow_x_hidden()
                     .child(content),
             );
 
         backdrop.child(modal).into_any_element()
     }
+}
+
+fn prev_char_boundary(s: &str, pos: usize) -> usize {
+    if pos == 0 {
+        return 0;
+    }
+    let mut p = pos - 1;
+    while p > 0 && !s.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
+fn next_char_boundary(s: &str, pos: usize) -> usize {
+    if pos >= s.len() {
+        return s.len();
+    }
+    let mut p = pos + 1;
+    while p < s.len() && !s.is_char_boundary(p) {
+        p += 1;
+    }
+    p
 }

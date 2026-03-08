@@ -42,6 +42,15 @@ fn main() {
         rgitui_settings::init(cx);
         cx.set_global(rgitui_ui::AvatarCache::new());
 
+        // Apply saved theme from settings
+        let saved_theme = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| s.settings().theme.clone())
+            .unwrap_or_default();
+        if !saved_theme.is_empty() {
+            rgitui_theme::set_theme(&saved_theme, cx);
+        }
+
         // Determine which repos to open
         let cli_path = std::env::args().nth(1).map(PathBuf::from);
 
