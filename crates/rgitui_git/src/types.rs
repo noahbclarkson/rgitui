@@ -179,3 +179,65 @@ pub enum PullResult {
     Merged(git2::Oid),
     Conflict(Vec<PathBuf>),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitOperationKind {
+    Fetch,
+    Pull,
+    Push,
+    Checkout,
+    Merge,
+    CherryPick,
+    Revert,
+    Reset,
+    RemoveRemote,
+    Commit,
+    Stage,
+    Unstage,
+    Stash,
+    Branch,
+    Tag,
+    Discard,
+}
+
+impl GitOperationKind {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            GitOperationKind::Fetch => "Fetch",
+            GitOperationKind::Pull => "Pull",
+            GitOperationKind::Push => "Push",
+            GitOperationKind::Checkout => "Checkout",
+            GitOperationKind::Merge => "Merge",
+            GitOperationKind::CherryPick => "Cherry-pick",
+            GitOperationKind::Revert => "Revert",
+            GitOperationKind::Reset => "Reset",
+            GitOperationKind::RemoveRemote => "Remove remote",
+            GitOperationKind::Commit => "Commit",
+            GitOperationKind::Stage => "Stage",
+            GitOperationKind::Unstage => "Unstage",
+            GitOperationKind::Stash => "Stash",
+            GitOperationKind::Branch => "Branch",
+            GitOperationKind::Tag => "Tag",
+            GitOperationKind::Discard => "Discard",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitOperationState {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct GitOperationUpdate {
+    pub id: u64,
+    pub kind: GitOperationKind,
+    pub state: GitOperationState,
+    pub summary: String,
+    pub details: Option<String>,
+    pub remote_name: Option<String>,
+    pub branch_name: Option<String>,
+    pub retryable: bool,
+}

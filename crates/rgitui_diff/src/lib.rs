@@ -28,7 +28,10 @@ pub enum DiffDisplayMode {
 /// A pre-computed row for virtualized rendering.
 #[derive(Clone)]
 enum DisplayRow {
-    HunkHeader { header: String, hunk_index: usize },
+    HunkHeader {
+        header: String,
+        hunk_index: usize,
+    },
     Line {
         old_num: Option<usize>,
         new_num: Option<usize>,
@@ -40,7 +43,10 @@ enum DisplayRow {
 /// A pre-computed row for side-by-side rendering.
 #[derive(Clone)]
 enum SideBySideRow {
-    HunkHeader { header: String, hunk_index: usize },
+    HunkHeader {
+        header: String,
+        hunk_index: usize,
+    },
     Pair {
         left_num: Option<usize>,
         left_content: String,
@@ -92,13 +98,7 @@ impl DiffViewer {
         }
     }
 
-    pub fn set_diff(
-        &mut self,
-        diff: FileDiff,
-        path: String,
-        staged: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, cx: &mut Context<Self>) {
         self.display_rows = Arc::new(Self::compute_display_rows(&diff));
         self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff));
         self.diff = Some(diff);
@@ -190,36 +190,35 @@ impl DiffViewer {
             let mut pending_dels: Vec<(usize, String)> = Vec::new();
             let mut pending_adds: Vec<(usize, String)> = Vec::new();
 
-            let flush =
-                |rows: &mut Vec<SideBySideRow>,
-                 dels: &mut Vec<(usize, String)>,
-                 adds: &mut Vec<(usize, String)>| {
-                    let max_len = dels.len().max(adds.len());
-                    for j in 0..max_len {
-                        let (left_num, left_content, left_kind) =
-                            if let Some((num, text)) = dels.get(j) {
-                                (Some(*num), text.clone(), SideBySideLineKind::Deletion)
-                            } else {
-                                (None, String::new(), SideBySideLineKind::Empty)
-                            };
-                        let (right_num, right_content, right_kind) =
-                            if let Some((num, text)) = adds.get(j) {
-                                (Some(*num), text.clone(), SideBySideLineKind::Addition)
-                            } else {
-                                (None, String::new(), SideBySideLineKind::Empty)
-                            };
-                        rows.push(SideBySideRow::Pair {
-                            left_num,
-                            left_content,
-                            left_kind,
-                            right_num,
-                            right_content,
-                            right_kind,
-                        });
-                    }
-                    dels.clear();
-                    adds.clear();
-                };
+            let flush = |rows: &mut Vec<SideBySideRow>,
+                         dels: &mut Vec<(usize, String)>,
+                         adds: &mut Vec<(usize, String)>| {
+                let max_len = dels.len().max(adds.len());
+                for j in 0..max_len {
+                    let (left_num, left_content, left_kind) = if let Some((num, text)) = dels.get(j)
+                    {
+                        (Some(*num), text.clone(), SideBySideLineKind::Deletion)
+                    } else {
+                        (None, String::new(), SideBySideLineKind::Empty)
+                    };
+                    let (right_num, right_content, right_kind) =
+                        if let Some((num, text)) = adds.get(j) {
+                            (Some(*num), text.clone(), SideBySideLineKind::Addition)
+                        } else {
+                            (None, String::new(), SideBySideLineKind::Empty)
+                        };
+                    rows.push(SideBySideRow::Pair {
+                        left_num,
+                        left_content,
+                        left_kind,
+                        right_num,
+                        right_content,
+                        right_kind,
+                    });
+                }
+                dels.clear();
+                adds.clear();
+            };
 
             for line in &hunk.lines {
                 match line {
@@ -802,11 +801,7 @@ impl Render for DiffViewer {
         };
 
         // ── Build container ─────────────────────────────────────────
-        let mut container = div()
-            .id("diff-viewer")
-            .v_flex()
-            .size_full()
-            .bg(editor_bg);
+        let mut container = div().id("diff-viewer").v_flex().size_full().bg(editor_bg);
 
         // ── File header bar ─────────────────────────────────────────
         if let Some(path) = &self.file_path {

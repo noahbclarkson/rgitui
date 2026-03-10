@@ -41,7 +41,7 @@ pub enum ButtonSize {
 impl ButtonSize {
     pub fn height(&self) -> gpui::Rems {
         match self {
-            ButtonSize::Large => gpui::rems(2.0),    // 32px
+            ButtonSize::Large => gpui::rems(2.0),     // 32px
             ButtonSize::Default => gpui::rems(1.75),  // 28px
             ButtonSize::Compact => gpui::rems(1.375), // 22px
             ButtonSize::None => gpui::rems(1.0),      // 16px
@@ -178,17 +178,18 @@ impl RenderOnce for Button {
                 };
                 (
                     Some(bg_color),
-                    Some(Hsla { a: bg_color.a + 0.1, ..bg_color }),
-                    Some(Hsla { a: bg_color.a + 0.2, ..bg_color }),
+                    Some(Hsla {
+                        a: bg_color.a + 0.1,
+                        ..bg_color
+                    }),
+                    Some(Hsla {
+                        a: bg_color.a + 0.2,
+                        ..bg_color
+                    }),
                     None,
                 )
             }
-            ButtonStyle::Transparent => (
-                None,
-                None,
-                None,
-                None,
-            ),
+            ButtonStyle::Transparent => (None, None, None, None),
         };
 
         let height = self.size.height();
@@ -247,15 +248,11 @@ impl RenderOnce for Button {
             ButtonSize::None => LabelSize::XSmall,
         };
 
-        let icon_el = self.icon.map(|name| {
-            Icon::new(name)
-                .size(icon_size)
-                .color(label_color)
-        });
+        let icon_el = self
+            .icon
+            .map(|name| Icon::new(name).size(icon_size).color(label_color));
 
-        let label_el = Label::new(self.label)
-            .size(label_size)
-            .color(label_color);
+        let label_el = Label::new(self.label).size(label_size).color(label_color);
 
         match self.icon_position {
             IconPosition::Start => {

@@ -72,8 +72,7 @@ impl RenderOnce for Label {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let text_color = self.color.color(cx);
 
-        let mut el = div()
-            .text_color(text_color);
+        let mut el = div().text_color(text_color);
 
         el = match self.size {
             LabelSize::XSmall => el.text_xs(),
@@ -87,7 +86,11 @@ impl RenderOnce for Label {
         }
 
         if self.truncate {
-            el = el.min_w_0().overflow_x_hidden().whitespace_nowrap().text_ellipsis();
+            el = el
+                .min_w_0()
+                .overflow_x_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis();
         }
 
         el.child(self.text)

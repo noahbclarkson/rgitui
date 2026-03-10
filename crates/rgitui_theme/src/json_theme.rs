@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use gpui::Hsla;
 use serde::Deserialize;
 
-use crate::colors::{hex_to_hsla, ThemeColors, StatusColors};
-use crate::theme::{Theme, Appearance};
+use crate::colors::{hex_to_hsla, StatusColors, ThemeColors};
+use crate::theme::{Appearance, Theme};
 
 /// Raw JSON representation of a theme file.
 #[derive(Debug, Deserialize)]
@@ -111,11 +111,26 @@ pub fn load_theme_from_json(json: &str) -> Result<Theme> {
 
 /// Embedded JSON theme files (compiled into the binary).
 const BUILTIN_THEME_FILES: &[(&str, &str)] = &[
-    ("catppuccin-mocha", include_str!("../../../assets/themes/catppuccin-mocha.json")),
-    ("catppuccin-latte", include_str!("../../../assets/themes/catppuccin-latte.json")),
-    ("one-dark", include_str!("../../../assets/themes/one-dark.json")),
-    ("github-dark", include_str!("../../../assets/themes/github-dark.json")),
-    ("dracula", include_str!("../../../assets/themes/dracula.json")),
+    (
+        "catppuccin-mocha",
+        include_str!("../../../assets/themes/catppuccin-mocha.json"),
+    ),
+    (
+        "catppuccin-latte",
+        include_str!("../../../assets/themes/catppuccin-latte.json"),
+    ),
+    (
+        "one-dark",
+        include_str!("../../../assets/themes/one-dark.json"),
+    ),
+    (
+        "github-dark",
+        include_str!("../../../assets/themes/github-dark.json"),
+    ),
+    (
+        "dracula",
+        include_str!("../../../assets/themes/dracula.json"),
+    ),
 ];
 
 /// Load all JSON-based built-in themes. Falls back to hardcoded themes on parse errors.
@@ -136,9 +151,7 @@ pub fn load_json_themes() -> Vec<Theme> {
 pub fn available_themes() -> Vec<String> {
     BUILTIN_THEME_FILES
         .iter()
-        .filter_map(|(_slug, json)| {
-            load_theme_from_json(json).ok().map(|t| t.name)
-        })
+        .filter_map(|(_slug, json)| load_theme_from_json(json).ok().map(|t| t.name))
         .collect()
 }
 
@@ -152,6 +165,5 @@ pub fn load_theme_by_name(name: &str) -> Theme {
         }
     }
     // Fallback: load first theme (Catppuccin Mocha)
-    load_theme_from_json(BUILTIN_THEME_FILES[0].1)
-        .expect("default theme must parse")
+    load_theme_from_json(BUILTIN_THEME_FILES[0].1).expect("default theme must parse")
 }

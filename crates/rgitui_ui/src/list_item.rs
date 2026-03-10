@@ -152,11 +152,7 @@ impl RenderOnce for ListItem {
         }
 
         // Main content (takes remaining space)
-        let mut content = div()
-            .h_flex()
-            .flex_1()
-            .min_w_0()
-            .gap_1();
+        let mut content = div().h_flex().flex_1().min_w_0().gap_1();
         for child in self.children {
             content = content.child(child);
         }
@@ -164,11 +160,7 @@ impl RenderOnce for ListItem {
 
         // End slot (always visible)
         if let Some(end) = self.end_slot {
-            row = row.child(
-                div()
-                    .h_flex()
-                    .child(end),
-            );
+            row = row.child(div().h_flex().child(end));
         }
 
         // End hover slot (visible only on hover)

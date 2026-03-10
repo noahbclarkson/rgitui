@@ -30,6 +30,9 @@ impl AssetSource for Assets {
 
 fn main() {
     env_logger::init();
+    std::panic::set_hook(Box::new(|panic_info| {
+        log::error!("panic: {}", panic_info);
+    }));
 
     let http_client = Arc::new(reqwest_client::ReqwestClient::new());
     let app = Application::with_platform(gpui_platform::current_platform(false))
@@ -37,6 +40,7 @@ fn main() {
         .with_assets(Assets);
 
     app.run(move |cx| {
+        log::info!("starting rgitui");
         // Initialize subsystems
         rgitui_theme::init(cx);
         rgitui_settings::init(cx);
@@ -53,36 +57,36 @@ fn main() {
 
         // Determine which repos to open
         let cli_path = std::env::args().nth(1).map(PathBuf::from);
+        let has_cli_path = cli_path.is_some();
 
-        let repos_to_open: Vec<PathBuf> = if let Some(raw_path) = cli_path {
+        let startup_workspace = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .and_then(|settings| settings.active_workspace().cloned());
+
+        let repos_to_open: Vec<PathBuf> = if let Some(raw_path) = cli_path.clone() {
             // CLI arg given — open that specific repo
             let repo_path = std::fs::canonicalize(&raw_path).unwrap_or(raw_path.clone());
             let repo_path = match git2::Repository::discover(&repo_path) {
-                Ok(repo) => repo
-                    .workdir()
-                    .unwrap_or_else(|| repo.path())
-                    .to_path_buf(),
+                Ok(repo) => repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf(),
                 Err(_) => repo_path,
             };
             vec![repo_path]
         } else {
-            // No CLI arg — try to restore last workspace
-            let last_workspace = cx
-                .try_global::<rgitui_settings::SettingsState>()
-                .map(|s| s.settings().last_workspace.clone())
-                .unwrap_or_default();
-
-            if last_workspace.is_empty() {
+            // No CLI arg — try to restore the active saved workspace
+            if let Some(workspace) = startup_workspace.as_ref() {
+                workspace
+                    .repos
+                    .iter()
+                    .filter(|path| path.exists())
+                    .cloned()
+                    .collect()
+            } else {
                 // Fall back to current directory if it's a git repo, otherwise show welcome
-                let raw_path =
-                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let raw_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let repo_path = std::fs::canonicalize(&raw_path).unwrap_or(raw_path);
                 match git2::Repository::discover(&repo_path) {
                     Ok(repo) => {
-                        let workdir = repo
-                            .workdir()
-                            .unwrap_or_else(|| repo.path())
-                            .to_path_buf();
+                        let workdir = repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf();
                         vec![workdir]
                     }
                     Err(_) => {
@@ -90,14 +94,10 @@ fn main() {
                         Vec::new()
                     }
                 }
-            } else {
-                // Filter to repos that still exist on disk
-                last_workspace
-                    .into_iter()
-                    .filter(|p| p.exists())
-                    .collect()
             }
         };
+
+        log::info!("startup resolved {} repositories", repos_to_open.len());
 
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
@@ -118,9 +118,24 @@ fn main() {
         cx.open_window(options, |_window, cx| {
             let workspace = cx.new(|cx| {
                 let mut ws = rgitui_workspace::Workspace::new(cx);
-                for repo_path in repos_to_open {
-                    if let Err(e) = ws.open_repo(repo_path, cx) {
-                        log::error!("Failed to open repo: {}", e);
+
+                if !has_cli_path {
+                    if let Some(snapshot) = startup_workspace.clone() {
+                        if let Err(error) = ws.restore_workspace_snapshot(snapshot, cx) {
+                            log::error!("Failed to restore saved workspace: {}", error);
+                        }
+                    } else {
+                        for repo_path in repos_to_open {
+                            if let Err(error) = ws.open_repo(repo_path, cx) {
+                                log::error!("Failed to open repo: {}", error);
+                            }
+                        }
+                    }
+                } else {
+                    for repo_path in repos_to_open {
+                        if let Err(error) = ws.open_repo(repo_path, cx) {
+                            log::error!("Failed to open repo: {}", error);
+                        }
                     }
                 }
                 ws

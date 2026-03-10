@@ -83,17 +83,19 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         let oid = commit.oid;
 
         // Find which lane this commit sits in
-        let (node_lane, has_incoming) =
-            if let Some(pos) = lanes.iter().position(|s| matches!(s, Some((o, _)) if *o == oid)) {
-                (pos, true)
-            } else {
-                // New branch tip — allocate a lane with a fresh color
-                let color = next_color;
-                next_color += 1;
-                let pos = alloc_lane(&mut lanes);
-                lanes[pos] = Some((oid, color));
-                (pos, false)
-            };
+        let (node_lane, has_incoming) = if let Some(pos) = lanes
+            .iter()
+            .position(|s| matches!(s, Some((o, _)) if *o == oid))
+        {
+            (pos, true)
+        } else {
+            // New branch tip — allocate a lane with a fresh color
+            let color = next_color;
+            next_color += 1;
+            let pos = alloc_lane(&mut lanes);
+            lanes[pos] = Some((oid, color));
+            (pos, false)
+        };
 
         let node_color = lanes[node_lane].map(|(_, c)| c).unwrap_or(0);
 
@@ -143,8 +145,7 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
                 // The primary parent itself should continue on lane 0 (or
                 // whichever lane is "main").
                 let fork_children = children_of.get(&primary).map(|c| c.len()).unwrap_or(0);
-                let parent_is_branch_base =
-                    fork_children > 1 && oid_set.contains(&primary);
+                let parent_is_branch_base = fork_children > 1 && oid_set.contains(&primary);
 
                 if parent_is_branch_base && node_lane != 0 {
                     // This branch diverges from the parent — keep own lane,
@@ -168,10 +169,9 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
 
             // Secondary parents (merge edges)
             for &parent in &parents[1..] {
-                let parent_lane = if let Some(pos) =
-                    lanes
-                        .iter()
-                        .position(|s| matches!(s, Some((o, _)) if *o == parent))
+                let parent_lane = if let Some(pos) = lanes
+                    .iter()
+                    .position(|s| matches!(s, Some((o, _)) if *o == parent))
                 {
                     pos
                 } else {

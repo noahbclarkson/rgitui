@@ -195,7 +195,8 @@ impl InteractiveRebase {
 
     fn move_entry_up(&mut self, cx: &mut Context<Self>) {
         if self.selected_index > 0 && self.selected_index < self.entries.len() {
-            self.entries.swap(self.selected_index, self.selected_index - 1);
+            self.entries
+                .swap(self.selected_index, self.selected_index - 1);
             // Update editing index if needed
             if let Some((ref mut edit_idx, _, _)) = self.editing_reword {
                 if *edit_idx == self.selected_index {
@@ -211,7 +212,8 @@ impl InteractiveRebase {
 
     fn move_entry_down(&mut self, cx: &mut Context<Self>) {
         if self.selected_index + 1 < self.entries.len() {
-            self.entries.swap(self.selected_index, self.selected_index + 1);
+            self.entries
+                .swap(self.selected_index, self.selected_index + 1);
             // Update editing index if needed
             if let Some((ref mut edit_idx, _, _)) = self.editing_reword {
                 if *edit_idx == self.selected_index {
@@ -302,10 +304,7 @@ impl InteractiveRebase {
                         *cursor += key_char.len();
                         cx.notify();
                         return;
-                    } else if key.len() == 1
-                        && !modifiers.control
-                        && !modifiers.platform
-                    {
+                    } else if key.len() == 1 && !modifiers.control && !modifiers.platform {
                         let ch = key.chars().next().unwrap();
                         if ch.is_ascii_graphic() || ch == ' ' {
                             msg.insert(*cursor, ch);
@@ -351,10 +350,9 @@ impl InteractiveRebase {
                     if let Some(key_char) = keystroke.key_char.as_deref().or(Some(key)) {
                         match key_char {
                             "p" => self.set_action_on_selected(RebaseAction::Pick, cx),
-                            "r" => self.set_action_on_selected(
-                                RebaseAction::Reword(String::new()),
-                                cx,
-                            ),
+                            "r" => {
+                                self.set_action_on_selected(RebaseAction::Reword(String::new()), cx)
+                            }
                             "s" => self.set_action_on_selected(RebaseAction::Squash, cx),
                             "f" => self.set_action_on_selected(RebaseAction::Fixup, cx),
                             "d" => self.set_action_on_selected(RebaseAction::Drop, cx),
@@ -471,10 +469,7 @@ impl Render for InteractiveRebase {
             let idx_for_action = idx;
             row = row.child(
                 div()
-                    .id(ElementId::NamedInteger(
-                        "rebase-action".into(),
-                        idx as u64,
-                    ))
+                    .id(ElementId::NamedInteger("rebase-action".into(), idx as u64))
                     .h_flex()
                     .items_center()
                     .justify_center()
@@ -517,12 +512,7 @@ impl Render for InteractiveRebase {
 
                 if msg.is_empty() {
                     input_row = input_row
-                        .child(
-                            div()
-                                .w(px(2.))
-                                .h(px(14.))
-                                .bg(text_color),
-                        )
+                        .child(div().w(px(2.)).h(px(14.)).bg(text_color))
                         .child(
                             Label::new("Enter new commit message...")
                                 .size(LabelSize::Small)
@@ -549,26 +539,19 @@ impl Render for InteractiveRebase {
                     }
                     if !cursor_char.is_empty() {
                         input_row = input_row.child(
-                            div()
-                                .bg(text_color)
-                                .child(
-                                    Label::new(SharedString::from(cursor_char.to_string()))
-                                        .size(LabelSize::Small)
-                                        .color(Color::Custom(gpui::Hsla {
-                                            h: 0.0,
-                                            s: 0.0,
-                                            l: 0.0,
-                                            a: 1.0,
-                                        })),
-                                ),
+                            div().bg(text_color).child(
+                                Label::new(SharedString::from(cursor_char.to_string()))
+                                    .size(LabelSize::Small)
+                                    .color(Color::Custom(gpui::Hsla {
+                                        h: 0.0,
+                                        s: 0.0,
+                                        l: 0.0,
+                                        a: 1.0,
+                                    })),
+                            ),
                         );
                     } else {
-                        input_row = input_row.child(
-                            div()
-                                .w(px(2.))
-                                .h(px(14.))
-                                .bg(text_color),
-                        );
+                        input_row = input_row.child(div().w(px(2.)).h(px(14.)).bg(text_color));
                     }
                     if !after.is_empty() {
                         input_row = input_row.child(
@@ -595,24 +578,20 @@ impl Render for InteractiveRebase {
                 // Strikethrough for dropped commits
                 if is_dropped {
                     row = row.child(
-                        div()
-                            .flex_1()
-                            .child(
-                                Label::new(display_msg)
-                                    .size(LabelSize::Small)
-                                    .color(msg_color)
-                                    .strikethrough(),
-                            ),
+                        div().flex_1().child(
+                            Label::new(display_msg)
+                                .size(LabelSize::Small)
+                                .color(msg_color)
+                                .strikethrough(),
+                        ),
                     );
                 } else {
                     row = row.child(
-                        div()
-                            .flex_1()
-                            .child(
-                                Label::new(display_msg)
-                                    .size(LabelSize::Small)
-                                    .color(msg_color),
-                            ),
+                        div().flex_1().child(
+                            Label::new(display_msg)
+                                .size(LabelSize::Small)
+                                .color(msg_color),
+                        ),
                     );
                 }
             }
@@ -633,9 +612,12 @@ impl Render for InteractiveRebase {
             .id("interactive-rebase-modal")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
-            .on_mouse_down(gpui::MouseButton::Left, |_: &gpui::MouseDownEvent, _, cx| {
-                cx.stop_propagation();
-            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                |_: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                },
+            )
             .v_flex()
             .w(px(700.))
             .max_h(px(560.))

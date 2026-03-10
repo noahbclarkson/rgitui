@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 /// Returns the test repo path from environment variable or default.
 fn test_repo_path() -> PathBuf {
-    let path = std::env::var("RGITUI_TEST_REPO")
-        .unwrap_or_else(|_| "/home/noah/src/krypto".to_string());
+    let path =
+        std::env::var("RGITUI_TEST_REPO").unwrap_or_else(|_| "/home/noah/src/krypto".to_string());
     PathBuf::from(path)
 }
 

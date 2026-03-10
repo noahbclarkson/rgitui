@@ -97,20 +97,17 @@ impl AiGenerator {
         cx.emit(AiEvent::GenerationStarted);
         cx.notify();
 
-        let settings = cx.global::<SettingsState>().settings().clone();
-        let api_key = settings.ai.api_key.clone();
+        let settings_state = cx.global::<SettingsState>();
+        let settings = settings_state.settings().clone();
+        let api_key = settings_state.ai_api_key();
         let model = settings.ai.model.clone();
         let provider = settings.ai.provider.clone();
         let commit_style = CommitStyle::from_str(&settings.ai.commit_style);
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = match provider.as_str() {
-                "gemini" => {
-                    generate_gemini(&api_key, &model, &diff, &summary, commit_style).await
-                }
-                "openai" => {
-                    generate_openai(&api_key, &model, &diff, &summary, commit_style).await
-                }
+                "gemini" => generate_gemini(&api_key, &model, &diff, &summary, commit_style).await,
+                "openai" => generate_openai(&api_key, &model, &diff, &summary, commit_style).await,
                 "anthropic" => {
                     generate_anthropic(&api_key, &model, &diff, &summary, commit_style).await
                 }
@@ -240,7 +237,10 @@ async fn generate_openai(
         anyhow::bail!("OpenAI API error ({}): {}", status, text);
     }
 
-    let json: serde_json::Value = response.json().await.context("Failed to parse OpenAI response")?;
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .context("Failed to parse OpenAI response")?;
     let text = json["choices"][0]["message"]["content"]
         .as_str()
         .context("No text in OpenAI response")?
@@ -290,7 +290,10 @@ async fn generate_anthropic(
         anyhow::bail!("Anthropic API error ({}): {}", status, text);
     }
 
-    let json: serde_json::Value = response.json().await.context("Failed to parse Anthropic response")?;
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .context("Failed to parse Anthropic response")?;
     let text = json["content"][0]["text"]
         .as_str()
         .context("No text in Anthropic response")?

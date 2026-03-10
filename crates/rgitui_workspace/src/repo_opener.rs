@@ -21,7 +21,7 @@ pub struct RepoOpener {
     cursor_pos: usize,
     recent_repos: Vec<PathBuf>,
     filtered_indices: Vec<usize>,
-    selected_index: usize,
+    selected_index: Option<usize>,
     visible: bool,
     focus_handle: FocusHandle,
 }
@@ -35,7 +35,7 @@ impl RepoOpener {
             cursor_pos: 0,
             recent_repos: Vec::new(),
             filtered_indices: Vec::new(),
-            selected_index: 0,
+            selected_index: None,
             visible: false,
             focus_handle: cx.focus_handle(),
         }
@@ -46,7 +46,7 @@ impl RepoOpener {
         if self.visible {
             self.query.clear();
             self.cursor_pos = 0;
-            self.selected_index = 0;
+            self.selected_index = None;
             // Load recent repos from settings
             self.recent_repos = cx
                 .global::<rgitui_settings::SettingsState>()
@@ -69,7 +69,7 @@ impl RepoOpener {
         if self.visible {
             self.query.clear();
             self.cursor_pos = 0;
-            self.selected_index = 0;
+            self.selected_index = None;
             self.recent_repos = cx
                 .global::<rgitui_settings::SettingsState>()
                 .settings()
@@ -108,7 +108,7 @@ impl RepoOpener {
                 .map(|(i, _)| i)
                 .collect();
         }
-        self.selected_index = 0;
+        self.selected_index = None;
     }
 
     fn try_open(&mut self, cx: &mut Context<Self>) {
@@ -124,8 +124,12 @@ impl RepoOpener {
                 PathBuf::from(&self.query)
             };
             expanded
-        } else if let Some(&idx) = self.filtered_indices.get(self.selected_index) {
-            self.recent_repos[idx].clone()
+        } else if let Some(selected_index) = self.selected_index {
+            if let Some(&idx) = self.filtered_indices.get(selected_index) {
+                self.recent_repos[idx].clone()
+            } else {
+                return;
+            }
         } else {
             return;
         };
@@ -154,16 +158,26 @@ impl RepoOpener {
                 self.try_open(cx);
             }
             "up" => {
-                if self.selected_index > 0 {
-                    self.selected_index -= 1;
-                    cx.notify();
+                if self.filtered_indices.is_empty() {
+                    return;
                 }
+                self.selected_index = Some(match self.selected_index {
+                    Some(index) if index > 0 => index - 1,
+                    Some(index) => index,
+                    None => self.filtered_indices.len().saturating_sub(1),
+                });
+                cx.notify();
             }
             "down" => {
-                if self.selected_index + 1 < self.filtered_indices.len() {
-                    self.selected_index += 1;
-                    cx.notify();
+                if self.filtered_indices.is_empty() {
+                    return;
                 }
+                self.selected_index = Some(match self.selected_index {
+                    Some(index) if index + 1 < self.filtered_indices.len() => index + 1,
+                    Some(index) => index,
+                    None => 0,
+                });
+                cx.notify();
             }
             "backspace" => {
                 if self.cursor_pos > 0 {
@@ -256,12 +270,7 @@ impl Render for RepoOpener {
 
         if is_empty {
             input_row = input_row
-                .child(
-                    div()
-                        .w(px(2.))
-                        .h(px(16.))
-                        .bg(colors.text),
-                )
+                .child(div().w(px(2.)).h(px(16.)).bg(colors.text))
                 .child(
                     Label::new("/path/to/repository")
                         .size(LabelSize::Small)
@@ -269,40 +278,29 @@ impl Render for RepoOpener {
                 );
         } else {
             if !before_cursor.is_empty() {
-                input_row = input_row.child(
-                    Label::new(SharedString::from(before_cursor))
-                        .size(LabelSize::Small),
-                );
+                input_row = input_row
+                    .child(Label::new(SharedString::from(before_cursor)).size(LabelSize::Small));
             }
             if !cursor_char.is_empty() {
                 input_row = input_row.child(
-                    div()
-                        .bg(colors.text)
-                        .child(
-                            Label::new(SharedString::from(cursor_char))
-                                .size(LabelSize::Small)
-                                .color(Color::Custom(gpui::Hsla {
-                                    h: 0.0,
-                                    s: 0.0,
-                                    l: 0.0,
-                                    a: 1.0,
-                                })),
-                        ),
+                    div().bg(colors.text).child(
+                        Label::new(SharedString::from(cursor_char))
+                            .size(LabelSize::Small)
+                            .color(Color::Custom(gpui::Hsla {
+                                h: 0.0,
+                                s: 0.0,
+                                l: 0.0,
+                                a: 1.0,
+                            })),
+                    ),
                 );
             } else {
                 // Cursor at end
-                input_row = input_row.child(
-                    div()
-                        .w(px(2.))
-                        .h(px(16.))
-                        .bg(colors.text),
-                );
+                input_row = input_row.child(div().w(px(2.)).h(px(16.)).bg(colors.text));
             }
             if !after_cursor.is_empty() {
-                input_row = input_row.child(
-                    Label::new(SharedString::from(after_cursor))
-                        .size(LabelSize::Small),
-                );
+                input_row = input_row
+                    .child(Label::new(SharedString::from(after_cursor)).size(LabelSize::Small));
             }
         }
 
@@ -326,16 +324,12 @@ impl Render for RepoOpener {
 
         // Title
         modal = modal.child(
-            div()
-                .px_4()
-                .pt_4()
-                .pb_2()
-                .child(
-                    Label::new("Open Repository")
-                        .size(LabelSize::Large)
-                        .weight(gpui::FontWeight::BOLD)
-                        .color(Color::Default),
-                ),
+            div().px_4().pt_4().pb_2().child(
+                Label::new("Open Repository")
+                    .size(LabelSize::Large)
+                    .weight(gpui::FontWeight::BOLD)
+                    .color(Color::Default),
+            ),
         );
 
         // Path input
@@ -366,14 +360,11 @@ impl Render for RepoOpener {
 
         // Hint text
         modal = modal.child(
-            div()
-                .px_4()
-                .pb_1()
-                .child(
-                    Label::new("Press Enter to open path, or select a recent repository below")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
-                ),
+            div().px_4().pb_1().child(
+                Label::new("Press Enter to open path, or select a recent repository below")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            ),
         );
 
         // Recent repos section
@@ -409,7 +400,7 @@ impl Render for RepoOpener {
                     .into();
                 let repo_path_display: SharedString =
                     repo_path.to_string_lossy().to_string().into();
-                let is_selected = display_idx == self.selected_index;
+                let is_selected = self.selected_index == Some(display_idx);
                 let path_clone = repo_path.clone();
 
                 let row = div()
@@ -448,16 +439,11 @@ impl Render for RepoOpener {
 
             if self.filtered_indices.is_empty() {
                 results = results.child(
-                    div()
-                        .w_full()
-                        .py_4()
-                        .flex()
-                        .justify_center()
-                        .child(
-                            Label::new("No matching repositories")
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
+                    div().w_full().py_4().flex().justify_center().child(
+                        Label::new("No matching repositories")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    ),
                 );
             }
 
@@ -496,12 +482,11 @@ impl Render for RepoOpener {
                             this.dismiss(cx);
                         })),
                 )
-                .child(
-                    Button::new("open-repo", "Open")
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.try_open(cx);
-                        })),
-                ),
+                .child(Button::new("open-repo", "Open").on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
+                        this.try_open(cx);
+                    },
+                ))),
         );
 
         // Backdrop + modal

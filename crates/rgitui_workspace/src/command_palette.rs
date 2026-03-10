@@ -1,5 +1,8 @@
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString, Window};
+use gpui::{
+    div, px, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, KeyDownEvent, Render,
+    SharedString, Window,
+};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Label, LabelSize};
 
@@ -34,33 +37,180 @@ impl EventEmitter<CommandPaletteEvent> for CommandPalette {}
 impl CommandPalette {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let commands = vec![
-            PaletteCommand { id: "fetch", label: "Git: Fetch", shortcut: None, category: "Git" },
-            PaletteCommand { id: "pull", label: "Git: Pull", shortcut: None, category: "Git" },
-            PaletteCommand { id: "push", label: "Git: Push", shortcut: None, category: "Git" },
-            PaletteCommand { id: "commit", label: "Git: Commit", shortcut: Some("Ctrl+Enter"), category: "Git" },
-            PaletteCommand { id: "stage_all", label: "Git: Stage All", shortcut: Some("Ctrl+S"), category: "Git" },
-            PaletteCommand { id: "unstage_all", label: "Git: Unstage All", shortcut: Some("Ctrl+Shift+S"), category: "Git" },
-            PaletteCommand { id: "stash_save", label: "Git: Stash", shortcut: Some("Ctrl+Z"), category: "Git" },
-            PaletteCommand { id: "stash_pop", label: "Git: Pop Stash", shortcut: Some("Ctrl+Shift+Z"), category: "Git" },
-            PaletteCommand { id: "create_branch", label: "Git: Create Branch", shortcut: Some("Ctrl+B"), category: "Git" },
-            PaletteCommand { id: "toggle_diff_mode", label: "View: Toggle Diff Mode", shortcut: None, category: "View" },
-            PaletteCommand { id: "ai_message", label: "AI: Generate Commit Message", shortcut: None, category: "AI" },
-            PaletteCommand { id: "refresh", label: "Git: Refresh", shortcut: Some("F5"), category: "Git" },
-            PaletteCommand { id: "interactive_rebase", label: "Git: Interactive Rebase", shortcut: None, category: "Git" },
-            PaletteCommand { id: "settings", label: "Preferences: Open Settings", shortcut: Some("Ctrl+,"), category: "Preferences" },
-            PaletteCommand { id: "merge_branch", label: "Git: Merge Branch", shortcut: None, category: "Git" },
-            PaletteCommand { id: "delete_branch", label: "Git: Delete Branch", shortcut: None, category: "Git" },
-            PaletteCommand { id: "open_repo", label: "File: Open Repository", shortcut: Some("Ctrl+O"), category: "File" },
-            PaletteCommand { id: "shortcuts", label: "Help: Keyboard Shortcuts", shortcut: Some("?"), category: "Help" },
-            PaletteCommand { id: "search", label: "View: Search Commits", shortcut: Some("Ctrl+F"), category: "View" },
-            PaletteCommand { id: "create_tag", label: "Git: Create Tag", shortcut: None, category: "Git" },
-            PaletteCommand { id: "rename_branch", label: "Git: Rename Branch", shortcut: None, category: "Git" },
-            PaletteCommand { id: "stash_drop", label: "Git: Drop Stash", shortcut: None, category: "Git" },
-            PaletteCommand { id: "stash_apply", label: "Git: Apply Stash (keep)", shortcut: None, category: "Git" },
-            PaletteCommand { id: "cherry_pick", label: "Git: Cherry-pick Commit", shortcut: None, category: "Git" },
-            PaletteCommand { id: "revert_commit", label: "Git: Revert Commit", shortcut: None, category: "Git" },
-            PaletteCommand { id: "force_push", label: "Git: Force Push", shortcut: None, category: "Git" },
-            PaletteCommand { id: "discard_all", label: "Git: Discard All Changes", shortcut: None, category: "Git" },
+            PaletteCommand {
+                id: "fetch",
+                label: "Git: Fetch",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "pull",
+                label: "Git: Pull",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "push",
+                label: "Git: Push",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "commit",
+                label: "Git: Commit",
+                shortcut: Some("Ctrl+Enter"),
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "stage_all",
+                label: "Git: Stage All",
+                shortcut: Some("Ctrl+S"),
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "unstage_all",
+                label: "Git: Unstage All",
+                shortcut: Some("Ctrl+Shift+S"),
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "stash_save",
+                label: "Git: Stash",
+                shortcut: Some("Ctrl+Z"),
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "stash_pop",
+                label: "Git: Pop Stash",
+                shortcut: Some("Ctrl+Shift+Z"),
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "create_branch",
+                label: "Git: Create Branch",
+                shortcut: Some("Ctrl+B"),
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "toggle_diff_mode",
+                label: "View: Toggle Diff Mode",
+                shortcut: None,
+                category: "View",
+            },
+            PaletteCommand {
+                id: "ai_message",
+                label: "AI: Generate Commit Message",
+                shortcut: None,
+                category: "AI",
+            },
+            PaletteCommand {
+                id: "refresh",
+                label: "Git: Refresh",
+                shortcut: Some("F5"),
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "interactive_rebase",
+                label: "Git: Interactive Rebase",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "settings",
+                label: "Preferences: Open Settings",
+                shortcut: Some("Ctrl+,"),
+                category: "Preferences",
+            },
+            PaletteCommand {
+                id: "merge_branch",
+                label: "Git: Merge Branch",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "delete_branch",
+                label: "Git: Delete Branch",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "open_repo",
+                label: "File: Open Repository",
+                shortcut: Some("Ctrl+O"),
+                category: "File",
+            },
+            PaletteCommand {
+                id: "workspace_home",
+                label: "Workspace: Home",
+                shortcut: Some("Ctrl+Shift+W"),
+                category: "Workspace",
+            },
+            PaletteCommand {
+                id: "restore_last_workspace",
+                label: "Workspace: Restore Last Workspace",
+                shortcut: None,
+                category: "Workspace",
+            },
+            PaletteCommand {
+                id: "shortcuts",
+                label: "Help: Keyboard Shortcuts",
+                shortcut: Some("?"),
+                category: "Help",
+            },
+            PaletteCommand {
+                id: "search",
+                label: "View: Search Commits",
+                shortcut: Some("Ctrl+F"),
+                category: "View",
+            },
+            PaletteCommand {
+                id: "create_tag",
+                label: "Git: Create Tag",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "rename_branch",
+                label: "Git: Rename Branch",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "stash_drop",
+                label: "Git: Drop Stash",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "stash_apply",
+                label: "Git: Apply Stash (keep)",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "cherry_pick",
+                label: "Git: Cherry-pick Commit",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "revert_commit",
+                label: "Git: Revert Commit",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "force_push",
+                label: "Git: Force Push",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "discard_all",
+                label: "Git: Discard All Changes",
+                shortcut: None,
+                category: "Git",
+            },
         ];
 
         let filtered_indices = (0..commands.len()).collect();
@@ -125,7 +275,12 @@ impl CommandPalette {
         }
     }
 
-    fn handle_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = event.keystroke.key.as_str();
 
         match key {
@@ -241,20 +396,13 @@ impl Render for CommandPalette {
                 .py_2()
                 .border_b_1()
                 .border_color(colors.border_variant)
+                .child(Label::new(">").size(LabelSize::Small).color(Color::Accent))
                 .child(
-                    Label::new(">")
-                        .size(LabelSize::Small)
-                        .color(Color::Accent),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .pl_2()
-                        .child(
-                            Label::new(query_display)
-                                .size(LabelSize::Small)
-                                .color(query_color),
-                        ),
+                    div().flex_1().pl_2().child(
+                        Label::new(query_display)
+                            .size(LabelSize::Small)
+                            .color(query_color),
+                    ),
                 ),
         );
 
@@ -273,7 +421,10 @@ impl Render for CommandPalette {
             let cmd_id = cmd.id.to_string();
 
             let mut row = div()
-                .id(ElementId::NamedInteger("palette-cmd".into(), display_idx as u64))
+                .id(ElementId::NamedInteger(
+                    "palette-cmd".into(),
+                    display_idx as u64,
+                ))
                 .h_flex()
                 .w_full()
                 .h(px(32.))
@@ -289,20 +440,13 @@ impl Render for CommandPalette {
                     cx.notify();
                 }));
 
-            row = row.child(
-                Label::new(label)
-                    .size(LabelSize::Small),
-            );
+            row = row.child(Label::new(label).size(LabelSize::Small));
 
             if let Some(shortcut) = cmd.shortcut {
                 let sc: SharedString = shortcut.into();
                 row = row
                     .child(div().flex_1())
-                    .child(
-                        Label::new(sc)
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    );
+                    .child(Label::new(sc).size(LabelSize::XSmall).color(Color::Muted));
             }
 
             results = results.child(row);
@@ -310,16 +454,11 @@ impl Render for CommandPalette {
 
         if self.filtered_indices.is_empty() {
             results = results.child(
-                div()
-                    .w_full()
-                    .py_4()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        Label::new("No matching commands")
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    ),
+                div().w_full().py_4().flex().justify_center().child(
+                    Label::new("No matching commands")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
             );
         }
 

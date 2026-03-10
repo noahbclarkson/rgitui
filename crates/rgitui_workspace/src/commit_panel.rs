@@ -1,7 +1,12 @@
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString, Window};
+use gpui::{
+    div, px, ClickEvent, Context, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString,
+    Window,
+};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonSize, ButtonStyle, CheckState, Checkbox, IconName, Label, LabelSize};
+use rgitui_ui::{
+    Button, ButtonSize, ButtonStyle, CheckState, Checkbox, IconName, Label, LabelSize,
+};
 
 /// Events from the commit panel.
 #[derive(Debug, Clone)]
@@ -78,7 +83,12 @@ impl CommitPanel {
         p
     }
 
-    fn handle_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
         let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
@@ -136,13 +146,15 @@ impl CommitPanel {
             }
             "left" => {
                 if self.cursor_pos > 0 {
-                    self.cursor_pos = Self::prev_char_boundary(&self.commit_message, self.cursor_pos);
+                    self.cursor_pos =
+                        Self::prev_char_boundary(&self.commit_message, self.cursor_pos);
                     cx.notify();
                 }
             }
             "right" => {
                 if self.cursor_pos < self.commit_message.len() {
-                    self.cursor_pos = Self::next_char_boundary(&self.commit_message, self.cursor_pos);
+                    self.cursor_pos =
+                        Self::next_char_boundary(&self.commit_message, self.cursor_pos);
                     cx.notify();
                 }
             }
@@ -197,11 +209,7 @@ impl Render for CommitPanel {
         };
 
         // Character count for first line (conventional commits suggest 72 chars)
-        let first_line = self
-            .commit_message
-            .lines()
-            .next()
-            .unwrap_or("");
+        let first_line = self.commit_message.lines().next().unwrap_or("");
         let first_line_len = first_line.len();
         let char_count_label: SharedString = format!("{}/72", first_line_len).into();
         let char_count_color = if first_line_len > 72 {
@@ -268,15 +276,13 @@ impl Render for CommitPanel {
                                 colors.element_disabled
                             })
                             .items_center()
-                            .child(
-                                Label::new(staged_label)
-                                    .size(LabelSize::XSmall)
-                                    .color(if self.staged_count > 0 {
-                                        Color::Added
-                                    } else {
-                                        Color::Muted
-                                    }),
-                            ),
+                            .child(Label::new(staged_label).size(LabelSize::XSmall).color(
+                                if self.staged_count > 0 {
+                                    Color::Added
+                                } else {
+                                    Color::Muted
+                                },
+                            )),
                     )
                     .child(div().flex_1())
                     .when(self.is_ai_generating, |el| {
@@ -400,16 +406,14 @@ impl Render for CommitPanel {
                                 this.amend = !this.amend;
                                 cx.notify();
                             }))
-                            .child(
-                                Checkbox::new(
-                                    "amend-checkbox",
-                                    if self.amend {
-                                        CheckState::Checked
-                                    } else {
-                                        CheckState::Unchecked
-                                    },
-                                ),
-                            )
+                            .child(Checkbox::new(
+                                "amend-checkbox",
+                                if self.amend {
+                                    CheckState::Checked
+                                } else {
+                                    CheckState::Unchecked
+                                },
+                            ))
                             .child(
                                 Label::new("Amend")
                                     .size(LabelSize::XSmall)
@@ -448,16 +452,18 @@ impl Render for CommitPanel {
                         .style(ButtonStyle::Filled)
                         .size(ButtonSize::Default)
                         .disabled(!can_commit)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            cx.emit(CommitPanelEvent::CommitRequested {
-                                message: message.clone(),
-                                amend,
-                            });
-                            this.commit_message.clear();
-                            this.cursor_pos = 0;
-                            this.amend = false;
-                            cx.notify();
-                        })),
+                        .on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                cx.emit(CommitPanelEvent::CommitRequested {
+                                    message: message.clone(),
+                                    amend,
+                                });
+                                this.commit_message.clear();
+                                this.cursor_pos = 0;
+                                this.amend = false;
+                                cx.notify();
+                            },
+                        )),
                     ),
             )
     }

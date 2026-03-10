@@ -1,8 +1,14 @@
 use gpui::prelude::*;
-use gpui::{div, img, px, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter, ObjectFit, Render, SharedString, Window};
+use gpui::{
+    div, img, px, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter, ObjectFit, Render,
+    SharedString, Window,
+};
 use rgitui_git::{CommitDiff, CommitInfo, FileDiff, RefLabel};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{AvatarCache, Badge, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{
+    AvatarCache, Badge, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label,
+    LabelSize,
+};
 
 // Note: ButtonSize::Compact = small, ButtonStyle::Transparent = ghost-like
 
@@ -65,12 +71,7 @@ impl DetailPanel {
         }
     }
 
-    pub fn set_commit(
-        &mut self,
-        commit: CommitInfo,
-        diff: CommitDiff,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_commit(&mut self, commit: CommitInfo, diff: CommitDiff, cx: &mut Context<Self>) {
         self.commit = Some(commit);
         self.commit_diff = Some(diff);
         self.selected_file_index = None;
@@ -124,7 +125,12 @@ impl Render for DetailPanel {
         let author_name: SharedString = commit.author.name.clone().into();
         let author_email: SharedString = format!("<{}>", commit.author.email).into();
         let relative_time = format_relative_time(commit.time.timestamp());
-        let date: SharedString = format!("{} ({})", commit.time.format("%Y-%m-%d %H:%M"), relative_time).into();
+        let date: SharedString = format!(
+            "{} ({})",
+            commit.time.format("%Y-%m-%d %H:%M"),
+            relative_time
+        )
+        .into();
         let refs = commit.refs.clone();
 
         // Split message into summary (first line) and description (rest)
@@ -180,13 +186,11 @@ impl Render for DetailPanel {
                 .items_start()
                 .gap_2()
                 .child(
-                    div()
-                        .flex_1()
-                        .child(
-                            Label::new(summary)
-                                .size(LabelSize::Small)
-                                .weight(gpui::FontWeight::BOLD),
-                        ),
+                    div().flex_1().child(
+                        Label::new(summary)
+                            .size(LabelSize::Small)
+                            .weight(gpui::FontWeight::BOLD),
+                    ),
                 )
                 .child(
                     IconButton::new("cherry-pick-btn", IconName::GitCommit)
@@ -224,11 +228,7 @@ impl Render for DetailPanel {
                     .pt_1()
                     .border_t_1()
                     .border_color(colors.border_variant)
-                    .child(
-                        Label::new(desc)
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    ),
+                    .child(Label::new(desc).size(LabelSize::XSmall).color(Color::Muted)),
             );
         }
 
@@ -305,11 +305,7 @@ impl Render for DetailPanel {
                                         .color(Color::Muted),
                                 ),
                         )
-                        .child(
-                            Label::new(date)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
-                        ),
+                        .child(Label::new(date).size(LabelSize::XSmall).color(Color::Muted)),
                 ),
         );
 
@@ -349,10 +345,16 @@ impl Render for DetailPanel {
                             IconButton::new("copy-sha-btn", IconName::Copy)
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Transparent)
-                                .on_click(cx.listener(move |_this, _: &ClickEvent, _window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(sha_copy_clone.to_string()));
-                                    cx.emit(DetailPanelEvent::CopySha(sha_copy_clone.to_string()));
-                                })),
+                                .on_click(cx.listener(
+                                    move |_this, _: &ClickEvent, _window, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            sha_copy_clone.to_string(),
+                                        ));
+                                        cx.emit(DetailPanelEvent::CopySha(
+                                            sha_copy_clone.to_string(),
+                                        ));
+                                    },
+                                )),
                         ),
                 )
                 .child(
@@ -481,16 +483,8 @@ impl Render for DetailPanel {
                             ));
                             cx.notify();
                         }))
-                        .child(
-                            Icon::new(icon_name)
-                                .size(IconSize::Small)
-                                .color(icon_color),
-                        )
-                        .child(
-                            Label::new(path_label)
-                                .size(LabelSize::XSmall)
-                                .truncate(),
-                        )
+                        .child(Icon::new(icon_name).size(IconSize::Small).color(icon_color))
+                        .child(Label::new(path_label).size(LabelSize::XSmall).truncate())
                         .child(div().flex_1())
                         .child(
                             div()
@@ -514,4 +508,3 @@ impl Render for DetailPanel {
         panel.into_any_element()
     }
 }
-

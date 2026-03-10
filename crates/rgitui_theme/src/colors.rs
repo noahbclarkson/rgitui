@@ -180,7 +180,12 @@ pub fn hex_to_hsla(hex: &str) -> Hsla {
     let l = (max + min) / 2.0;
 
     if (max - min).abs() < f32::EPSILON {
-        return Hsla { h: 0.0, s: 0.0, l, a };
+        return Hsla {
+            h: 0.0,
+            s: 0.0,
+            l,
+            a,
+        };
     }
 
     let d = max - min;
@@ -202,30 +207,35 @@ pub fn hex_to_hsla(hex: &str) -> Hsla {
         (r - g) / d + 4.0
     };
 
-    Hsla { h: h / 6.0, s, l, a }
+    Hsla {
+        h: h / 6.0,
+        s,
+        l,
+        a,
+    }
 }
 
 /// Catppuccin Mocha dark theme colors.
 pub fn catppuccin_mocha_colors() -> ThemeColors {
     // Catppuccin Mocha palette
-    let base = hsla(240.0, 21.0, 15.0, 1.0);        // #1e1e2e
-    let mantle = hsla(240.0, 21.0, 12.0, 1.0);      // #181825
-    let crust = hsla(240.0, 23.0, 9.0, 1.0);        // #11111b
-    let surface0 = hsla(237.0, 16.0, 23.0, 1.0);    // #313244
-    let surface1 = hsla(234.0, 13.0, 31.0, 1.0);    // #45475a
-    let surface2 = hsla(233.0, 12.0, 39.0, 1.0);    // #585b70
-    let overlay0 = hsla(231.0, 11.0, 47.0, 1.0);    // #6c7086
-    let overlay1 = hsla(230.0, 13.0, 55.0, 1.0);    // #7f849c
-    let subtext0 = hsla(228.0, 17.0, 64.0, 1.0);    // #a6adc8
-    let text = hsla(227.0, 35.0, 80.0, 1.0);        // #cdd6f4
-    let mauve = hsla(267.0, 84.0, 81.0, 1.0);       // #cba6f7 (accent)
-    let red = hsla(343.0, 81.0, 75.0, 1.0);         // #f38ba8
-    let green = hsla(115.0, 54.0, 76.0, 1.0);       // #a6e3a1
-    let yellow = hsla(41.0, 86.0, 83.0, 1.0);       // #f9e2af
-    let blue = hsla(217.0, 92.0, 76.0, 1.0);        // #89b4fa
-    let peach = hsla(23.0, 92.0, 75.0, 1.0);        // #fab387
-    let teal = hsla(170.0, 57.0, 73.0, 1.0);        // #94e2d5
-    let _sapphire = hsla(189.0, 71.0, 73.0, 1.0);    // #74c7ec
+    let base = hsla(240.0, 21.0, 15.0, 1.0); // #1e1e2e
+    let mantle = hsla(240.0, 21.0, 12.0, 1.0); // #181825
+    let crust = hsla(240.0, 23.0, 9.0, 1.0); // #11111b
+    let surface0 = hsla(237.0, 16.0, 23.0, 1.0); // #313244
+    let surface1 = hsla(234.0, 13.0, 31.0, 1.0); // #45475a
+    let surface2 = hsla(233.0, 12.0, 39.0, 1.0); // #585b70
+    let overlay0 = hsla(231.0, 11.0, 47.0, 1.0); // #6c7086
+    let overlay1 = hsla(230.0, 13.0, 55.0, 1.0); // #7f849c
+    let subtext0 = hsla(228.0, 17.0, 64.0, 1.0); // #a6adc8
+    let text = hsla(227.0, 35.0, 80.0, 1.0); // #cdd6f4
+    let mauve = hsla(267.0, 84.0, 81.0, 1.0); // #cba6f7 (accent)
+    let red = hsla(343.0, 81.0, 75.0, 1.0); // #f38ba8
+    let green = hsla(115.0, 54.0, 76.0, 1.0); // #a6e3a1
+    let yellow = hsla(41.0, 86.0, 83.0, 1.0); // #f9e2af
+    let blue = hsla(217.0, 92.0, 76.0, 1.0); // #89b4fa
+    let peach = hsla(23.0, 92.0, 75.0, 1.0); // #fab387
+    let teal = hsla(170.0, 57.0, 73.0, 1.0); // #94e2d5
+    let _sapphire = hsla(189.0, 71.0, 73.0, 1.0); // #74c7ec
 
     ThemeColors {
         background: crust,
@@ -238,14 +248,24 @@ pub fn catppuccin_mocha_colors() -> ThemeColors {
         border_focused: mauve,
         border_selected: mauve,
         border_disabled: surface0,
-        border_transparent: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        border_transparent: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
 
         element_background: surface0,
         element_hover: surface1,
         element_active: surface2,
         element_selected: surface1,
         element_disabled: surface0,
-        ghost_element_background: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        ghost_element_background: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
         ghost_element_hover: hsla(237.0, 16.0, 23.0, 0.5),
         ghost_element_active: hsla(234.0, 13.0, 31.0, 0.5),
         ghost_element_selected: hsla(234.0, 13.0, 31.0, 0.7),
@@ -302,24 +322,24 @@ pub fn catppuccin_mocha_status() -> StatusColors {
 
 /// Catppuccin Latte light theme colors.
 pub fn catppuccin_latte_colors() -> ThemeColors {
-    let base = hsla(220.0, 23.0, 95.0, 1.0);        // #eff1f5
-    let mantle = hsla(220.0, 22.0, 92.0, 1.0);      // #e6e9ef
-    let crust = hsla(220.0, 21.0, 89.0, 1.0);       // #dce0e8
-    let surface0 = hsla(223.0, 16.0, 83.0, 1.0);    // #ccd0da
-    let surface1 = hsla(225.0, 14.0, 77.0, 1.0);    // #bcc0cc
-    let surface2 = hsla(227.0, 12.0, 71.0, 1.0);    // #acb0be
-    let overlay0 = hsla(228.0, 11.0, 65.0, 1.0);    // #9ca0b0
-    let overlay1 = hsla(227.0, 12.0, 58.0, 1.0);    // #8c8fa1
-    let subtext0 = hsla(228.0, 14.0, 45.0, 1.0);    // #6c6f85
-    let text = hsla(234.0, 16.0, 35.0, 1.0);        // #4c4f69
-    let mauve = hsla(266.0, 85.0, 58.0, 1.0);       // #8839ef
-    let red = hsla(347.0, 87.0, 44.0, 1.0);         // #d20f39
-    let green = hsla(109.0, 58.0, 40.0, 1.0);       // #40a02b
-    let yellow = hsla(35.0, 77.0, 49.0, 1.0);       // #df8e1d
-    let blue = hsla(220.0, 91.0, 54.0, 1.0);        // #1e66f5
-    let peach = hsla(22.0, 99.0, 52.0, 1.0);        // #fe640b
-    let teal = hsla(183.0, 74.0, 35.0, 1.0);        // #179299
-    let _sapphire = hsla(189.0, 70.0, 42.0, 1.0);    // #209fb5
+    let base = hsla(220.0, 23.0, 95.0, 1.0); // #eff1f5
+    let mantle = hsla(220.0, 22.0, 92.0, 1.0); // #e6e9ef
+    let crust = hsla(220.0, 21.0, 89.0, 1.0); // #dce0e8
+    let surface0 = hsla(223.0, 16.0, 83.0, 1.0); // #ccd0da
+    let surface1 = hsla(225.0, 14.0, 77.0, 1.0); // #bcc0cc
+    let surface2 = hsla(227.0, 12.0, 71.0, 1.0); // #acb0be
+    let overlay0 = hsla(228.0, 11.0, 65.0, 1.0); // #9ca0b0
+    let overlay1 = hsla(227.0, 12.0, 58.0, 1.0); // #8c8fa1
+    let subtext0 = hsla(228.0, 14.0, 45.0, 1.0); // #6c6f85
+    let text = hsla(234.0, 16.0, 35.0, 1.0); // #4c4f69
+    let mauve = hsla(266.0, 85.0, 58.0, 1.0); // #8839ef
+    let red = hsla(347.0, 87.0, 44.0, 1.0); // #d20f39
+    let green = hsla(109.0, 58.0, 40.0, 1.0); // #40a02b
+    let yellow = hsla(35.0, 77.0, 49.0, 1.0); // #df8e1d
+    let blue = hsla(220.0, 91.0, 54.0, 1.0); // #1e66f5
+    let peach = hsla(22.0, 99.0, 52.0, 1.0); // #fe640b
+    let teal = hsla(183.0, 74.0, 35.0, 1.0); // #179299
+    let _sapphire = hsla(189.0, 70.0, 42.0, 1.0); // #209fb5
 
     ThemeColors {
         background: crust,
@@ -332,14 +352,24 @@ pub fn catppuccin_latte_colors() -> ThemeColors {
         border_focused: mauve,
         border_selected: mauve,
         border_disabled: surface0,
-        border_transparent: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        border_transparent: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
 
         element_background: surface0,
         element_hover: surface1,
         element_active: surface2,
         element_selected: surface1,
         element_disabled: surface0,
-        ghost_element_background: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        ghost_element_background: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
         ghost_element_hover: hsla(223.0, 16.0, 83.0, 0.5),
         ghost_element_active: hsla(225.0, 14.0, 77.0, 0.5),
         ghost_element_selected: hsla(225.0, 14.0, 77.0, 0.7),
@@ -398,21 +428,21 @@ pub fn catppuccin_latte_status() -> StatusColors {
 
 /// One Dark (Atom) theme colors — GitKraken-like dark theme.
 pub fn one_dark_colors() -> ThemeColors {
-    let bg = hsla(220.0, 13.0, 18.0, 1.0);          // #282c34
-    let bg_lighter = hsla(220.0, 13.0, 21.0, 1.0);   // #2c313a
-    let gutter = hsla(220.0, 13.0, 24.0, 1.0);        // #353b45
-    let guide = hsla(220.0, 10.0, 30.0, 1.0);         // #3b4048
-    let text = hsla(219.0, 14.0, 71.0, 1.0);          // #abb2bf
-    let text_muted = hsla(220.0, 9.0, 55.0, 1.0);     // #7f848e
-    let text_dim = hsla(220.0, 9.0, 44.0, 1.0);       // #636d83
-    let accent = hsla(207.0, 82.0, 66.0, 1.0);        // #61afef (blue)
-    let red = hsla(355.0, 65.0, 65.0, 1.0);           // #e06c75
-    let green = hsla(95.0, 38.0, 62.0, 1.0);          // #98c379
-    let yellow = hsla(39.0, 67.0, 69.0, 1.0);         // #e5c07b
-    let _blue = hsla(207.0, 82.0, 66.0, 1.0);         // #61afef (same as accent)
-    let magenta = hsla(286.0, 60.0, 67.0, 1.0);       // #c678dd
-    let cyan = hsla(187.0, 47.0, 55.0, 1.0);          // #56b6c2
-    let orange = hsla(29.0, 54.0, 61.0, 1.0);         // #d19a66
+    let bg = hsla(220.0, 13.0, 18.0, 1.0); // #282c34
+    let bg_lighter = hsla(220.0, 13.0, 21.0, 1.0); // #2c313a
+    let gutter = hsla(220.0, 13.0, 24.0, 1.0); // #353b45
+    let guide = hsla(220.0, 10.0, 30.0, 1.0); // #3b4048
+    let text = hsla(219.0, 14.0, 71.0, 1.0); // #abb2bf
+    let text_muted = hsla(220.0, 9.0, 55.0, 1.0); // #7f848e
+    let text_dim = hsla(220.0, 9.0, 44.0, 1.0); // #636d83
+    let accent = hsla(207.0, 82.0, 66.0, 1.0); // #61afef (blue)
+    let red = hsla(355.0, 65.0, 65.0, 1.0); // #e06c75
+    let green = hsla(95.0, 38.0, 62.0, 1.0); // #98c379
+    let yellow = hsla(39.0, 67.0, 69.0, 1.0); // #e5c07b
+    let _blue = hsla(207.0, 82.0, 66.0, 1.0); // #61afef (same as accent)
+    let magenta = hsla(286.0, 60.0, 67.0, 1.0); // #c678dd
+    let cyan = hsla(187.0, 47.0, 55.0, 1.0); // #56b6c2
+    let orange = hsla(29.0, 54.0, 61.0, 1.0); // #d19a66
 
     ThemeColors {
         background: hsla(220.0, 13.0, 15.0, 1.0),
@@ -425,14 +455,24 @@ pub fn one_dark_colors() -> ThemeColors {
         border_focused: accent,
         border_selected: accent,
         border_disabled: gutter,
-        border_transparent: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        border_transparent: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
 
         element_background: gutter,
         element_hover: guide,
         element_active: hsla(220.0, 10.0, 35.0, 1.0),
         element_selected: guide,
         element_disabled: gutter,
-        ghost_element_background: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        ghost_element_background: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
         ghost_element_hover: hsla(220.0, 13.0, 24.0, 0.5),
         ghost_element_active: hsla(220.0, 10.0, 30.0, 0.5),
         ghost_element_selected: hsla(220.0, 10.0, 30.0, 0.7),
@@ -491,20 +531,20 @@ pub fn one_dark_status() -> StatusColors {
 
 /// GitHub Dark theme colors.
 pub fn github_dark_colors() -> ThemeColors {
-    let bg = hsla(215.0, 21.0, 7.0, 1.0);              // #0d1117
-    let surface = hsla(215.0, 19.0, 11.0, 1.0);          // #161b22
-    let elevated = hsla(215.0, 15.0, 14.0, 1.0);         // #1c2128
-    let border_main = hsla(215.0, 14.0, 21.0, 1.0);      // #30363d
-    let border_sub = hsla(215.0, 14.0, 15.0, 1.0);       // #21262d
-    let text = hsla(213.0, 14.0, 80.0, 1.0);             // #c9d1d9
-    let text_muted = hsla(212.0, 9.0, 57.0, 1.0);        // #8b949e
-    let text_dim = hsla(213.0, 9.0, 46.0, 1.0);          // #6e7681
-    let text_dimmer = hsla(215.0, 10.0, 31.0, 1.0);      // #484f58
-    let accent = hsla(212.0, 100.0, 67.0, 1.0);          // #58a6ff
-    let red = hsla(2.0, 92.0, 63.0, 1.0);                // #f85149
-    let green = hsla(139.0, 66.0, 49.0, 1.0);            // #3fb950
-    let yellow = hsla(39.0, 73.0, 49.0, 1.0);            // #d29922
-    let orange = hsla(24.0, 73.0, 50.0, 1.0);            // #db6d28
+    let bg = hsla(215.0, 21.0, 7.0, 1.0); // #0d1117
+    let surface = hsla(215.0, 19.0, 11.0, 1.0); // #161b22
+    let elevated = hsla(215.0, 15.0, 14.0, 1.0); // #1c2128
+    let border_main = hsla(215.0, 14.0, 21.0, 1.0); // #30363d
+    let border_sub = hsla(215.0, 14.0, 15.0, 1.0); // #21262d
+    let text = hsla(213.0, 14.0, 80.0, 1.0); // #c9d1d9
+    let text_muted = hsla(212.0, 9.0, 57.0, 1.0); // #8b949e
+    let text_dim = hsla(213.0, 9.0, 46.0, 1.0); // #6e7681
+    let text_dimmer = hsla(215.0, 10.0, 31.0, 1.0); // #484f58
+    let accent = hsla(212.0, 100.0, 67.0, 1.0); // #58a6ff
+    let red = hsla(2.0, 92.0, 63.0, 1.0); // #f85149
+    let green = hsla(139.0, 66.0, 49.0, 1.0); // #3fb950
+    let yellow = hsla(39.0, 73.0, 49.0, 1.0); // #d29922
+    let orange = hsla(24.0, 73.0, 50.0, 1.0); // #db6d28
 
     ThemeColors {
         background: bg,
@@ -517,14 +557,24 @@ pub fn github_dark_colors() -> ThemeColors {
         border_focused: accent,
         border_selected: accent,
         border_disabled: border_sub,
-        border_transparent: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        border_transparent: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
 
         element_background: border_sub,
         element_hover: border_main,
         element_active: hsla(215.0, 10.0, 26.0, 1.0),
         element_selected: border_main,
         element_disabled: border_sub,
-        ghost_element_background: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        ghost_element_background: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
         ghost_element_hover: hsla(215.0, 14.0, 15.0, 0.5),
         ghost_element_active: hsla(215.0, 14.0, 21.0, 0.5),
         ghost_element_selected: hsla(215.0, 14.0, 21.0, 0.7),
@@ -583,20 +633,20 @@ pub fn github_dark_status() -> StatusColors {
 
 /// Dracula theme colors.
 pub fn dracula_colors() -> ThemeColors {
-    let bg = hsla(231.0, 15.0, 18.0, 1.0);              // #282a36
-    let bg_darker = hsla(232.0, 14.0, 15.0, 1.0);        // #21222c
-    let surface = hsla(232.0, 14.0, 24.0, 1.0);          // #343746
-    let border_main = hsla(232.0, 14.0, 31.0, 1.0);      // #44475a
-    let text = hsla(60.0, 30.0, 96.0, 1.0);              // #f8f8f2
-    let text_muted = hsla(0.0, 0.0, 75.0, 1.0);          // #bfbfbf
-    let comment = hsla(225.0, 27.0, 51.0, 1.0);          // #6272a4
-    let text_dim = hsla(232.0, 14.0, 33.0, 1.0);         // #545872
-    let purple = hsla(265.0, 89.0, 78.0, 1.0);           // #bd93f9
-    let red = hsla(0.0, 100.0, 67.0, 1.0);               // #ff5555
-    let green = hsla(135.0, 94.0, 65.0, 1.0);            // #50fa7b
-    let yellow = hsla(65.0, 92.0, 77.0, 1.0);            // #f1fa8c
-    let orange = hsla(31.0, 100.0, 71.0, 1.0);           // #ffb86c
-    let cyan = hsla(191.0, 97.0, 77.0, 1.0);             // #8be9fd
+    let bg = hsla(231.0, 15.0, 18.0, 1.0); // #282a36
+    let bg_darker = hsla(232.0, 14.0, 15.0, 1.0); // #21222c
+    let surface = hsla(232.0, 14.0, 24.0, 1.0); // #343746
+    let border_main = hsla(232.0, 14.0, 31.0, 1.0); // #44475a
+    let text = hsla(60.0, 30.0, 96.0, 1.0); // #f8f8f2
+    let text_muted = hsla(0.0, 0.0, 75.0, 1.0); // #bfbfbf
+    let comment = hsla(225.0, 27.0, 51.0, 1.0); // #6272a4
+    let text_dim = hsla(232.0, 14.0, 33.0, 1.0); // #545872
+    let purple = hsla(265.0, 89.0, 78.0, 1.0); // #bd93f9
+    let red = hsla(0.0, 100.0, 67.0, 1.0); // #ff5555
+    let green = hsla(135.0, 94.0, 65.0, 1.0); // #50fa7b
+    let yellow = hsla(65.0, 92.0, 77.0, 1.0); // #f1fa8c
+    let orange = hsla(31.0, 100.0, 71.0, 1.0); // #ffb86c
+    let cyan = hsla(191.0, 97.0, 77.0, 1.0); // #8be9fd
 
     ThemeColors {
         background: bg_darker,
@@ -609,14 +659,24 @@ pub fn dracula_colors() -> ThemeColors {
         border_focused: purple,
         border_selected: purple,
         border_disabled: surface,
-        border_transparent: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        border_transparent: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
 
         element_background: surface,
         element_hover: border_main,
         element_active: hsla(232.0, 14.0, 37.0, 1.0),
         element_selected: border_main,
         element_disabled: surface,
-        ghost_element_background: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 },
+        ghost_element_background: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
         ghost_element_hover: hsla(232.0, 14.0, 31.0, 0.5),
         ghost_element_active: hsla(232.0, 14.0, 37.0, 0.5),
         ghost_element_selected: hsla(232.0, 14.0, 31.0, 0.7),
@@ -673,16 +733,16 @@ pub fn dracula_status() -> StatusColors {
 
 /// Lane colors for the commit graph. Cycles through these for branch visualization.
 pub const GRAPH_LANE_COLORS: &[fn() -> Hsla] = &[
-    || hsla(267.0, 84.0, 75.0, 1.0),  // mauve (boosted)
-    || hsla(217.0, 92.0, 65.0, 1.0),  // blue (boosted)
-    || hsla(115.0, 60.0, 65.0, 1.0),  // green (boosted)
-    || hsla(23.0, 92.0, 65.0, 1.0),   // peach (boosted)
-    || hsla(343.0, 81.0, 65.0, 1.0),  // red (boosted)
-    || hsla(170.0, 65.0, 60.0, 1.0),  // teal (boosted)
-    || hsla(41.0, 86.0, 70.0, 1.0),   // yellow (boosted)
-    || hsla(189.0, 75.0, 60.0, 1.0),  // sapphire (boosted)
-    || hsla(316.0, 72.0, 72.0, 1.0),  // pink (boosted)
-    || hsla(10.0, 70.0, 75.0, 1.0),   // rosewater (boosted)
+    || hsla(267.0, 84.0, 75.0, 1.0), // mauve (boosted)
+    || hsla(217.0, 92.0, 65.0, 1.0), // blue (boosted)
+    || hsla(115.0, 60.0, 65.0, 1.0), // green (boosted)
+    || hsla(23.0, 92.0, 65.0, 1.0),  // peach (boosted)
+    || hsla(343.0, 81.0, 65.0, 1.0), // red (boosted)
+    || hsla(170.0, 65.0, 60.0, 1.0), // teal (boosted)
+    || hsla(41.0, 86.0, 70.0, 1.0),  // yellow (boosted)
+    || hsla(189.0, 75.0, 60.0, 1.0), // sapphire (boosted)
+    || hsla(316.0, 72.0, 72.0, 1.0), // pink (boosted)
+    || hsla(10.0, 70.0, 75.0, 1.0),  // rosewater (boosted)
 ];
 
 pub fn lane_color(index: usize) -> Hsla {

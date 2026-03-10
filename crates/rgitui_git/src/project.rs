@@ -1,61 +1,18 @@
 use anyhow::{Context as _, Result};
 use chrono::{TimeZone, Utc};
-use git2::{Cred, DiffOptions, FetchOptions, PushOptions, RemoteCallbacks, Repository, StatusOptions};
+use git2::{
+    Cred, DiffOptions, FetchOptions, PushOptions, RemoteCallbacks, Repository, StatusOptions,
+};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use rgitui_settings::current_git_auth_runtime;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::types::*;
-
-/// Git authentication configuration.
-#[derive(Debug, Clone, Default)]
-pub struct GitAuthConfig {
-    /// Optional personal access token for HTTPS auth.
-    pub https_token: Option<String>,
-    /// Optional custom SSH key path (overrides default key search).
-    pub ssh_key_path: Option<PathBuf>,
-    /// Optional GPG signing key ID (for signed commits).
-    pub gpg_key_id: Option<String>,
-    /// Whether to sign commits by default.
-    pub sign_commits: bool,
-}
-
-/// Load auth config from the global settings state (if available).
-fn load_auth_config() -> GitAuthConfig {
-    // Try to read from the settings file directly (we can't access GPUI globals
-    // from a background thread, so read the file).
-    let config_path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rgitui")
-        .join("settings.json");
-
-    if let Ok(json) = std::fs::read_to_string(&config_path) {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-            let git = val.get("git").cloned().unwrap_or_default();
-            return GitAuthConfig {
-                https_token: git.get("https_token")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string()),
-                ssh_key_path: git.get("ssh_key_path")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(PathBuf::from),
-                gpg_key_id: git.get("gpg_key_id")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string()),
-                sign_commits: git.get("sign_commits")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-            };
-        }
-    }
-    GitAuthConfig::default()
-}
 
 /// Create RemoteCallbacks with credential support.
 ///
@@ -67,7 +24,7 @@ fn load_auth_config() -> GitAuthConfig {
 /// 5. Git credential helper (for HTTPS URLs)
 /// 6. Anonymous access (for public HTTPS repos)
 fn make_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
-    let auth_config = load_auth_config();
+    let auth_config = current_git_auth_runtime();
     let mut callbacks = RemoteCallbacks::new();
     let attempts = std::cell::Cell::new(0u32);
     let tried_anonymous = std::cell::Cell::new(false);
@@ -85,11 +42,14 @@ fn make_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
 
         log::debug!(
             "git auth attempt {} for url={} user={:?} types={:?}",
-            attempt, url, username_from_url, allowed_types
+            attempt,
+            url,
+            username_from_url,
+            allowed_types
         );
 
         let user = username_from_url.unwrap_or("git");
-        let is_ssh = url.starts_with("ssh://") || url.starts_with("git@") || url.contains("@");
+        let is_ssh = is_ssh_remote_url(url);
 
         // ── SSH authentication ─────────────────────────────────────
         if allowed_types.contains(git2::CredentialType::SSH_KEY) {
@@ -116,9 +76,7 @@ fn make_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
             }
 
             // 3. Fallback: try common SSH key paths
-            let home = std::env::var("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
+            let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
             for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
                 let key_path = home.join(".ssh").join(key_name);
                 if key_path.exists() {
@@ -139,9 +97,26 @@ fn make_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
         // ── HTTPS authentication ───────────────────────────────────
         if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
             // 4. Try personal access token from settings
-            if let Some(ref token) = auth_config.https_token {
-                log::debug!("Using HTTPS personal access token");
-                return Cred::userpass_plaintext("x-access-token", token);
+            if let Some(provider) = matching_provider(url, &auth_config) {
+                if let Some(token) = provider.token.as_ref() {
+                    let username = if provider.username.trim().is_empty() {
+                        default_https_username_for(&provider.kind, username_from_url)
+                    } else {
+                        provider.username.as_str()
+                    };
+                    log::debug!(
+                        "Using provider credentials for host={} provider={}",
+                        provider.host,
+                        provider.display_name
+                    );
+                    return Cred::userpass_plaintext(username, token);
+                }
+            }
+
+            if let Some(ref token) = auth_config.default_https_token {
+                let username = default_https_username_for("generic", username_from_url);
+                log::debug!("Using default HTTPS personal access token");
+                return Cred::userpass_plaintext(username, token);
             }
 
             // 5. Try git credential helper
@@ -166,9 +141,125 @@ fn make_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
             return Cred::username(user);
         }
 
-        Err(git2::Error::from_str("no suitable authentication method found"))
+        Err(git2::Error::from_str(
+            "no suitable authentication method found",
+        ))
     });
     callbacks
+}
+
+fn matching_provider<'a>(
+    url: &str,
+    auth_config: &'a rgitui_settings::GitAuthRuntime,
+) -> Option<&'a rgitui_settings::GitProviderRuntime> {
+    let host = remote_host(url)?;
+    auth_config.providers.iter().find(|provider| {
+        provider.use_for_https
+            && !provider.host.trim().is_empty()
+            && hosts_match(&provider.host, &host)
+    })
+}
+
+fn is_ssh_remote_url(url: &str) -> bool {
+    if url.starts_with("ssh://") {
+        return true;
+    }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return false;
+    }
+    url.contains('@') && url.contains(':')
+}
+
+fn remote_uses_ssh(repo: &Repository, remote_name: &str) -> Result<bool> {
+    let remote = repo.find_remote(remote_name)?;
+    let url = remote.url().context(format!(
+        "Remote '{remote_name}' does not have a URL configured"
+    ))?;
+    Ok(is_ssh_remote_url(url))
+}
+
+fn run_git_network_command(repo_path: &Path, args: &[&str]) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| format!("Failed to run system git command: git {}", args.join(" ")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let detail = if stderr.is_empty() {
+        stdout
+    } else if stdout.is_empty() {
+        stderr
+    } else {
+        format!("{stderr}\n{stdout}")
+    };
+
+    if output.status.success() {
+        let detail = detail.trim().to_string();
+        Ok((!detail.is_empty()).then_some(detail))
+    } else {
+        anyhow::bail!(
+            "{}",
+            if detail.is_empty() {
+                format!(
+                    "git {} failed with exit status {}",
+                    args.join(" "),
+                    output.status
+                )
+            } else {
+                detail
+            }
+        );
+    }
+}
+
+fn hosts_match(configured_host: &str, actual_host: &str) -> bool {
+    let configured = configured_host
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let configured = configured.split('/').next().unwrap_or(configured);
+    configured.eq_ignore_ascii_case(actual_host)
+}
+
+fn remote_host(url: &str) -> Option<String> {
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        return Some(
+            rest.split('@')
+                .next_back()
+                .and_then(|s| s.split('/').next())
+                .unwrap_or(rest)
+                .trim_end_matches(':')
+                .to_string(),
+        );
+    }
+
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        return Some(rest.split('/').next()?.to_string());
+    }
+
+    if let Some(rest) = url.split('@').nth(1) {
+        return Some(rest.split(':').next()?.to_string());
+    }
+
+    None
+}
+
+fn default_https_username_for<'a>(kind: &str, username_from_url: Option<&'a str>) -> &'a str {
+    if let Some(username) = username_from_url {
+        return username;
+    }
+
+    match kind {
+        "github" => "x-access-token",
+        "gitlab" => "oauth2",
+        _ => "git",
+    }
 }
 
 /// Create FetchOptions with auth callbacks.
@@ -185,6 +276,120 @@ fn make_push_options<'a>() -> PushOptions<'a> {
     push_opts
 }
 
+fn parse_remote_tracking_ref(name: &str) -> Option<(String, String)> {
+    let trimmed = name.strip_prefix("refs/remotes/").unwrap_or(name);
+    let mut parts = trimmed.splitn(2, '/');
+    let remote = parts.next()?.trim();
+    let branch = parts.next()?.trim();
+    if remote.is_empty() || branch.is_empty() {
+        return None;
+    }
+    Some((remote.to_string(), branch.to_string()))
+}
+
+fn head_branch_name(repo: &Repository) -> Result<String> {
+    let head = repo.head()?;
+    if !head.is_branch() {
+        anyhow::bail!("HEAD is detached. Switch to a branch before running this operation.");
+    }
+    head.shorthand()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("Failed to determine the current branch name"))
+}
+
+fn repo_has_worktree_changes(repo: &Repository) -> Result<bool> {
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(false);
+    Ok(!repo.statuses(Some(&mut opts))?.is_empty())
+}
+
+fn ensure_clean_worktree(repo: &Repository, operation: &str) -> Result<()> {
+    if repo_has_worktree_changes(repo)? {
+        anyhow::bail!(
+            "{} requires a clean working tree. Commit, stash, or discard your changes first.",
+            operation
+        );
+    }
+    Ok(())
+}
+
+fn default_remote_name(repo: &Repository) -> Result<String> {
+    if let Ok(branch_name) = head_branch_name(repo) {
+        if let Ok(branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
+            if let Ok(upstream) = branch.upstream() {
+                if let Some(upstream_name) = upstream.name()?.and_then(parse_remote_tracking_ref) {
+                    return Ok(upstream_name.0);
+                }
+            }
+        }
+    }
+
+    let remote_names = repo.remotes()?;
+    if remote_names.is_empty() {
+        anyhow::bail!("No git remotes are configured for this repository.")
+    }
+
+    if remote_names.iter().flatten().any(|name| name == "origin") {
+        return Ok("origin".to_string());
+    }
+
+    remote_names
+        .iter()
+        .flatten()
+        .next()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("No usable git remotes are configured."))
+}
+
+fn pull_target(repo: &Repository, preferred_remote: Option<&str>) -> Result<(String, String)> {
+    let branch_name = head_branch_name(repo)?;
+    if let Ok(branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
+        if let Ok(upstream) = branch.upstream() {
+            if let Some(upstream_name) = upstream.name()?.and_then(parse_remote_tracking_ref) {
+                if preferred_remote
+                    .map(|remote| remote == upstream_name.0)
+                    .unwrap_or(true)
+                {
+                    return Ok(upstream_name);
+                }
+            }
+        }
+    }
+
+    let remote_name = preferred_remote
+        .map(str::to_string)
+        .unwrap_or(default_remote_name(repo)?);
+    Ok((remote_name, branch_name))
+}
+
+fn push_target(
+    repo: &Repository,
+    preferred_remote: Option<&str>,
+) -> Result<(String, String, bool)> {
+    let branch_name = head_branch_name(repo)?;
+    if let Ok(branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
+        if let Ok(upstream) = branch.upstream() {
+            if let Some((remote_name, remote_branch)) =
+                upstream.name()?.and_then(parse_remote_tracking_ref)
+            {
+                if preferred_remote
+                    .map(|remote| remote == remote_name)
+                    .unwrap_or(true)
+                {
+                    return Ok((remote_name, remote_branch, false));
+                }
+            }
+        }
+    }
+
+    let remote_name = preferred_remote
+        .map(str::to_string)
+        .unwrap_or(default_remote_name(repo)?);
+    Ok((remote_name, branch_name, true))
+}
+
 /// All the data gathered during a refresh, designed to be Send so it can
 /// be computed on a background thread and then applied on the main thread.
 pub struct RefreshData {
@@ -199,19 +404,14 @@ pub struct RefreshData {
 
 /// Compute line-level diff stats (additions/deletions) for a single file.
 /// For staged files, diffs HEAD vs index. For unstaged files, diffs index vs workdir.
-fn compute_file_diff_stats(
-    repo: &Repository,
-    path: &Path,
-    staged: bool,
-) -> (usize, usize) {
+fn compute_file_diff_stats(repo: &Repository, path: &Path, staged: bool) -> (usize, usize) {
     let pathspec = path.to_str().unwrap_or("");
     let mut diff_opts = DiffOptions::new();
     diff_opts.pathspec(pathspec);
 
     let diff_result = if staged {
         // Staged: diff HEAD tree vs index
-        let head_tree = repo.head().ok()
-            .and_then(|r| r.peel_to_tree().ok());
+        let head_tree = repo.head().ok().and_then(|r| r.peel_to_tree().ok());
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))
     } else {
         // Unstaged: diff index vs workdir
@@ -228,6 +428,101 @@ fn compute_file_diff_stats(
         }
         Err(_) => (0, 0),
     }
+}
+
+fn generate_hunk_patch_for_repo(
+    repo: &Repository,
+    file_path: &Path,
+    hunk_index: usize,
+    staged: bool,
+) -> Result<String> {
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.pathspec(file_path);
+
+    let diff = if staged {
+        let head_tree = repo.head()?.peel_to_tree().ok();
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))?
+    } else {
+        repo.diff_index_to_workdir(None, Some(&mut diff_opts))?
+    };
+
+    let mut patch_text = String::new();
+    let mut current_hunk_idx: i32 = -1;
+    let mut file_header_written = false;
+
+    diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
+        if hunk.is_none() {
+            if !file_header_written {
+                let content = String::from_utf8_lossy(line.content());
+                match line.origin() {
+                    'F' => patch_text.push_str(&content),
+                    _ => {
+                        let prefix = match line.origin() {
+                            '+' | '-' | ' ' | '>' | '<' => String::from(line.origin()),
+                            _ => String::new(),
+                        };
+                        patch_text.push_str(&prefix);
+                        patch_text.push_str(&content);
+                    }
+                }
+            }
+            return true;
+        }
+
+        let hunk = hunk.unwrap();
+        let header = String::from_utf8_lossy(hunk.header()).to_string();
+
+        let is_new_hunk = if current_hunk_idx < 0 {
+            true
+        } else {
+            current_hunk_idx >= 0 && !patch_text.contains(&header)
+        };
+
+        if is_new_hunk || current_hunk_idx < 0 {
+            current_hunk_idx += 1;
+        }
+
+        if current_hunk_idx as usize == hunk_index {
+            if !file_header_written {
+                let old_path = delta.old_file().path().unwrap_or(Path::new(""));
+                let new_path = delta.new_file().path().unwrap_or(Path::new(""));
+                patch_text.clear();
+                patch_text.push_str(&format!("--- a/{}\n", old_path.display()));
+                patch_text.push_str(&format!("+++ b/{}\n", new_path.display()));
+                file_header_written = true;
+            }
+
+            let content = String::from_utf8_lossy(line.content());
+            match line.origin() {
+                'H' => patch_text.push_str(&content),
+                '+' => {
+                    patch_text.push('+');
+                    patch_text.push_str(&content);
+                }
+                '-' => {
+                    patch_text.push('-');
+                    patch_text.push_str(&content);
+                }
+                ' ' => {
+                    patch_text.push(' ');
+                    patch_text.push_str(&content);
+                }
+                _ => {}
+            }
+        }
+
+        true
+    })?;
+
+    if patch_text.is_empty() {
+        anyhow::bail!("Could not generate patch for hunk {}", hunk_index);
+    }
+
+    if !patch_text.ends_with('\n') {
+        patch_text.push('\n');
+    }
+
+    Ok(patch_text)
 }
 
 /// Gather all refresh data from a repository at the given path.
@@ -257,22 +552,22 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
             let is_remote = branch_type == git2::BranchType::Remote;
             let tip_oid = branch.get().target();
 
-            let upstream = branch.upstream().ok().and_then(|u| {
-                u.name().ok().flatten().map(String::from)
-            });
+            let upstream = branch
+                .upstream()
+                .ok()
+                .and_then(|u| u.name().ok().flatten().map(String::from));
 
-            let (ahead, behind) = if let (Some(local_oid), Ok(upstream_ref)) =
-                (tip_oid, branch.upstream())
-            {
-                if let Some(remote_oid) = upstream_ref.get().target() {
-                    repo.graph_ahead_behind(local_oid, remote_oid)
-                        .unwrap_or((0, 0))
+            let (ahead, behind) =
+                if let (Some(local_oid), Ok(upstream_ref)) = (tip_oid, branch.upstream()) {
+                    if let Some(remote_oid) = upstream_ref.get().target() {
+                        repo.graph_ahead_behind(local_oid, remote_oid)
+                            .unwrap_or((0, 0))
+                    } else {
+                        (0, 0)
+                    }
                 } else {
                     (0, 0)
-                }
-            } else {
-                (0, 0)
-            };
+                };
 
             branches.push(BranchInfo {
                 name,
@@ -527,9 +822,7 @@ pub enum GitProjectEvent {
     StatusChanged,
     HeadChanged,
     RefsChanged,
-    OperationStarted(String),
-    OperationCompleted(String),
-    OperationFailed(String, String),
+    OperationUpdated(GitOperationUpdate),
 }
 
 /// The core Git project state holder.
@@ -545,6 +838,7 @@ pub struct GitProject {
     stashes: Vec<StashEntry>,
     status: WorkingTreeStatus,
     recent_commits: Vec<CommitInfo>,
+    next_operation_id: u64,
 
     // Filesystem watcher (kept alive)
     _watcher: Option<RecommendedWatcher>,
@@ -558,10 +852,7 @@ impl GitProject {
         let repo = Repository::open(&path)
             .with_context(|| format!("Failed to open repository at {}", path.display()))?;
 
-        let repo_path = repo
-            .workdir()
-            .unwrap_or_else(|| repo.path())
-            .to_path_buf();
+        let repo_path = repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf();
 
         let mut project = Self {
             repo_path,
@@ -572,6 +863,7 @@ impl GitProject {
             stashes: Vec::new(),
             status: WorkingTreeStatus::default(),
             recent_commits: Vec::new(),
+            next_operation_id: 1,
             _watcher: None,
         };
 
@@ -589,25 +881,27 @@ impl GitProject {
         let dirty = Arc::new(AtomicBool::new(false));
         let dirty_flag = dirty.clone();
 
-        let watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res {
-                // Ignore .git directory internal changes to avoid feedback loops
-                let dominated_by_git = event.paths.iter().all(|p| {
-                    p.components().any(|c| c.as_os_str() == ".git")
-                });
-                if dominated_by_git {
-                    return;
-                }
-                match event.kind {
-                    notify::EventKind::Create(_)
-                    | notify::EventKind::Modify(_)
-                    | notify::EventKind::Remove(_) => {
-                        dirty_flag.store(true, Ordering::Relaxed);
+        let watcher =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(event) = res {
+                    // Ignore .git directory internal changes to avoid feedback loops
+                    let dominated_by_git = event
+                        .paths
+                        .iter()
+                        .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
+                    if dominated_by_git {
+                        return;
                     }
-                    _ => {}
+                    match event.kind {
+                        notify::EventKind::Create(_)
+                        | notify::EventKind::Modify(_)
+                        | notify::EventKind::Remove(_) => {
+                            dirty_flag.store(true, Ordering::Relaxed);
+                        }
+                        _ => {}
+                    }
                 }
-            }
-        });
+            });
 
         if let Ok(mut watcher) = watcher {
             let _ = watcher.watch(&repo_path, RecursiveMode::Recursive);
@@ -654,6 +948,99 @@ impl GitProject {
         }
     }
 
+    fn begin_operation(
+        &mut self,
+        kind: GitOperationKind,
+        summary: impl Into<String>,
+        remote_name: Option<String>,
+        branch_name: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        let id = self.next_operation_id;
+        self.next_operation_id += 1;
+        cx.emit(GitProjectEvent::OperationUpdated(GitOperationUpdate {
+            id,
+            kind,
+            state: GitOperationState::Running,
+            summary: summary.into(),
+            details: None,
+            remote_name,
+            branch_name,
+            retryable: false,
+        }));
+        cx.notify();
+        id
+    }
+
+    fn complete_operation(
+        &self,
+        id: u64,
+        kind: GitOperationKind,
+        summary: impl Into<String>,
+        details: Option<String>,
+        remote_name: Option<String>,
+        branch_name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(GitProjectEvent::OperationUpdated(GitOperationUpdate {
+            id,
+            kind,
+            state: GitOperationState::Succeeded,
+            summary: summary.into(),
+            details,
+            remote_name,
+            branch_name,
+            retryable: false,
+        }));
+    }
+
+    fn fail_operation(
+        &self,
+        id: u64,
+        kind: GitOperationKind,
+        summary: impl Into<String>,
+        error: impl Into<String>,
+        remote_name: Option<String>,
+        branch_name: Option<String>,
+        retryable: bool,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(GitProjectEvent::OperationUpdated(GitOperationUpdate {
+            id,
+            kind,
+            state: GitOperationState::Failed,
+            summary: summary.into(),
+            details: Some(error.into()),
+            remote_name,
+            branch_name,
+            retryable,
+        }));
+    }
+
+    fn fail_to_start_task(
+        &mut self,
+        kind: GitOperationKind,
+        summary: impl Into<String>,
+        error: anyhow::Error,
+        retryable: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let summary = summary.into();
+        let operation_id =
+            self.begin_operation(kind, summary.clone(), None, self.head_branch.clone(), cx);
+        self.fail_operation(
+            operation_id,
+            kind,
+            summary,
+            error.to_string(),
+            None,
+            self.head_branch.clone(),
+            retryable,
+            cx,
+        );
+        cx.spawn(async move |_this: WeakEntity<Self>, _cx: &mut AsyncApp| Err(error))
+    }
+
     pub fn repo_path(&self) -> &Path {
         &self.repo_path
     }
@@ -679,6 +1066,61 @@ impl GitProject {
 
     pub fn remotes(&self) -> &[RemoteInfo] {
         &self.remotes
+    }
+
+    pub fn preferred_remote_name(&self) -> Result<String> {
+        let repo = self.open_repo()?;
+        default_remote_name(&repo)
+    }
+
+    pub fn fetch_default(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let remote_name = match self.preferred_remote_name() {
+            Ok(remote_name) => remote_name,
+            Err(error) => {
+                return self.fail_to_start_task(
+                    GitOperationKind::Fetch,
+                    "Fetch could not start",
+                    error,
+                    true,
+                    cx,
+                )
+            }
+        };
+        self.fetch(&remote_name, cx)
+    }
+
+    pub fn pull_default(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let (remote_name, branch_name) =
+            match self.open_repo().and_then(|repo| pull_target(&repo, None)) {
+                Ok(target) => target,
+                Err(error) => {
+                    return self.fail_to_start_task(
+                        GitOperationKind::Pull,
+                        "Pull could not start",
+                        error,
+                        true,
+                        cx,
+                    )
+                }
+            };
+        self.pull_from(&remote_name, &branch_name, cx)
+    }
+
+    pub fn push_default(&mut self, force: bool, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let (remote_name, branch_name, set_upstream) =
+            match self.open_repo().and_then(|repo| push_target(&repo, None)) {
+                Ok(target) => target,
+                Err(error) => {
+                    return self.fail_to_start_task(
+                        GitOperationKind::Push,
+                        "Push could not start",
+                        error,
+                        true,
+                        cx,
+                    )
+                }
+            };
+        self.push_to(&remote_name, &branch_name, force, set_upstream, cx)
     }
 
     /// Resolve a tag name to the commit OID it points to.
@@ -800,22 +1242,22 @@ impl GitProject {
             let is_remote = branch_type == git2::BranchType::Remote;
             let tip_oid = branch.get().target();
 
-            let upstream = branch.upstream().ok().and_then(|u| {
-                u.name().ok().flatten().map(String::from)
-            });
+            let upstream = branch
+                .upstream()
+                .ok()
+                .and_then(|u| u.name().ok().flatten().map(String::from));
 
-            let (ahead, behind) = if let (Some(local_oid), Ok(upstream_ref)) =
-                (tip_oid, branch.upstream())
-            {
-                if let Some(remote_oid) = upstream_ref.get().target() {
-                    repo.graph_ahead_behind(local_oid, remote_oid)
-                        .unwrap_or((0, 0))
+            let (ahead, behind) =
+                if let (Some(local_oid), Ok(upstream_ref)) = (tip_oid, branch.upstream()) {
+                    if let Some(remote_oid) = upstream_ref.get().target() {
+                        repo.graph_ahead_behind(local_oid, remote_oid)
+                            .unwrap_or((0, 0))
+                    } else {
+                        (0, 0)
+                    }
                 } else {
                     (0, 0)
-                }
-            } else {
-                (0, 0)
-            };
+                };
 
             self.branches.push(BranchInfo {
                 name,
@@ -1061,21 +1503,71 @@ impl GitProject {
     /// Stage specific files.
     pub fn stage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
         let paths = paths.to_vec();
+        let task_paths = paths.clone();
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stage,
+            if paths.len() == 1 {
+                format!("Staging {}...", paths[0].display())
+            } else {
+                format!("Staging {} files...", paths.len())
+            },
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
                     let mut index = repo.index()?;
-                    for path in &paths {
-                        if path.exists() || this.repo_path.join(path).exists() {
+                    for path in &task_paths {
+                        if repo_path.join(path).exists() {
                             index.add_path(path)?;
                         } else {
                             index.remove_path(path)?;
                         }
                     }
                     index.write()?;
-                    this.refresh_status(&repo)?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Stage,
+                                if paths.len() == 1 {
+                                    format!("Staged {}", paths[0].display())
+                                } else {
+                                    format!("Staged {} files", paths.len())
+                                },
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Stage,
+                                "Stage failed",
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1084,28 +1576,73 @@ impl GitProject {
     }
 
     /// Unstage specific files.
-    pub fn unstage_files(
-        &mut self,
-        paths: &[PathBuf],
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn unstage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
         let paths = paths.to_vec();
+        let task_paths = paths.clone();
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Unstage,
+            if paths.len() == 1 {
+                format!("Unstaging {}...", paths[0].display())
+            } else {
+                format!("Unstaging {} files...", paths.len())
+            },
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
-                    // On empty repos, head() fails — unstage by removing from index
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
                     if let Ok(head_tree) = repo.head().and_then(|h| h.peel_to_tree()) {
-                        repo.reset_default(Some(&head_tree.into_object()), &paths)?;
+                        repo.reset_default(Some(&head_tree.into_object()), &task_paths)?;
                     } else {
                         let mut index = repo.index()?;
-                        for path in &paths {
+                        for path in &task_paths {
                             let _ = index.remove_path(path);
                         }
                         index.write()?;
                     }
-                    this.refresh_status(&repo)?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Unstage,
+                                if paths.len() == 1 {
+                                    format!("Unstaged {}", paths[0].display())
+                                } else {
+                                    format!("Unstaged {} files", paths.len())
+                                },
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Unstage,
+                                "Unstage failed",
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1115,15 +1652,56 @@ impl GitProject {
 
     /// Stage all changes.
     pub fn stage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stage,
+            "Staging all changes...",
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
                     let mut index = repo.index()?;
                     index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
                     index.write()?;
-                    this.refresh_status(&repo)?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Stage,
+                                "Staged all changes",
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Stage,
+                                "Stage all failed",
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1133,16 +1711,57 @@ impl GitProject {
 
     /// Unstage all changes.
     pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Unstage,
+            "Unstaging all changes...",
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
                     if let Ok(head) = repo.head() {
                         let obj = head.peel(git2::ObjectType::Any)?;
                         repo.reset(&obj, git2::ResetType::Mixed, None)?;
                     }
-                    this.refresh_status(&repo)?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Unstage,
+                                "Unstaged all changes",
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Unstage,
+                                "Unstage all failed",
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1158,12 +1777,31 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<git2::Oid>> {
         let message = message.to_string();
+        let task_message = message.clone();
+        let commit_summary = message.lines().next().unwrap_or("").to_string();
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Commit,
+            if amend {
+                "Amending commit..."
+            } else {
+                "Creating commit..."
+            },
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
+            let result: anyhow::Result<(git2::Oid, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
                     let sig = repo.signature()?;
                     let mut index = repo.index()?;
+                    if index.is_empty() {
+                        anyhow::bail!("There are no staged changes to commit.")
+                    }
                     let tree_oid = index.write_tree()?;
                     let tree = repo.find_tree(tree_oid)?;
 
@@ -1174,7 +1812,7 @@ impl GitProject {
                             Some(&sig),
                             Some(&sig),
                             None,
-                            Some(&message),
+                            Some(&task_message),
                             Some(&tree),
                         )?
                     } else {
@@ -1184,21 +1822,53 @@ impl GitProject {
                             vec![]
                         };
                         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-                        repo.commit(
-                            Some("HEAD"),
-                            &sig,
-                            &sig,
-                            &message,
-                            &tree,
-                            &parent_refs,
-                        )?
+                        repo.commit(Some("HEAD"), &sig, &sig, &task_message, &tree, &parent_refs)?
                     };
 
-                    this.refresh_sync()?;
-                    cx.emit(GitProjectEvent::HeadChanged);
-                    cx.emit(GitProjectEvent::StatusChanged);
-                    cx.notify();
-                    Ok(oid)
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((oid, data))
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| match result {
+                    Ok((oid, data)) => {
+                        this.apply_refresh_data(data);
+                        this.complete_operation(
+                            operation_id,
+                            GitOperationKind::Commit,
+                            if amend {
+                                format!("Amended commit {}", &oid.to_string()[..7])
+                            } else {
+                                format!("Created commit {}", &oid.to_string()[..7])
+                            },
+                            Some(commit_summary.clone()),
+                            None,
+                            branch_name.clone(),
+                            cx,
+                        );
+                        cx.emit(GitProjectEvent::HeadChanged);
+                        cx.emit(GitProjectEvent::StatusChanged);
+                        cx.notify();
+                        Ok(oid)
+                    }
+                    Err(e) => {
+                        this.fail_operation(
+                            operation_id,
+                            GitOperationKind::Commit,
+                            if amend {
+                                "Amend failed"
+                            } else {
+                                "Commit failed"
+                            },
+                            e.to_string(),
+                            None,
+                            branch_name.clone(),
+                            false,
+                            cx,
+                        );
+                        Err(e)
+                    }
                 })
             })?
         })
@@ -1270,7 +1940,9 @@ impl GitProject {
                 let header = String::from_utf8_lossy(hunk.header()).to_string();
                 let expected_start = hunk.new_start();
                 // Check if this is a new hunk
-                let needs_new = current_hunks.last().map_or(true, |h| h.new_start != expected_start || h.header != header);
+                let needs_new = current_hunks.last().map_or(true, |h| {
+                    h.new_start != expected_start || h.header != header
+                });
                 if needs_new {
                     current_hunks.push(DiffHunk {
                         old_start: hunk.old_start(),
@@ -1440,38 +2112,67 @@ impl GitProject {
     }
 
     /// Checkout a branch by name.
-    pub fn checkout_branch(
-        &mut self,
-        name: &str,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn checkout_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         let name = name.to_string();
+        let task_name = name.clone();
+        let repo_path = self.repo_path.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Checkout,
+            format!("Switching to '{}'...", name),
+            None,
+            Some(name.clone()),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(String, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    ensure_clean_worktree(&repo, "Checkout")?;
+                    let current_branch = head_branch_name(&repo).ok();
+                    if current_branch.as_deref() == Some(task_name.as_str()) {
+                        anyhow::bail!("'{}' is already checked out.", task_name);
+                    }
+                    let obj = repo.revparse_single(&format!("refs/heads/{}", task_name))?;
+                    let mut checkout_opts = git2::build::CheckoutBuilder::new();
+                    checkout_opts.safe();
+                    repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
+                    repo.set_head(&format!("refs/heads/{}", task_name))?;
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((format!("Switched to '{}'", task_name), data))
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    cx.emit(GitProjectEvent::OperationStarted(format!("Checking out {}...", name)));
-                    let result: Result<()> = (|| {
-                        let repo = this.open_repo()?;
-                        let obj = repo.revparse_single(&format!("refs/heads/{}", name))?;
-                        let mut checkout_opts = git2::build::CheckoutBuilder::new();
-                        checkout_opts.safe();
-                        repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
-                        repo.set_head(&format!("refs/heads/{}", name))?;
-                        this.refresh_sync()?;
-                        Ok(())
-                    })();
                     match result {
-                        Ok(()) => {
-                            cx.emit(GitProjectEvent::OperationCompleted(format!("Switched to {}", name)));
+                        Ok((msg, data)) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Checkout,
+                                msg,
+                                Some("Working tree updated for the selected branch.".into()),
+                                None,
+                                Some(name.clone()),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::HeadChanged);
                             cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
                             cx.notify();
                         }
                         Err(e) => {
-                            cx.emit(GitProjectEvent::OperationFailed(
-                                "Checkout".to_string(),
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Checkout,
+                                format!("Checkout of '{}' failed", name),
                                 e.to_string(),
-                            ));
+                                None,
+                                Some(name.clone()),
+                                true,
+                                cx,
+                            );
                         }
                     }
                     Ok(())
@@ -1481,11 +2182,7 @@ impl GitProject {
     }
 
     /// Create a new branch from HEAD.
-    pub fn create_branch(
-        &mut self,
-        name: &str,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn create_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         self.create_branch_at(name, None, cx)
     }
 
@@ -1499,24 +2196,67 @@ impl GitProject {
     ) -> Task<Result<()>> {
         let name = name.to_string();
         let base_ref = base_ref.map(|s| s.to_string());
+        let task_name = name.clone();
+        let task_base_ref = base_ref.clone();
+        let repo_path = self.repo_path.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Branch,
+            format!("Creating branch '{}'...", name),
+            None,
+            Some(name.clone()),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
-                    let target = if let Some(ref r) = base_ref {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let target = if let Some(ref r) = task_base_ref {
                         if r.is_empty() {
                             repo.head()?.peel_to_commit()?
                         } else {
                             let obj = repo.revparse_single(r)?;
-                            obj.peel_to_commit()
-                                .map_err(|_| anyhow::anyhow!("'{}' does not resolve to a commit", r))?
+                            obj.peel_to_commit().map_err(|_| {
+                                anyhow::anyhow!("'{}' does not resolve to a commit", r)
+                            })?
                         }
                     } else {
                         repo.head()?.peel_to_commit()?
                     };
-                    repo.branch(&name, &target, false)?;
-                    this.refresh_branches(&repo)?;
-                    cx.emit(GitProjectEvent::RefsChanged);
+                    repo.branch(&task_name, &target, false)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Branch,
+                                format!("Created branch '{}'", name),
+                                base_ref.as_ref().map(|value| format!("Base: {}", value)),
+                                None,
+                                Some(name.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Branch,
+                                format!("Branch '{}' could not be created", name),
+                                e.to_string(),
+                                None,
+                                Some(name.clone()),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1525,20 +2265,57 @@ impl GitProject {
     }
 
     /// Delete a local branch.
-    pub fn delete_branch(
-        &mut self,
-        name: &str,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn delete_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         let name = name.to_string();
+        let task_name = name.clone();
+        let repo_path = self.repo_path.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Branch,
+            format!("Deleting branch '{}'...", name),
+            None,
+            Some(name.clone()),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let mut branch = repo.find_branch(&task_name, git2::BranchType::Local)?;
+                    branch.delete()?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
-                    let mut branch = repo.find_branch(&name, git2::BranchType::Local)?;
-                    branch.delete()?;
-                    this.refresh_branches(&repo)?;
-                    cx.emit(GitProjectEvent::RefsChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Branch,
+                                format!("Deleted branch '{}'", name),
+                                None,
+                                None,
+                                Some(name.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Branch,
+                                format!("Delete branch '{}' failed", name),
+                                e.to_string(),
+                                None,
+                                Some(name.clone()),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1555,14 +2332,57 @@ impl GitProject {
     ) -> Task<Result<()>> {
         let old_name = old_name.to_string();
         let new_name = new_name.to_string();
+        let task_old_name = old_name.clone();
+        let task_new_name = new_name.clone();
+        let repo_path = self.repo_path.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Branch,
+            format!("Renaming branch '{}'...", old_name),
+            None,
+            Some(old_name.clone()),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let mut branch = repo.find_branch(&task_old_name, git2::BranchType::Local)?;
+                    branch.rename(&task_new_name, false)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
-                    let mut branch = repo.find_branch(&old_name, git2::BranchType::Local)?;
-                    branch.rename(&new_name, false)?;
-                    this.refresh_branches(&repo)?;
-                    cx.emit(GitProjectEvent::RefsChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Branch,
+                                format!("Renamed '{}' to '{}'", old_name, new_name),
+                                None,
+                                None,
+                                Some(new_name.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::HeadChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Branch,
+                                format!("Rename branch '{}' failed", old_name),
+                                e.to_string(),
+                                None,
+                                Some(old_name.clone()),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1578,14 +2398,55 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let name = name.to_string();
+        let task_name = name.clone();
+        let repo_path = self.repo_path.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Tag,
+            format!("Creating tag '{}'...", name),
+            None,
+            self.head_branch.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let obj = repo.find_object(target_oid, None)?;
+                    repo.tag_lightweight(&task_name, &obj, false)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
-                    let obj = repo.find_object(target_oid, None)?;
-                    repo.tag_lightweight(&name, &obj, false)?;
-                    this.refresh_tags(&repo)?;
-                    cx.emit(GitProjectEvent::RefsChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Tag,
+                                format!("Created tag '{}'", name),
+                                None,
+                                None,
+                                this.head_branch.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Tag,
+                                format!("Tag '{}' could not be created", name),
+                                e.to_string(),
+                                None,
+                                this.head_branch.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1594,19 +2455,56 @@ impl GitProject {
     }
 
     /// Delete a tag by name.
-    pub fn delete_tag(
-        &mut self,
-        name: &str,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn delete_tag(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         let name = name.to_string();
+        let task_name = name.clone();
+        let repo_path = self.repo_path.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Tag,
+            format!("Deleting tag '{}'...", name),
+            None,
+            self.head_branch.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    repo.tag_delete(&task_name)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let repo = this.open_repo()?;
-                    repo.tag_delete(&name)?;
-                    this.refresh_tags(&repo)?;
-                    cx.emit(GitProjectEvent::RefsChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Tag,
+                                format!("Deleted tag '{}'", name),
+                                None,
+                                None,
+                                this.head_branch.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Tag,
+                                format!("Delete tag '{}' failed", name),
+                                e.to_string(),
+                                None,
+                                this.head_branch.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1615,18 +2513,55 @@ impl GitProject {
     }
 
     /// Drop a stash entry without applying it.
-    pub fn stash_drop(
-        &mut self,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn stash_drop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stash,
+            format!("Dropping stash #{}...", index),
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut repo = Repository::open(&repo_path)?;
+                    repo.stash_drop(index)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let mut repo = Repository::open(&this.repo_path)?;
-                    repo.stash_drop(index)?;
-                    this.refresh_sync()?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                format!("Dropped stash #{}", index),
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                format!("Drop stash #{} failed", index),
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1635,18 +2570,55 @@ impl GitProject {
     }
 
     /// Apply a stash entry without removing it from the stash list.
-    pub fn stash_apply(
-        &mut self,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn stash_apply(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stash,
+            format!("Applying stash #{}...", index),
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut repo = Repository::open(&repo_path)?;
+                    repo.stash_apply(index, None)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let mut repo = Repository::open(&this.repo_path)?;
-                    repo.stash_apply(index, None)?;
-                    this.refresh_sync()?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                format!("Applied stash #{}", index),
+                                Some("The stash entry was kept.".into()),
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                format!("Apply stash #{} failed", index),
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -1661,6 +2633,17 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let paths = paths.to_vec();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Discard,
+            if paths.len() == 1 {
+                format!("Discarding changes in {}...", paths[0].display())
+            } else {
+                format!("Discarding changes in {} files...", paths.len())
+            },
+            None,
+            self.head_branch.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
@@ -1668,7 +2651,9 @@ impl GitProject {
                         let repo = this.open_repo()?;
                         let workdir = repo
                             .workdir()
-                            .ok_or_else(|| anyhow::anyhow!("Bare repository has no working directory"))?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Bare repository has no working directory")
+                            })?
                             .to_path_buf();
                         let mut checkout_opts = git2::build::CheckoutBuilder::new();
                         checkout_opts.force();
@@ -1682,8 +2667,9 @@ impl GitProject {
                             if is_untracked {
                                 let full = workdir.join(path);
                                 if full.is_file() {
-                                    std::fs::remove_file(&full)
-                                        .with_context(|| format!("Failed to delete {}", full.display()))?;
+                                    std::fs::remove_file(&full).with_context(|| {
+                                        format!("Failed to delete {}", full.display())
+                                    })?;
                                 }
                             } else {
                                 checkout_opts.path(path);
@@ -1698,14 +2684,33 @@ impl GitProject {
                     })();
                     match result {
                         Ok(()) => {
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Discard,
+                                if paths.len() == 1 {
+                                    format!("Discarded changes in {}", paths[0].display())
+                                } else {
+                                    format!("Discarded changes in {} files", paths.len())
+                                },
+                                None,
+                                None,
+                                this.head_branch.clone(),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::StatusChanged);
                             cx.notify();
                         }
                         Err(e) => {
-                            cx.emit(GitProjectEvent::OperationFailed(
-                                "Discard".to_string(),
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Discard,
+                                "Discard changes failed",
                                 e.to_string(),
-                            ));
+                                None,
+                                this.head_branch.clone(),
+                                false,
+                                cx,
+                            );
                         }
                     }
                     Ok(())
@@ -1715,31 +2720,56 @@ impl GitProject {
     }
 
     /// Hard reset to HEAD, discarding all working tree and index changes.
-    pub fn reset_hard(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn reset_hard(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Reset,
+            "Resetting working tree to HEAD...",
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let head_commit = repo.head()?.peel_to_commit()?;
+                    repo.reset(head_commit.as_object(), git2::ResetType::Hard, None)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let result: Result<()> = (|| {
-                        let repo = this.open_repo()?;
-                        let head_commit = repo.head()?.peel_to_commit()?;
-                        repo.reset(head_commit.as_object(), git2::ResetType::Hard, None)?;
-                        this.refresh_sync()?;
-                        Ok(())
-                    })();
                     match result {
-                        Ok(()) => {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Reset,
+                                "Reset working tree to HEAD",
+                                Some("All staged and unstaged changes were discarded.".into()),
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::StatusChanged);
                             cx.emit(GitProjectEvent::HeadChanged);
                             cx.notify();
                         }
                         Err(e) => {
-                            cx.emit(GitProjectEvent::OperationFailed(
-                                "Reset".to_string(),
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Reset,
+                                "Reset to HEAD failed",
                                 e.to_string(),
-                            ));
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
                         }
                     }
                     Ok(())
@@ -1749,45 +2779,80 @@ impl GitProject {
     }
 
     /// Revert a commit (creates a new commit that undoes the given commit).
-    pub fn revert_commit(
-        &mut self,
-        oid: git2::Oid,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let short_id = oid.to_string()[..7].to_string();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Revert,
+            format!("Reverting {}...", short_id),
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(String, RefreshData, bool)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    ensure_clean_worktree(&repo, "Revert")?;
+                    let commit = repo.find_commit(oid)?;
+                    let summary = commit.summary().unwrap_or("").to_string();
+                    let mut opts = git2::RevertOptions::new();
+                    repo.revert(&commit, Some(&mut opts))?;
+                    let has_conflicts = repo.index()?.has_conflicts();
+                    if !has_conflicts {
+                        repo.cleanup_state()?;
+                    }
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((summary, data, has_conflicts))
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let result: Result<()> = (|| {
-                        let repo = this.open_repo()?;
-                        let commit = repo.find_commit(oid)?;
-                        let mut opts = git2::RevertOptions::new();
-                        repo.revert(&commit, Some(&mut opts))?;
-                        // Auto-commit the revert
-                        let sig = repo.signature()?;
-                        let msg = format!("Revert \"{}\"", commit.summary().unwrap_or(""));
-                        let tree_id = {
-                            let mut idx = repo.index()?;
-                            idx.write_tree()?
-                        };
-                        let tree = repo.find_tree(tree_id)?;
-                        let head_commit = repo.head()?.peel_to_commit()?;
-                        repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&head_commit])?;
-                        repo.cleanup_state()?;
-                        this.refresh_sync()?;
-                        Ok(())
-                    })();
                     match result {
-                        Ok(()) => {
+                        Ok((summary, data, has_conflicts)) => {
+                            this.apply_refresh_data(data);
                             cx.emit(GitProjectEvent::StatusChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::RefsChanged);
+                            if has_conflicts {
+                                this.fail_operation(
+                                    operation_id,
+                                    GitOperationKind::Revert,
+                                    format!("Revert of {} needs conflict resolution", short_id),
+                                    "Resolve the conflicts in the working tree, then commit the revert manually.".to_string(),
+                                    None,
+                                    branch_name.clone(),
+                                    false,
+                                    cx,
+                                );
+                            } else {
+                                this.complete_operation(
+                                    operation_id,
+                                    GitOperationKind::Revert,
+                                    format!("Reverted {}", short_id),
+                                    Some(format!(
+                                        "Revert for '{}' has been applied. Review the changes and commit them manually.",
+                                        summary
+                                    )),
+                                    None,
+                                    branch_name.clone(),
+                                    cx,
+                                );
+                            }
                             cx.notify();
                         }
                         Err(e) => {
-                            cx.emit(GitProjectEvent::OperationFailed(
-                                "Revert".to_string(),
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Revert,
+                                format!("Revert of {} failed", short_id),
                                 e.to_string(),
-                            ));
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
                         }
                     }
                     Ok(())
@@ -1797,48 +2862,80 @@ impl GitProject {
     }
 
     /// Cherry-pick a commit onto the current HEAD.
-    pub fn cherry_pick(
-        &mut self,
-        oid: git2::Oid,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn cherry_pick(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let short_id = oid.to_string()[..7].to_string();
+        let operation_id = self.begin_operation(
+            GitOperationKind::CherryPick,
+            format!("Cherry-picking {}...", short_id),
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(String, RefreshData, bool)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    ensure_clean_worktree(&repo, "Cherry-pick")?;
+                    let commit = repo.find_commit(oid)?;
+                    let summary = commit.summary().unwrap_or("").to_string();
+                    let mut opts = git2::CherrypickOptions::new();
+                    repo.cherrypick(&commit, Some(&mut opts))?;
+                    let has_conflicts = repo.index()?.has_conflicts();
+                    if !has_conflicts {
+                        repo.cleanup_state()?;
+                    }
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((summary, data, has_conflicts))
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let result: Result<()> = (|| {
-                        let repo = this.open_repo()?;
-                        let commit = repo.find_commit(oid)?;
-                        let mut opts = git2::CherrypickOptions::new();
-                        repo.cherrypick(&commit, Some(&mut opts))?;
-                        // Auto-commit the cherry-pick
-                        let sig = repo.signature()?;
-                        let msg = format!(
-                            "Cherry-pick: {}",
-                            commit.summary().unwrap_or("")
-                        );
-                        let tree_id = {
-                            let mut idx = repo.index()?;
-                            idx.write_tree()?
-                        };
-                        let tree = repo.find_tree(tree_id)?;
-                        let head_commit = repo.head()?.peel_to_commit()?;
-                        repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &[&head_commit])?;
-                        repo.cleanup_state()?;
-                        this.refresh_sync()?;
-                        Ok(())
-                    })();
                     match result {
-                        Ok(()) => {
+                        Ok((summary, data, has_conflicts)) => {
+                            this.apply_refresh_data(data);
                             cx.emit(GitProjectEvent::StatusChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::RefsChanged);
+                            if has_conflicts {
+                                this.fail_operation(
+                                    operation_id,
+                                    GitOperationKind::CherryPick,
+                                    format!("Cherry-pick of {} needs conflict resolution", short_id),
+                                    "Resolve the conflicts in the working tree, then commit the cherry-pick manually.".to_string(),
+                                    None,
+                                    branch_name.clone(),
+                                    false,
+                                    cx,
+                                );
+                            } else {
+                                this.complete_operation(
+                                    operation_id,
+                                    GitOperationKind::CherryPick,
+                                    format!("Cherry-picked {}", short_id),
+                                    Some(format!(
+                                        "Cherry-pick for '{}' has been applied. Review the changes and commit them manually.",
+                                        summary
+                                    )),
+                                    None,
+                                    branch_name.clone(),
+                                    cx,
+                                );
+                            }
                             cx.notify();
                         }
                         Err(e) => {
-                            cx.emit(GitProjectEvent::OperationFailed(
-                                "Cherry-pick".to_string(),
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::CherryPick,
+                                format!("Cherry-pick of {} failed", short_id),
                                 e.to_string(),
-                            ));
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
                         }
                     }
                     Ok(())
@@ -1848,42 +2945,62 @@ impl GitProject {
     }
 
     /// Checkout a specific commit (detached HEAD).
-    pub fn checkout_commit(
-        &mut self,
-        oid: git2::Oid,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn checkout_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let short_id = oid.to_string()[..7].to_string();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Checkout,
+            format!("Checking out {}...", short_id),
+            None,
+            Some(short_id.clone()),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    ensure_clean_worktree(&repo, "Checkout")?;
+                    let commit = repo.find_commit(oid)?;
+                    let obj = commit.into_object();
+                    let mut checkout_opts = git2::build::CheckoutBuilder::new();
+                    checkout_opts.safe();
+                    repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
+                    repo.set_head_detached(oid)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    cx.emit(GitProjectEvent::OperationStarted(
-                        format!("Checking out {}...", &oid.to_string()[..7]),
-                    ));
-                    let result: Result<()> = (|| {
-                        let repo = this.open_repo()?;
-                        let commit = repo.find_commit(oid)?;
-                        let obj = commit.into_object();
-                        let mut checkout_opts = git2::build::CheckoutBuilder::new();
-                        checkout_opts.safe();
-                        repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
-                        repo.set_head_detached(oid)?;
-                        this.refresh_sync()?;
-                        Ok(())
-                    })();
                     match result {
-                        Ok(()) => {
-                            cx.emit(GitProjectEvent::OperationCompleted(
-                                format!("Checked out {}", &oid.to_string()[..7]),
-                            ));
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Checkout,
+                                format!("Checked out {}", short_id),
+                                Some("HEAD is now detached at the selected commit.".into()),
+                                None,
+                                Some(short_id.clone()),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::HeadChanged);
                             cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
                             cx.notify();
                         }
                         Err(e) => {
-                            cx.emit(GitProjectEvent::OperationFailed(
-                                "Checkout".to_string(),
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Checkout,
+                                format!("Checkout of {} failed", short_id),
                                 e.to_string(),
-                            ));
+                                None,
+                                Some(short_id.clone()),
+                                true,
+                                cx,
+                            );
                         }
                     }
                     Ok(())
@@ -1893,12 +3010,16 @@ impl GitProject {
     }
 
     /// Remove a remote by name.
-    pub fn remove_remote(
-        &mut self,
-        name: &str,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn remove_remote(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         let name = name.to_string();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::RemoveRemote,
+            format!("Removing remote '{}'...", name),
+            Some(name.clone()),
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
@@ -1910,17 +3031,29 @@ impl GitProject {
                     })();
                     match result {
                         Ok(()) => {
-                            cx.emit(GitProjectEvent::OperationCompleted(
-                                format!("Remote '{}' removed", name),
-                            ));
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::RemoveRemote,
+                                format!("Removed remote '{}'", name),
+                                Some("Remote list refreshed.".into()),
+                                Some(name.clone()),
+                                branch_name.clone(),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::RefsChanged);
                             cx.notify();
                         }
                         Err(e) => {
-                            cx.emit(GitProjectEvent::OperationFailed(
-                                "Remove remote".to_string(),
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::RemoveRemote,
+                                format!("Removing remote '{}' failed", name),
                                 e.to_string(),
-                            ));
+                                Some(name.clone()),
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
                         }
                     }
                     Ok(())
@@ -1930,43 +3063,69 @@ impl GitProject {
     }
 
     /// Fetch from a remote.
-    pub fn fetch(
-        &mut self,
-        remote_name: &str,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn fetch(&mut self, remote_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         let remote_name = remote_name.to_string();
+        let task_remote_name = remote_name.clone();
         let repo_path = self.repo_path.clone();
-        cx.emit(GitProjectEvent::OperationStarted("Fetching...".into()));
-        cx.notify();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Fetch,
+            format!("Fetching from '{}'...", remote_name),
+            Some(remote_name.clone()),
+            self.head_branch.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            // Run blocking git operation + refresh on background executor
-            let result = cx
+            let result: anyhow::Result<(Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    {
+                    let details = {
                         let repo = Repository::open(&repo_path)?;
-                        let mut remote = repo.find_remote(&remote_name)?;
-                        let mut fetch_opts = make_fetch_options();
-                        remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
-                    }
+                        if remote_uses_ssh(&repo, &task_remote_name)? {
+                            drop(repo);
+                            run_git_network_command(
+                                &repo_path,
+                                &["fetch", "--prune", &task_remote_name],
+                            )?
+                        } else {
+                            let mut remote = repo.find_remote(&task_remote_name)?;
+                            let mut fetch_opts = make_fetch_options();
+                            remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
+                            None
+                        }
+                    };
                     let data = gather_refresh_data(&repo_path)?;
-                    anyhow::Ok(data)
+                    anyhow::Ok((details, data))
                 })
                 .await;
 
-            // Update UI on main thread
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok(data) => {
+                        Ok((details, data)) => {
                             this.apply_refresh_data(data);
-                            cx.emit(GitProjectEvent::OperationCompleted("Fetch complete".into()));
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Fetch,
+                                format!("Fetched from '{}'", remote_name),
+                                details.or(Some("Remote refs refreshed.".into())),
+                                Some(remote_name.clone()),
+                                this.head_branch.clone(),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::RefsChanged);
                         }
                         Err(e) => {
                             log::error!("Fetch failed: {}", e);
-                            cx.emit(GitProjectEvent::OperationFailed("Fetch".into(), e.to_string()));
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Fetch,
+                                format!("Fetch from '{}' failed", remote_name),
+                                e.to_string(),
+                                Some(remote_name.clone()),
+                                this.head_branch.clone(),
+                                true,
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
@@ -1977,97 +3136,172 @@ impl GitProject {
     }
 
     /// Pull from a remote (fetch + merge).
-    pub fn pull(
+    pub fn pull(&mut self, remote_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let branch_name = match self
+            .open_repo()
+            .and_then(|repo| pull_target(&repo, Some(remote_name)).map(|(_, branch)| branch))
+        {
+            Ok(branch_name) => branch_name,
+            Err(error) => {
+                return self.fail_to_start_task(
+                    GitOperationKind::Pull,
+                    "Pull could not start",
+                    error,
+                    true,
+                    cx,
+                )
+            }
+        };
+        self.pull_from(remote_name, &branch_name, cx)
+    }
+
+    pub fn pull_from(
         &mut self,
         remote_name: &str,
+        branch_name: &str,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let remote_name = remote_name.to_string();
+        let branch_name = branch_name.to_string();
+        let task_remote_name = remote_name.clone();
+        let task_branch_name = branch_name.clone();
         let repo_path = self.repo_path.clone();
-        cx.emit(GitProjectEvent::OperationStarted("Pulling...".into()));
-        cx.notify();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Pull,
+            format!("Pulling '{}' from '{}'...", branch_name, remote_name),
+            Some(remote_name.clone()),
+            Some(branch_name.clone()),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            // Run the entire pull on a background thread
-            let result: anyhow::Result<(String, RefreshData)> = cx
+            let result: anyhow::Result<(String, Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let msg = {
+                    let (msg, details) = {
                         let repo = Repository::open(&repo_path)?;
+                        ensure_clean_worktree(&repo, "Pull")?;
 
-                        // Fetch first
-                        let mut remote = repo.find_remote(&remote_name)?;
-                        let mut fetch_opts = make_fetch_options();
-                        remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
-                        drop(remote);
-
-                        // Find upstream branch to merge
-                        let head = repo.head()?;
-                        let branch_name = head.shorthand().unwrap_or("main").to_string();
-                        drop(head);
-                        let fetch_head = repo.find_reference("FETCH_HEAD")?;
-                        let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
-                        drop(fetch_head);
-
-                        // Perform merge analysis
-                        let (analysis, _pref) = repo.merge_analysis(&[&fetch_commit])?;
-
-                        if analysis.is_up_to_date() {
-                            "Already up to date".to_string()
-                        } else if analysis.is_fast_forward() {
-                            let refname = format!("refs/heads/{}", branch_name);
-                            let mut reference = repo.find_reference(&refname)?;
-                            reference.set_target(fetch_commit.id(), "Fast-forward pull")?;
-                            repo.set_head(&refname)?;
-                            repo.checkout_head(Some(
-                                git2::build::CheckoutBuilder::new().force(),
-                            ))?;
-                            "Pull complete (fast-forward)".to_string()
-                        } else if analysis.is_normal() {
-                            repo.merge(&[&fetch_commit], None, None)?;
-                            let has_conflicts = repo.index()?.has_conflicts();
-                            if !has_conflicts {
-                                let sig = repo.signature()?;
-                                let mut index = repo.index()?;
-                                let tree_oid = index.write_tree()?;
-                                let tree = repo.find_tree(tree_oid)?;
-                                let head_commit = repo.head()?.peel_to_commit()?;
-                                let fetch_commit_obj = repo.find_commit(fetch_commit.id())?;
-                                repo.commit(
-                                    Some("HEAD"),
-                                    &sig,
-                                    &sig,
-                                    &format!("Merge remote-tracking branch '{}/{}'", remote_name, branch_name),
-                                    &tree,
-                                    &[&head_commit, &fetch_commit_obj],
-                                )?;
-                                repo.cleanup_state()?;
-                                "Pull complete (merge)".to_string()
+                        if remote_uses_ssh(&repo, &task_remote_name)? {
+                            drop(repo);
+                            let details = run_git_network_command(
+                                &repo_path,
+                                &["pull", &task_remote_name, &task_branch_name],
+                            )?;
+                            let msg = if details
+                                .as_deref()
+                                .map(|text| text.contains("Already up to date."))
+                                .unwrap_or(false)
+                            {
+                                format!(
+                                    "'{}' is already up to date with '{}'",
+                                    task_branch_name, task_remote_name
+                                )
                             } else {
-                                "Pull complete (conflicts to resolve)".to_string()
-                            }
+                                format!(
+                                    "Pulled '{}' from '{}' using system Git",
+                                    task_branch_name, task_remote_name
+                                )
+                            };
+                            (msg, details)
                         } else {
-                            "Pull complete".to_string()
+                            let mut remote = repo.find_remote(&task_remote_name)?;
+                            let mut fetch_opts = make_fetch_options();
+                            remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
+                            drop(remote);
+
+                            let fetch_head = repo.find_reference("FETCH_HEAD")?;
+                            let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
+                            drop(fetch_head);
+
+                            let (analysis, _pref) = repo.merge_analysis(&[&fetch_commit])?;
+
+                            let msg = if analysis.is_up_to_date() {
+                                format!(
+                                    "'{}' is already up to date with '{}'",
+                                    task_branch_name, task_remote_name
+                                )
+                            } else if analysis.is_fast_forward() {
+                                let refname = format!("refs/heads/{}", task_branch_name);
+                                let mut reference = repo.find_reference(&refname)?;
+                                reference.set_target(fetch_commit.id(), "Fast-forward pull")?;
+                                repo.set_head(&refname)?;
+                                repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+                                format!(
+                                    "Pulled '{}' from '{}' (fast-forward)",
+                                    task_branch_name, task_remote_name
+                                )
+                            } else if analysis.is_normal() {
+                                repo.merge(&[&fetch_commit], None, None)?;
+                                let has_conflicts = repo.index()?.has_conflicts();
+                                if !has_conflicts {
+                                    let sig = repo.signature()?;
+                                    let mut index = repo.index()?;
+                                    let tree_oid = index.write_tree()?;
+                                    let tree = repo.find_tree(tree_oid)?;
+                                    let head_commit = repo.head()?.peel_to_commit()?;
+                                    let fetch_commit_obj = repo.find_commit(fetch_commit.id())?;
+                                    repo.commit(
+                                        Some("HEAD"),
+                                        &sig,
+                                        &sig,
+                                        &format!(
+                                            "Merge remote-tracking branch '{}/{}'",
+                                            task_remote_name, task_branch_name
+                                        ),
+                                        &tree,
+                                        &[&head_commit, &fetch_commit_obj],
+                                    )?;
+                                    repo.cleanup_state()?;
+                                    format!(
+                                        "Pulled '{}' from '{}' with a merge commit",
+                                        task_branch_name, task_remote_name
+                                    )
+                                } else {
+                                    anyhow::bail!(
+                                        "Pull produced conflicts. Resolve them in the working tree, then commit the merge manually."
+                                    )
+                                }
+                            } else {
+                                format!("Pulled '{}' from '{}'", task_branch_name, task_remote_name)
+                            };
+                            (msg, None)
                         }
                     }; // repo dropped here
 
                     let data = gather_refresh_data(&repo_path)?;
-                    Ok((msg, data))
+                    Ok((msg, details, data))
                 })
                 .await;
 
-            // Update UI on main thread
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok((msg, data)) => {
+                        Ok((msg, details, data)) => {
                             this.apply_refresh_data(data);
-                            cx.emit(GitProjectEvent::OperationCompleted(msg));
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Pull,
+                                msg,
+                                details.or(Some("Repository state refreshed after pull.".into())),
+                                Some(remote_name.clone()),
+                                Some(branch_name.clone()),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::HeadChanged);
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
                             log::error!("Pull failed: {}", e);
-                            cx.emit(GitProjectEvent::OperationFailed("Pull".into(), e.to_string()));
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Pull,
+                                format!("Pull from '{}' failed", remote_name),
+                                e.to_string(),
+                                Some(remote_name.clone()),
+                                Some(branch_name.clone()),
+                                true,
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
@@ -2084,46 +3318,166 @@ impl GitProject {
         force: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        let (branch_name, set_upstream) = match self.open_repo().and_then(|repo| {
+            push_target(&repo, Some(remote_name)).map(|(_, branch, set)| (branch, set))
+        }) {
+            Ok(target) => target,
+            Err(error) => {
+                return self.fail_to_start_task(
+                    GitOperationKind::Push,
+                    "Push could not start",
+                    error,
+                    true,
+                    cx,
+                )
+            }
+        };
+        self.push_to(remote_name, &branch_name, force, set_upstream, cx)
+    }
+
+    pub fn push_to(
+        &mut self,
+        remote_name: &str,
+        remote_branch_name: &str,
+        force: bool,
+        set_upstream: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let remote_name = remote_name.to_string();
+        let remote_branch_name = remote_branch_name.to_string();
+        let task_remote_name = remote_name.clone();
+        let task_remote_branch_name = remote_branch_name.clone();
         let repo_path = self.repo_path.clone();
-        cx.emit(GitProjectEvent::OperationStarted("Pushing...".into()));
-        cx.notify();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Push,
+            if force {
+                format!(
+                    "Force pushing to '{}/{}'...",
+                    remote_name, remote_branch_name
+                )
+            } else {
+                format!("Pushing to '{}/{}'...", remote_name, remote_branch_name)
+            },
+            Some(remote_name.clone()),
+            Some(remote_branch_name.clone()),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            // Run blocking push + refresh on background thread
-            let result = cx
+            let result: anyhow::Result<(String, Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    {
+                    let (msg, details) = {
                         let repo = Repository::open(&repo_path)?;
-                        let head = repo.head()?;
-                        let branch_name = head.shorthand().unwrap_or("main").to_string();
+                        let branch_name = head_branch_name(&repo)?;
 
-                        let mut remote = repo.find_remote(&remote_name)?;
-                        let refspec = if force {
-                            format!("+refs/heads/{}:refs/heads/{}", branch_name, branch_name)
+                        if remote_uses_ssh(&repo, &task_remote_name)? {
+                            drop(repo);
+                            let mut args = vec!["push"];
+                            if force {
+                                args.push("--force");
+                            }
+                            if set_upstream {
+                                args.push("--set-upstream");
+                            }
+                            args.push(task_remote_name.as_str());
+                            let refspec = format!("HEAD:{}", task_remote_branch_name);
+                            args.push(refspec.as_str());
+                            let details = run_git_network_command(&repo_path, &args)?;
+                            let msg = if force {
+                                format!(
+                                    "Force pushed '{}' to '{}/{}' using system Git",
+                                    branch_name, task_remote_name, task_remote_branch_name
+                                )
+                            } else if set_upstream {
+                                format!(
+                                    "Pushed '{}' to '{}/{}' and set upstream using system Git",
+                                    branch_name, task_remote_name, task_remote_branch_name
+                                )
+                            } else {
+                                format!(
+                                    "Pushed '{}' to '{}/{}' using system Git",
+                                    branch_name, task_remote_name, task_remote_branch_name
+                                )
+                            };
+                            (msg, details)
                         } else {
-                            format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name)
-                        };
-                        let mut push_opts = make_push_options();
-                        remote.push(&[&refspec], Some(&mut push_opts))?;
-                    }
+                            let mut remote = repo.find_remote(&task_remote_name)?;
+                            let refspec = if force {
+                                format!(
+                                    "+refs/heads/{}:refs/heads/{}",
+                                    branch_name, task_remote_branch_name
+                                )
+                            } else {
+                                format!(
+                                    "refs/heads/{}:refs/heads/{}",
+                                    branch_name, task_remote_branch_name
+                                )
+                            };
+                            let mut push_opts = make_push_options();
+                            remote.push(&[&refspec], Some(&mut push_opts))?;
+                            drop(remote);
+
+                            if set_upstream {
+                                let mut branch =
+                                    repo.find_branch(&branch_name, git2::BranchType::Local)?;
+                                branch.set_upstream(Some(&format!(
+                                    "{}/{}",
+                                    task_remote_name, task_remote_branch_name
+                                )))?;
+                            }
+
+                            let msg = if force {
+                                format!(
+                                    "Force pushed '{}' to '{}/{}'",
+                                    branch_name, task_remote_name, task_remote_branch_name
+                                )
+                            } else if set_upstream {
+                                format!(
+                                    "Pushed '{}' to '{}/{}' and set upstream",
+                                    branch_name, task_remote_name, task_remote_branch_name
+                                )
+                            } else {
+                                format!(
+                                    "Pushed '{}' to '{}/{}'",
+                                    branch_name, task_remote_name, task_remote_branch_name
+                                )
+                            };
+                            (msg, None)
+                        }
+                    };
                     let data = gather_refresh_data(&repo_path)?;
-                    anyhow::Ok(data)
+                    Ok((msg, details, data))
                 })
                 .await;
 
-            // Update UI on main thread
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok(data) => {
+                        Ok((msg, details, data)) => {
                             this.apply_refresh_data(data);
-                            cx.emit(GitProjectEvent::OperationCompleted("Push complete".into()));
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Push,
+                                msg,
+                                details.or(Some("Remote refs refreshed after push.".into())),
+                                Some(remote_name.clone()),
+                                Some(remote_branch_name.clone()),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::RefsChanged);
                         }
                         Err(e) => {
                             log::error!("Push failed: {}", e);
-                            cx.emit(GitProjectEvent::OperationFailed("Push".into(), e.to_string()));
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Push,
+                                format!("Push to '{}' failed", remote_name),
+                                e.to_string(),
+                                Some(remote_name.clone()),
+                                Some(remote_branch_name.clone()),
+                                true,
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
@@ -2134,28 +3488,32 @@ impl GitProject {
     }
 
     /// Merge a branch into the current HEAD.
-    pub fn merge_branch(
-        &mut self,
-        branch_name: &str,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn merge_branch(&mut self, branch_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         let branch_name = branch_name.to_string();
+        let task_branch_name = branch_name.clone();
         let repo_path = self.repo_path.clone();
-        cx.emit(GitProjectEvent::OperationStarted(
-            format!("Merging {}...", branch_name),
-        ));
-        cx.notify();
+        let current_branch = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Merge,
+            format!("Merging '{}'...", branch_name),
+            None,
+            current_branch.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result: anyhow::Result<(String, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
                     let msg = {
                         let repo = Repository::open(&repo_path)?;
+                        ensure_clean_worktree(&repo, "Merge")?;
 
                         // Find the branch reference and its annotated commit
                         let reference = repo
-                            .find_branch(&branch_name, git2::BranchType::Local)
-                            .or_else(|_| repo.find_branch(&branch_name, git2::BranchType::Remote))?;
+                            .find_branch(&task_branch_name, git2::BranchType::Local)
+                            .or_else(|_| {
+                                repo.find_branch(&task_branch_name, git2::BranchType::Remote)
+                            })?;
                         let annotated_commit =
                             repo.reference_to_annotated_commit(reference.get())?;
 
@@ -2172,13 +3530,13 @@ impl GitProject {
                             let mut reference = repo.find_reference(&refname)?;
                             reference.set_target(
                                 annotated_commit.id(),
-                                &format!("Fast-forward merge of '{}'", branch_name),
+                                &format!("Fast-forward merge of '{}'", task_branch_name),
                             )?;
                             repo.set_head(&refname)?;
                             repo.checkout_head(Some(
                                 git2::build::CheckoutBuilder::new().force(),
                             ))?;
-                            format!("Merged '{}' (fast-forward)", branch_name)
+                            format!("Merged '{}' (fast-forward)", task_branch_name)
                         } else if analysis.is_normal() {
                             repo.merge(&[&annotated_commit], None, None)?;
 
@@ -2202,7 +3560,7 @@ impl GitProject {
                                 &sig,
                                 &format!(
                                     "Merge branch '{}' into {}",
-                                    branch_name,
+                                    task_branch_name,
                                     repo.head()?
                                         .shorthand()
                                         .unwrap_or("HEAD")
@@ -2211,7 +3569,7 @@ impl GitProject {
                                 &[&head_commit, &merge_commit],
                             )?;
                             repo.cleanup_state()?;
-                            format!("Merged '{}' successfully", branch_name)
+                            format!("Merged '{}' successfully", task_branch_name)
                         } else {
                             "Merge complete".to_string()
                         }
@@ -2228,16 +3586,30 @@ impl GitProject {
                     match result {
                         Ok((msg, data)) => {
                             this.apply_refresh_data(data);
-                            cx.emit(GitProjectEvent::OperationCompleted(msg));
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Merge,
+                                msg,
+                                Some("Repository state refreshed after merge.".into()),
+                                None,
+                                current_branch.clone(),
+                                cx,
+                            );
                             cx.emit(GitProjectEvent::RefsChanged);
                             cx.emit(GitProjectEvent::HeadChanged);
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            cx.emit(GitProjectEvent::OperationFailed(
-                                "Merge".into(),
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Merge,
+                                format!("Merge of '{}' failed", branch_name),
                                 e.to_string(),
-                            ));
+                                None,
+                                current_branch.clone(),
+                                false,
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
@@ -2254,18 +3626,55 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let message = message.map(String::from);
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stash,
+            "Saving stash...",
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut repo = Repository::open(&repo_path)?;
+                    let sig = repo.signature()?;
+                    repo.stash_save(&sig, message.as_deref().unwrap_or("WIP"), None)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let mut repo = Repository::open(&this.repo_path)?;
-                    let sig = repo.signature()?;
-                    repo.stash_save(
-                        &sig,
-                        message.as_deref().unwrap_or("WIP"),
-                        None,
-                    )?;
-                    this.refresh_sync()?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                "Saved stash",
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                "Save stash failed",
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -2274,18 +3683,55 @@ impl GitProject {
     }
 
     /// Pop the top stash entry.
-    pub fn stash_pop(
-        &mut self,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn stash_pop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stash,
+            format!("Popping stash #{}...", index),
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut repo = Repository::open(&repo_path)?;
+                    repo.stash_pop(index, None)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let mut repo = Repository::open(&this.repo_path)?;
-                    repo.stash_pop(index, None)?;
-                    this.refresh_sync()?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                format!("Popped stash #{}", index),
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                format!("Pop stash #{} failed", index),
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -2302,15 +3748,66 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let file_path = file_path.to_path_buf();
+        let task_file_path = file_path.clone();
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stage,
+            format!(
+                "Staging hunk {} in {}...",
+                hunk_index + 1,
+                file_path.display()
+            ),
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    let patch_text = this.generate_hunk_patch(&file_path, hunk_index, false)?;
-                    let repo = this.open_repo()?;
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let patch_text =
+                        generate_hunk_patch_for_repo(&repo, &task_file_path, hunk_index, false)?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     repo.apply(&diff, git2::ApplyLocation::Index, None)?;
-                    this.refresh_status(&repo)?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Stage,
+                                format!(
+                                    "Staged hunk {} in {}",
+                                    hunk_index + 1,
+                                    file_path.display()
+                                ),
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Stage,
+                                "Stage hunk failed",
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -2326,16 +3823,67 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let file_path = file_path.to_path_buf();
+        let task_file_path = file_path.clone();
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Unstage,
+            format!(
+                "Unstaging hunk {} in {}...",
+                hunk_index + 1,
+                file_path.display()
+            ),
+            None,
+            branch_name.clone(),
+            cx,
+        );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.update(|cx| {
-                this.update(cx, |this, cx| {
-                    let patch_text = this.generate_hunk_patch(&file_path, hunk_index, true)?;
-                    let repo = this.open_repo()?;
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let patch_text =
+                        generate_hunk_patch_for_repo(&repo, &task_file_path, hunk_index, true)?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     let mut opts = git2::ApplyOptions::new();
                     repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut opts))?;
-                    this.refresh_status(&repo)?;
-                    cx.emit(GitProjectEvent::StatusChanged);
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Unstage,
+                                format!(
+                                    "Unstaged hunk {} in {}",
+                                    hunk_index + 1,
+                                    file_path.display()
+                                ),
+                                None,
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Unstage,
+                                "Unstage hunk failed",
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
                     cx.notify();
                     Ok(())
                 })
@@ -2344,111 +3892,6 @@ impl GitProject {
     }
 
     /// Generate a patch for a single hunk from a file's diff.
-    fn generate_hunk_patch(&self, file_path: &Path, hunk_index: usize, staged: bool) -> Result<String> {
-        let repo = self.open_repo()?;
-        let mut diff_opts = DiffOptions::new();
-        diff_opts.pathspec(file_path);
-
-        let diff = if staged {
-            let head_tree = repo.head()?.peel_to_tree().ok();
-            repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))?
-        } else {
-            repo.diff_index_to_workdir(None, Some(&mut diff_opts))?
-        };
-
-        let mut patch_text = String::new();
-        let mut current_hunk_idx: i32 = -1;
-        let mut file_header_written = false;
-
-        diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-            // Write file header lines (those without a hunk)
-            if hunk.is_none() {
-                if !file_header_written {
-                    let content = String::from_utf8_lossy(line.content());
-                    match line.origin() {
-                        'F' => {
-                            // File header line - write as-is
-                            patch_text.push_str(&content);
-                        }
-                        _ => {
-                            let prefix = match line.origin() {
-                                '+' | '-' | ' ' | '>' | '<' => {
-                                    String::from(line.origin())
-                                }
-                                _ => String::new(),
-                            };
-                            patch_text.push_str(&prefix);
-                            patch_text.push_str(&content);
-                        }
-                    }
-                }
-                return true;
-            }
-
-            let hunk = hunk.unwrap();
-            let header = String::from_utf8_lossy(hunk.header()).to_string();
-
-            // Track hunk index
-            let is_new_hunk = if current_hunk_idx < 0 {
-                true
-            } else {
-                // Check if header changed
-                let _prev_start = hunk.new_start();
-                current_hunk_idx >= 0 && !patch_text.contains(&header)
-            };
-
-            if is_new_hunk || current_hunk_idx < 0 {
-                current_hunk_idx += 1;
-            }
-
-            // Only include lines from the target hunk
-            if current_hunk_idx as usize == hunk_index {
-                if !file_header_written {
-                    // Generate a minimal file header
-                    let old_path = delta.old_file().path().unwrap_or(Path::new(""));
-                    let new_path = delta.new_file().path().unwrap_or(Path::new(""));
-                    patch_text.clear();
-                    patch_text.push_str(&format!("--- a/{}\n", old_path.display()));
-                    patch_text.push_str(&format!("+++ b/{}\n", new_path.display()));
-                    file_header_written = true;
-                }
-
-                let content = String::from_utf8_lossy(line.content());
-                match line.origin() {
-                    'H' => {
-                        patch_text.push_str(&content);
-                    }
-                    '+' => {
-                        patch_text.push('+');
-                        patch_text.push_str(&content);
-                    }
-                    '-' => {
-                        patch_text.push('-');
-                        patch_text.push_str(&content);
-                    }
-                    ' ' => {
-                        patch_text.push(' ');
-                        patch_text.push_str(&content);
-                    }
-                    _ => {}
-                }
-            }
-
-            true
-        })?;
-
-        if patch_text.is_empty() {
-            anyhow::bail!("Could not generate patch for hunk {}", hunk_index);
-        }
-
-        // Ensure trailing newline
-        if !patch_text.ends_with('\n') {
-            patch_text.push('\n');
-        }
-
-        Ok(patch_text)
-    }
-
     /// Get the staged diff as a string (for AI commit message generation).
     pub fn staged_diff_text(&self) -> Result<String> {
         let repo = self.open_repo()?;
@@ -2475,7 +3918,11 @@ impl GitProject {
     pub fn staged_summary(&self) -> String {
         let mut parts = Vec::new();
         for file in &self.status.staged {
-            parts.push(format!("{} {}", file.kind.short_code(), file.path.display()));
+            parts.push(format!(
+                "{} {}",
+                file.kind.short_code(),
+                file.path.display()
+            ));
         }
         parts.join("\n")
     }
@@ -2494,7 +3941,9 @@ fn parse_file_diff(path: &Path, diff: &git2::Diff) -> Result<FileDiff> {
         if let Some(hunk) = hunk {
             let header = String::from_utf8_lossy(hunk.header()).to_string();
             let expected_start = hunk.new_start();
-            let needs_new = file_diff.hunks.last().map_or(true, |h| h.new_start != expected_start || h.header != header);
+            let needs_new = file_diff.hunks.last().map_or(true, |h| {
+                h.new_start != expected_start || h.header != header
+            });
             if needs_new {
                 file_diff.hunks.push(DiffHunk {
                     old_start: hunk.old_start(),

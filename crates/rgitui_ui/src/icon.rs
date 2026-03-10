@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{svg, App, Window, Rems, rems};
+use gpui::{rems, svg, App, Rems, Window};
 use rgitui_theme::Color;
 
 /// Icon names mapping to SVG file paths.
@@ -139,10 +139,10 @@ pub enum IconSize {
 impl IconSize {
     pub fn rems(&self) -> Rems {
         match self {
-            IconSize::XSmall => rems(0.75),   // 12px
-            IconSize::Small => rems(0.875),   // 14px
-            IconSize::Medium => rems(1.0),    // 16px
-            IconSize::Large => rems(1.5),     // 24px
+            IconSize::XSmall => rems(0.75), // 12px
+            IconSize::Small => rems(0.875), // 14px
+            IconSize::Medium => rems(1.0),  // 16px
+            IconSize::Large => rems(1.5),   // 24px
             IconSize::Custom(r) => *r,
         }
     }

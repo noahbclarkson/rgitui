@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
-use gpui::{App, Global, Hsla, Styled, px, point, BoxShadow};
+use gpui::{point, px, App, BoxShadow, Global, Hsla, Styled};
 
 use crate::colors::{
-    ThemeColors, StatusColors,
-    catppuccin_mocha_colors, catppuccin_mocha_status,
-    catppuccin_latte_colors, catppuccin_latte_status,
-    one_dark_colors, one_dark_status,
-    github_dark_colors, github_dark_status,
-    dracula_colors, dracula_status,
+    catppuccin_latte_colors, catppuccin_latte_status, catppuccin_mocha_colors,
+    catppuccin_mocha_status, dracula_colors, dracula_status, github_dark_colors,
+    github_dark_status, one_dark_colors, one_dark_status, StatusColors, ThemeColors,
 };
 
 /// Visual appearance mode.
@@ -146,7 +143,12 @@ impl ElevationIndex {
             ElevationIndex::Background | ElevationIndex::Surface => vec![],
             ElevationIndex::ElevatedSurface => vec![
                 BoxShadow {
-                    color: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.12 },
+                    color: Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.12,
+                    },
                     offset: point(px(0.), px(2.)),
                     blur_radius: px(3.),
                     spread_radius: px(0.),
@@ -165,13 +167,23 @@ impl ElevationIndex {
             ],
             ElevationIndex::ModalSurface => vec![
                 BoxShadow {
-                    color: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.2 },
+                    color: Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.2,
+                    },
                     offset: point(px(0.), px(8.)),
                     blur_radius: px(16.),
                     spread_radius: px(0.),
                 },
                 BoxShadow {
-                    color: Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.12 },
+                    color: Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.12,
+                    },
                     offset: point(px(0.), px(2.)),
                     blur_radius: px(4.),
                     spread_radius: px(0.),

@@ -58,21 +58,23 @@ impl RenderOnce for Modal {
         if let Some(title) = self.title {
             container = container
                 .child(
-                    div()
-                        .h_flex()
-                        .px_4()
-                        .py_3()
-                        .child(
-                            Label::new(title)
-                                .size(LabelSize::Large)
-                                .weight(gpui::FontWeight::SEMIBOLD),
-                        ),
+                    div().h_flex().px_4().py_3().child(
+                        Label::new(title)
+                            .size(LabelSize::Large)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
                 )
                 .child(Divider::new());
         }
 
         // Body
-        let mut body = div().id("modal-body").v_flex().flex_1().p_4().gap_3().overflow_y_scroll();
+        let mut body = div()
+            .id("modal-body")
+            .v_flex()
+            .flex_1()
+            .p_4()
+            .gap_3()
+            .overflow_y_scroll();
         for child in self.body {
             body = body.child(child);
         }
@@ -80,17 +82,15 @@ impl RenderOnce for Modal {
 
         // Footer
         if let Some(footer) = self.footer {
-            container = container
-                .child(Divider::new())
-                .child(
-                    div()
-                        .h_flex()
-                        .px_4()
-                        .py_3()
-                        .justify_end()
-                        .gap_2()
-                        .child(footer),
-                );
+            container = container.child(Divider::new()).child(
+                div()
+                    .h_flex()
+                    .px_4()
+                    .py_3()
+                    .justify_end()
+                    .gap_2()
+                    .child(footer),
+            );
         }
 
         // Backdrop

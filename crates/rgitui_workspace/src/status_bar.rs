@@ -136,12 +136,7 @@ impl RenderOnce for StatusBar {
 
         // Separator
         if has_branch {
-            bar = bar.child(
-                div()
-                    .w(px(1.))
-                    .h(px(14.))
-                    .bg(colors.border_variant),
-            );
+            bar = bar.child(div().w(px(1.)).h(px(14.)).bg(colors.border_variant));
         }
 
         // Operation message
@@ -181,8 +176,7 @@ impl RenderOnce for StatusBar {
             );
         }
         if self.unstaged_count > 0 {
-            let unstaged_text: SharedString =
-                format!("{} changed", self.unstaged_count).into();
+            let unstaged_text: SharedString = format!("{} changed", self.unstaged_count).into();
             bar = bar.child(
                 div()
                     .h_flex()

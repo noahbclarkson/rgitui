@@ -28,8 +28,8 @@ impl ToastKind {
         match self {
             ToastKind::Success => IconName::Check,
             ToastKind::Error => IconName::X,
-            ToastKind::Info => IconName::Info,
-            ToastKind::Warning => IconName::AlertTriangle,
+            ToastKind::Info => IconName::Search,
+            ToastKind::Warning => IconName::FileConflict,
         }
     }
 }
@@ -57,7 +57,12 @@ impl ToastLayer {
     }
 
     /// Show a new toast notification. It will auto-dismiss after 4 seconds.
-    pub fn show_toast(&mut self, message: impl Into<String>, kind: ToastKind, cx: &mut Context<Self>) {
+    pub fn show_toast(
+        &mut self,
+        message: impl Into<String>,
+        kind: ToastKind,
+        cx: &mut Context<Self>,
+    ) {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -69,14 +74,15 @@ impl ToastLayer {
         });
 
         // Schedule auto-dismiss
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            smol::Timer::after(Duration::from_secs(4)).await;
-            cx.update(|cx| {
-                let _ = this.update(cx, |this, cx| {
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                cx.background_executor().timer(Duration::from_secs(4)).await;
+                this.update(cx, |this, cx| {
                     this.dismiss_toast(id, cx);
-                });
-            });
-        })
+                })
+                .ok();
+            },
+        )
         .detach();
 
         cx.notify();
@@ -128,63 +134,56 @@ impl Render for ToastLayer {
             let entity = cx.entity().downgrade();
             let message: SharedString = toast.message.clone().into();
 
-            stack = stack.child(
-                div()
-                    .id(ElementId::NamedInteger("toast".into(), toast_id as u64))
-                    .h_flex()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .bg(colors.elevated_surface_background)
-                    .border_1()
-                    .border_color(border_color)
-                    .rounded_lg()
-                    .shadow_md()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .p_1()
-                            .rounded_md()
-                            .bg(bg)
-                            .child(
-                                Icon::new(icon_name)
-                                    .size(IconSize::Small)
-                                    .color(kind_color),
+            stack =
+                stack.child(
+                    div()
+                        .id(ElementId::NamedInteger("toast".into(), toast_id as u64))
+                        .h_flex()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .bg(colors.elevated_surface_background)
+                        .border_1()
+                        .border_color(border_color)
+                        .elevation_2(cx)
+                        .items_center()
+                        .child(
+                            div().flex_shrink_0().p_1().rounded_md().bg(bg).child(
+                                Icon::new(icon_name).size(IconSize::Small).color(kind_color),
                             ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
+                        )
+                        .child(
+                            div().flex_1().min_w_0().child(
                                 Label::new(message)
                                     .size(LabelSize::Small)
                                     .color(Color::Default),
                             ),
-                    )
-                    .child(
-                        div()
-                            .id(ElementId::NamedInteger("toast-close".into(), toast_id as u64))
-                            .flex_shrink_0()
-                            .cursor_pointer()
-                            .rounded_md()
-                            .p(px(2.))
-                            .hover(|s| s.bg(colors.ghost_element_hover))
-                            .on_click(move |_event, _window, cx| {
-                                entity
-                                    .update(cx, |this, cx| {
-                                        this.dismiss_toast(toast_id, cx);
-                                    })
-                                    .ok();
-                            })
-                            .child(
-                                Icon::new(IconName::X)
-                                    .size(IconSize::XSmall)
-                                    .color(Color::Muted),
-                            ),
-                    ),
-            );
+                        )
+                        .child(
+                            div()
+                                .id(ElementId::NamedInteger(
+                                    "toast-close".into(),
+                                    toast_id as u64,
+                                ))
+                                .flex_shrink_0()
+                                .cursor_pointer()
+                                .rounded_md()
+                                .p(px(2.))
+                                .hover(|s| s.bg(colors.ghost_element_hover))
+                                .on_click(move |_event, _window, cx| {
+                                    entity
+                                        .update(cx, |this, cx| {
+                                            this.dismiss_toast(toast_id, cx);
+                                        })
+                                        .ok();
+                                })
+                                .child(
+                                    Icon::new(IconName::X)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
+                        ),
+                );
         }
 
         stack.into_any_element()

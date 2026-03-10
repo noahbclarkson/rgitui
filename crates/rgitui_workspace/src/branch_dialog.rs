@@ -1,5 +1,8 @@
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString, Window};
+use gpui::{
+    div, px, ClickEvent, Context, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString,
+    Window,
+};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Button, ButtonStyle, Label, LabelSize};
 
@@ -134,7 +137,12 @@ impl BranchDialog {
         cx.notify();
     }
 
-    fn handle_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
 
@@ -240,19 +248,11 @@ impl Render for BranchDialog {
         };
 
         // Text input field
-        let mut input_row = div()
-            .h_flex()
-            .items_center()
-            .w_full();
+        let mut input_row = div().h_flex().items_center().w_full();
 
         if is_empty {
             input_row = input_row
-                .child(
-                    div()
-                        .w(px(2.))
-                        .h(px(16.))
-                        .bg(colors.text),
-                )
+                .child(div().w(px(2.)).h(px(16.)).bg(colors.text))
                 .child(
                     Label::new("feature/my-branch")
                         .size(LabelSize::Small)
@@ -260,35 +260,29 @@ impl Render for BranchDialog {
                 );
         } else {
             if !before_cursor.is_empty() {
-                input_row = input_row.child(
-                    Label::new(SharedString::from(before_cursor))
-                        .size(LabelSize::Small),
-                );
+                input_row = input_row
+                    .child(Label::new(SharedString::from(before_cursor)).size(LabelSize::Small));
             }
             if !cursor_char.is_empty() {
                 input_row = input_row.child(
-                    div()
-                        .bg(colors.text)
-                        .child(
-                            Label::new(SharedString::from(cursor_char))
-                                .size(LabelSize::Small)
-                                .color(Color::Custom(gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 })),
-                        ),
+                    div().bg(colors.text).child(
+                        Label::new(SharedString::from(cursor_char))
+                            .size(LabelSize::Small)
+                            .color(Color::Custom(gpui::Hsla {
+                                h: 0.0,
+                                s: 0.0,
+                                l: 0.0,
+                                a: 1.0,
+                            })),
+                    ),
                 );
             } else {
                 // Cursor at end
-                input_row = input_row.child(
-                    div()
-                        .w(px(2.))
-                        .h(px(16.))
-                        .bg(colors.text),
-                );
+                input_row = input_row.child(div().w(px(2.)).h(px(16.)).bg(colors.text));
             }
             if !after_cursor.is_empty() {
-                input_row = input_row.child(
-                    Label::new(SharedString::from(after_cursor))
-                        .size(LabelSize::Small),
-                );
+                input_row = input_row
+                    .child(Label::new(SharedString::from(after_cursor)).size(LabelSize::Small));
             }
         }
 
@@ -368,12 +362,11 @@ impl Render for BranchDialog {
                             this.dismiss(cx);
                         })),
                 )
-                .child(
-                    Button::new("create-branch", "Create")
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.try_create(cx);
-                        })),
-                ),
+                .child(Button::new("create-branch", "Create").on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
+                        this.try_create(cx);
+                    },
+                ))),
         );
 
         // Backdrop + modal

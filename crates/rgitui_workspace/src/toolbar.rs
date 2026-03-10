@@ -1,7 +1,7 @@
 use gpui::prelude::*;
+use gpui::SharedString;
 use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use gpui::SharedString;
 use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize, VerticalDivider};
 
 /// Events emitted by the toolbar.
@@ -111,8 +111,7 @@ impl Toolbar {
             .gap(px(5.))
             .items_center()
             .justify_center()
-            .rounded(px(6.))
-;
+            .rounded(px(6.));
 
         if disabled || loading {
             el.child(Icon::new(icon).size(IconSize::Small).color(Color::Disabled))
@@ -201,43 +200,44 @@ impl Render for Toolbar {
                     self.is_fetching,
                     cx,
                 )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Fetch)),
-                ),
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Fetch))),
             )
             .child({
-                let mut btn = self.icon_button(
-                    "tb-pull",
-                    IconName::ArrowDown,
-                    pull_label,
-                    "Pull from remote",
-                    !self.can_pull,
-                    self.is_pulling,
-                    cx,
-                )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Pull)),
-                );
+                let mut btn = self
+                    .icon_button(
+                        "tb-pull",
+                        IconName::ArrowDown,
+                        pull_label,
+                        "Pull from remote",
+                        !self.can_pull,
+                        self.is_pulling,
+                        cx,
+                    )
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Pull)));
                 if self.behind > 0 && !self.is_pulling {
-                    btn = btn.child(Badge::new(SharedString::from(self.behind.to_string())).color(Color::Info));
+                    btn = btn.child(
+                        Badge::new(SharedString::from(self.behind.to_string())).color(Color::Info),
+                    );
                 }
                 btn
             })
             .child({
-                let mut btn = self.icon_button(
-                    "tb-push",
-                    IconName::ArrowUp,
-                    push_label,
-                    "Push to remote",
-                    !self.can_push,
-                    self.is_pushing,
-                    cx,
-                )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Push)),
-                );
+                let mut btn = self
+                    .icon_button(
+                        "tb-push",
+                        IconName::ArrowUp,
+                        push_label,
+                        "Push to remote",
+                        !self.can_push,
+                        self.is_pushing,
+                        cx,
+                    )
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Push)));
                 if self.ahead > 0 && !self.is_pushing {
-                    btn = btn.child(Badge::new(SharedString::from(self.ahead.to_string())).color(Color::Success));
+                    btn = btn.child(
+                        Badge::new(SharedString::from(self.ahead.to_string()))
+                            .color(Color::Success),
+                    );
                 }
                 btn
             })
@@ -253,9 +253,7 @@ impl Render for Toolbar {
                     false,
                     cx,
                 )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch)),
-                ),
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch))),
             )
             .child(VerticalDivider::new())
             // Stash operations
@@ -269,9 +267,7 @@ impl Render for Toolbar {
                     false,
                     cx,
                 )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashSave)),
-                ),
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashSave))),
             )
             .child(
                 self.icon_button(
@@ -283,9 +279,7 @@ impl Render for Toolbar {
                     false,
                     cx,
                 )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashPop)),
-                ),
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashPop))),
             )
             // Spacer
             .child(div().flex_1())
@@ -303,15 +297,10 @@ impl Render for Toolbar {
                     ),
             )
             .child(
-                self.icon_only_button(
-                    "tb-settings",
-                    IconName::Settings,
-                    "Settings (Ctrl+,)",
-                    cx,
-                )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Settings)),
-                ),
+                self.icon_only_button("tb-settings", IconName::Settings, "Settings (Ctrl+,)", cx)
+                    .on_click(
+                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Settings)),
+                    ),
             )
     }
 }

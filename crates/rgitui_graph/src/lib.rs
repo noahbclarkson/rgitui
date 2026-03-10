@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    App, canvas, div, img, point, px, Bounds, ClickEvent, Context, ElementId, EventEmitter,
-    FocusHandle, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, ObjectFit,
-    PathBuilder, Pixels, Point, Render, ScrollStrategy, SharedString, UniformListScrollHandle,
-    WeakEntity, Window, uniform_list,
+    canvas, div, img, point, px, uniform_list, App, Bounds, ClickEvent, Context, ElementId,
+    EventEmitter, FocusHandle, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent,
+    ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy, SharedString,
+    UniformListScrollHandle, WeakEntity, Window,
 };
-use rgitui_git::{CommitInfo, GraphEdge, GraphRow, RefLabel, compute_graph};
+use rgitui_git::{compute_graph, CommitInfo, GraphEdge, GraphRow, RefLabel};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{AvatarCache, Badge, Icon, IconName, IconSize, Label, LabelSize};
 
@@ -215,7 +215,8 @@ impl GraphView {
         self.current_match = (self.current_match + 1) % self.filter_matches.len();
         let index = self.filter_matches[self.current_match];
         self.select_index(index, cx);
-        self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
+        self.scroll_handle
+            .scroll_to_item(index, ScrollStrategy::Top);
     }
 
     /// Jump to the previous search match.
@@ -230,7 +231,8 @@ impl GraphView {
         }
         let index = self.filter_matches[self.current_match];
         self.select_index(index, cx);
-        self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
+        self.scroll_handle
+            .scroll_to_item(index, ScrollStrategy::Top);
     }
 
     /// Jump to first match after updating the search filter.
@@ -239,7 +241,8 @@ impl GraphView {
             self.current_match = 0;
             let index = self.filter_matches[0];
             self.select_index(index, cx);
-            self.scroll_handle.scroll_to_item(index, ScrollStrategy::Top);
+            self.scroll_handle
+                .scroll_to_item(index, ScrollStrategy::Top);
         }
     }
 
@@ -317,13 +320,15 @@ impl GraphView {
             }
             "left" => {
                 if self.search_cursor_pos > 0 {
-                    self.search_cursor_pos = Self::prev_char_boundary(&self.search_query, self.search_cursor_pos);
+                    self.search_cursor_pos =
+                        Self::prev_char_boundary(&self.search_query, self.search_cursor_pos);
                     cx.notify();
                 }
             }
             "right" => {
                 if self.search_cursor_pos < self.search_query.len() {
-                    self.search_cursor_pos = Self::next_char_boundary(&self.search_query, self.search_cursor_pos);
+                    self.search_cursor_pos =
+                        Self::next_char_boundary(&self.search_query, self.search_cursor_pos);
                     cx.notify();
                 }
             }
@@ -339,7 +344,8 @@ impl GraphView {
                 // Insert printable characters
                 if !ctrl {
                     if let Some(key_char) = &keystroke.key_char {
-                        self.search_query.insert_str(self.search_cursor_pos, key_char);
+                        self.search_query
+                            .insert_str(self.search_cursor_pos, key_char);
                         self.search_cursor_pos += key_char.len();
                         self.update_search_filter();
                         self.jump_to_first_match(cx);
@@ -443,7 +449,11 @@ impl Render for GraphView {
                     .h_flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(Icon::new(IconName::GitCommit).size(IconSize::XSmall).color(Color::Muted))
+                    .child(
+                        Icon::new(IconName::GitCommit)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
                     .child(
                         Label::new("Graph")
                             .size(LabelSize::XSmall)
@@ -452,25 +462,20 @@ impl Render for GraphView {
                     ),
             )
             .child(
-                div()
-                    .w(px(80.))
-                    .flex_shrink_0()
-                    .child(
-                        Label::new("Hash")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted)
-                            .weight(gpui::FontWeight::SEMIBOLD),
-                    ),
+                div().w(px(80.)).flex_shrink_0().child(
+                    Label::new("Hash")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted)
+                        .weight(gpui::FontWeight::SEMIBOLD),
+                ),
             )
             .child(
-                div()
-                    .flex_1()
-                    .child(
-                        Label::new("Message")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted)
-                            .weight(gpui::FontWeight::SEMIBOLD),
-                    ),
+                div().flex_1().child(
+                    Label::new("Message")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted)
+                        .weight(gpui::FontWeight::SEMIBOLD),
+                ),
             )
             .child(
                 div()
@@ -479,7 +484,11 @@ impl Render for GraphView {
                     .h_flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(Icon::new(IconName::User).size(IconSize::XSmall).color(Color::Muted))
+                    .child(
+                        Icon::new(IconName::User)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
                     .child(
                         Label::new("Author")
                             .size(LabelSize::XSmall)
@@ -494,7 +503,11 @@ impl Render for GraphView {
                     .h_flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(Icon::new(IconName::Clock).size(IconSize::XSmall).color(Color::Muted))
+                    .child(
+                        Icon::new(IconName::Clock)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
                     .child(
                         Label::new("Date")
                             .size(LabelSize::XSmall)
@@ -869,9 +882,11 @@ impl Render for GraphView {
             .on_mouse_down(MouseButton::Left, {
                 let view_dismiss = cx.weak_entity();
                 move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                    view_dismiss.update(cx, |this: &mut GraphView, cx| {
-                        this.dismiss_context_menu(cx);
-                    }).ok();
+                    view_dismiss
+                        .update(cx, |this: &mut GraphView, cx| {
+                            this.dismiss_context_menu(cx);
+                        })
+                        .ok();
                 }
             })
             .child(header);
@@ -898,12 +913,7 @@ impl Render for GraphView {
             } else if self.filter_matches.is_empty() {
                 "No matches".into()
             } else {
-                format!(
-                    "{}/{}",
-                    self.current_match + 1,
-                    self.filter_matches.len()
-                )
-                .into()
+                format!("{}/{}", self.current_match + 1, self.filter_matches.len()).into()
             };
             let query_color = if self.search_query.is_empty() && !is_search_focused {
                 Color::Placeholder
@@ -939,13 +949,11 @@ impl Render for GraphView {
                         .color(Color::Muted),
                 )
                 .child(
-                    div()
-                        .flex_1()
-                        .child(
-                            Label::new(query_display)
-                                .size(LabelSize::Small)
-                                .color(query_color),
-                        ),
+                    div().flex_1().child(
+                        Label::new(query_display)
+                            .size(LabelSize::Small)
+                            .color(query_color),
+                    ),
                 )
                 .child(
                     Label::new(match_count_text)
@@ -958,11 +966,24 @@ impl Render for GraphView {
                         .cursor_pointer()
                         .rounded_sm()
                         .p(px(2.))
-                        .hover(move |s| s.bg(if has_matches { hover_bg } else { gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } }))
+                        .hover(move |s| {
+                            s.bg(if has_matches {
+                                hover_bg
+                            } else {
+                                gpui::Hsla {
+                                    h: 0.0,
+                                    s: 0.0,
+                                    l: 0.0,
+                                    a: 0.0,
+                                }
+                            })
+                        })
                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                            view_prev.update(cx, |this: &mut GraphView, cx| {
-                                this.jump_to_prev_match(cx);
-                            }).ok();
+                            view_prev
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.jump_to_prev_match(cx);
+                                })
+                                .ok();
                         })
                         .child(
                             Icon::new(IconName::ChevronUp)
@@ -976,11 +997,24 @@ impl Render for GraphView {
                         .cursor_pointer()
                         .rounded_sm()
                         .p(px(2.))
-                        .hover(move |s| s.bg(if has_matches { active_bg } else { gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } }))
+                        .hover(move |s| {
+                            s.bg(if has_matches {
+                                active_bg
+                            } else {
+                                gpui::Hsla {
+                                    h: 0.0,
+                                    s: 0.0,
+                                    l: 0.0,
+                                    a: 0.0,
+                                }
+                            })
+                        })
                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                            view_next.update(cx, |this: &mut GraphView, cx| {
-                                this.jump_to_next_match(cx);
-                            }).ok();
+                            view_next
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.jump_to_next_match(cx);
+                                })
+                                .ok();
                         })
                         .child(
                             Icon::new(IconName::ChevronDown)
@@ -1030,13 +1064,19 @@ impl Render for GraphView {
                     .rounded_md()
                     .elevation_3(cx)
                     // Prevent left-click on menu from dismissing via container handler
-                    .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                        cx.stop_propagation();
-                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                            cx.stop_propagation();
+                        },
+                    )
                     // Prevent right-click on menu from opening another menu
-                    .on_mouse_down(MouseButton::Right, |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                        cx.stop_propagation();
-                    });
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                            cx.stop_propagation();
+                        },
+                    );
 
                 for (idx, (label_text, icon_name)) in menu_items.iter().enumerate() {
                     let label: SharedString = (*label_text).into();
@@ -1071,65 +1111,76 @@ impl Render for GraphView {
                     match idx {
                         0 => {
                             let w = weak.clone();
-                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                w.update(cx, |this: &mut GraphView, cx| {
-                                    this.context_menu = None;
-                                    cx.emit(GraphViewEvent::CherryPick(oid));
-                                    cx.notify();
-                                }).ok();
-                            });
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::CherryPick(oid));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
                         }
                         1 => {
                             let w = weak.clone();
-                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                w.update(cx, |this: &mut GraphView, cx| {
-                                    this.context_menu = None;
-                                    cx.emit(GraphViewEvent::RevertCommit(oid));
-                                    cx.notify();
-                                }).ok();
-                            });
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::RevertCommit(oid));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
                         }
                         2 => {
                             let w = weak.clone();
-                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                w.update(cx, |this: &mut GraphView, cx| {
-                                    this.context_menu = None;
-                                    cx.emit(GraphViewEvent::CheckoutCommit(oid));
-                                    cx.notify();
-                                }).ok();
-                            });
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::CheckoutCommit(oid));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
                         }
                         3 => {
                             let w = weak.clone();
-                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                w.update(cx, |this: &mut GraphView, cx| {
-                                    this.context_menu = None;
-                                    cx.emit(GraphViewEvent::CreateBranchAtCommit(oid));
-                                    cx.notify();
-                                }).ok();
-                            });
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::CreateBranchAtCommit(oid));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
                         }
                         4 => {
                             let w = weak.clone();
                             let sha_for_click = sha_clone.clone();
-                            item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                let sha_val = sha_for_click.clone();
-                                w.update(cx, |this: &mut GraphView, cx| {
-                                    this.context_menu = None;
-                                    cx.emit(GraphViewEvent::CopyCommitSha(sha_val));
-                                    cx.notify();
-                                }).ok();
-                            });
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    let sha_val = sha_for_click.clone();
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::CopyCommitSha(sha_val));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
                         }
                         _ => {}
                     }
 
                     item = item
-                        .child(
-                            Icon::new(icon)
-                                .size(IconSize::Small)
-                                .color(Color::Muted),
-                        )
+                        .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
                         .child(
                             Label::new(label)
                                 .size(LabelSize::Small)

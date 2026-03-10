@@ -123,20 +123,14 @@ impl RenderOnce for ContextMenu {
                 crate::Color::Default
             };
 
-            row = row.child(
-                Label::new(label)
-                    .size(LabelSize::Small)
-                    .color(text_color),
-            );
+            row = row.child(Label::new(label).size(LabelSize::Small).color(text_color));
 
             if let Some(shortcut) = item.shortcut {
-                row = row
-                    .child(div().flex_1())
-                    .child(
-                        Label::new(shortcut)
-                            .size(LabelSize::XSmall)
-                            .color(crate::Color::Muted),
-                    );
+                row = row.child(div().flex_1()).child(
+                    Label::new(shortcut)
+                        .size(LabelSize::XSmall)
+                        .color(crate::Color::Muted),
+                );
             }
 
             menu = menu.child(row);

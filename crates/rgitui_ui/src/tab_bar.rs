@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, AnyElement, ClickEvent, CursorStyle, ElementId, SharedString, Window};
+use gpui::{div, px, AnyElement, App, ClickEvent, CursorStyle, ElementId, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use smallvec::SmallVec;
 

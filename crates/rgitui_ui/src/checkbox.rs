@@ -59,11 +59,7 @@ impl RenderOnce for Checkbox {
                 colors.text_accent,
                 Some(IconName::Minus),
             ),
-            CheckState::Unchecked => (
-                colors.element_background,
-                colors.border,
-                None,
-            ),
+            CheckState::Unchecked => (colors.element_background, colors.border, None),
         };
 
         let mut container = div()
@@ -91,20 +87,18 @@ impl RenderOnce for Checkbox {
         }
 
         if let Some(icon_name) = icon {
-            container = container.child(
-                Icon::new(icon_name)
-                    .size(IconSize::XSmall)
-                    .color(rgitui_theme::Color::Custom(gpui::Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: if cx.theme().appearance == rgitui_theme::Appearance::Dark {
-                            0.1
-                        } else {
-                            1.0
-                        },
-                        a: 1.0,
-                    })),
-            );
+            container = container.child(Icon::new(icon_name).size(IconSize::XSmall).color(
+                rgitui_theme::Color::Custom(gpui::Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: if cx.theme().appearance == rgitui_theme::Appearance::Dark {
+                        0.1
+                    } else {
+                        1.0
+                    },
+                    a: 1.0,
+                }),
+            ));
         }
 
         container

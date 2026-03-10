@@ -59,12 +59,7 @@ impl RenderOnce for TitleBar {
                     ),
             )
             // Separator
-            .child(
-                div()
-                    .w(px(1.))
-                    .h(px(16.))
-                    .bg(colors.border_variant),
-            )
+            .child(div().w(px(1.)).h(px(16.)).bg(colors.border_variant))
             // Repo icon + name
             .child(
                 div()
@@ -83,12 +78,7 @@ impl RenderOnce for TitleBar {
                     ),
             )
             // Separator
-            .child(
-                div()
-                    .w(px(1.))
-                    .h(px(16.))
-                    .bg(colors.border_variant),
-            )
+            .child(div().w(px(1.)).h(px(16.)).bg(colors.border_variant))
             // Branch indicator - pill style
             .child(
                 div()

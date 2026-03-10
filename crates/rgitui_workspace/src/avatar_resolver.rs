@@ -118,10 +118,7 @@ fn parse_github_noreply(email: &str) -> Option<String> {
 
 /// Check if a URL returns 200 OK (HEAD-like: we read minimal data).
 async fn check_url_exists(http: &Arc<dyn HttpClient>, url: &str) -> bool {
-    match http
-        .get(url, Default::default(), true)
-        .await
-    {
+    match http.get(url, Default::default(), true).await {
         Ok(response) => response.status().is_success(),
         Err(_) => false,
     }

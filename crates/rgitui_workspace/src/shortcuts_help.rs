@@ -127,27 +127,22 @@ impl ShortcutsHelp {
                     .gap_3()
                     .py(px(2.))
                     .child(
-                        div()
-                            .w(px(140.))
-                            .flex_shrink_0()
-                            .child(
+                        div().w(px(140.)).flex_shrink_0().child(
+                            div().h_flex().child(
                                 div()
-                                    .h_flex()
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .bg(colors.element_background)
+                                    .border_1()
+                                    .border_color(colors.border_variant)
+                                    .rounded(px(4.))
                                     .child(
-                                        div()
-                                            .px(px(6.))
-                                            .py(px(2.))
-                                            .bg(colors.element_background)
-                                            .border_1()
-                                            .border_color(colors.border_variant)
-                                            .rounded(px(4.))
-                                            .child(
-                                                Label::new(SharedString::from(key.to_string()))
-                                                    .size(LabelSize::XSmall)
-                                                    .weight(FontWeight::MEDIUM),
-                                            ),
+                                        Label::new(SharedString::from(key.to_string()))
+                                            .size(LabelSize::XSmall)
+                                            .weight(FontWeight::MEDIUM),
                                     ),
                             ),
+                        ),
                     )
                     .child(
                         Label::new(SharedString::from(desc.to_string()))
