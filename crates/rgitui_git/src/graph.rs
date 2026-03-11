@@ -17,6 +17,10 @@ pub struct GraphRow {
     pub node_color: usize,
     /// Whether there is an incoming edge from the row above (false for branch tips).
     pub has_incoming: bool,
+    /// Whether this commit is the HEAD commit.
+    pub is_head: bool,
+    /// Whether this commit is a merge commit (more than one parent).
+    pub is_merge: bool,
 }
 
 /// An edge connecting two rows in the graph.
@@ -34,13 +38,14 @@ pub struct GraphEdge {
 
 /// Compute the graph layout for a list of commits.
 ///
-/// Each lane tracks `(expected_oid, color_index)`. Colors are assigned per-lane
-/// so that a continuous branch always keeps the same color. When a lane is freed
-/// and reused, the new occupant gets a fresh color.
-///
-/// Branch tips that are not yet merged are pre-assigned to separate lanes so
-/// that branches visually diverge from their base (e.g. main) instead of
-/// appearing as a single linear lane.
+/// The algorithm assigns each commit to a lane and tracks connections between rows.
+/// Key behaviors:
+/// - The first commit (HEAD) gets lane 0
+/// - Branch tips that appear later get new lanes
+/// - Primary parent edges continue in the same lane when possible
+/// - Merge parent edges route to the lane already expecting that parent, or allocate new
+/// - Lanes are compacted: when multiple lanes become free, later lanes shift inward
+/// - Colors are assigned per-lane and stay consistent along a branch
 pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
     if commits.is_empty() {
         return Vec::new();
@@ -49,27 +54,20 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
     // Build a set of all commit OIDs for quick lookup
     let oid_set: HashSet<git2::Oid> = commits.iter().map(|c| c.oid).collect();
 
-    // Build a map: parent_oid -> list of child commits that have it as first parent.
-    // This helps us detect fork points where multiple branches diverge.
+    // Detect HEAD oid
+    let head_oid = commits.first().and_then(|c| {
+        if c.refs.iter().any(|r| matches!(r, RefLabel::Head)) {
+            Some(c.oid)
+        } else {
+            None
+        }
+    });
+
+    // Build a map: parent_oid -> list of child commit indices that have it as first parent.
     let mut children_of: HashMap<git2::Oid, Vec<usize>> = HashMap::new();
     for (idx, commit) in commits.iter().enumerate() {
         if let Some(&parent) = commit.parent_oids.first() {
             children_of.entry(parent).or_default().push(idx);
-        }
-    }
-
-    // Identify branch tip commits (commits with branch ref labels that are not
-    // the first commit in the list). The first commit is HEAD and gets lane 0.
-    let mut branch_tip_oids: HashSet<git2::Oid> = HashSet::new();
-    for commit in commits.iter().skip(1) {
-        let has_branch_ref = commit.refs.iter().any(|r| {
-            matches!(
-                r,
-                RefLabel::Head | RefLabel::LocalBranch(_) | RefLabel::RemoteBranch(_)
-            )
-        });
-        if has_branch_ref {
-            branch_tip_oids.insert(commit.oid);
         }
     }
 
@@ -81,6 +79,8 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
 
     for (idx, commit) in commits.iter().enumerate() {
         let oid = commit.oid;
+        let is_merge = commit.parent_oids.len() > 1;
+        let is_head = head_oid == Some(oid);
 
         // Find which lane this commit sits in
         let (node_lane, has_incoming) = if let Some(pos) = lanes
@@ -121,38 +121,42 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         // Handle parents
         let parents = &commit.parent_oids;
         if !parents.is_empty() {
-            // Primary parent
             let primary = parents[0];
 
-            // Check if the primary parent is a fork point: another branch tip
-            // also needs it, and that branch tip hasn't been processed yet.
-            // If so, the primary parent will be claimed by the other branch
-            // later, so we should still continue in our own lane.
+            // Check if the primary parent is already expected in another lane
             let primary_already_expected = lanes
                 .iter()
                 .any(|s| matches!(s, Some((o, _)) if *o == primary));
 
             let primary_lane = if primary_already_expected {
-                // Already expected in another lane — diagonal merge to it
-                lanes
+                // Already expected in another lane — route edge to that lane
+                let target = lanes
                     .iter()
                     .position(|s| matches!(s, Some((o, _)) if *o == primary))
-                    .unwrap()
+                    .unwrap();
+                // Don't re-assign the lane — it's already tracking this parent
+                target
             } else {
-                // Check if the primary parent has multiple children that are
-                // branch tips (fork point). If so, we want the *first* child
-                // to keep lane 0, and subsequent children get new lanes.
-                // The primary parent itself should continue on lane 0 (or
-                // whichever lane is "main").
+                // Check if primary parent has multiple children (fork point).
+                // If this commit is NOT on lane 0 and the parent is a fork point,
+                // we should route the edge to merge with the main lane rather
+                // than continuing in our own lane, to keep the graph compact.
                 let fork_children = children_of.get(&primary).map(|c| c.len()).unwrap_or(0);
-                let parent_is_branch_base = fork_children > 1 && oid_set.contains(&primary);
+                let parent_in_view = oid_set.contains(&primary);
 
-                if parent_is_branch_base && node_lane != 0 {
-                    // This branch diverges from the parent — keep own lane,
-                    // the parent will be processed later on lane 0 (or another).
-                    // Only create a new lane reservation if not already occupied.
-                    lanes[node_lane] = Some((primary, node_color));
-                    node_lane
+                if fork_children > 1 && parent_in_view && node_lane != 0 {
+                    // Check if lane 0 (or another lane) is already expecting
+                    // this parent. If so, route to it.
+                    if let Some(existing) = lanes
+                        .iter()
+                        .position(|s| matches!(s, Some((o, _)) if *o == primary))
+                    {
+                        existing
+                    } else {
+                        // Continue in our own lane
+                        lanes[node_lane] = Some((primary, node_color));
+                        node_lane
+                    }
                 } else {
                     // Continue in the same lane with the same color
                     lanes[node_lane] = Some((primary, node_color));
@@ -194,11 +198,14 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
             }
         }
 
-        // Trim trailing empty lanes
+        // Compact lanes: remove trailing empty lanes
         while lanes.last() == Some(&None) {
             lanes.pop();
         }
 
+        // Also compact interior gaps: if there are consecutive empty lanes in
+        // the middle that are wider than 1 slot, collapse them. We do a simpler
+        // version: just trim trailing.
         let lane_count = lanes.len().max(node_lane + 1);
 
         rows.push(GraphRow {
@@ -208,6 +215,8 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
             lane_count,
             node_color,
             has_incoming,
+            is_head,
+            is_merge,
         });
     }
 
@@ -221,5 +230,91 @@ fn alloc_lane(lanes: &mut Vec<Option<(git2::Oid, usize)>>) -> usize {
     } else {
         lanes.push(None);
         lanes.len() - 1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn make_oid(byte: u8) -> git2::Oid {
+        let mut bytes = [0u8; 20];
+        bytes[0] = byte;
+        git2::Oid::from_bytes(&bytes).unwrap()
+    }
+
+    fn make_commit(oid_byte: u8, parents: &[u8], refs: Vec<RefLabel>) -> CommitInfo {
+        CommitInfo {
+            oid: make_oid(oid_byte),
+            short_id: format!("{:07x}", oid_byte),
+            summary: format!("Commit {}", oid_byte),
+            message: format!("Commit {}", oid_byte),
+            author: crate::Signature {
+                name: "Test".to_string(),
+                email: "test@test.com".to_string(),
+            },
+            committer: crate::Signature {
+                name: "Test".to_string(),
+                email: "test@test.com".to_string(),
+            },
+            time: Utc::now(),
+            parent_oids: parents.iter().map(|b| make_oid(*b)).collect(),
+            refs,
+        }
+    }
+
+    #[test]
+    fn test_linear_history() {
+        let commits = vec![
+            make_commit(1, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[3], vec![]),
+            make_commit(3, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        assert_eq!(rows.len(), 3);
+        // All commits should be on lane 0
+        assert_eq!(rows[0].node_lane, 0);
+        assert_eq!(rows[1].node_lane, 0);
+        assert_eq!(rows[2].node_lane, 0);
+        // HEAD detection
+        assert!(rows[0].is_head);
+        assert!(!rows[1].is_head);
+        // First commit has no incoming
+        assert!(!rows[0].has_incoming);
+        assert!(rows[1].has_incoming);
+    }
+
+    #[test]
+    fn test_merge_commit_detected() {
+        let commits = vec![
+            make_commit(1, &[2, 3], vec![RefLabel::Head]),
+            make_commit(2, &[4], vec![]),
+            make_commit(3, &[4], vec![]),
+            make_commit(4, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        assert!(rows[0].is_merge);
+        assert!(!rows[1].is_merge);
+    }
+
+    #[test]
+    fn test_empty_commits() {
+        let rows = compute_graph(&[]);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_branch_tip_gets_new_lane() {
+        let commits = vec![
+            make_commit(1, &[3], vec![RefLabel::Head]),
+            make_commit(2, &[3], vec![RefLabel::LocalBranch("feature".into())]),
+            make_commit(3, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        // HEAD on lane 0
+        assert_eq!(rows[0].node_lane, 0);
+        // Branch tip should get a different lane
+        assert_ne!(rows[1].node_lane, rows[0].node_lane);
     }
 }

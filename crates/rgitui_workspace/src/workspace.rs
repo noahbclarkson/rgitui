@@ -1182,6 +1182,11 @@ impl Workspace {
                     GraphViewEvent::CopyCommitSha(sha) => {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(sha.clone()));
                     }
+                    GraphViewEvent::LoadMoreCommits => {
+                        // Progressive loading: currently all commits are loaded
+                        // during refresh. This event is reserved for future use
+                        // when viewport-aware loading is implemented.
+                    }
                 }
             }
         })
@@ -1943,10 +1948,10 @@ impl Workspace {
                 .mt(px(12.))
                 .w_full()
                 .items_center()
-                .child(self.shortcut_hint("Open Repository", "Ctrl+O", &colors))
-                .child(self.shortcut_hint("Go Home", "Ctrl+Shift+W", &colors))
-                .child(self.shortcut_hint("Command Palette", "Ctrl+Shift+P", &colors))
-                .child(self.shortcut_hint("Settings", "Ctrl+,", &colors)),
+                .child(self.shortcut_hint("Open Repository", "Ctrl+O", colors))
+                .child(self.shortcut_hint("Go Home", "Ctrl+Shift+W", colors))
+                .child(self.shortcut_hint("Command Palette", "Ctrl+Shift+P", colors))
+                .child(self.shortcut_hint("Settings", "Ctrl+,", colors)),
         );
 
         div()

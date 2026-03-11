@@ -400,6 +400,8 @@ pub struct RefreshData {
     pub stashes: Vec<StashEntry>,
     pub status: WorkingTreeStatus,
     pub recent_commits: Vec<CommitInfo>,
+    /// Whether there are more commits beyond the loaded limit.
+    pub has_more_commits: bool,
 }
 
 /// Compute line-level diff stats (additions/deletions) for a single file.
@@ -717,8 +719,8 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
     };
 
     // Recent commits (uses branches and tags for ref labels)
-    let recent_commits = {
-        let limit = 200;
+    let (recent_commits, has_more_commits) = {
+        let limit = 1000;
         let mut commits = Vec::new();
 
         let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
@@ -763,13 +765,16 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                 stashes,
                 status,
                 recent_commits: commits,
+                has_more_commits: false,
             });
         }
         revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
 
         let mut count = 0;
+        let mut has_more = false;
         for oid_result in revwalk {
             if count >= limit {
+                has_more = true;
                 break;
             }
             let oid = oid_result?;
@@ -802,7 +807,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
             count += 1;
         }
 
-        commits
+        (commits, has_more)
     };
 
     Ok(RefreshData {
@@ -813,6 +818,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
         stashes,
         status,
         recent_commits,
+        has_more_commits,
     })
 }
 
@@ -838,6 +844,8 @@ pub struct GitProject {
     stashes: Vec<StashEntry>,
     status: WorkingTreeStatus,
     recent_commits: Vec<CommitInfo>,
+    /// Whether the repository has more commits beyond the loaded set.
+    has_more_commits: bool,
     next_operation_id: u64,
 
     // Filesystem watcher (kept alive)
@@ -863,6 +871,7 @@ impl GitProject {
             stashes: Vec::new(),
             status: WorkingTreeStatus::default(),
             recent_commits: Vec::new(),
+            has_more_commits: false,
             next_operation_id: 1,
             _watcher: None,
         };
@@ -1185,7 +1194,7 @@ impl GitProject {
         self.refresh_remotes(&repo)?;
         self.refresh_stashes(&repo)?;
         self.refresh_status(&repo)?;
-        self.refresh_recent_commits(&repo, 200)?;
+        self.refresh_recent_commits(&repo, 1000)?;
         Ok(())
     }
 
@@ -1198,6 +1207,12 @@ impl GitProject {
         self.stashes = data.stashes;
         self.status = data.status;
         self.recent_commits = data.recent_commits;
+        self.has_more_commits = data.has_more_commits;
+    }
+
+    /// Whether there are more commits beyond the currently loaded set.
+    pub fn has_more_commits(&self) -> bool {
+        self.has_more_commits
     }
 
     /// Refresh all state asynchronously on a background thread.
@@ -1461,8 +1476,10 @@ impl GitProject {
         revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
 
         let mut count = 0;
+        self.has_more_commits = false;
         for oid_result in revwalk {
             if count >= limit {
+                self.has_more_commits = true;
                 break;
             }
             let oid = oid_result?;

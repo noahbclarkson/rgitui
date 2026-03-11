@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -21,6 +22,8 @@ pub enum GraphViewEvent {
     CreateBranchAtCommit(git2::Oid),
     CheckoutCommit(git2::Oid),
     CopyCommitSha(String),
+    /// Request to load more commits beyond the current set.
+    LoadMoreCommits,
 }
 
 /// State for the right-click context menu.
@@ -36,6 +39,8 @@ pub struct GraphView {
     commits: Arc<Vec<CommitInfo>>,
     graph_rows: Arc<Vec<GraphRow>>,
     selected_index: Option<usize>,
+    /// OID of the selected commit — used to preserve selection across refreshes.
+    selected_oid: Option<git2::Oid>,
     row_height: f32,
     scroll_handle: UniformListScrollHandle,
     context_menu: Option<ContextMenuState>,
@@ -45,12 +50,19 @@ pub struct GraphView {
     show_search: bool,
     /// Indices of commits that match the current search query.
     filter_matches: Vec<usize>,
+    /// Set of matching indices for O(1) lookup during rendering.
+    filter_match_set: HashSet<usize>,
     /// Index into `filter_matches` for the current highlighted match.
     current_match: usize,
     /// Focus handle for the search input.
     search_focus: FocusHandle,
     /// Cursor position within the search query (byte offset).
     search_cursor_pos: usize,
+    /// Whether we've reached the end of available commits.
+    all_commits_loaded: bool,
+    /// Cached graph rows from the last computation to avoid recomputation
+    /// when only selection changes.
+    cached_graph_hash: u64,
 }
 
 impl EventEmitter<GraphViewEvent> for GraphView {}
@@ -61,26 +73,59 @@ impl GraphView {
             commits: Arc::new(Vec::new()),
             graph_rows: Arc::new(Vec::new()),
             selected_index: None,
+            selected_oid: None,
             row_height: 38.0,
             scroll_handle: UniformListScrollHandle::new(),
             context_menu: None,
             search_query: String::new(),
             show_search: false,
             filter_matches: Vec::new(),
+            filter_match_set: HashSet::new(),
             current_match: 0,
             search_focus: cx.focus_handle(),
             search_cursor_pos: 0,
+            all_commits_loaded: false,
+            cached_graph_hash: 0,
         }
     }
 
     pub fn set_commits(&mut self, commits: Vec<CommitInfo>, cx: &mut Context<Self>) {
+        // Compute a simple hash to detect if commits actually changed
+        let new_hash = Self::compute_commits_hash(&commits);
+        if new_hash == self.cached_graph_hash && !self.commits.is_empty() {
+            // Commits haven't changed — skip recomputation
+            return;
+        }
+        self.cached_graph_hash = new_hash;
+
+        // Preserve selection by OID across refreshes
+        let prev_selected_oid = self.selected_oid;
+
         self.graph_rows = Arc::new(compute_graph(&commits));
         self.commits = Arc::new(commits);
-        self.selected_index = None;
+
+        // Restore selection if the previously selected commit still exists
+        if let Some(prev_oid) = prev_selected_oid {
+            if let Some(new_index) = self.commits.iter().position(|c| c.oid == prev_oid) {
+                self.selected_index = Some(new_index);
+                // Don't emit CommitSelected — the selection is unchanged
+            } else {
+                self.selected_index = None;
+                self.selected_oid = None;
+            }
+        } else {
+            self.selected_index = None;
+        }
+
         if self.show_search && !self.search_query.is_empty() {
             self.update_search_filter();
         }
         cx.notify();
+    }
+
+    /// Mark that all available commits have been loaded (disables "load more").
+    pub fn set_all_loaded(&mut self, loaded: bool) {
+        self.all_commits_loaded = loaded;
     }
 
     pub fn selected_commit(&self) -> Option<&CommitInfo> {
@@ -123,6 +168,7 @@ impl GraphView {
         if index < self.commits.len() {
             self.selected_index = Some(index);
             if let Some(commit) = self.commits.get(index) {
+                self.selected_oid = Some(commit.oid);
                 cx.emit(GraphViewEvent::CommitSelected(commit.oid));
             }
             cx.notify();
@@ -136,6 +182,7 @@ impl GraphView {
             self.search_query.clear();
             self.search_cursor_pos = 0;
             self.filter_matches.clear();
+            self.filter_match_set.clear();
             self.current_match = 0;
         }
         cx.notify();
@@ -150,6 +197,7 @@ impl GraphView {
             self.search_query.clear();
             self.search_cursor_pos = 0;
             self.filter_matches.clear();
+            self.filter_match_set.clear();
             self.current_match = 0;
         }
         cx.notify();
@@ -158,6 +206,18 @@ impl GraphView {
     /// Returns whether the search bar is currently visible.
     pub fn is_search_visible(&self) -> bool {
         self.show_search
+    }
+
+    /// Compute a simple hash of the commit list for change detection.
+    fn compute_commits_hash(commits: &[CommitInfo]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        commits.len().hash(&mut hasher);
+        for c in commits {
+            // Hash OID bytes — this uniquely identifies the commit set
+            c.oid.as_bytes().hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     /// Get the byte index of the start of the character before `pos`.
@@ -188,6 +248,7 @@ impl GraphView {
     /// Matches case-insensitively against commit message, author name, author email, and short SHA.
     fn update_search_filter(&mut self) {
         self.filter_matches.clear();
+        self.filter_match_set.clear();
         self.current_match = 0;
 
         if self.search_query.is_empty() {
@@ -203,6 +264,7 @@ impl GraphView {
                 || commit.short_id.to_lowercase().contains(&query)
             {
                 self.filter_matches.push(i);
+                self.filter_match_set.insert(i);
             }
         }
     }
@@ -289,6 +351,7 @@ impl GraphView {
                 self.search_query.clear();
                 self.search_cursor_pos = 0;
                 self.filter_matches.clear();
+                self.filter_match_set.clear();
                 self.current_match = 0;
                 cx.notify();
             }
@@ -411,20 +474,25 @@ impl Render for GraphView {
             ..colors.text_accent
         };
 
+        // HEAD emphasis: subtle glow color for the HEAD row
+        let head_row_bg = gpui::Hsla {
+            a: 0.06,
+            ..colors.text_accent
+        };
+
         // Cheap Arc clones
         let commits = self.commits.clone();
         let graph_rows = self.graph_rows.clone();
         let selected_index = self.selected_index;
         let view: WeakEntity<GraphView> = cx.weak_entity();
 
-        // Search state for the render closure
-        let filter_matches: Arc<Vec<usize>> = Arc::new(self.filter_matches.clone());
+        // Search state for the render closure — use HashSet for O(1) lookup
+        let filter_match_set: Arc<HashSet<usize>> = Arc::new(self.filter_match_set.clone());
         let current_match_index = if self.filter_matches.is_empty() {
             None
         } else {
             Some(self.filter_matches[self.current_match])
         };
-        let _show_search = self.show_search;
         let has_search_query = self.show_search && !self.search_query.is_empty();
 
         let lane_width: f32 = 24.0;
@@ -521,351 +589,475 @@ impl Render for GraphView {
             "graph-commit-list",
             commits.len(),
             move |range: Range<usize>, _window: &mut Window, cx: &mut App| {
-                range.map(|i| {
-                    let commit = commits[i].clone();
-                    let graph_row = graph_rows[i].clone();
-                    let selected = selected_index == Some(i);
-                    let is_current_match = current_match_index == Some(i);
-                    let is_any_match = has_search_query && filter_matches.contains(&i);
-                    // Alternating row background for zebra-stripe effect
-                    let row_base_bg = if i % 2 == 1 { zebra_bg } else { panel_bg };
-                    let bg = if selected {
-                        selected_bg
-                    } else if is_current_match {
-                        search_current_bg
-                    } else if is_any_match {
-                        search_match_bg
-                    } else {
-                        row_base_bg
-                    };
-                    // Don't show hover effect on already-selected rows
-                    let row_hover_bg = if selected { selected_bg } else { hover_bg };
-                    let row_active_bg = if selected { selected_bg } else { active_bg };
+                range
+                    .map(|i| {
+                        let commit = commits[i].clone();
+                        let graph_row = graph_rows[i].clone();
+                        let selected = selected_index == Some(i);
+                        let is_current_match = current_match_index == Some(i);
+                        let is_any_match = has_search_query && filter_match_set.contains(&i);
+                        let is_head_row = graph_row.is_head;
+                        let is_merge_commit = graph_row.is_merge;
 
-                    let max_lane = graph_row.lane_count.max(1);
-                    let graph_width = (max_lane as f32 * lane_width).max(80.0);
-                    let node_lane = graph_row.node_lane;
-                    let node_x = node_lane as f32 * lane_width + lane_width / 2.0;
-
-                    let node_color = rgitui_theme::lane_color(graph_row.node_color);
-                    let has_incoming = graph_row.has_incoming;
-
-                    // Author initials for avatar
-                    let initials: SharedString = commit
-                        .author
-                        .name
-                        .split_whitespace()
-                        .take(2)
-                        .filter_map(|w| w.chars().next())
-                        .collect::<String>()
-                        .to_uppercase()
-                        .into();
-
-                    // Ref badges — distinct styling per ref type
-                    let mut ref_badges: Vec<Badge> = Vec::new();
-                    for r in &commit.refs {
-                        let badge = match r {
-                            RefLabel::Head => Badge::new("HEAD")
-                                .color(Color::Accent)
-                                .bold(),
-                            RefLabel::LocalBranch(name) => Badge::new(name.clone())
-                                .color(Color::Success),
-                            RefLabel::RemoteBranch(name) => Badge::new(name.clone())
-                                .color(Color::Info)
-                                .italic(),
-                            RefLabel::Tag(name) => Badge::new(name.clone())
-                                .color(Color::Warning)
-                                .prefix("tag"),
+                        // Row background priority: selected > search current > search match > head > zebra
+                        let row_base_bg = if is_head_row {
+                            head_row_bg
+                        } else if i % 2 == 1 {
+                            zebra_bg
+                        } else {
+                            panel_bg
                         };
-                        ref_badges.push(badge);
-                    }
+                        let bg = if selected {
+                            selected_bg
+                        } else if is_current_match {
+                            search_current_bg
+                        } else if is_any_match {
+                            search_match_bg
+                        } else {
+                            row_base_bg
+                        };
+                        // Don't show hover effect on already-selected rows
+                        let row_hover_bg = if selected { selected_bg } else { hover_bg };
+                        let row_active_bg = if selected { selected_bg } else { active_bg };
 
-                    let short_id: SharedString = commit.short_id.clone().into();
-                    let summary: SharedString = commit.summary.clone().into();
-                    let author: SharedString = commit.author.name.clone().into();
-                    let time_str: SharedString = format_relative_time(&commit.time).into();
+                        let max_lane = graph_row.lane_count.max(1);
+                        let graph_width = (max_lane as f32 * lane_width).max(80.0);
+                        let node_lane = graph_row.node_lane;
+                        let node_x = node_lane as f32 * lane_width + lane_width / 2.0;
 
-                    // Clone data for canvas closure
-                    let edges: Vec<GraphEdge> = graph_row.edges.clone();
-                    let row_bg_for_canvas = bg;
+                        let node_color = rgitui_theme::lane_color(graph_row.node_color);
+                        let has_incoming = graph_row.has_incoming;
 
-                    let view_clone = view.clone();
-                    let view_ctx_menu = view.clone();
+                        // Author initials for avatar
+                        let initials: SharedString = commit
+                            .author
+                            .name
+                            .split_whitespace()
+                            .take(2)
+                            .filter_map(|w| w.chars().next())
+                            .collect::<String>()
+                            .to_uppercase()
+                            .into();
 
-                    // Left edge indicator: accent border when selected, lane color otherwise
-                    let left_tab_color = if selected {
-                        accent_border
-                    } else {
-                        gpui::Hsla { a: 0.5, ..node_color }
-                    };
-
-                    let mut row = div()
-                        .id(ElementId::NamedInteger("commit-row".into(), i as u64))
-                        .h_flex()
-                        .items_center()
-                        .h(px(row_height))
-                        .w_full()
-                        .bg(bg)
-                        .border_l_2()
-                        .border_color(if selected { accent_border } else { gpui::Hsla { h: 0.0, s: 0.0, l: 0.0, a: 0.0 } })
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(row_hover_bg))
-                        .active(move |s| s.bg(row_active_bg))
-                        .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
-                            view_clone.update(cx, |this, cx| {
-                                this.dismiss_context_menu(cx);
-                                this.select_index(i, cx);
-                            }).ok();
-                        })
-                        .on_mouse_down(MouseButton::Right, move |event: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
-                            view_ctx_menu.update(cx, |this, cx| {
-                                this.show_context_menu(i, event.position, cx);
-                            }).ok();
-                        })
-                        // Color tab on left edge (after the border)
-                        .child(
-                            div()
-                                .w(px(3.))
-                                .h_full()
-                                .flex_shrink_0()
-                                .bg(left_tab_color),
-                        )
-                        // Gap between color tab and graph
-                        .child(div().w(px(10.)).flex_shrink_0());
-
-                    // Graph column with canvas + avatar overlay
-                    row = row.child(
-                        div()
-                            .relative()
-                            .w(px(graph_width))
-                            .flex_shrink_0()
-                            .h_full()
-                            .child(
-                                canvas(
-                                    |_bounds: Bounds<Pixels>, _window: &mut Window, _cx: &mut App| {},
-                                    move |bounds: Bounds<Pixels>, _: (), window: &mut Window, _cx: &mut App| {
-                                        let origin = bounds.origin;
-                                        let h = bounds.size.height;
-                                        let mid_y = px(row_height / 2.0);
-                                        let node_x_px = px(node_x);
-
-                                        // 1. Approach segment: incoming line from row above → dot center.
-                                        //    Only drawn if this commit was expected (not a branch tip).
-                                        if has_incoming {
-                                            let mut approach = PathBuilder::stroke(px(2.5));
-                                            approach.move_to(point(origin.x + node_x_px, origin.y));
-                                            approach.line_to(point(origin.x + node_x_px, origin.y + mid_y));
-                                            if let Ok(built) = approach.build() {
-                                                window.paint_path(built, node_color);
-                                            }
-                                        }
-
-                                        // 2. Draw all edges (pass-throughs + outgoing from dot).
-                                        for edge in &edges {
-                                            let from_x = px(edge.from_lane as f32 * lane_width + lane_width / 2.0);
-                                            let to_x = px(edge.to_lane as f32 * lane_width + lane_width / 2.0);
-                                            let color = rgitui_theme::lane_color(edge.color_index);
-
-                                            // Edges departing from the commit dot start at mid_y;
-                                            // pass-through edges span the full row height.
-                                            let start_y = if edge.from_lane == node_lane {
-                                                origin.y + mid_y
-                                            } else {
-                                                origin.y
-                                            };
-                                            let end_y = origin.y + h;
-
-                                            let stroke_width = if edge.is_merge { px(1.5) } else { px(2.5) };
-                                            let mut path = PathBuilder::stroke(stroke_width);
-
-                                            if from_x == to_x {
-                                                // Straight vertical line
-                                                path.move_to(point(origin.x + from_x, start_y));
-                                                path.line_to(point(origin.x + to_x, end_y));
-                                            } else {
-                                                // Smooth S-curve: control points at 40%/60% of
-                                                // vertical span, keeping source/dest X coords.
-                                                // This departs vertically, transitions smoothly,
-                                                // and arrives vertically — a natural branch/merge curve.
-                                                let span = end_y - start_y;
-                                                let ctrl_y1 = start_y + span * 0.4;
-                                                let ctrl_y2 = start_y + span * 0.6;
-                                                path.move_to(point(origin.x + from_x, start_y));
-                                                path.cubic_bezier_to(
-                                                    point(origin.x + to_x, end_y),
-                                                    point(origin.x + from_x, ctrl_y1),
-                                                    point(origin.x + to_x, ctrl_y2),
-                                                );
-                                            }
-
-                                            if let Ok(built_path) = path.build() {
-                                                window.paint_path(built_path, color);
-                                            }
-                                        }
-
-                                        // 3. Draw commit dot with background ring (occludes passing lines).
-                                        let r = 14.0_f32;
-                                        let cx_x = origin.x + node_x_px;
-                                        let cy_y = origin.y + mid_y;
-                                        let steps = 32_usize;
-
-                                        // Background ring to occlude lines passing behind the dot
-                                        // Use the actual row background color so it blends correctly
-                                        let ring_r = r + 3.0;
-                                        let mut ring = PathBuilder::fill();
-                                        for s in 0..steps {
-                                            let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
-                                            let x = cx_x + px(ring_r * angle.cos());
-                                            let y = cy_y + px(ring_r * angle.sin());
-                                            if s == 0 { ring.move_to(point(x, y)); }
-                                            else { ring.line_to(point(x, y)); }
-                                        }
-                                        ring.close();
-                                        if let Ok(built_ring) = ring.build() {
-                                            window.paint_path(built_ring, row_bg_for_canvas);
-                                        }
-                                    },
-                                )
-                                .size_full(),
-                            )
-                            // Avatar overlay: resolved image or initials fallback
-                            .child({
-                                let avatar_url = cx
-                                    .try_global::<AvatarCache>()
-                                    .and_then(|cache| cache.avatar_url(&commit.author.email))
-                                    .map(|s| s.to_string());
-                                let initials_fallback = initials.clone();
-                                let fallback_color = node_color;
-
-                                let avatar_size = 28.0_f32;
-                                let mut avatar_container = div()
-                                    .absolute()
-                                    .left(px(node_x - avatar_size / 2.0))
-                                    .top(px((row_height - avatar_size) / 2.0))
-                                    .w(px(avatar_size))
-                                    .h(px(avatar_size))
-                                    .rounded_full()
-                                    .bg(panel_bg)
-                                    .border_2()
-                                    .border_color(node_color)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center();
-
-                                if let Some(url) = avatar_url {
-                                    let fb_initials = initials_fallback.clone();
-                                    let fb_color = fallback_color;
-                                    avatar_container = avatar_container.child(
-                                        img(url)
-                                            .rounded_full()
-                                            .size_full()
-                                            .object_fit(ObjectFit::Cover)
-                                            .with_fallback(move || {
-                                                div()
-                                                    .size_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .child(
-                                                        div()
-                                                            .text_color(fb_color)
-                                                            .text_xs()
-                                                            .font_weight(gpui::FontWeight::BOLD)
-                                                            .child(fb_initials.clone()),
-                                                    )
-                                                    .into_any_element()
-                                            }),
-                                    );
-                                } else {
-                                    avatar_container = avatar_container.child(
-                                        div()
-                                            .text_color(fallback_color)
-                                            .text_xs()
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .child(initials_fallback),
-                                    );
+                        // Ref badges — distinct styling per ref type
+                        let mut ref_badges: Vec<Badge> = Vec::new();
+                        for r in &commit.refs {
+                            let badge = match r {
+                                RefLabel::Head => Badge::new("HEAD").color(Color::Accent).bold(),
+                                RefLabel::LocalBranch(name) => {
+                                    Badge::new(name.clone()).color(Color::Success)
                                 }
+                                RefLabel::RemoteBranch(name) => {
+                                    Badge::new(name.clone()).color(Color::Info).italic()
+                                }
+                                RefLabel::Tag(name) => {
+                                    Badge::new(name.clone()).color(Color::Warning).prefix("tag")
+                                }
+                            };
+                            ref_badges.push(badge);
+                        }
 
-                                avatar_container
-                            }),
-                    );
+                        let short_id: SharedString = commit.short_id.clone().into();
+                        let summary: SharedString = commit.summary.clone().into();
+                        let author: SharedString = commit.author.name.clone().into();
+                        let time_str: SharedString = format_relative_time(&commit.time).into();
 
-                    // Hash column
-                    row = row.child(
-                        div()
-                            .w(px(80.))
-                            .flex_shrink_0()
-                            .child(
+                        // Clone data for canvas closure
+                        let edges: Vec<GraphEdge> = graph_row.edges.clone();
+                        let row_bg_for_canvas = bg;
+
+                        let view_clone = view.clone();
+                        let view_ctx_menu = view.clone();
+
+                        // Left edge indicator: accent border when selected, lane color otherwise
+                        let left_tab_color = if selected {
+                            accent_border
+                        } else if is_head_row {
+                            // HEAD row gets a brighter accent tab
+                            gpui::Hsla {
+                                a: 0.8,
+                                ..accent_border
+                            }
+                        } else {
+                            gpui::Hsla {
+                                a: 0.5,
+                                ..node_color
+                            }
+                        };
+
+                        let mut row = div()
+                            .id(ElementId::NamedInteger("commit-row".into(), i as u64))
+                            .h_flex()
+                            .items_center()
+                            .h(px(row_height))
+                            .w_full()
+                            .bg(bg)
+                            .border_l_2()
+                            .border_color(if selected {
+                                accent_border
+                            } else {
+                                gpui::Hsla {
+                                    h: 0.0,
+                                    s: 0.0,
+                                    l: 0.0,
+                                    a: 0.0,
+                                }
+                            })
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(row_hover_bg))
+                            .active(move |s| s.bg(row_active_bg))
+                            .on_click(
+                                move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                                    view_clone
+                                        .update(cx, |this, cx| {
+                                            this.dismiss_context_menu(cx);
+                                            this.select_index(i, cx);
+                                        })
+                                        .ok();
+                                },
+                            )
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                move |event: &MouseDownEvent,
+                                      _window: &mut Window,
+                                      cx: &mut App| {
+                                    view_ctx_menu
+                                        .update(cx, |this, cx| {
+                                            this.show_context_menu(i, event.position, cx);
+                                        })
+                                        .ok();
+                                },
+                            )
+                            // Color tab on left edge (after the border)
+                            .child(div().w(px(3.)).h_full().flex_shrink_0().bg(left_tab_color))
+                            // Gap between color tab and graph
+                            .child(div().w(px(10.)).flex_shrink_0());
+
+                        // Graph column with canvas + avatar overlay
+                        row = row.child(
+                            div()
+                                .relative()
+                                .w(px(graph_width))
+                                .flex_shrink_0()
+                                .h_full()
+                                .child(
+                                    canvas(
+                                        |_bounds: Bounds<Pixels>,
+                                         _window: &mut Window,
+                                         _cx: &mut App| {},
+                                        move |bounds: Bounds<Pixels>,
+                                              _: (),
+                                              window: &mut Window,
+                                              _cx: &mut App| {
+                                            let origin = bounds.origin;
+                                            let h = bounds.size.height;
+                                            let mid_y = px(row_height / 2.0);
+                                            let node_x_px = px(node_x);
+
+                                            // 1. Approach segment: incoming line from row above → dot center.
+                                            if has_incoming {
+                                                let mut approach = PathBuilder::stroke(px(2.5));
+                                                approach.move_to(point(
+                                                    origin.x + node_x_px,
+                                                    origin.y,
+                                                ));
+                                                approach.line_to(point(
+                                                    origin.x + node_x_px,
+                                                    origin.y + mid_y,
+                                                ));
+                                                if let Ok(built) = approach.build() {
+                                                    window.paint_path(built, node_color);
+                                                }
+                                            }
+
+                                            // 2. Draw all edges (pass-throughs + outgoing from dot).
+                                            for edge in &edges {
+                                                let from_x = px(
+                                                    edge.from_lane as f32 * lane_width
+                                                        + lane_width / 2.0,
+                                                );
+                                                let to_x = px(
+                                                    edge.to_lane as f32 * lane_width
+                                                        + lane_width / 2.0,
+                                                );
+                                                let color =
+                                                    rgitui_theme::lane_color(edge.color_index);
+
+                                                let start_y = if edge.from_lane == node_lane {
+                                                    origin.y + mid_y
+                                                } else {
+                                                    origin.y
+                                                };
+                                                let end_y = origin.y + h;
+
+                                                let stroke_width =
+                                                    if edge.is_merge { px(1.5) } else { px(2.5) };
+
+                                                // Merge edges use dashed appearance via slightly
+                                                // transparent color
+                                                let edge_color = if edge.is_merge {
+                                                    gpui::Hsla { a: 0.7, ..color }
+                                                } else {
+                                                    color
+                                                };
+
+                                                let mut path = PathBuilder::stroke(stroke_width);
+
+                                                if from_x == to_x {
+                                                    // Straight vertical line
+                                                    path.move_to(point(
+                                                        origin.x + from_x,
+                                                        start_y,
+                                                    ));
+                                                    path.line_to(point(
+                                                        origin.x + to_x,
+                                                        end_y,
+                                                    ));
+                                                } else {
+                                                    // Smooth S-curve with cubic bezier
+                                                    let span = end_y - start_y;
+                                                    let ctrl_y1 = start_y + span * 0.4;
+                                                    let ctrl_y2 = start_y + span * 0.6;
+                                                    path.move_to(point(
+                                                        origin.x + from_x,
+                                                        start_y,
+                                                    ));
+                                                    path.cubic_bezier_to(
+                                                        point(origin.x + to_x, end_y),
+                                                        point(origin.x + from_x, ctrl_y1),
+                                                        point(origin.x + to_x, ctrl_y2),
+                                                    );
+                                                }
+
+                                                if let Ok(built_path) = path.build() {
+                                                    window.paint_path(built_path, edge_color);
+                                                }
+                                            }
+
+                                            // 3. Draw commit dot with background ring.
+                                            let dot_radius = if is_merge_commit {
+                                                16.0_f32
+                                            } else {
+                                                14.0_f32
+                                            };
+                                            let cx_x = origin.x + node_x_px;
+                                            let cy_y = origin.y + mid_y;
+                                            let steps = 32_usize;
+
+                                            // Background ring to occlude lines passing behind the dot
+                                            let ring_r = dot_radius + 3.0;
+                                            let mut ring = PathBuilder::fill();
+                                            for s in 0..steps {
+                                                let angle = (s as f32)
+                                                    * std::f32::consts::TAU
+                                                    / (steps as f32);
+                                                let x = cx_x + px(ring_r * angle.cos());
+                                                let y = cy_y + px(ring_r * angle.sin());
+                                                if s == 0 {
+                                                    ring.move_to(point(x, y));
+                                                } else {
+                                                    ring.line_to(point(x, y));
+                                                }
+                                            }
+                                            ring.close();
+                                            if let Ok(built_ring) = ring.build() {
+                                                window
+                                                    .paint_path(built_ring, row_bg_for_canvas);
+                                            }
+
+                                            // For HEAD commit, draw a subtle glow ring
+                                            if is_head_row {
+                                                let glow_r = dot_radius + 6.0;
+                                                let mut glow = PathBuilder::stroke(px(2.0));
+                                                for s in 0..=steps {
+                                                    let angle = (s as f32)
+                                                        * std::f32::consts::TAU
+                                                        / (steps as f32);
+                                                    let x = cx_x + px(glow_r * angle.cos());
+                                                    let y = cy_y + px(glow_r * angle.sin());
+                                                    if s == 0 {
+                                                        glow.move_to(point(x, y));
+                                                    } else {
+                                                        glow.line_to(point(x, y));
+                                                    }
+                                                }
+                                                if let Ok(built_glow) = glow.build() {
+                                                    let glow_color = gpui::Hsla {
+                                                        a: 0.3,
+                                                        ..node_color
+                                                    };
+                                                    window.paint_path(built_glow, glow_color);
+                                                }
+                                            }
+
+                                            // For merge commits, draw a slightly larger outer ring
+                                            if is_merge_commit {
+                                                let merge_r = dot_radius + 1.0;
+                                                let mut merge_ring =
+                                                    PathBuilder::stroke(px(1.5));
+                                                for s in 0..=steps {
+                                                    let angle = (s as f32)
+                                                        * std::f32::consts::TAU
+                                                        / (steps as f32);
+                                                    let x =
+                                                        cx_x + px(merge_r * angle.cos());
+                                                    let y =
+                                                        cy_y + px(merge_r * angle.sin());
+                                                    if s == 0 {
+                                                        merge_ring.move_to(point(x, y));
+                                                    } else {
+                                                        merge_ring.line_to(point(x, y));
+                                                    }
+                                                }
+                                                if let Ok(built_merge) = merge_ring.build() {
+                                                    let merge_ring_color = gpui::Hsla {
+                                                        a: 0.5,
+                                                        ..node_color
+                                                    };
+                                                    window.paint_path(
+                                                        built_merge,
+                                                        merge_ring_color,
+                                                    );
+                                                }
+                                            }
+                                        },
+                                    )
+                                    .size_full(),
+                                )
+                                // Avatar overlay: resolved image or initials fallback
+                                .child({
+                                    let avatar_url = cx
+                                        .try_global::<AvatarCache>()
+                                        .and_then(|cache| cache.avatar_url(&commit.author.email))
+                                        .map(|s| s.to_string());
+                                    let initials_fallback = initials.clone();
+                                    let fallback_color = node_color;
+
+                                    let avatar_size = 28.0_f32;
+                                    let mut avatar_container = div()
+                                        .absolute()
+                                        .left(px(node_x - avatar_size / 2.0))
+                                        .top(px((row_height - avatar_size) / 2.0))
+                                        .w(px(avatar_size))
+                                        .h(px(avatar_size))
+                                        .rounded_full()
+                                        .bg(panel_bg)
+                                        .border_2()
+                                        .border_color(node_color)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center();
+
+                                    if let Some(url) = avatar_url {
+                                        let fb_initials = initials_fallback.clone();
+                                        let fb_color = fallback_color;
+                                        avatar_container = avatar_container.child(
+                                            img(url)
+                                                .rounded_full()
+                                                .size_full()
+                                                .object_fit(ObjectFit::Cover)
+                                                .with_fallback(move || {
+                                                    div()
+                                                        .size_full()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .child(
+                                                            div()
+                                                                .text_color(fb_color)
+                                                                .text_xs()
+                                                                .font_weight(
+                                                                    gpui::FontWeight::BOLD,
+                                                                )
+                                                                .child(fb_initials.clone()),
+                                                        )
+                                                        .into_any_element()
+                                                }),
+                                        );
+                                    } else {
+                                        avatar_container = avatar_container.child(
+                                            div()
+                                                .text_color(fallback_color)
+                                                .text_xs()
+                                                .font_weight(gpui::FontWeight::BOLD)
+                                                .child(initials_fallback),
+                                        );
+                                    }
+
+                                    avatar_container
+                                }),
+                        );
+
+                        // Hash column
+                        row = row.child(
+                            div().w(px(80.)).flex_shrink_0().child(
                                 Label::new(short_id)
                                     .size(LabelSize::XSmall)
                                     .color(Color::Accent)
                                     .weight(gpui::FontWeight::MEDIUM),
                             ),
-                    );
-
-                    // Message column — contains ref badges (inline) + summary text
-                    {
-                        let mut message_col = div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .overflow_x_hidden();
-
-                        // Ref badges inline before the summary
-                        if !ref_badges.is_empty() {
-                            let mut badges_container = div()
-                                .h_flex()
-                                .gap(px(3.))
-                                .flex_shrink_0()
-                                .max_w(px(300.))
-                                .overflow_x_hidden();
-                            for badge in ref_badges {
-                                badges_container = badges_container.child(badge);
-                            }
-                            message_col = message_col.child(badges_container);
-                        }
-
-                        // Summary text
-                        message_col = message_col.child(
-                            Label::new(summary)
-                                .size(LabelSize::Small)
-                                .truncate(),
                         );
 
-                        row = row.child(message_col);
-                    }
+                        // Message column — contains ref badges (inline) + summary text
+                        {
+                            let mut message_col = div()
+                                .flex_1()
+                                .min_w_0()
+                                .h_flex()
+                                .items_center()
+                                .gap(px(5.))
+                                .overflow_x_hidden();
 
-                    // Author column
-                    row = row.child(
-                        div()
-                            .w(px(120.))
-                            .flex_shrink_0()
-                            .px(px(4.))
-                            .child(
+                            // Ref badges inline before the summary
+                            if !ref_badges.is_empty() {
+                                let mut badges_container = div()
+                                    .h_flex()
+                                    .gap(px(3.))
+                                    .flex_shrink_0()
+                                    .max_w(px(300.))
+                                    .overflow_x_hidden();
+                                for badge in ref_badges {
+                                    badges_container = badges_container.child(badge);
+                                }
+                                message_col = message_col.child(badges_container);
+                            }
+
+                            // Summary text — HEAD commits get slightly bolder text
+                            let summary_label = if is_head_row {
+                                Label::new(summary)
+                                    .size(LabelSize::Small)
+                                    .weight(gpui::FontWeight::SEMIBOLD)
+                                    .truncate()
+                            } else {
+                                Label::new(summary).size(LabelSize::Small).truncate()
+                            };
+                            message_col = message_col.child(summary_label);
+
+                            row = row.child(message_col);
+                        }
+
+                        // Author column
+                        row = row.child(
+                            div().w(px(120.)).flex_shrink_0().px(px(4.)).child(
                                 Label::new(author)
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted)
                                     .truncate(),
                             ),
-                    );
+                        );
 
-                    // Date column (relative time)
-                    row = row.child(
-                        div()
-                            .w(px(100.))
-                            .flex_shrink_0()
-                            .pr(px(8.))
-                            .child(
+                        // Date column (relative time)
+                        row = row.child(
+                            div().w(px(100.)).flex_shrink_0().pr(px(8.)).child(
                                 Label::new(time_str)
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             ),
-                    );
+                        );
 
-                    row.into_any_element()
-                }).collect()
+                        row.into_any_element()
+                    })
+                    .collect()
             },
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
