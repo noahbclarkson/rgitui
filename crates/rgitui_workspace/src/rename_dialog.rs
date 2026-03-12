@@ -6,30 +6,33 @@ use gpui::{
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize};
 
-/// Events emitted by the branch creation dialog.
+/// Events emitted by the rename dialog.
 #[derive(Debug, Clone)]
-pub enum BranchDialogEvent {
-    CreateBranch { name: String, base_ref: String },
+pub enum RenameDialogEvent {
+    Rename {
+        old_name: String,
+        new_name: String,
+    },
     Dismissed,
 }
 
-/// A modal dialog for creating a new Git branch.
-pub struct BranchDialog {
-    branch_name: String,
-    base_ref: String,
+/// A modal dialog for renaming a Git branch.
+pub struct RenameDialog {
+    old_name: String,
+    new_name: String,
     error_message: Option<String>,
     visible: bool,
     cursor_pos: usize,
     focus_handle: FocusHandle,
 }
 
-impl EventEmitter<BranchDialogEvent> for BranchDialog {}
+impl EventEmitter<RenameDialogEvent> for RenameDialog {}
 
-impl BranchDialog {
+impl RenameDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            branch_name: String::new(),
-            base_ref: "HEAD".to_string(),
+            old_name: String::new(),
+            new_name: String::new(),
             error_message: None,
             visible: false,
             cursor_pos: 0,
@@ -37,41 +40,23 @@ impl BranchDialog {
         }
     }
 
-    /// Show the dialog, optionally setting the base ref (e.g. current branch name).
-    pub fn show(&mut self, base_ref: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        self.visible = true;
-        self.branch_name.clear();
-        self.cursor_pos = 0;
+    /// Show the dialog for renaming the given branch.
+    pub fn show_visible(&mut self, old_name: String, cx: &mut Context<Self>) {
+        self.old_name = old_name.clone();
+        self.new_name = old_name;
+        self.cursor_pos = self.new_name.len();
         self.error_message = None;
-        if let Some(base) = base_ref {
-            self.base_ref = base;
-        } else {
-            self.base_ref = "HEAD".to_string();
-        }
-        self.focus_handle.focus(window, cx);
-        cx.notify();
-    }
-
-    /// Show the dialog without focusing (for use from contexts where Window is unavailable).
-    pub fn show_visible(&mut self, base_ref: Option<String>, cx: &mut Context<Self>) {
         self.visible = true;
-        self.branch_name.clear();
-        self.cursor_pos = 0;
-        self.error_message = None;
-        if let Some(base) = base_ref {
-            self.base_ref = base;
-        } else {
-            self.base_ref = "HEAD".to_string();
-        }
         cx.notify();
     }
 
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         self.visible = false;
-        self.branch_name.clear();
+        self.old_name.clear();
+        self.new_name.clear();
         self.cursor_pos = 0;
         self.error_message = None;
-        cx.emit(BranchDialogEvent::Dismissed);
+        cx.emit(RenameDialogEvent::Dismissed);
         cx.notify();
     }
 
@@ -79,8 +64,7 @@ impl BranchDialog {
         self.visible
     }
 
-    /// Validate the branch name and return an error message if invalid.
-    fn validate_branch_name(name: &str) -> Option<String> {
+    fn validate(name: &str) -> Option<String> {
         if name.is_empty() {
             return Some("Branch name cannot be empty".to_string());
         }
@@ -88,52 +72,58 @@ impl BranchDialog {
             return Some("Branch name cannot contain spaces".to_string());
         }
         if name.starts_with('.') || name.starts_with('-') {
-            return Some("Branch name cannot start with '.' or '-'".to_string());
+            return Some("Cannot start with '.' or '-'".to_string());
         }
         if name.ends_with('.') || name.ends_with('/') {
-            return Some("Branch name cannot end with '.' or '/'".to_string());
+            return Some("Cannot end with '.' or '/'".to_string());
         }
-        if name.contains("..") {
-            return Some("Branch name cannot contain '..'".to_string());
+        if name.contains("..") || name.contains("//") {
+            return Some("Cannot contain '..' or '//'".to_string());
         }
-        if name.contains("~") || name.contains("^") || name.contains(":") || name.contains("\\") {
-            return Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string());
-        }
-        if name.contains("?") || name.contains("*") || name.contains("[") {
-            return Some("Branch name cannot contain glob characters".to_string());
+        if name.contains("~")
+            || name.contains("^")
+            || name.contains(":")
+            || name.contains("\\")
+            || name.contains("?")
+            || name.contains("*")
+            || name.contains("[")
+        {
+            return Some("Contains invalid characters".to_string());
         }
         if name.contains('\x7f') || name.chars().any(|c| c.is_control()) {
-            return Some("Branch name cannot contain control characters".to_string());
+            return Some("Contains control characters".to_string());
         }
-        if name.contains("@{") {
-            return Some("Branch name cannot contain '@{'".to_string());
-        }
-        if name == "@" {
-            return Some("Branch name cannot be '@'".to_string());
-        }
-        if name.contains("//") {
-            return Some("Branch name cannot contain consecutive slashes".to_string());
+        if name.contains("@{") || name == "@" {
+            return Some("Invalid ref name".to_string());
         }
         if name.ends_with(".lock") {
-            return Some("Branch name cannot end with '.lock'".to_string());
+            return Some("Cannot end with '.lock'".to_string());
         }
         None
     }
 
-    fn try_create(&mut self, cx: &mut Context<Self>) {
-        if let Some(err) = Self::validate_branch_name(&self.branch_name) {
+    fn try_rename(&mut self, cx: &mut Context<Self>) {
+        if self.new_name == self.old_name {
+            self.dismiss(cx);
+            return;
+        }
+        if let Some(err) = Self::validate(&self.new_name) {
             self.error_message = Some(err);
             cx.notify();
             return;
         }
 
-        let name = self.branch_name.clone();
-        let base_ref = self.base_ref.clone();
+        let old = self.old_name.clone();
+        let new = self.new_name.clone();
         self.visible = false;
-        self.branch_name.clear();
+        self.old_name.clear();
+        self.new_name.clear();
         self.cursor_pos = 0;
         self.error_message = None;
-        cx.emit(BranchDialogEvent::CreateBranch { name, base_ref });
+        cx.emit(RenameDialogEvent::Rename {
+            old_name: old,
+            new_name: new,
+        });
         cx.notify();
     }
 
@@ -147,31 +137,27 @@ impl BranchDialog {
         let key = keystroke.key.as_str();
 
         match key {
-            "escape" => {
-                self.dismiss(cx);
-            }
-            "enter" => {
-                self.try_create(cx);
-            }
+            "escape" => self.dismiss(cx),
+            "enter" => self.try_rename(cx),
             "backspace" => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
-                    self.branch_name.remove(self.cursor_pos);
-                    self.error_message = if self.branch_name.is_empty() {
+                    self.new_name.remove(self.cursor_pos);
+                    self.error_message = if self.new_name.is_empty() {
                         None
                     } else {
-                        Self::validate_branch_name(&self.branch_name)
+                        Self::validate(&self.new_name)
                     };
                     cx.notify();
                 }
             }
             "delete" => {
-                if self.cursor_pos < self.branch_name.len() {
-                    self.branch_name.remove(self.cursor_pos);
-                    self.error_message = if self.branch_name.is_empty() {
+                if self.cursor_pos < self.new_name.len() {
+                    self.new_name.remove(self.cursor_pos);
+                    self.error_message = if self.new_name.is_empty() {
                         None
                     } else {
-                        Self::validate_branch_name(&self.branch_name)
+                        Self::validate(&self.new_name)
                     };
                     cx.notify();
                 }
@@ -183,7 +169,7 @@ impl BranchDialog {
                 }
             }
             "right" => {
-                if self.cursor_pos < self.branch_name.len() {
+                if self.cursor_pos < self.new_name.len() {
                     self.cursor_pos += 1;
                     cx.notify();
                 }
@@ -193,15 +179,14 @@ impl BranchDialog {
                 cx.notify();
             }
             "end" => {
-                self.cursor_pos = self.branch_name.len();
+                self.cursor_pos = self.new_name.len();
                 cx.notify();
             }
             _ => {
-                // Handle character input
                 if let Some(key_char) = &keystroke.key_char {
-                    self.branch_name.insert_str(self.cursor_pos, key_char);
+                    self.new_name.insert_str(self.cursor_pos, key_char);
                     self.cursor_pos += key_char.len();
-                    self.error_message = Self::validate_branch_name(&self.branch_name);
+                    self.error_message = Self::validate(&self.new_name);
                     cx.notify();
                 } else if key.len() == 1
                     && !keystroke.modifiers.control
@@ -209,9 +194,9 @@ impl BranchDialog {
                 {
                     let ch = key.chars().next().unwrap();
                     if ch.is_ascii_graphic() {
-                        self.branch_name.insert(self.cursor_pos, ch);
+                        self.new_name.insert(self.cursor_pos, ch);
                         self.cursor_pos += 1;
-                        self.error_message = Self::validate_branch_name(&self.branch_name);
+                        self.error_message = Self::validate(&self.new_name);
                         cx.notify();
                     }
                 }
@@ -220,34 +205,35 @@ impl BranchDialog {
     }
 }
 
-impl Render for BranchDialog {
+impl Render for RenameDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
         if !self.visible {
-            return div().id("branch-dialog").into_any_element();
+            return div().id("rename-dialog").into_any_element();
         }
 
         // Build the input display with cursor
-        let (before_cursor, cursor_char, after_cursor) = if self.branch_name.is_empty() {
+        let (before_cursor, cursor_char, after_cursor) = if self.new_name.is_empty() {
             (String::new(), String::new(), String::new())
         } else {
-            let before = self.branch_name[..self.cursor_pos].to_string();
-            let cursor = if self.cursor_pos < self.branch_name.len() {
-                self.branch_name[self.cursor_pos..self.cursor_pos + 1].to_string()
+            let before = self.new_name[..self.cursor_pos].to_string();
+            let cursor = if self.cursor_pos < self.new_name.len() {
+                self.new_name[self.cursor_pos..self.cursor_pos + 1].to_string()
             } else {
                 String::new()
             };
-            let after = if self.cursor_pos + 1 < self.branch_name.len() {
-                self.branch_name[self.cursor_pos + 1..].to_string()
+            let after = if self.cursor_pos + 1 < self.new_name.len() {
+                self.new_name[self.cursor_pos + 1..].to_string()
             } else {
                 String::new()
             };
             (before, cursor, after)
         };
 
-        let is_empty = self.branch_name.is_empty();
+        let is_empty = self.new_name.is_empty();
         let has_error = self.error_message.is_some();
+        let is_unchanged = self.new_name == self.old_name;
 
         let input_border_color = if has_error {
             colors.vc_deleted
@@ -255,14 +241,13 @@ impl Render for BranchDialog {
             colors.border_focused
         };
 
-        // Text input field
         let mut input_row = div().h_flex().items_center().w_full();
 
         if is_empty {
             input_row = input_row
                 .child(div().w(px(2.)).h(px(16.)).bg(colors.text))
                 .child(
-                    Label::new("feature/my-branch")
+                    Label::new("new-branch-name")
                         .size(LabelSize::Small)
                         .color(Color::Placeholder),
                 );
@@ -285,7 +270,6 @@ impl Render for BranchDialog {
                     ),
                 );
             } else {
-                // Cursor at end
                 input_row = input_row.child(div().w(px(2.)).h(px(16.)).bg(colors.text));
             }
             if !after_cursor.is_empty() {
@@ -294,9 +278,10 @@ impl Render for BranchDialog {
             }
         }
 
-        // Build the modal content
+        let old_name: SharedString = self.old_name.clone().into();
+
         let mut modal = div()
-            .id("branch-dialog-modal")
+            .id("rename-dialog-modal")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
@@ -312,32 +297,66 @@ impl Render for BranchDialog {
                 cx.stop_propagation();
             });
 
-        // Title with icon
+        // Title
         modal = modal.child(
             div()
                 .h_flex()
                 .gap_2()
                 .items_center()
                 .child(
-                    Icon::new(IconName::GitBranch)
+                    Icon::new(IconName::Edit)
                         .size(IconSize::Medium)
                         .color(Color::Accent),
                 )
                 .child(
-                    Label::new("Create Branch")
+                    Label::new("Rename Branch")
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD)
                         .color(Color::Default),
                 ),
         );
 
-        // Branch name input
+        // Current name badge
+        modal = modal.child(
+            div()
+                .h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    Label::new("Current name")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .h(px(20.))
+                        .px(px(8.))
+                        .gap(px(4.))
+                        .rounded(px(4.))
+                        .bg(colors.ghost_element_selected)
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::GitBranch)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(old_name)
+                                .size(LabelSize::XSmall)
+                                .weight(gpui::FontWeight::MEDIUM)
+                                .color(Color::Muted),
+                        ),
+                ),
+        );
+
+        // New name input
         modal = modal.child(
             div()
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Branch name")
+                    Label::new("New name")
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -355,41 +374,6 @@ impl Render for BranchDialog {
                 ),
         );
 
-        // Base ref display as badge
-        let base_ref_str: SharedString = self.base_ref.clone().into();
-        modal = modal.child(
-            div()
-                .h_flex()
-                .gap_2()
-                .items_center()
-                .child(
-                    Label::new("Based on")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
-                )
-                .child(
-                    div()
-                        .h_flex()
-                        .h(px(20.))
-                        .px(px(8.))
-                        .gap(px(4.))
-                        .rounded(px(4.))
-                        .bg(colors.ghost_element_selected)
-                        .items_center()
-                        .child(
-                            Icon::new(IconName::GitCommit)
-                                .size(IconSize::XSmall)
-                                .color(Color::Accent),
-                        )
-                        .child(
-                            Label::new(base_ref_str)
-                                .size(LabelSize::XSmall)
-                                .weight(gpui::FontWeight::MEDIUM)
-                                .color(Color::Accent),
-                        ),
-                ),
-        );
-
         // Error message
         if let Some(ref err) = self.error_message {
             modal = modal.child(
@@ -400,14 +384,14 @@ impl Render for BranchDialog {
         }
 
         // Buttons
-        let can_create = !self.branch_name.is_empty() && self.error_message.is_none();
+        let can_rename = !is_empty && !has_error && !is_unchanged;
         modal = modal.child(
             div()
                 .h_flex()
                 .justify_between()
                 .items_center()
                 .child(
-                    Label::new("Enter to create · Esc to cancel")
+                    Label::new("Enter to rename · Esc to cancel")
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -416,7 +400,7 @@ impl Render for BranchDialog {
                         .h_flex()
                         .gap_2()
                         .child(
-                            Button::new("cancel-branch", "Cancel")
+                            Button::new("cancel-rename", "Cancel")
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -424,22 +408,21 @@ impl Render for BranchDialog {
                                 })),
                         )
                         .child(
-                            Button::new("create-branch", "Create Branch")
-                                .icon(IconName::GitBranch)
+                            Button::new("do-rename", "Rename")
+                                .icon(IconName::Edit)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)
                                 .color(Color::Accent)
-                                .disabled(!can_create)
+                                .disabled(!can_rename)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.try_create(cx);
+                                    this.try_rename(cx);
                                 })),
                         ),
                 ),
         );
 
-        // Backdrop + modal
         div()
-            .id("branch-dialog-backdrop")
+            .id("rename-dialog-backdrop")
             .absolute()
             .top_0()
             .left_0()

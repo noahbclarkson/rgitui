@@ -77,16 +77,19 @@ impl RenderOnce for Tab {
             Color::Muted
         };
 
+        let active_bg = colors.ghost_element_active;
+
         let mut tab = div()
             .id(self.id.clone())
             .group("tab")
             .h_flex()
-            .h(px(32.))
-            .px_3()
+            .h(px(28.))
+            .px_2()
             .gap_1()
             .bg(bg)
             .cursor(CursorStyle::PointingHand)
-            .hover(|s| s.bg(colors.ghost_element_hover));
+            .hover(|s| s.bg(colors.ghost_element_hover))
+            .active(move |s| s.bg(active_bg));
 
         if self.active {
             tab = tab.border_b_2().border_color(colors.text_accent);
@@ -116,6 +119,7 @@ impl RenderOnce for Tab {
 
         // Close button (visible on hover or when active)
         if self.closeable {
+            let is_active = self.active;
             let mut close_btn = IconButton::new(
                 ElementId::Name(format!("{}-close", self.id).into()),
                 IconName::X,
@@ -127,7 +131,14 @@ impl RenderOnce for Tab {
                 close_btn = close_btn.on_click(on_close);
             }
 
-            tab = tab.child(close_btn);
+            // Only show close button on hover or when tab is active
+            tab = tab.child(
+                div()
+                    .when(!is_active, |el| {
+                        el.invisible().group_hover("tab", |s| s.visible())
+                    })
+                    .child(close_btn),
+            );
         }
 
         tab
@@ -167,7 +178,7 @@ impl RenderOnce for TabBar {
         let mut bar = div()
             .h_flex()
             .w_full()
-            .h(px(34.))
+            .h(px(30.))
             .bg(colors.tab_bar_background)
             .border_b_1()
             .border_color(colors.border_variant)

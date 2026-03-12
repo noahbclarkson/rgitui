@@ -1176,6 +1176,7 @@ impl SettingsModal {
                     .when(is_active, |el| el.bg(colors.ghost_element_selected))
                     .when(!is_active, |el| {
                         el.hover(|s| s.bg(colors.ghost_element_hover))
+                            .active(|s| s.bg(colors.ghost_element_active))
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.active_section = section;

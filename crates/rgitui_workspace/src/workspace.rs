@@ -21,9 +21,10 @@ use rgitui_ui::{
 use crate::{
     BranchDialog, BranchDialogEvent, CommandPalette, CommandPaletteEvent, CommitPanel,
     CommitPanelEvent, ConfirmAction, ConfirmDialog, ConfirmDialogEvent, DetailPanel,
-    DetailPanelEvent, InteractiveRebase, InteractiveRebaseEvent, RepoOpener, RepoOpenerEvent,
-    SettingsModal, SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent,
-    StatusBar, TitleBar, ToastKind, ToastLayer, Toolbar, ToolbarEvent,
+    DetailPanelEvent, InteractiveRebase, InteractiveRebaseEvent, RenameDialog, RenameDialogEvent,
+    RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent, ShortcutsHelp,
+    ShortcutsHelpEvent, Sidebar, SidebarEvent, StatusBar, TagDialog, TagDialogEvent, TitleBar,
+    ToastKind, ToastLayer, Toolbar, ToolbarEvent,
 };
 
 /// Marker types for drag-resize handles — each implements Render to serve as the drag ghost view.
@@ -77,6 +78,15 @@ pub enum WorkspaceEvent {
     OpenRepo(String),
 }
 
+/// Which panel had focus before a modal was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedPanel {
+    Sidebar,
+    Graph,
+    DetailPanel,
+    DiffViewer,
+}
+
 /// The root workspace view.
 pub struct Workspace {
     tabs: Vec<ProjectTab>,
@@ -93,6 +103,8 @@ pub struct Workspace {
     diff_viewer_height: f32,
     commit_input_height: f32,
     branch_dialog: Entity<BranchDialog>,
+    tag_dialog: Entity<TagDialog>,
+    rename_dialog: Entity<RenameDialog>,
     confirm_dialog: Entity<ConfirmDialog>,
     repo_opener: Entity<RepoOpener>,
     shortcuts_help: Entity<ShortcutsHelp>,
@@ -102,6 +114,8 @@ pub struct Workspace {
     loading_message: Option<String>,
     active_git_operation: Option<GitOperationUpdate>,
     last_failed_git_operation: Option<GitOperationUpdate>,
+    /// Tracks which panel was focused before a modal opened, for focus restoration.
+    last_focused_panel: Option<FocusedPanel>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -190,6 +204,8 @@ impl Workspace {
         .detach();
 
         let branch_dialog = cx.new(BranchDialog::new);
+        let tag_dialog = cx.new(TagDialog::new);
+        let rename_dialog = cx.new(RenameDialog::new);
         let confirm_dialog = cx.new(ConfirmDialog::new);
         let repo_opener = cx.new(RepoOpener::new);
         let shortcuts_help = cx.new(ShortcutsHelp::new);
@@ -214,6 +230,49 @@ impl Workspace {
                     this.show_toast(format!("Branch '{}' created", name), ToastKind::Success, cx);
                 }
                 BranchDialogEvent::Dismissed => {}
+            },
+        )
+        .detach();
+
+        // Subscribe to tag dialog events
+        cx.subscribe(
+            &tag_dialog,
+            |this, _td, event: &TagDialogEvent, cx| match event {
+                TagDialogEvent::CreateTag { name, target_oid } => {
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        let project = tab.project.clone();
+                        let name = name.clone();
+                        let oid = *target_oid;
+                        project.update(cx, |proj, cx| {
+                            proj.create_tag(&name, oid, cx).detach();
+                        });
+                    }
+                }
+                TagDialogEvent::Dismissed => {}
+            },
+        )
+        .detach();
+
+        // Subscribe to rename dialog events
+        cx.subscribe(
+            &rename_dialog,
+            |this, _rd, event: &RenameDialogEvent, cx| match event {
+                RenameDialogEvent::Rename { old_name, new_name } => {
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        let project = tab.project.clone();
+                        let old = old_name.clone();
+                        let new = new_name.clone();
+                        project.update(cx, |proj, cx| {
+                            proj.rename_branch(&old, &new, cx).detach();
+                        });
+                    }
+                    this.show_toast(
+                        format!("Branch renamed: {} → {}", old_name, new_name),
+                        ToastKind::Success,
+                        cx,
+                    );
+                }
+                RenameDialogEvent::Dismissed => {}
             },
         )
         .detach();
@@ -271,15 +330,25 @@ impl Workspace {
                                         proj.delete_tag(&name, cx).detach();
                                     });
                                 }
-                                ConfirmAction::ResetHard(_target) => {
+                                ConfirmAction::ResetHard(target) => {
+                                    let target = target.clone();
                                     project.update(cx, |proj, cx| {
-                                        proj.reset_hard(cx).detach();
+                                        if let Ok(oid) = git2::Oid::from_str(&target) {
+                                            proj.reset_to_commit(oid, cx).detach();
+                                        } else {
+                                            proj.reset_hard(cx).detach();
+                                        }
                                     });
                                 }
                                 ConfirmAction::RemoveRemote(name) => {
                                     let name = name.clone();
                                     project.update(cx, |proj, cx| {
                                         proj.remove_remote(&name, cx).detach();
+                                    });
+                                }
+                                ConfirmAction::AbortMerge => {
+                                    project.update(cx, |proj, cx| {
+                                        proj.abort_operation(cx).detach();
                                     });
                                 }
                             }
@@ -343,6 +412,8 @@ impl Workspace {
             diff_viewer_height,
             commit_input_height,
             branch_dialog,
+            tag_dialog,
+            rename_dialog,
             confirm_dialog,
             repo_opener,
             shortcuts_help,
@@ -352,6 +423,7 @@ impl Workspace {
             loading_message: None,
             active_git_operation: None,
             last_failed_git_operation: None,
+            last_focused_panel: None,
         }
     }
 
@@ -422,9 +494,10 @@ impl Workspace {
             "commit" => {
                 let commit_panel = tab.commit_panel.clone();
                 commit_panel.update(cx, |cp, cx| {
-                    if !cp.message().is_empty() {
+                    let msg = cp.message();
+                    if !msg.is_empty() {
                         cx.emit(CommitPanelEvent::CommitRequested {
-                            message: cp.message().to_string(),
+                            message: msg,
                             amend: false,
                         });
                     }
@@ -558,7 +631,84 @@ impl Workspace {
                     );
                 });
             }
-            "create_tag" | "rename_branch" | "cherry_pick" | "revert_commit" | "delete_branch" => {
+            "abort_operation" => {
+                let project = tab.project.clone();
+                let state = project.read(cx).repo_state();
+                if state.is_clean() {
+                    self.show_toast("No operation in progress to abort", ToastKind::Warning, cx);
+                } else {
+                    let state_label = state.label().to_string();
+                    self.confirm_dialog.update(cx, |cd, cx| {
+                        cd.show_visible(
+                            format!("Abort {}", state_label),
+                            format!(
+                                "This will abort the current {} and reset to HEAD. All conflict resolution progress will be lost.",
+                                state_label.to_lowercase()
+                            ),
+                            ConfirmAction::AbortMerge,
+                            cx,
+                        );
+                    });
+                }
+            }
+            "continue_merge" => {
+                let project = tab.project.clone();
+                let state = project.read(cx).repo_state();
+                if state.is_clean() {
+                    self.show_toast("No operation in progress", ToastKind::Warning, cx);
+                } else if project.read(cx).has_conflicts() {
+                    self.show_toast(
+                        "Cannot continue — resolve all conflicts first",
+                        ToastKind::Error,
+                        cx,
+                    );
+                } else {
+                    project.update(cx, |proj, cx| {
+                        proj.continue_merge(cx).detach();
+                    });
+                }
+            }
+            "create_tag" => {
+                if let Some(tab) = self.tabs.get(self.active_tab) {
+                    let proj = tab.project.read(cx);
+                    if let Some(head) = proj.recent_commits().first() {
+                        let oid = head.oid;
+                        self.tag_dialog.update(cx, |td, cx| {
+                            td.show_visible(oid, cx);
+                        });
+                    } else {
+                        self.show_toast("No HEAD commit to tag".to_string(), ToastKind::Error, cx);
+                    }
+                }
+            }
+            "reset_hard" => {
+                self.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Reset Hard",
+                        "Hard reset to HEAD? All staged and unstaged changes will be permanently discarded.",
+                        ConfirmAction::ResetHard("HEAD".to_string()),
+                        cx,
+                    );
+                });
+            }
+            "rename_branch" => {
+                if let Some(tab) = self.tabs.get(self.active_tab) {
+                    let proj = tab.project.read(cx);
+                    if let Some(head) = proj.head_branch() {
+                        let name = head.to_string();
+                        self.rename_dialog.update(cx, |rd, cx| {
+                            rd.show_visible(name, cx);
+                        });
+                    } else {
+                        self.show_toast(
+                            "No branch to rename (detached HEAD)".to_string(),
+                            ToastKind::Error,
+                            cx,
+                        );
+                    }
+                }
+            }
+            "cherry_pick" | "revert_commit" | "delete_branch" => {
                 let msg = format!(
                     "Use the sidebar context menu for '{}'",
                     cmd_id.replace('_', " ")
@@ -570,6 +720,99 @@ impl Workspace {
     }
 
     /// Show a temporary toast notification.
+    /// Detect which panel is currently focused and save it for later restoration.
+    fn save_focus(&mut self, window: &Window, cx: &Context<Self>) {
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            if tab.sidebar.read(cx).is_focused(window) {
+                self.last_focused_panel = Some(FocusedPanel::Sidebar);
+            } else if tab.graph.read(cx).is_focused(window) {
+                self.last_focused_panel = Some(FocusedPanel::Graph);
+            } else if tab.detail_panel.read(cx).is_focused(window) {
+                self.last_focused_panel = Some(FocusedPanel::DetailPanel);
+            } else if tab.diff_viewer.read(cx).is_focused(window) {
+                self.last_focused_panel = Some(FocusedPanel::DiffViewer);
+            }
+        }
+    }
+
+    /// Detect which panel currently has focus.
+    fn current_focused_panel(&self, window: &Window, cx: &Context<Self>) -> Option<FocusedPanel> {
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            if tab.sidebar.read(cx).is_focused(window) {
+                return Some(FocusedPanel::Sidebar);
+            }
+            if tab.graph.read(cx).is_focused(window) {
+                return Some(FocusedPanel::Graph);
+            }
+            if tab.detail_panel.read(cx).is_focused(window) {
+                return Some(FocusedPanel::DetailPanel);
+            }
+            if tab.diff_viewer.read(cx).is_focused(window) {
+                return Some(FocusedPanel::DiffViewer);
+            }
+        }
+        None
+    }
+
+    /// Cycle focus to the next panel in order.
+    fn focus_next_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.current_focused_panel(window, cx);
+        let next = match current {
+            Some(FocusedPanel::Sidebar) => FocusedPanel::Graph,
+            Some(FocusedPanel::Graph) => FocusedPanel::DetailPanel,
+            Some(FocusedPanel::DetailPanel) => FocusedPanel::DiffViewer,
+            Some(FocusedPanel::DiffViewer) => FocusedPanel::Sidebar,
+            None => FocusedPanel::Graph,
+        };
+        self.focus_panel(next, window, cx);
+    }
+
+    /// Cycle focus to the previous panel in order.
+    fn focus_prev_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.current_focused_panel(window, cx);
+        let prev = match current {
+            Some(FocusedPanel::Sidebar) => FocusedPanel::DiffViewer,
+            Some(FocusedPanel::Graph) => FocusedPanel::Sidebar,
+            Some(FocusedPanel::DetailPanel) => FocusedPanel::Graph,
+            Some(FocusedPanel::DiffViewer) => FocusedPanel::DetailPanel,
+            None => FocusedPanel::Graph,
+        };
+        self.focus_panel(prev, window, cx);
+    }
+
+    /// Focus a specific panel.
+    fn focus_panel(
+        &mut self,
+        panel: FocusedPanel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            match panel {
+                FocusedPanel::Sidebar => {
+                    tab.sidebar.update(cx, |s, cx| s.focus(window, cx));
+                }
+                FocusedPanel::Graph => {
+                    tab.graph.update(cx, |g, cx| g.focus(window, cx));
+                }
+                FocusedPanel::DetailPanel => {
+                    tab.detail_panel.update(cx, |d, cx| d.focus(window, cx));
+                }
+                FocusedPanel::DiffViewer => {
+                    tab.diff_viewer.update(cx, |d, cx| d.focus(window, cx));
+                }
+            }
+        }
+    }
+
+    /// Restore focus to the previously focused panel.
+    fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.last_focused_panel.take();
+        if let Some(panel) = panel {
+            self.focus_panel(panel, window, cx);
+        }
+    }
+
     fn show_toast(&mut self, text: impl Into<String>, kind: ToastKind, cx: &mut Context<Self>) {
         let message = text.into();
         self.toast_layer
@@ -808,9 +1051,9 @@ impl Workspace {
         });
 
         let graph = cx.new(|cx| GraphView::new(cx));
-        let diff_viewer = cx.new(|_cx| DiffViewer::new());
-        let detail_panel = cx.new(|_cx| DetailPanel::new());
-        let sidebar = cx.new(|_cx| Sidebar::new());
+        let diff_viewer = cx.new(|cx| DiffViewer::new(cx));
+        let detail_panel = cx.new(|cx| DetailPanel::new(cx));
+        let sidebar = cx.new(|cx| Sidebar::new(cx));
         let commit_panel = cx.new(CommitPanel::new);
         let toolbar = cx.new(|_cx| Toolbar::new());
 
@@ -843,7 +1086,11 @@ impl Workspace {
                             .map(|c| (c.author.name.clone(), c.author.email.clone()))
                             .collect();
                         crate::avatar_resolver::resolve_avatars(authors, cx);
-                        graph.update(cx, |g, cx| g.set_commits(commits, cx));
+                        let has_more = project.read(cx).has_more_commits();
+                        graph.update(cx, |g, cx| {
+                            g.set_commits(commits, cx);
+                            g.set_all_loaded(!has_more);
+                        });
 
                         // Update sidebar
                         let branches = project.read(cx).branches().to_vec();
@@ -1111,6 +1358,46 @@ impl Workspace {
                             ro.toggle_visible(cx);
                         });
                     }
+                    SidebarEvent::TagDelete(name) => {
+                        let name = name.clone();
+                        this.confirm_dialog.update(cx, |cd, cx| {
+                            cd.show_visible(
+                                "Delete Tag",
+                                format!(
+                                    "Are you sure you want to delete tag '{}'? This cannot be undone.",
+                                    name
+                                ),
+                                ConfirmAction::TagDelete(name),
+                                cx,
+                            );
+                        });
+                    }
+                    SidebarEvent::StashApply(index) => {
+                        let index = *index;
+                        project.update(cx, |proj, cx| {
+                            proj.stash_apply(index, cx).detach();
+                        });
+                    }
+                    SidebarEvent::BranchRename(name) => {
+                        let name = name.clone();
+                        this.rename_dialog.update(cx, |rd, cx| {
+                            rd.show_visible(name, cx);
+                        });
+                    }
+                    SidebarEvent::StashDrop(index) => {
+                        let index = *index;
+                        this.confirm_dialog.update(cx, |cd, cx| {
+                            cd.show_visible(
+                                "Drop Stash",
+                                format!(
+                                    "Are you sure you want to drop stash@{{{}}}? This cannot be undone.",
+                                    index
+                                ),
+                                ConfirmAction::StashDrop(index),
+                                cx,
+                            );
+                        });
+                    }
                 }
             }
         })
@@ -1181,11 +1468,42 @@ impl Workspace {
                     }
                     GraphViewEvent::CopyCommitSha(sha) => {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(sha.clone()));
+                        let short = &sha[..7.min(sha.len())];
+                        this.show_toast(
+                            format!("Copied SHA: {}", short),
+                            ToastKind::Success,
+                            cx,
+                        );
+                    }
+                    GraphViewEvent::CreateTagAtCommit(oid) => {
+                        let oid = *oid;
+                        this.tag_dialog.update(cx, |td, cx| {
+                            td.show_visible(oid, cx);
+                        });
+                    }
+                    GraphViewEvent::ResetToCommit(oid, sha) => {
+                        let oid = *oid;
+                        let sha = sha.clone();
+                        let short = &sha[..7.min(sha.len())];
+                        this.confirm_dialog.update(cx, |cd, cx| {
+                            cd.show_visible(
+                                "Reset to Commit",
+                                format!(
+                                    "Hard reset the current branch to {}? All uncommitted changes and commits after this point will be lost.",
+                                    short
+                                ),
+                                ConfirmAction::ResetHard(oid.to_string()),
+                                cx,
+                            );
+                        });
                     }
                     GraphViewEvent::LoadMoreCommits => {
-                        // Progressive loading: currently all commits are loaded
-                        // during refresh. This event is reserved for future use
-                        // when viewport-aware loading is implemented.
+                        this.show_toast(
+                            "Showing maximum 1,000 commits. Use search (Ctrl+F) to find older commits."
+                                .to_string(),
+                            ToastKind::Info,
+                            cx,
+                        );
                     }
                 }
             }
@@ -1358,7 +1676,11 @@ impl Workspace {
                 .map(|c| (c.author.name.clone(), c.author.email.clone()))
                 .collect();
             crate::avatar_resolver::resolve_avatars(authors, cx);
-            graph.update(cx, |g, cx| g.set_commits(commits, cx));
+            let has_more = project.read(cx).has_more_commits();
+            graph.update(cx, |g, cx| {
+                g.set_commits(commits, cx);
+                g.set_all_loaded(!has_more);
+            });
 
             let branches = project.read(cx).branches().to_vec();
             let tags = project.read(cx).tags().to_vec();
@@ -1477,6 +1799,7 @@ impl Workspace {
             self.settings_modal.update(cx, |sm, cx| {
                 sm.dismiss(cx);
             });
+            self.restore_focus(window, cx);
             return;
         }
 
@@ -1485,6 +1808,7 @@ impl Workspace {
             self.interactive_rebase.update(cx, |ir, cx| {
                 ir.dismiss(cx);
             });
+            self.restore_focus(window, cx);
             return;
         }
 
@@ -1493,6 +1817,7 @@ impl Workspace {
             self.confirm_dialog.update(cx, |cd, cx| {
                 cd.cancel(cx);
             });
+            self.restore_focus(window, cx);
             return;
         }
 
@@ -1501,6 +1826,25 @@ impl Workspace {
             self.branch_dialog.update(cx, |bd, cx| {
                 bd.dismiss(cx);
             });
+            self.restore_focus(window, cx);
+            return;
+        }
+
+        // Dismiss tag dialog on Escape
+        if key == "escape" && self.tag_dialog.read(cx).is_visible() {
+            self.tag_dialog.update(cx, |td, cx| {
+                td.dismiss(cx);
+            });
+            self.restore_focus(window, cx);
+            return;
+        }
+
+        // Dismiss rename dialog on Escape
+        if key == "escape" && self.rename_dialog.read(cx).is_visible() {
+            self.rename_dialog.update(cx, |rd, cx| {
+                rd.dismiss(cx);
+            });
+            self.restore_focus(window, cx);
             return;
         }
 
@@ -1509,6 +1853,7 @@ impl Workspace {
             self.repo_opener.update(cx, |ro, cx| {
                 ro.dismiss(cx);
             });
+            self.restore_focus(window, cx);
             return;
         }
 
@@ -1517,11 +1862,28 @@ impl Workspace {
             self.shortcuts_help.update(cx, |sh, cx| {
                 sh.dismiss(cx);
             });
+            self.restore_focus(window, cx);
             return;
         }
 
+        // When an overlay is active, only allow modal toggle shortcuts (below) and Escape (above).
+        // Block all panel-specific shortcuts (j/k, Alt+1/2/3/4, Tab, resize, etc.)
+        let any_overlay_active = self.command_palette.read(cx).is_visible()
+            || self.interactive_rebase.read(cx).is_visible()
+            || self.settings_modal.read(cx).is_visible()
+            || self.branch_dialog.read(cx).is_visible()
+            || self.tag_dialog.read(cx).is_visible()
+            || self.rename_dialog.read(cx).is_visible()
+            || self.repo_opener.read(cx).is_visible()
+            || self.confirm_dialog.read(cx).is_visible()
+            || self.shortcuts_help.read(cx).is_visible();
+
         // Ctrl+F to toggle graph search
-        if (modifiers.control || modifiers.platform) && !modifiers.shift && key == "f" {
+        if !any_overlay_active
+            && (modifiers.control || modifiers.platform)
+            && !modifiers.shift
+            && key == "f"
+        {
             if let Some(tab) = self.tabs.get(self.active_tab) {
                 let graph = tab.graph.clone();
                 graph.update(cx, |g, cx| {
@@ -1533,6 +1895,7 @@ impl Workspace {
 
         // Ctrl+Shift+P or Cmd+Shift+P to open command palette
         if (modifiers.control || modifiers.platform) && modifiers.shift && key == "p" {
+            self.save_focus(window, cx);
             self.command_palette.update(cx, |cp, cx| {
                 cp.toggle(window, cx);
             });
@@ -1540,6 +1903,7 @@ impl Workspace {
 
         // Ctrl+, to open settings
         if (modifiers.control || modifiers.platform) && key == "," {
+            self.save_focus(window, cx);
             self.settings_modal.update(cx, |sm, cx| {
                 sm.toggle(window, cx);
             });
@@ -1547,12 +1911,13 @@ impl Workspace {
         }
 
         // F5 to refresh
-        if key == "f5" {
+        if !any_overlay_active && key == "f5" {
             self.execute_command("refresh", cx);
         }
 
         // Ctrl+O to open repo opener
         if (modifiers.control || modifiers.platform) && key == "o" {
+            self.save_focus(window, cx);
             self.repo_opener.update(cx, |ro, cx| {
                 ro.toggle(window, cx);
             });
@@ -1560,46 +1925,86 @@ impl Workspace {
         }
 
         // ? to toggle shortcuts help (without modifiers)
-        if key == "?" && !modifiers.control && !modifiers.platform && !modifiers.alt {
+        if !any_overlay_active && key == "?" && !modifiers.control && !modifiers.platform && !modifiers.alt {
+            self.save_focus(window, cx);
             self.shortcuts_help.update(cx, |sh, cx| {
                 sh.toggle(window, cx);
             });
             return;
         }
 
-        // j/k vim-style navigation in the commit graph
-        if !modifiers.control && !modifiers.alt && !modifiers.shift && !modifiers.platform {
-            match key {
-                "j" => {
-                    if let Some(tab) = self.tabs.get(self.active_tab) {
-                        let graph = tab.graph.clone();
-                        graph.update(cx, |g, cx| {
-                            let next = g
-                                .selected_index()
-                                .map(|i| (i + 1).min(g.commit_count().saturating_sub(1)))
-                                .unwrap_or(0);
-                            g.select_index(next, cx);
-                        });
+        // j/k vim-style navigation in the commit graph (skip when graph or detail panel
+        // is focused, since they handle their own j/k to avoid double-movement)
+        if !any_overlay_active
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.shift
+            && !modifiers.platform
+        {
+            let panel_has_focus = self
+                .tabs
+                .get(self.active_tab)
+                .map(|tab| {
+                    tab.graph.read(cx).is_focused(window)
+                        || tab.detail_panel.read(cx).is_focused(window)
+                        || tab.diff_viewer.read(cx).is_focused(window)
+                })
+                .unwrap_or(false);
+
+            if !panel_has_focus {
+                match key {
+                    "j" => {
+                        if let Some(tab) = self.tabs.get(self.active_tab) {
+                            let graph = tab.graph.clone();
+                            graph.update(cx, |g, cx| {
+                                let next = g
+                                    .selected_index()
+                                    .map(|i| (i + 1).min(g.commit_count().saturating_sub(1)))
+                                    .unwrap_or(0);
+                                g.select_index(next, cx);
+                            });
+                        }
                     }
-                }
-                "k" => {
-                    if let Some(tab) = self.tabs.get(self.active_tab) {
-                        let graph = tab.graph.clone();
-                        graph.update(cx, |g, cx| {
-                            if let Some(i) = g.selected_index() {
-                                if i > 0 {
-                                    g.select_index(i - 1, cx);
+                    "k" => {
+                        if let Some(tab) = self.tabs.get(self.active_tab) {
+                            let graph = tab.graph.clone();
+                            graph.update(cx, |g, cx| {
+                                if let Some(i) = g.selected_index() {
+                                    if i > 0 {
+                                        g.select_index(i - 1, cx);
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
+            }
+        }
+
+        // 'd' to toggle diff display mode (unified/side-by-side)
+        // Only when not in a text-entry context (sidebar, commit panel don't consume 'd')
+        if !any_overlay_active
+            && key == "d"
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.shift
+            && !modifiers.platform
+        {
+            // Skip if sidebar has focus (user might be navigating branches)
+            let sidebar_has_focus = self
+                .tabs
+                .get(self.active_tab)
+                .map(|tab| tab.sidebar.read(cx).is_focused(window))
+                .unwrap_or(false);
+            if !sidebar_has_focus {
+                self.execute_command("toggle_diff_mode", cx);
+                return;
             }
         }
 
         // Ctrl+[ / Ctrl+] to resize detail panel width
-        if modifiers.control && !modifiers.shift && !modifiers.alt {
+        if !any_overlay_active && modifiers.control && !modifiers.shift && !modifiers.alt {
             match key {
                 "[" | "bracketleft" => {
                     self.detail_panel_width = (self.detail_panel_width - 20.0).max(180.0);
@@ -1627,43 +2032,43 @@ impl Workspace {
         }
 
         // Ctrl+S to stage all
-        if modifiers.control && !modifiers.shift && key == "s" {
+        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "s" {
             self.execute_command("stage_all", cx);
             return;
         }
 
         // Ctrl+Shift+S to unstage all
-        if modifiers.control && modifiers.shift && key == "s" {
+        if !any_overlay_active && modifiers.control && modifiers.shift && key == "s" {
             self.execute_command("unstage_all", cx);
             return;
         }
 
         // Ctrl+B to create branch
-        if modifiers.control && !modifiers.shift && key == "b" {
+        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "b" {
             self.execute_command("create_branch", cx);
             return;
         }
 
         // Ctrl+Enter to commit
-        if modifiers.control && !modifiers.shift && key == "enter" {
+        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "enter" {
             self.execute_command("commit", cx);
             return;
         }
 
         // Ctrl+Z to stash save
-        if modifiers.control && !modifiers.shift && key == "z" {
+        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "z" {
             self.execute_command("stash_save", cx);
             return;
         }
 
         // Ctrl+Shift+Z to stash pop
-        if modifiers.control && modifiers.shift && key == "z" {
+        if !any_overlay_active && modifiers.control && modifiers.shift && key == "z" {
             self.execute_command("stash_pop", cx);
             return;
         }
 
         // Ctrl+Tab to switch to next tab
-        if modifiers.control && !modifiers.shift && key == "tab" {
+        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "tab" {
             if !self.tabs.is_empty() {
                 self.active_tab = (self.active_tab + 1) % self.tabs.len();
                 cx.notify();
@@ -1672,7 +2077,7 @@ impl Workspace {
         }
 
         // Ctrl+Shift+Tab to switch to previous tab
-        if modifiers.control && modifiers.shift && key == "tab" {
+        if !any_overlay_active && modifiers.control && modifiers.shift && key == "tab" {
             if !self.tabs.is_empty() {
                 if self.active_tab == 0 {
                     self.active_tab = self.tabs.len() - 1;
@@ -1685,7 +2090,7 @@ impl Workspace {
         }
 
         // Ctrl+W to close current tab
-        if modifiers.control && !modifiers.shift && key == "w" {
+        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "w" {
             if !self.tabs.is_empty() {
                 self.close_tab(self.active_tab, cx);
             }
@@ -1693,8 +2098,41 @@ impl Workspace {
         }
 
         // Ctrl+Shift+W to return to workspace home
-        if modifiers.control && modifiers.shift && key == "w" {
+        if !any_overlay_active && modifiers.control && modifiers.shift && key == "w" {
             self.go_home(cx);
+            return;
+        }
+
+        // Alt+1/2/3/4 to focus sidebar/graph/detail/diff panel
+        if !any_overlay_active && modifiers.alt && !modifiers.control {
+            match key {
+                "1" => {
+                    self.focus_panel(FocusedPanel::Sidebar, window, cx);
+                    return;
+                }
+                "2" => {
+                    self.focus_panel(FocusedPanel::Graph, window, cx);
+                    return;
+                }
+                "3" => {
+                    self.focus_panel(FocusedPanel::DetailPanel, window, cx);
+                    return;
+                }
+                "4" => {
+                    self.focus_panel(FocusedPanel::DiffViewer, window, cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Tab / Shift+Tab to cycle between panels (only when no overlay is active)
+        if !any_overlay_active && !modifiers.control && !modifiers.alt && key == "tab" {
+            if modifiers.shift {
+                self.focus_prev_panel(window, cx);
+            } else {
+                self.focus_next_panel(window, cx);
+            }
             return;
         }
 
@@ -1718,9 +2156,9 @@ impl Workspace {
 
         let mut content = div()
             .v_flex()
-            .gap(px(18.))
+            .gap(px(12.))
             .items_center()
-            .max_w(px(620.))
+            .max_w(px(520.))
             .w_full()
             // Logo area
             .child(
@@ -1728,13 +2166,13 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(64.))
-                    .h(px(64.))
-                    .rounded(px(16.))
+                    .w(px(48.))
+                    .h(px(48.))
+                    .rounded(px(12.))
                     .bg(colors.element_background)
                     .child(
                         Icon::new(IconName::GitCommit)
-                            .size(IconSize::Large)
+                            .size(IconSize::Medium)
                             .color(Color::Accent),
                     ),
             )
@@ -1787,7 +2225,7 @@ impl Workspace {
             );
 
         if !recent_workspaces.is_empty() {
-            let mut workspaces_list = div().v_flex().w_full().mt(px(8.)).gap(px(6.)).child(
+            let mut workspaces_list = div().v_flex().w_full().mt(px(4.)).gap(px(4.)).child(
                 Label::new("Recent Workspaces")
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
@@ -1824,12 +2262,12 @@ impl Workspace {
                         .id(ElementId::NamedInteger("recent-workspace".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .min_h(px(64.))
+                        .min_h(px(48.))
                         .px_3()
-                        .py_2()
-                        .gap_3()
+                        .py(px(6.))
+                        .gap_2()
                         .items_start()
-                        .rounded(px(8.))
+                        .rounded(px(6.))
                         .cursor_pointer()
                         .bg(colors.ghost_element_background)
                         .border_1()
@@ -1879,7 +2317,7 @@ impl Workspace {
         }
 
         if !recent_repos.is_empty() {
-            let mut repos_list = div().v_flex().w_full().gap(px(4.)).child(
+            let mut repos_list = div().v_flex().w_full().gap(px(2.)).child(
                 Label::new("Recent Repositories")
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
@@ -1900,11 +2338,11 @@ impl Workspace {
                         .id(ElementId::NamedInteger("recent-repo".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(40.))
+                        .h(px(32.))
                         .px_3()
                         .gap_2()
                         .items_center()
-                        .rounded(px(6.))
+                        .rounded(px(4.))
                         .cursor_pointer()
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
@@ -1944,8 +2382,8 @@ impl Workspace {
         content = content.child(
             div()
                 .v_flex()
-                .gap(px(8.))
-                .mt(px(12.))
+                .gap(px(4.))
+                .mt(px(8.))
                 .w_full()
                 .items_center()
                 .child(self.shortcut_hint("Open Repository", "Ctrl+O", colors))
@@ -1997,7 +2435,7 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
         // If no tabs, show welcome screen
@@ -2013,6 +2451,8 @@ impl Render for Workspace {
                 .child(self.interactive_rebase.clone())
                 .child(self.settings_modal.clone())
                 .child(self.branch_dialog.clone())
+                .child(self.tag_dialog.clone())
+                .child(self.rename_dialog.clone())
                 .child(self.repo_opener.clone())
                 .child(self.shortcuts_help.clone())
                 .into_any_element();
@@ -2027,15 +2467,28 @@ impl Render for Workspace {
             .to_string()
             .into();
         let has_changes = project.has_changes();
+        let head_detached = project.is_head_detached();
+        let repo_state = project.repo_state();
         let staged_count = project.status().staged.len();
         let unstaged_count = project.status().unstaged.len();
+        let stash_count = project.stashes().len();
+        let repo_path_display: SharedString = project.repo_path().display().to_string().into();
         let overlays_active = self.command_palette.read(cx).is_visible()
             || self.interactive_rebase.read(cx).is_visible()
             || self.settings_modal.read(cx).is_visible()
             || self.branch_dialog.read(cx).is_visible()
+            || self.tag_dialog.read(cx).is_visible()
+            || self.rename_dialog.read(cx).is_visible()
             || self.repo_opener.read(cx).is_visible()
             || self.confirm_dialog.read(cx).is_visible()
             || self.shortcuts_help.read(cx).is_visible();
+
+        // Detect which panel has keyboard focus for visual indicators
+        let sidebar_focused = active_tab.sidebar.read(cx).is_focused(window);
+        let graph_focused = active_tab.graph.read(cx).is_focused(window);
+        let detail_focused = active_tab.detail_panel.read(cx).is_focused(window);
+        let diff_focused = active_tab.diff_viewer.read(cx).is_focused(window);
+        let focus_accent = colors.border_focused;
 
         // Find head branch info for ahead/behind
         let (ahead, behind) = project
@@ -2111,19 +2564,23 @@ impl Render for Workspace {
                 ),
         );
 
-        // Status bar with operation message
-        let status_bar = if let Some(msg) = &self.status_message {
-            StatusBar::new()
-                .branch(branch_name.clone())
-                .ahead_behind(ahead, behind)
-                .changes(staged_count, unstaged_count)
-                .operation_message(msg.clone())
-        } else {
-            StatusBar::new()
-                .branch(branch_name.clone())
-                .ahead_behind(ahead, behind)
-                .changes(staged_count, unstaged_count)
-        };
+        // Status bar with operation message and state indicators
+        let mut status_bar = StatusBar::new()
+            .branch(branch_name.clone())
+            .ahead_behind(ahead, behind)
+            .changes(staged_count, unstaged_count)
+            .stash_count(stash_count)
+            .repo_path(repo_path_display)
+            .loading(self.is_loading)
+            .error(self.last_failed_git_operation.is_some())
+            .head_detached(head_detached);
+        if !repo_state.is_clean() {
+            status_bar = status_bar.repo_state_label(repo_state.label());
+        }
+
+        if let Some(msg) = &self.status_message {
+            status_bar = status_bar.operation_message(msg.clone());
+        }
 
         let operation_banner = if let Some(update) = self
             .active_git_operation
@@ -2152,10 +2609,10 @@ impl Render for Workspace {
                 div()
                     .h_flex()
                     .w_full()
-                    .min_h(px(34.))
-                    .px(px(12.))
-                    .py(px(6.))
-                    .gap(px(8.))
+                    .min_h(px(30.))
+                    .px(px(10.))
+                    .py(px(4.))
+                    .gap(px(6.))
                     .items_center()
                     .bg(bg)
                     .border_b_1()
@@ -2219,10 +2676,106 @@ impl Render for Workspace {
             .bg(colors.background)
             .on_key_down(cx.listener(Self::handle_key_down))
             // Title bar
-            .child(TitleBar::new(repo_name.clone(), branch_name.clone()).has_changes(has_changes))
+            .child({
+                let mut title = TitleBar::new(repo_name.clone(), branch_name.clone())
+                    .has_changes(has_changes)
+                    .head_detached(head_detached);
+                if !repo_state.is_clean() {
+                    title = title.repo_state(repo_state.label());
+                }
+                title
+            })
             // Toolbar
             .child(active_tab.toolbar.clone())
             .when_some(operation_banner, |el, banner| el.child(banner))
+            // Conflict state banner (merge/rebase/cherry-pick/revert in progress)
+            .when(!repo_state.is_clean(), |el| {
+                let has_conflicts = active_tab.project.read(cx).has_conflicts();
+                let conflict_count = active_tab.project.read(cx).conflicted_files().len();
+                let state_label: SharedString = repo_state.label().into();
+                let detail_msg: SharedString = if has_conflicts {
+                    format!(
+                        "{} file{} with conflicts — resolve before continuing",
+                        conflict_count,
+                        if conflict_count == 1 { "" } else { "s" }
+                    )
+                    .into()
+                } else {
+                    "All conflicts resolved — ready to continue".into()
+                };
+
+                el.child(
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .min_h(px(32.))
+                        .px(px(10.))
+                        .py(px(4.))
+                        .gap(px(6.))
+                        .items_center()
+                        .bg(if has_conflicts {
+                            cx.status().warning_background
+                        } else {
+                            cx.status().success_background
+                        })
+                        .border_b_1()
+                        .border_color(if has_conflicts {
+                            cx.status().warning
+                        } else {
+                            cx.status().success
+                        })
+                        .child(
+                            Icon::new(if has_conflicts {
+                                IconName::FileConflict
+                            } else {
+                                IconName::Check
+                            })
+                            .size(IconSize::Small)
+                            .color(if has_conflicts {
+                                Color::Warning
+                            } else {
+                                Color::Success
+                            }),
+                        )
+                        .child(
+                            div()
+                                .v_flex()
+                                .min_w_0()
+                                .flex_1()
+                                .child(
+                                    Label::new(state_label)
+                                        .size(LabelSize::Small)
+                                        .weight(gpui::FontWeight::SEMIBOLD)
+                                        .truncate(),
+                                )
+                                .child(
+                                    Label::new(detail_msg)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .truncate(),
+                                ),
+                        )
+                        .child(
+                            Button::new("conflict-continue", "Continue")
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Filled)
+                                .color(Color::Success)
+                                .disabled(has_conflicts)
+                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                    this.execute_command("continue_merge", cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("conflict-abort", "Abort")
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Subtle)
+                                .color(Color::Error)
+                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                    this.execute_command("abort_operation", cx);
+                                })),
+                        ),
+                )
+            })
             // Tab bar
             .child(tab_bar)
             // Main content area — drag_move listeners live here so they fire globally
@@ -2293,6 +2846,9 @@ impl Render for Workspace {
                             .w(px(self.sidebar_width))
                             .h_full()
                             .flex_shrink_0()
+                            .when(sidebar_focused, |el| {
+                                el.border_t_2().border_color(focus_accent)
+                            })
                             .child(active_tab.sidebar.clone())
                             // Resize handle straddles the right border
                             .child(
@@ -2300,12 +2856,17 @@ impl Render for Workspace {
                                     .id("sidebar-resize-handle")
                                     .absolute()
                                     .top_0()
-                                    .right(px(-4.))
+                                    .right(px(-3.))
                                     .h_full()
-                                    .w(px(6.))
+                                    .w(px(5.))
                                     .when(!overlays_active, |el| {
                                         el.cursor_col_resize()
-                                            .hover(|s| s.bg(colors.border_focused))
+                                            .hover(|s| {
+                                                s.bg(gpui::Hsla {
+                                                    a: 0.6,
+                                                    ..colors.border_focused
+                                                })
+                                            })
                                             .on_drag(SidebarResize, |val, _, _, cx| {
                                                 cx.stop_propagation();
                                                 cx.new(|_| val.clone())
@@ -2357,19 +2918,32 @@ impl Render for Workspace {
                                 )
                             })
                             // Graph view
-                            .child(div().flex_1().min_h_0().child(active_tab.graph.clone()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .when(graph_focused, |el| {
+                                        el.border_t_2().border_color(focus_accent)
+                                    })
+                                    .child(active_tab.graph.clone()),
+                            )
                             // Drag-to-resize strip between graph and diff viewer
                             .child(
                                 div()
                                     .id("diff-resize-handle")
                                     .w_full()
-                                    .h(px(2.))
+                                    .h(px(3.))
                                     .flex_shrink_0()
                                     .border_t_1()
                                     .border_color(colors.border_variant)
                                     .when(!overlays_active, |el| {
                                         el.cursor_row_resize()
-                                            .hover(|s| s.bg(colors.border_focused))
+                                            .hover(|s| {
+                                                s.bg(gpui::Hsla {
+                                                    a: 0.6,
+                                                    ..colors.border_focused
+                                                })
+                                            })
                                             .on_drag(DiffViewerResize, |val, _, _, cx| {
                                                 cx.stop_propagation();
                                                 cx.new(|_| val.clone())
@@ -2387,6 +2961,9 @@ impl Render for Workspace {
                                 div()
                                     .h(px(self.diff_viewer_height))
                                     .flex_shrink_0()
+                                    .when(diff_focused, |el| {
+                                        el.border_t_2().border_color(focus_accent)
+                                    })
                                     .child(active_tab.diff_viewer.clone()),
                             ),
                     )
@@ -2424,6 +3001,9 @@ impl Render for Workspace {
                                     .flex_1()
                                     .min_h_0()
                                     .overflow_y_scroll()
+                                    .when(detail_focused, |el| {
+                                        el.border_t_2().border_color(focus_accent)
+                                    })
                                     .child(active_tab.detail_panel.clone()),
                             )
                             // Resize handle between detail and commit input
@@ -2431,13 +3011,18 @@ impl Render for Workspace {
                                 div()
                                     .id("commit-input-resize-handle")
                                     .w_full()
-                                    .h(px(2.))
+                                    .h(px(3.))
                                     .flex_shrink_0()
                                     .border_t_1()
                                     .border_color(colors.border_variant)
                                     .when(!overlays_active, |el| {
                                         el.cursor_row_resize()
-                                            .hover(|s| s.bg(colors.border_focused))
+                                            .hover(|s| {
+                                                s.bg(gpui::Hsla {
+                                                    a: 0.6,
+                                                    ..colors.border_focused
+                                                })
+                                            })
                                             .on_drag(CommitInputResize, |val, _, _, cx| {
                                                 cx.stop_propagation();
                                                 cx.new(|_| val.clone())
@@ -2465,10 +3050,15 @@ impl Render for Workspace {
                                     .top_0()
                                     .left(px(-3.))
                                     .h_full()
-                                    .w(px(6.))
+                                    .w(px(5.))
                                     .when(!overlays_active, |el| {
                                         el.cursor_col_resize()
-                                            .hover(|s| s.bg(colors.border_focused))
+                                            .hover(|s| {
+                                                s.bg(gpui::Hsla {
+                                                    a: 0.6,
+                                                    ..colors.border_focused
+                                                })
+                                            })
                                             .on_drag(DetailPanelResize, |val, _, _, cx| {
                                                 cx.stop_propagation();
                                                 cx.new(|_| val.clone())
@@ -2494,6 +3084,10 @@ impl Render for Workspace {
             .child(self.settings_modal.clone())
             // Branch dialog overlay
             .child(self.branch_dialog.clone())
+            // Tag dialog overlay
+            .child(self.tag_dialog.clone())
+            // Rename dialog overlay
+            .child(self.rename_dialog.clone())
             // Repo opener overlay
             .child(self.repo_opener.clone())
             // Confirm dialog overlay

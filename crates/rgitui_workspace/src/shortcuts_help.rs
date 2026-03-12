@@ -67,7 +67,19 @@ impl ShortcutsHelp {
             (
                 "Navigation",
                 vec![
-                    ("j / k", "Up / Down in graph"),
+                    ("j / k", "Up / Down in focused panel"),
+                    ("g / G", "First / Last item"),
+                    ("/", "Search in graph"),
+                    ("d", "Toggle diff mode (unified/split)"),
+                    ("Tab", "Next panel"),
+                    ("Shift+Tab", "Previous panel"),
+                    ("Alt+1", "Focus sidebar"),
+                    ("Alt+2", "Focus graph"),
+                    ("Alt+3", "Focus detail panel"),
+                    ("Alt+4", "Focus diff viewer"),
+                    ("Enter / Space", "Activate sidebar item"),
+                    ("s", "Stage / Unstage file (sidebar)"),
+                    ("x / Delete", "Delete selected item (sidebar)"),
                     ("Ctrl+Tab", "Next tab"),
                     ("Ctrl+Shift+Tab", "Previous tab"),
                 ],
@@ -81,7 +93,6 @@ impl ShortcutsHelp {
                     ("Ctrl+B", "Create Branch"),
                     ("Ctrl+Z", "Stash Changes"),
                     ("Ctrl+Shift+Z", "Pop Stash"),
-                    ("Ctrl+Shift+K", "Stash"),
                 ],
             ),
             (

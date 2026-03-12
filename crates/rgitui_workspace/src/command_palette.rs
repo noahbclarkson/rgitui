@@ -211,6 +211,24 @@ impl CommandPalette {
                 shortcut: None,
                 category: "Git",
             },
+            PaletteCommand {
+                id: "abort_operation",
+                label: "Git: Abort Merge/Rebase",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "continue_merge",
+                label: "Git: Continue Merge",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: "reset_hard",
+                label: "Git: Reset Hard (to HEAD)",
+                shortcut: None,
+                category: "Git",
+            },
         ];
 
         let filtered_indices = (0..commands.len()).collect();
@@ -434,6 +452,7 @@ impl Render for CommandPalette {
                 .cursor_pointer()
                 .when(is_selected, |el| el.bg(colors.ghost_element_selected))
                 .hover(|s| s.bg(colors.ghost_element_hover))
+                .active(|s| s.bg(colors.ghost_element_active))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.visible = false;
                     cx.emit(CommandPaletteEvent::CommandSelected(cmd_id.clone()));

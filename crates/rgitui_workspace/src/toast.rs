@@ -73,6 +73,11 @@ impl ToastLayer {
             _created_at: Instant::now(),
         });
 
+        // Cap at 3 visible toasts — remove oldest if over limit
+        while self.toasts.len() > 3 {
+            self.toasts.remove(0);
+        }
+
         // Schedule auto-dismiss
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
@@ -106,11 +111,11 @@ impl Render for ToastLayer {
 
         let mut stack = div()
             .absolute()
-            .bottom(px(32.))
-            .right(px(16.))
+            .bottom(px(28.))
+            .right(px(12.))
             .v_flex()
-            .gap_2()
-            .w(px(320.));
+            .gap(px(6.))
+            .w(px(300.));
 
         for toast in &self.toasts {
             let toast_id = toast.id;
@@ -145,6 +150,7 @@ impl Render for ToastLayer {
                         .bg(colors.elevated_surface_background)
                         .border_1()
                         .border_color(border_color)
+                        .rounded(px(8.))
                         .elevation_2(cx)
                         .items_center()
                         .child(

@@ -2,7 +2,7 @@ use gpui::prelude::*;
 use gpui::SharedString;
 use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize, VerticalDivider};
+use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize, Tooltip, VerticalDivider};
 
 /// Events emitted by the toolbar.
 #[derive(Debug, Clone)]
@@ -92,7 +92,7 @@ impl Toolbar {
         id: &'static str,
         icon: IconName,
         label: &'static str,
-        _tooltip_text: &'static str,
+        tooltip_text: &'static str,
         disabled: bool,
         loading: bool,
         cx: &mut Context<Self>,
@@ -101,32 +101,47 @@ impl Toolbar {
         let hover_bg = colors.ghost_element_hover;
         let active_bg = colors.ghost_element_active;
 
-        let display_label = if loading { "..." } else { label };
+        let is_inactive = disabled || loading;
+
+        let icon_color = if loading {
+            Color::Accent
+        } else if disabled {
+            Color::Disabled
+        } else {
+            Color::Default
+        };
+        let text_color = if loading {
+            Color::Muted
+        } else if disabled {
+            Color::Disabled
+        } else {
+            Color::Default
+        };
 
         let el = div()
             .id(id)
             .h_flex()
-            .h(px(28.))
-            .px(px(8.))
-            .gap(px(5.))
+            .h(px(26.))
+            .px(px(6.))
+            .gap(px(4.))
             .items_center()
             .justify_center()
-            .rounded(px(6.));
+            .rounded(px(4.))
+            .when(disabled && !loading, |el| el.opacity(0.5))
+            .when(!is_inactive, move |el| {
+                el.hover(move |s| s.bg(hover_bg))
+                    .active(move |s| s.bg(active_bg))
+                    .cursor_pointer()
+            })
+            .tooltip(Tooltip::text(tooltip_text))
+            .child(Icon::new(icon).size(IconSize::Small).color(icon_color))
+            .child(
+                Label::new(label)
+                    .size(LabelSize::XSmall)
+                    .color(text_color),
+            );
 
-        if disabled || loading {
-            el.child(Icon::new(icon).size(IconSize::Small).color(Color::Disabled))
-                .child(
-                    Label::new(display_label)
-                        .size(LabelSize::XSmall)
-                        .color(Color::Disabled),
-                )
-        } else {
-            el.hover(move |s| s.bg(hover_bg))
-                .active(move |s| s.bg(active_bg))
-                .cursor_pointer()
-                .child(Icon::new(icon).size(IconSize::Small))
-                .child(Label::new(display_label).size(LabelSize::XSmall))
-        }
+        el
     }
 
     /// Small icon-only button for the right side.
@@ -134,7 +149,7 @@ impl Toolbar {
         &self,
         id: &'static str,
         icon: IconName,
-        _tooltip_text: &'static str,
+        tooltip_text: &'static str,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let colors = cx.colors();
@@ -146,12 +161,13 @@ impl Toolbar {
             .flex()
             .items_center()
             .justify_center()
-            .w(px(28.))
-            .h(px(28.))
-            .rounded(px(6.))
+            .w(px(26.))
+            .h(px(26.))
+            .rounded(px(4.))
             .hover(move |s| s.bg(hover_bg))
             .active(move |s| s.bg(active_bg))
             .cursor_pointer()
+            .tooltip(Tooltip::text(tooltip_text))
             .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
     }
 }
@@ -182,9 +198,9 @@ impl Render for Toolbar {
         div()
             .h_flex()
             .w_full()
-            .h(px(40.))
-            .px(px(10.))
-            .gap(px(4.))
+            .h(px(36.))
+            .px(px(8.))
+            .gap(px(2.))
             .items_center()
             .bg(colors.toolbar_background)
             .border_b_1()
@@ -196,7 +212,7 @@ impl Render for Toolbar {
                     IconName::Refresh,
                     fetch_label,
                     "Fetch from remote (Ctrl+Shift+F)",
-                    false,
+                    self.is_fetching,
                     self.is_fetching,
                     cx,
                 )

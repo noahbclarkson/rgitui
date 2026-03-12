@@ -185,5 +185,8 @@ impl RenderOnce for Icon {
             .path(self.name.path())
             .text_color(icon_color)
             .size(size)
+            .flex_shrink_0()
+            .min_w(size)
+            .min_h(size)
     }
 }

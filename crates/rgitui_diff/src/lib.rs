@@ -3,12 +3,13 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FontWeight,
-    ListSizingBehavior, Render, SharedString, UniformListScrollHandle, WeakEntity, Window,
+    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
+    FontWeight, KeyDownEvent, ListSizingBehavior, Render, ScrollStrategy, SharedString,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{DiffLine, FileDiff};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize};
 
 /// Events from the diff viewer.
 #[derive(Debug, Clone)]
@@ -81,12 +82,15 @@ pub struct DiffViewer {
     display_rows: Arc<Vec<DisplayRow>>,
     sbs_rows: Arc<Vec<SideBySideRow>>,
     scroll_handle: UniformListScrollHandle,
+    focus_handle: FocusHandle,
+    /// Currently highlighted row index for keyboard navigation.
+    highlighted_row: Option<usize>,
 }
 
 impl EventEmitter<DiffViewerEvent> for DiffViewer {}
 
 impl DiffViewer {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             diff: None,
             display_mode: DiffDisplayMode::Unified,
@@ -95,7 +99,20 @@ impl DiffViewer {
             display_rows: Arc::new(Vec::new()),
             sbs_rows: Arc::new(Vec::new()),
             scroll_handle: UniformListScrollHandle::new(),
+            focus_handle: cx.focus_handle(),
+            highlighted_row: None,
         }
+    }
+
+    /// Focus the diff viewer for keyboard navigation.
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Check if the diff viewer is currently focused.
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window)
     }
 
     pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, cx: &mut Context<Self>) {
@@ -104,6 +121,7 @@ impl DiffViewer {
         self.diff = Some(diff);
         self.file_path = Some(path);
         self.is_staged = staged;
+        self.highlighted_row = None;
         cx.notify();
     }
 
@@ -112,7 +130,73 @@ impl DiffViewer {
         self.file_path = None;
         self.display_rows = Arc::new(Vec::new());
         self.sbs_rows = Arc::new(Vec::new());
+        self.highlighted_row = None;
         cx.notify();
+    }
+
+    fn row_count(&self) -> usize {
+        match self.display_mode {
+            DiffDisplayMode::Unified => self.display_rows.len(),
+            DiffDisplayMode::SideBySide => self.sbs_rows.len(),
+        }
+    }
+
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+        let row_count = self.row_count();
+
+        if row_count == 0 {
+            return;
+        }
+
+        match key {
+            "j" | "down" if !ctrl => {
+                let next = match self.highlighted_row {
+                    Some(i) if i + 1 < row_count => i + 1,
+                    None => 0,
+                    Some(i) => i,
+                };
+                self.highlighted_row = Some(next);
+                self.scroll_handle
+                    .scroll_to_item(next, ScrollStrategy::Top);
+                cx.notify();
+            }
+            "k" | "up" if !ctrl => {
+                let next = match self.highlighted_row {
+                    Some(i) if i > 0 => i - 1,
+                    None if row_count > 0 => 0,
+                    Some(i) => i,
+                    None => 0,
+                };
+                self.highlighted_row = Some(next);
+                self.scroll_handle
+                    .scroll_to_item(next, ScrollStrategy::Top);
+                cx.notify();
+            }
+            "g" if !ctrl && !event.keystroke.modifiers.shift => {
+                self.highlighted_row = Some(0);
+                self.scroll_handle
+                    .scroll_to_item(0, ScrollStrategy::Top);
+                cx.notify();
+            }
+            "g" if event.keystroke.modifiers.shift => {
+                let last = row_count.saturating_sub(1);
+                self.highlighted_row = Some(last);
+                self.scroll_handle
+                    .scroll_to_item(last, ScrollStrategy::Top);
+                cx.notify();
+            }
+            "d" if !ctrl => {
+                self.toggle_display_mode(cx);
+            }
+            _ => {}
+        }
     }
 
     pub fn toggle_display_mode(&mut self, cx: &mut Context<Self>) {
@@ -309,40 +393,66 @@ impl Render for DiffViewer {
         if self.diff.is_none() {
             return div()
                 .id("diff-viewer")
+                .v_flex()
                 .size_full()
                 .bg(colors.editor_background)
-                .flex()
-                .items_center()
-                .justify_center()
+                // Header bar — matches other panels
                 .child(
                     div()
-                        .v_flex()
-                        .gap_3()
+                        .h_flex()
+                        .w_full()
+                        .h(px(26.))
+                        .px(px(10.))
+                        .gap(px(4.))
                         .items_center()
+                        .bg(colors.toolbar_background)
+                        .border_b_1()
+                        .border_color(colors.border_variant)
                         .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .w(px(48.))
-                                .h(px(48.))
-                                .rounded(px(24.))
-                                .bg(colors.element_background)
-                                .child(
-                                    Icon::new(IconName::GitCommit)
-                                        .size(IconSize::Large)
-                                        .color(Color::Muted),
-                                ),
-                        )
-                        .child(
-                            Label::new("Select a file or commit to view changes")
-                                .size(LabelSize::Default)
+                            Icon::new(IconName::File)
+                                .size(IconSize::XSmall)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Click a file in the sidebar or a commit in the graph")
+                            Label::new("Diff")
                                 .size(LabelSize::XSmall)
-                                .color(Color::Placeholder),
+                                .weight(FontWeight::SEMIBOLD)
+                                .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .v_flex()
+                                .gap(px(8.))
+                                .items_center()
+                                .px(px(24.))
+                                .py(px(16.))
+                                .rounded(px(8.))
+                                .bg(gpui::Hsla {
+                                    a: 0.03,
+                                    ..colors.text
+                                })
+                                .child(
+                                    Icon::new(IconName::File)
+                                        .size(IconSize::Large)
+                                        .color(Color::Placeholder),
+                                )
+                                .child(
+                                    Label::new("No file selected")
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    Label::new("Click a file in the sidebar or detail panel")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Placeholder),
+                                ),
                         ),
                 )
                 .into_any_element();
@@ -356,7 +466,6 @@ impl Render for DiffViewer {
 
         // ── Pre-compute colors for the closure ──────────────────────
         let editor_bg = colors.editor_background;
-        let surface_bg = colors.surface_background;
         let text_color = colors.text;
         let text_placeholder_color = colors.text_placeholder;
         let border_variant = colors.border_variant;
@@ -391,11 +500,22 @@ impl Render for DiffViewer {
 
         // Neutral gutter background for context lines
         let gutter_bg = gpui::Hsla {
-            a: 0.03,
+            a: 0.06,
             ..colors.text
         };
 
-        let row_height = 22.0_f32;
+        let row_height = 20.0_f32;
+
+        // Highlight row for keyboard navigation
+        let highlighted_row = self.highlighted_row;
+        let highlight_bg = gpui::Hsla {
+            a: 0.10,
+            ..colors.text_accent
+        };
+        let row_hover_bg = gpui::Hsla {
+            a: 0.04,
+            ..colors.text
+        };
 
         // ── Build the list based on display mode ─────────────────────
         let list = match display_mode {
@@ -503,18 +623,26 @@ impl Render for DiffViewer {
                                             .map(|n| format!("{:>4}", n))
                                             .unwrap_or_else(|| "    ".to_string())
                                             .into();
+                                        let prefix_str: SharedString = prefix.into();
                                         let content_text: SharedString =
-                                            format!("{}{}", prefix, content.trim_end()).into();
+                                            content.trim_end().to_string().into();
+                                        let is_highlighted = highlighted_row == Some(i);
+                                        let effective_bg = if is_highlighted {
+                                            highlight_bg
+                                        } else {
+                                            line_bg
+                                        };
 
                                         div()
                                             .h_flex()
                                             .h(px(row_height))
                                             .w_full()
-                                            .bg(line_bg)
+                                            .bg(effective_bg)
+                                            .hover(move |s| s.bg(row_hover_bg))
                                             // Old line number gutter
                                             .child(
                                                 div()
-                                                    .w(px(44.))
+                                                    .w(px(40.))
                                                     .flex_shrink_0()
                                                     .h_full()
                                                     .flex()
@@ -529,7 +657,7 @@ impl Render for DiffViewer {
                                             // New line number gutter
                                             .child(
                                                 div()
-                                                    .w(px(44.))
+                                                    .w(px(40.))
                                                     .flex_shrink_0()
                                                     .h_full()
                                                     .flex()
@@ -543,6 +671,19 @@ impl Render for DiffViewer {
                                                     .px_1()
                                                     .child(new_str),
                                             )
+                                            // Prefix indicator (+/-/space)
+                                            .child(
+                                                div()
+                                                    .w(px(16.))
+                                                    .flex_shrink_0()
+                                                    .h_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .text_xs()
+                                                    .text_color(text_col)
+                                                    .child(prefix_str),
+                                            )
                                             // Content area
                                             .child(
                                                 div()
@@ -551,7 +692,6 @@ impl Render for DiffViewer {
                                                     .h_full()
                                                     .flex()
                                                     .items_center()
-                                                    .pl_2()
                                                     .text_xs()
                                                     .text_color(text_col)
                                                     .whitespace_nowrap()
@@ -697,21 +837,34 @@ impl Render for DiffViewer {
                                         let right_text: SharedString =
                                             right_content.trim_end().to_string().into();
 
+                                        let is_highlighted = highlighted_row == Some(i);
+                                        let effective_left_bg = if is_highlighted {
+                                            highlight_bg
+                                        } else {
+                                            left_bg
+                                        };
+                                        let effective_right_bg = if is_highlighted {
+                                            highlight_bg
+                                        } else {
+                                            right_bg
+                                        };
+
                                         div()
                                             .h_flex()
                                             .h(px(row_height))
                                             .w_full()
+                                            .hover(move |s| s.bg(row_hover_bg))
                                             // ── Left half ──
                                             .child(
                                                 div()
                                                     .h_flex()
                                                     .flex_1()
                                                     .h_full()
-                                                    .bg(left_bg)
+                                                    .bg(effective_left_bg)
                                                     // Left gutter
                                                     .child(
                                                         div()
-                                                            .w(px(44.))
+                                                            .w(px(40.))
                                                             .flex_shrink_0()
                                                             .h_full()
                                                             .flex()
@@ -743,7 +896,7 @@ impl Render for DiffViewer {
                                             // ── Center divider ──
                                             .child(
                                                 div()
-                                                    .w(px(1.))
+                                                    .w(px(2.))
                                                     .flex_shrink_0()
                                                     .h_full()
                                                     .bg(border_variant),
@@ -754,11 +907,11 @@ impl Render for DiffViewer {
                                                     .h_flex()
                                                     .flex_1()
                                                     .h_full()
-                                                    .bg(right_bg)
+                                                    .bg(effective_right_bg)
                                                     // Right gutter
                                                     .child(
                                                         div()
-                                                            .w(px(44.))
+                                                            .w(px(40.))
                                                             .flex_shrink_0()
                                                             .h_full()
                                                             .flex()
@@ -801,7 +954,17 @@ impl Render for DiffViewer {
         };
 
         // ── Build container ─────────────────────────────────────────
-        let mut container = div().id("diff-viewer").v_flex().size_full().bg(editor_bg);
+        let mut container = div()
+            .id("diff-viewer")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::handle_key_down))
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.focus_handle.focus(window, cx);
+                cx.notify();
+            }))
+            .v_flex()
+            .size_full()
+            .bg(editor_bg);
 
         // ── File header bar ─────────────────────────────────────────
         if let Some(path) = &self.file_path {
@@ -817,11 +980,11 @@ impl Render for DiffViewer {
                 div()
                     .h_flex()
                     .w_full()
-                    .h(px(36.))
-                    .px(px(12.))
-                    .gap_2()
+                    .h(px(26.))
+                    .px(px(10.))
+                    .gap(px(6.))
                     .items_center()
-                    .bg(surface_bg)
+                    .bg(colors.toolbar_background)
                     .border_b_1()
                     .border_color(border_variant)
                     // File icon (based on extension)
@@ -836,6 +999,15 @@ impl Render for DiffViewer {
                             .size(LabelSize::Small)
                             .weight(FontWeight::MEDIUM)
                             .truncate(),
+                    )
+                    // Staged/Unstaged indicator
+                    .child(
+                        Badge::new(if is_staged { "Staged" } else { "Unstaged" })
+                            .color(if is_staged {
+                                Color::Added
+                            } else {
+                                Color::Modified
+                            }),
                     )
                     // Spacer
                     .child(div().flex_1())

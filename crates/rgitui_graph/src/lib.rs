@@ -22,6 +22,8 @@ pub enum GraphViewEvent {
     CreateBranchAtCommit(git2::Oid),
     CheckoutCommit(git2::Oid),
     CopyCommitSha(String),
+    CreateTagAtCommit(git2::Oid),
+    ResetToCommit(git2::Oid, String),
     /// Request to load more commits beyond the current set.
     LoadMoreCommits,
 }
@@ -56,6 +58,8 @@ pub struct GraphView {
     current_match: usize,
     /// Focus handle for the search input.
     search_focus: FocusHandle,
+    /// Focus handle for the graph view itself (keyboard navigation).
+    graph_focus: FocusHandle,
     /// Cursor position within the search query (byte offset).
     search_cursor_pos: usize,
     /// Whether we've reached the end of available commits.
@@ -74,7 +78,7 @@ impl GraphView {
             graph_rows: Arc::new(Vec::new()),
             selected_index: None,
             selected_oid: None,
-            row_height: 38.0,
+            row_height: 32.0,
             scroll_handle: UniformListScrollHandle::new(),
             context_menu: None,
             search_query: String::new(),
@@ -83,10 +87,22 @@ impl GraphView {
             filter_match_set: HashSet::new(),
             current_match: 0,
             search_focus: cx.focus_handle(),
+            graph_focus: cx.focus_handle(),
             search_cursor_pos: 0,
             all_commits_loaded: false,
             cached_graph_hash: 0,
         }
+    }
+
+    /// Focus the graph view for keyboard navigation.
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.graph_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Check if the graph view is currently focused.
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.graph_focus.is_focused(window)
     }
 
     pub fn set_commits(&mut self, commits: Vec<CommitInfo>, cx: &mut Context<Self>) {
@@ -309,10 +325,92 @@ impl GraphView {
     }
 
     /// Handle key events on the focused search input.
+    fn handle_graph_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        let key = keystroke.key.as_str();
+        let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
+
+        match key {
+            "j" | "down" if !ctrl => {
+                // Move selection down
+                let next = match self.selected_index {
+                    Some(i) if i + 1 < self.commits.len() => i + 1,
+                    None if !self.commits.is_empty() => 0,
+                    _ => return,
+                };
+                self.select_index(next, cx);
+                self.scroll_handle
+                    .scroll_to_item(next, ScrollStrategy::Center);
+            }
+            "k" | "up" if !ctrl => {
+                // Move selection up
+                let next = match self.selected_index {
+                    Some(i) if i > 0 => i - 1,
+                    None if !self.commits.is_empty() => 0,
+                    _ => return,
+                };
+                self.select_index(next, cx);
+                self.scroll_handle
+                    .scroll_to_item(next, ScrollStrategy::Center);
+            }
+            "g" if !ctrl && !keystroke.modifiers.shift => {
+                // Jump to first commit
+                if !self.commits.is_empty() {
+                    self.select_index(0, cx);
+                    self.scroll_handle
+                        .scroll_to_item(0, ScrollStrategy::Top);
+                }
+            }
+            "g" if keystroke.modifiers.shift => {
+                // Shift+G: jump to last commit (vim-style)
+                if !self.commits.is_empty() {
+                    let last = self.commits.len() - 1;
+                    self.select_index(last, cx);
+                    self.scroll_handle
+                        .scroll_to_item(last, ScrollStrategy::Center);
+                }
+            }
+            "end" => {
+                // Jump to last commit
+                if !self.commits.is_empty() {
+                    let last = self.commits.len() - 1;
+                    self.select_index(last, cx);
+                    self.scroll_handle
+                        .scroll_to_item(last, ScrollStrategy::Center);
+                }
+            }
+            "home" => {
+                if !self.commits.is_empty() {
+                    self.select_index(0, cx);
+                    self.scroll_handle
+                        .scroll_to_item(0, ScrollStrategy::Top);
+                }
+            }
+            "/" if !ctrl => {
+                // Open search
+                self.show_search = true;
+                self.search_focus.focus(window, cx);
+                cx.notify();
+            }
+            "escape" => {
+                // Dismiss context menu or deselect
+                if self.context_menu.is_some() {
+                    self.dismiss_context_menu(cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_search_key_down(
         &mut self,
         event: &KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
@@ -353,6 +451,8 @@ impl GraphView {
                 self.filter_matches.clear();
                 self.filter_match_set.clear();
                 self.current_match = 0;
+                // Return focus to the graph for keyboard navigation
+                self.graph_focus.focus(window, cx);
                 cx.notify();
             }
             "enter" => {
@@ -430,21 +530,62 @@ impl GraphView {
 }
 
 impl Render for GraphView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
         if self.commits.is_empty() {
             return div()
                 .id("graph-view")
+                .v_flex()
                 .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
                 .bg(colors.panel_background)
+                // Header bar — consistent with other panels
                 .child(
-                    Label::new("No commits to display")
-                        .color(Color::Muted)
-                        .size(LabelSize::Small),
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .pl(px(10.))
+                        .pr(px(8.))
+                        .gap(px(4.))
+                        .items_center()
+                        .bg(colors.surface_background)
+                        .border_b_1()
+                        .border_color(colors.border_variant)
+                        .child(
+                            Icon::new(IconName::GitCommit)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Graph")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted)
+                                .weight(gpui::FontWeight::SEMIBOLD),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .v_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Icon::new(IconName::GitCommit)
+                                        .size(IconSize::Medium)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    Label::new("No commits to display")
+                                        .color(Color::Muted)
+                                        .size(LabelSize::Small),
+                                ),
+                        ),
                 )
                 .into_any_element();
         }
@@ -454,14 +595,12 @@ impl Render for GraphView {
         let hover_bg = colors.ghost_element_hover;
         let active_bg = colors.ghost_element_active;
         let panel_bg = colors.panel_background;
-        let surface_bg = colors.surface_background;
         let border_color = colors.border_variant;
         let accent_border = colors.text_accent;
-        // Subtle zebra-stripe: derive from surface bg with tiny alpha shift
-        let zebra_bg = gpui::Hsla {
-            l: (surface_bg.l - 0.02).max(0.0),
-            a: 0.5,
-            ..surface_bg
+        // Subtle row separator color (very faint border between rows)
+        let row_separator = gpui::Hsla {
+            a: 0.06,
+            ..colors.border_variant
         };
 
         // Search highlight colors
@@ -474,9 +613,9 @@ impl Render for GraphView {
             ..colors.text_accent
         };
 
-        // HEAD emphasis: subtle glow color for the HEAD row
+        // HEAD emphasis: accent-tinted background for the HEAD row
         let head_row_bg = gpui::Hsla {
-            a: 0.06,
+            a: 0.12,
             ..colors.text_accent
         };
 
@@ -495,7 +634,7 @@ impl Render for GraphView {
         };
         let has_search_query = self.show_search && !self.search_query.is_empty();
 
-        let lane_width: f32 = 24.0;
+        let lane_width: f32 = 20.0;
         let row_height = self.row_height;
 
         // Header row (not virtualized — always visible)
@@ -503,11 +642,11 @@ impl Render for GraphView {
             .h_flex()
             .items_center()
             .w_full()
-            .h(px(28.))
-            .pl(px(12.))
+            .h(px(26.))
+            .pl(px(11.))
             .pr(px(8.))
             .gap_1()
-            .bg(surface_bg)
+            .bg(colors.toolbar_background)
             .border_b_1()
             .border_color(border_color)
             .child(
@@ -599,11 +738,9 @@ impl Render for GraphView {
                         let is_head_row = graph_row.is_head;
                         let is_merge_commit = graph_row.is_merge;
 
-                        // Row background priority: selected > search current > search match > head > zebra
+                        // Row background priority: selected > search current > search match > head > default
                         let row_base_bg = if is_head_row {
                             head_row_bg
-                        } else if i % 2 == 1 {
-                            zebra_bg
                         } else {
                             panel_bg
                         };
@@ -692,17 +829,8 @@ impl Render for GraphView {
                             .h(px(row_height))
                             .w_full()
                             .bg(bg)
-                            .border_l_2()
-                            .border_color(if selected {
-                                accent_border
-                            } else {
-                                gpui::Hsla {
-                                    h: 0.0,
-                                    s: 0.0,
-                                    l: 0.0,
-                                    a: 0.0,
-                                }
-                            })
+                            .border_b_1()
+                            .border_color(row_separator)
                             .cursor_pointer()
                             .hover(move |s| s.bg(row_hover_bg))
                             .active(move |s| s.bg(row_active_bg))
@@ -728,10 +856,16 @@ impl Render for GraphView {
                                         .ok();
                                 },
                             )
-                            // Color tab on left edge (after the border)
-                            .child(div().w(px(3.)).h_full().flex_shrink_0().bg(left_tab_color))
+                            // Color tab on left edge — accent for selected, lane color otherwise
+                            .child(
+                                div()
+                                    .w(px(3.))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .bg(left_tab_color),
+                            )
                             // Gap between color tab and graph
-                            .child(div().w(px(10.)).flex_shrink_0());
+                            .child(div().w(px(5.)).flex_shrink_0());
 
                         // Graph column with canvas + avatar overlay
                         row = row.child(
@@ -756,7 +890,7 @@ impl Render for GraphView {
 
                                             // 1. Approach segment: incoming line from row above → dot center.
                                             if has_incoming {
-                                                let mut approach = PathBuilder::stroke(px(2.5));
+                                                let mut approach = PathBuilder::stroke(px(2.0));
                                                 approach.move_to(point(
                                                     origin.x + node_x_px,
                                                     origin.y,
@@ -791,7 +925,7 @@ impl Render for GraphView {
                                                 let end_y = origin.y + h;
 
                                                 let stroke_width =
-                                                    if edge.is_merge { px(1.5) } else { px(2.5) };
+                                                    if edge.is_merge { px(1.0) } else { px(2.0) };
 
                                                 // Merge edges use dashed appearance via slightly
                                                 // transparent color
@@ -836,16 +970,16 @@ impl Render for GraphView {
 
                                             // 3. Draw commit dot with background ring.
                                             let dot_radius = if is_merge_commit {
-                                                16.0_f32
+                                                5.5_f32
                                             } else {
-                                                14.0_f32
+                                                4.5_f32
                                             };
                                             let cx_x = origin.x + node_x_px;
                                             let cy_y = origin.y + mid_y;
                                             let steps = 32_usize;
 
                                             // Background ring to occlude lines passing behind the dot
-                                            let ring_r = dot_radius + 3.0;
+                                            let ring_r = dot_radius + 2.0;
                                             let mut ring = PathBuilder::fill();
                                             for s in 0..steps {
                                                 let angle = (s as f32)
@@ -867,7 +1001,7 @@ impl Render for GraphView {
 
                                             // For HEAD commit, draw a subtle glow ring
                                             if is_head_row {
-                                                let glow_r = dot_radius + 6.0;
+                                                let glow_r = dot_radius + 4.0;
                                                 let mut glow = PathBuilder::stroke(px(2.0));
                                                 for s in 0..=steps {
                                                     let angle = (s as f32)
@@ -892,7 +1026,7 @@ impl Render for GraphView {
 
                                             // For merge commits, draw a slightly larger outer ring
                                             if is_merge_commit {
-                                                let merge_r = dot_radius + 1.0;
+                                                let merge_r = dot_radius + 1.5;
                                                 let mut merge_ring =
                                                     PathBuilder::stroke(px(1.5));
                                                 for s in 0..=steps {
@@ -933,7 +1067,7 @@ impl Render for GraphView {
                                     let initials_fallback = initials.clone();
                                     let fallback_color = node_color;
 
-                                    let avatar_size = 28.0_f32;
+                                    let avatar_size = 20.0_f32;
                                     let mut avatar_container = div()
                                         .absolute()
                                         .left(px(node_x - avatar_size / 2.0))
@@ -942,7 +1076,7 @@ impl Render for GraphView {
                                         .h(px(avatar_size))
                                         .rounded_full()
                                         .bg(panel_bg)
-                                        .border_2()
+                                        .border_1()
                                         .border_color(node_color)
                                         .flex()
                                         .items_center()
@@ -1066,6 +1200,8 @@ impl Render for GraphView {
 
         let mut container = div()
             .id("graph-view")
+            .track_focus(&self.graph_focus)
+            .on_key_down(cx.listener(Self::handle_graph_key_down))
             .relative()
             .v_flex()
             .size_full()
@@ -1081,11 +1217,16 @@ impl Render for GraphView {
                         .ok();
                 }
             })
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                // Focus the graph when clicked (for keyboard navigation)
+                this.graph_focus.focus(window, cx);
+                cx.notify();
+            }))
             .child(header);
 
         // Search bar (shown when search is active)
         if self.show_search {
-            let is_search_focused = self.search_focus.is_focused(_window);
+            let is_search_focused = self.search_focus.is_focused(window);
             let query_display: SharedString = if self.search_query.is_empty() {
                 if is_search_focused {
                     "|".into()
@@ -1100,12 +1241,18 @@ impl Render for GraphView {
             } else {
                 self.search_query.clone().into()
             };
+            let no_matches = !self.search_query.is_empty() && self.filter_matches.is_empty();
             let match_count_text: SharedString = if self.search_query.is_empty() {
                 String::new().into()
-            } else if self.filter_matches.is_empty() {
+            } else if no_matches {
                 "No matches".into()
             } else {
                 format!("{}/{}", self.current_match + 1, self.filter_matches.len()).into()
+            };
+            let match_count_color = if no_matches {
+                Color::Warning
+            } else {
+                Color::Muted
             };
             let query_color = if self.search_query.is_empty() && !is_search_focused {
                 Color::Placeholder
@@ -1133,7 +1280,11 @@ impl Render for GraphView {
                 .gap_2()
                 .bg(colors.surface_background)
                 .border_b_1()
-                .border_color(colors.border_focused)
+                .border_color(if is_search_focused {
+                    colors.border_focused
+                } else {
+                    colors.border_variant
+                })
                 .cursor_text()
                 .child(
                     Icon::new(IconName::Search)
@@ -1150,7 +1301,7 @@ impl Render for GraphView {
                 .child(
                     Label::new(match_count_text)
                         .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        .color(match_count_color),
                 )
                 .child(
                     div()
@@ -1220,6 +1371,44 @@ impl Render for GraphView {
 
         container = container.child(list);
 
+        // "Load more" footer when there are more commits available
+        if !self.all_commits_loaded && !self.commits.is_empty() {
+            let view_load = cx.weak_entity();
+            container = container.child(
+                div()
+                    .id("load-more-row")
+                    .h_flex()
+                    .w_full()
+                    .h(px(32.))
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .bg(colors.surface_background)
+                    .border_t_1()
+                    .border_color(colors.border_variant)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colors.ghost_element_hover))
+                    .active(|s| s.bg(colors.ghost_element_active))
+                    .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        view_load
+                            .update(cx, |_this, cx| {
+                                cx.emit(GraphViewEvent::LoadMoreCommits);
+                            })
+                            .ok();
+                    })
+                    .child(
+                        Icon::new(IconName::ChevronDown)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new("Load more commits")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            );
+        }
+
         // Context menu overlay
         if let Some(ref menu_state) = self.context_menu {
             if let Some(commit) = self.commits.get(menu_state.commit_index) {
@@ -1239,21 +1428,33 @@ impl Render for GraphView {
                     ("Revert commit", IconName::Undo),
                     ("Checkout commit", IconName::Check),
                     ("Create branch here", IconName::GitBranch),
+                    ("Create tag here", IconName::Tag),
+                    ("Reset to here", IconName::Trash),
                     ("Copy SHA", IconName::Copy),
                 ];
+
+                // Clamp menu position to stay within window bounds.
+                // Approximate menu dimensions: 200px wide, 220px tall.
+                let menu_w = px(200.);
+                let menu_h = px(220.);
+                let win_bounds = window.bounds();
+                let max_x = win_bounds.size.width - menu_w;
+                let max_y = win_bounds.size.height - menu_h;
+                let clamped_x = if pos.x > max_x { max_x } else { pos.x };
+                let clamped_y = if pos.y > max_y { max_y } else { pos.y };
 
                 let mut menu = div()
                     .id("graph-context-menu")
                     .absolute()
-                    .left(pos.x)
-                    .top(pos.y)
+                    .left(clamped_x)
+                    .top(clamped_y)
                     .v_flex()
                     .min_w(px(200.))
-                    .py(px(4.))
+                    .py(px(3.))
                     .bg(menu_bg)
                     .border_1()
                     .border_color(menu_border)
-                    .rounded_md()
+                    .rounded(px(6.))
                     .elevation_3(cx)
                     // Prevent left-click on menu from dismissing via container handler
                     .on_mouse_down(
@@ -1274,8 +1475,8 @@ impl Render for GraphView {
                     let label: SharedString = (*label_text).into();
                     let icon = *icon_name;
 
-                    // Add separator before "Copy SHA" (last item)
-                    if idx == 4 {
+                    // Add separator before destructive "Reset" and before "Copy SHA"
+                    if idx == 5 || idx == 6 {
                         menu = menu.child(
                             div()
                                 .w_full()
@@ -1290,13 +1491,13 @@ impl Render for GraphView {
                         .id(ElementId::NamedInteger("ctx-action".into(), idx as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(30.))
+                        .h(px(26.))
                         .px(px(8.))
                         .mx(px(4.))
-                        .gap(px(8.))
+                        .gap(px(6.))
                         .items_center()
                         .cursor_pointer()
-                        .rounded_sm()
+                        .rounded(px(3.))
                         .hover(move |s| s.bg(menu_hover))
                         .active(move |s| s.bg(menu_active));
 
@@ -1355,6 +1556,34 @@ impl Render for GraphView {
                         }
                         4 => {
                             let w = weak.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::CreateTagAtCommit(oid));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        5 => {
+                            let w = weak.clone();
+                            let sha_for_reset = sha_clone.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    let sha_val = sha_for_reset.clone();
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::ResetToCommit(oid, sha_val));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        6 => {
+                            let w = weak.clone();
                             let sha_for_click = sha_clone.clone();
                             item = item.on_click(
                                 move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -1371,12 +1600,20 @@ impl Render for GraphView {
                         _ => {}
                     }
 
+                    // Destructive actions render in error color
+                    let item_color = if idx == 5 { Color::Error } else { Color::Muted };
+                    let label_color = if idx == 5 {
+                        Color::Error
+                    } else {
+                        Color::Default
+                    };
+
                     item = item
-                        .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
+                        .child(Icon::new(icon).size(IconSize::XSmall).color(item_color))
                         .child(
                             Label::new(label)
-                                .size(LabelSize::Small)
-                                .color(Color::Default),
+                                .size(LabelSize::XSmall)
+                                .color(label_color),
                         );
 
                     menu = menu.child(item);

@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter, ObjectFit, Render,
-    SharedString, Window,
+    div, img, px, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter, FocusHandle,
+    KeyDownEvent, ObjectFit, Render, SharedString, Window,
 };
 use rgitui_git::{CommitDiff, CommitInfo, FileDiff, RefLabel};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
@@ -58,16 +58,103 @@ pub struct DetailPanel {
     commit: Option<CommitInfo>,
     commit_diff: Option<CommitDiff>,
     selected_file_index: Option<usize>,
+    focus_handle: FocusHandle,
 }
 
 impl EventEmitter<DetailPanelEvent> for DetailPanel {}
 
 impl DetailPanel {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             commit: None,
             commit_diff: None,
             selected_file_index: None,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    /// Focus the detail panel for keyboard navigation.
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Check if the detail panel is currently focused.
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window)
+    }
+
+    fn file_count(&self) -> usize {
+        self.commit_diff
+            .as_ref()
+            .map(|d| d.files.len())
+            .unwrap_or(0)
+    }
+
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let file_count = self.file_count();
+        if file_count == 0 {
+            return;
+        }
+
+        match key {
+            "j" | "down" => {
+                let next = match self.selected_file_index {
+                    Some(i) if i + 1 < file_count => Some(i + 1),
+                    None => Some(0),
+                    other => other,
+                };
+                if next != self.selected_file_index {
+                    self.selected_file_index = next;
+                    self.emit_file_selected(cx);
+                    cx.notify();
+                }
+            }
+            "k" | "up" => {
+                let next = match self.selected_file_index {
+                    Some(i) if i > 0 => Some(i - 1),
+                    None if file_count > 0 => Some(0),
+                    other => other,
+                };
+                if next != self.selected_file_index {
+                    self.selected_file_index = next;
+                    self.emit_file_selected(cx);
+                    cx.notify();
+                }
+            }
+            "home" | "g" => {
+                if self.selected_file_index != Some(0) {
+                    self.selected_file_index = Some(0);
+                    self.emit_file_selected(cx);
+                    cx.notify();
+                }
+            }
+            "end" => {
+                let last = file_count.saturating_sub(1);
+                if self.selected_file_index != Some(last) {
+                    self.selected_file_index = Some(last);
+                    self.emit_file_selected(cx);
+                    cx.notify();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn emit_file_selected(&self, cx: &mut Context<Self>) {
+        if let (Some(idx), Some(diff)) = (self.selected_file_index, &self.commit_diff) {
+            if let Some(file) = diff.files.get(idx) {
+                cx.emit(DetailPanelEvent::FileSelected(
+                    file.clone(),
+                    file.path.to_string_lossy().to_string(),
+                ));
+            }
         }
     }
 
@@ -91,28 +178,68 @@ impl Render for DetailPanel {
         let colors = cx.colors();
 
         let Some(commit) = &self.commit else {
-            // Empty state: centered message with icon
+            // Empty state: header bar + centered message
             return div()
                 .id("detail-panel")
+                .v_flex()
                 .size_full()
                 .bg(colors.panel_background)
-                .flex()
-                .items_center()
-                .justify_center()
                 .child(
                     div()
-                        .v_flex()
+                        .h_flex()
+                        .w_full()
+                        .h(px(26.))
+                        .px(px(10.))
+                        .gap(px(4.))
                         .items_center()
-                        .gap_2()
+                        .bg(colors.toolbar_background)
+                        .border_b_1()
+                        .border_color(colors.border_variant)
                         .child(
                             Icon::new(IconName::GitCommit)
-                                .size(IconSize::Large)
+                                .size(IconSize::XSmall)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Select a commit to view details")
-                                .size(LabelSize::Small)
+                            Label::new("Details")
+                                .size(LabelSize::XSmall)
+                                .weight(gpui::FontWeight::SEMIBOLD)
                                 .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .v_flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .px(px(24.))
+                                .py(px(16.))
+                                .rounded(px(8.))
+                                .bg(gpui::Hsla {
+                                    a: 0.03,
+                                    ..colors.text
+                                })
+                                .child(
+                                    Icon::new(IconName::GitCommit)
+                                        .size(IconSize::Large)
+                                        .color(Color::Placeholder),
+                                )
+                                .child(
+                                    Label::new("No commit selected")
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    Label::new("Click a commit in the graph to view details")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Placeholder),
+                                ),
                         ),
                 )
                 .into_any_element();
@@ -159,9 +286,42 @@ impl Render for DetailPanel {
 
         let mut panel = div()
             .id("detail-panel")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
             .size_full()
-            .bg(colors.panel_background)
+            .bg(colors.panel_background);
+
+        // Panel header bar
+        panel = panel.child(
+            div()
+                .h_flex()
+                .w_full()
+                .h(px(28.))
+                .px(px(10.))
+                .gap(px(4.))
+                .items_center()
+                .bg(colors.surface_background)
+                .border_b_1()
+                .border_color(colors.border_variant)
+                .child(
+                    Icon::new(IconName::GitCommit)
+                        .size(IconSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(
+                    Label::new("Details")
+                        .size(LabelSize::XSmall)
+                        .weight(gpui::FontWeight::SEMIBOLD)
+                        .color(Color::Muted),
+                ),
+        );
+
+        // Scrollable content area
+        let mut content = div()
+            .id("detail-content")
+            .v_flex()
+            .flex_1()
             .overflow_y_scroll();
 
         // Commit header card with rounded corners
@@ -171,10 +331,10 @@ impl Render for DetailPanel {
             .mx_2()
             .mt_2()
             .px_3()
-            .py_3()
-            .gap_2()
+            .py_2()
+            .gap(px(6.))
             .bg(colors.elevated_surface_background)
-            .rounded(px(8.))
+            .rounded(px(6.))
             .border_1()
             .border_color(colors.border_variant);
 
@@ -240,8 +400,8 @@ impl Render for DetailPanel {
         let avatar_bg = colors.border_focused;
         let avatar_text_color = colors.background;
         let mut avatar_circle = div()
-            .w(px(22.))
-            .h(px(22.))
+            .w(px(20.))
+            .h(px(20.))
             .rounded_full()
             .bg(avatar_bg)
             .flex()
@@ -294,6 +454,7 @@ impl Render for DetailPanel {
                             div()
                                 .h_flex()
                                 .gap_1()
+                                .overflow_hidden()
                                 .child(
                                     Label::new(author_name)
                                         .size(LabelSize::XSmall)
@@ -302,7 +463,8 @@ impl Render for DetailPanel {
                                 .child(
                                     Label::new(author_email)
                                         .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
+                                        .color(Color::Muted)
+                                        .truncate(),
                                 ),
                         )
                         .child(Label::new(date).size(LabelSize::XSmall).color(Color::Muted)),
@@ -391,7 +553,7 @@ impl Render for DetailPanel {
             );
         }
 
-        panel = panel.child(card);
+        content = content.child(card);
 
         // Changed files list
         if let Some(diff) = &self.commit_diff {
@@ -406,17 +568,22 @@ impl Render for DetailPanel {
             let deletions_text: SharedString = format!("-{}", diff.total_deletions).into();
 
             // Section header with colored +/- stats
-            panel = panel.child(
+            content = content.child(
                 div()
                     .h_flex()
                     .w_full()
-                    .px_3()
-                    .py(px(6.))
-                    .mt_1()
+                    .h(px(28.))
+                    .px(px(10.))
+                    .gap(px(4.))
                     .items_center()
                     .bg(colors.surface_background)
                     .border_b_1()
                     .border_color(colors.border_variant)
+                    .child(
+                        Icon::new(IconName::File)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
                     .child(
                         Label::new(file_count_text)
                             .size(LabelSize::XSmall)
@@ -463,17 +630,30 @@ impl Render for DetailPanel {
                     (IconName::FileModified, Color::Modified)
                 };
 
-                panel = panel.child(
+                content = content.child(
                     div()
                         .id(ElementId::NamedInteger("detail-file".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(28.))
+                        .h(px(24.))
                         .px_3()
-                        .gap_2()
+                        .gap(px(6.))
                         .items_center()
-                        .when(selected, |el| el.bg(colors.ghost_element_selected))
+                        .border_l_2()
+                        .when(selected, |el| {
+                            el.bg(colors.ghost_element_selected)
+                                .border_color(colors.text_accent)
+                        })
+                        .when(!selected, |el| {
+                            el.border_color(gpui::Hsla {
+                                h: 0.0,
+                                s: 0.0,
+                                l: 0.0,
+                                a: 0.0,
+                            })
+                        })
                         .hover(|s| s.bg(colors.ghost_element_hover))
+                        .active(|s| s.bg(colors.ghost_element_active))
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.selected_file_index = Some(i);
@@ -505,6 +685,7 @@ impl Render for DetailPanel {
             }
         }
 
+        panel = panel.child(content);
         panel.into_any_element()
     }
 }

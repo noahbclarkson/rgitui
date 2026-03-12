@@ -6,30 +6,35 @@ use gpui::{
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize};
 
-/// Events emitted by the branch creation dialog.
+/// Events emitted by the tag creation dialog.
 #[derive(Debug, Clone)]
-pub enum BranchDialogEvent {
-    CreateBranch { name: String, base_ref: String },
+pub enum TagDialogEvent {
+    CreateTag {
+        name: String,
+        target_oid: git2::Oid,
+    },
     Dismissed,
 }
 
-/// A modal dialog for creating a new Git branch.
-pub struct BranchDialog {
-    branch_name: String,
-    base_ref: String,
+/// A modal dialog for creating a new Git tag at a specific commit.
+pub struct TagDialog {
+    tag_name: String,
+    target_oid: Option<git2::Oid>,
+    target_sha_short: String,
     error_message: Option<String>,
     visible: bool,
     cursor_pos: usize,
     focus_handle: FocusHandle,
 }
 
-impl EventEmitter<BranchDialogEvent> for BranchDialog {}
+impl EventEmitter<TagDialogEvent> for TagDialog {}
 
-impl BranchDialog {
+impl TagDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            branch_name: String::new(),
-            base_ref: "HEAD".to_string(),
+            tag_name: String::new(),
+            target_oid: None,
+            target_sha_short: String::new(),
             error_message: None,
             visible: false,
             cursor_pos: 0,
@@ -37,41 +42,28 @@ impl BranchDialog {
         }
     }
 
-    /// Show the dialog, optionally setting the base ref (e.g. current branch name).
-    pub fn show(&mut self, base_ref: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Show the dialog for creating a tag at the given commit.
+    pub fn show_visible(
+        &mut self,
+        target_oid: git2::Oid,
+        cx: &mut Context<Self>,
+    ) {
         self.visible = true;
-        self.branch_name.clear();
+        self.tag_name.clear();
         self.cursor_pos = 0;
         self.error_message = None;
-        if let Some(base) = base_ref {
-            self.base_ref = base;
-        } else {
-            self.base_ref = "HEAD".to_string();
-        }
-        self.focus_handle.focus(window, cx);
-        cx.notify();
-    }
-
-    /// Show the dialog without focusing (for use from contexts where Window is unavailable).
-    pub fn show_visible(&mut self, base_ref: Option<String>, cx: &mut Context<Self>) {
-        self.visible = true;
-        self.branch_name.clear();
-        self.cursor_pos = 0;
-        self.error_message = None;
-        if let Some(base) = base_ref {
-            self.base_ref = base;
-        } else {
-            self.base_ref = "HEAD".to_string();
-        }
+        self.target_sha_short = target_oid.to_string()[..7].to_string();
+        self.target_oid = Some(target_oid);
         cx.notify();
     }
 
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         self.visible = false;
-        self.branch_name.clear();
+        self.tag_name.clear();
         self.cursor_pos = 0;
         self.error_message = None;
-        cx.emit(BranchDialogEvent::Dismissed);
+        self.target_oid = None;
+        cx.emit(TagDialogEvent::Dismissed);
         cx.notify();
     }
 
@@ -79,62 +71,68 @@ impl BranchDialog {
         self.visible
     }
 
-    /// Validate the branch name and return an error message if invalid.
-    fn validate_branch_name(name: &str) -> Option<String> {
+    /// Validate the tag name.
+    fn validate_tag_name(name: &str) -> Option<String> {
         if name.is_empty() {
-            return Some("Branch name cannot be empty".to_string());
+            return Some("Tag name cannot be empty".to_string());
         }
         if name.contains(' ') {
-            return Some("Branch name cannot contain spaces".to_string());
+            return Some("Tag name cannot contain spaces".to_string());
         }
         if name.starts_with('.') || name.starts_with('-') {
-            return Some("Branch name cannot start with '.' or '-'".to_string());
+            return Some("Tag name cannot start with '.' or '-'".to_string());
         }
         if name.ends_with('.') || name.ends_with('/') {
-            return Some("Branch name cannot end with '.' or '/'".to_string());
+            return Some("Tag name cannot end with '.' or '/'".to_string());
         }
         if name.contains("..") {
-            return Some("Branch name cannot contain '..'".to_string());
+            return Some("Tag name cannot contain '..'".to_string());
         }
-        if name.contains("~") || name.contains("^") || name.contains(":") || name.contains("\\") {
-            return Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string());
+        if name.contains("~")
+            || name.contains("^")
+            || name.contains(":")
+            || name.contains("\\")
+        {
+            return Some("Tag name cannot contain '~', '^', ':', or '\\'".to_string());
         }
         if name.contains("?") || name.contains("*") || name.contains("[") {
-            return Some("Branch name cannot contain glob characters".to_string());
+            return Some("Tag name cannot contain glob characters".to_string());
         }
         if name.contains('\x7f') || name.chars().any(|c| c.is_control()) {
-            return Some("Branch name cannot contain control characters".to_string());
+            return Some("Tag name cannot contain control characters".to_string());
         }
         if name.contains("@{") {
-            return Some("Branch name cannot contain '@{'".to_string());
-        }
-        if name == "@" {
-            return Some("Branch name cannot be '@'".to_string());
+            return Some("Tag name cannot contain '@{'".to_string());
         }
         if name.contains("//") {
-            return Some("Branch name cannot contain consecutive slashes".to_string());
+            return Some("Tag name cannot contain consecutive slashes".to_string());
         }
         if name.ends_with(".lock") {
-            return Some("Branch name cannot end with '.lock'".to_string());
+            return Some("Tag name cannot end with '.lock'".to_string());
         }
         None
     }
 
     fn try_create(&mut self, cx: &mut Context<Self>) {
-        if let Some(err) = Self::validate_branch_name(&self.branch_name) {
+        if let Some(err) = Self::validate_tag_name(&self.tag_name) {
             self.error_message = Some(err);
             cx.notify();
             return;
         }
 
-        let name = self.branch_name.clone();
-        let base_ref = self.base_ref.clone();
-        self.visible = false;
-        self.branch_name.clear();
-        self.cursor_pos = 0;
-        self.error_message = None;
-        cx.emit(BranchDialogEvent::CreateBranch { name, base_ref });
-        cx.notify();
+        if let Some(oid) = self.target_oid {
+            let name = self.tag_name.clone();
+            self.visible = false;
+            self.tag_name.clear();
+            self.cursor_pos = 0;
+            self.error_message = None;
+            self.target_oid = None;
+            cx.emit(TagDialogEvent::CreateTag {
+                name,
+                target_oid: oid,
+            });
+            cx.notify();
+        }
     }
 
     fn handle_key_down(
@@ -156,22 +154,22 @@ impl BranchDialog {
             "backspace" => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
-                    self.branch_name.remove(self.cursor_pos);
-                    self.error_message = if self.branch_name.is_empty() {
+                    self.tag_name.remove(self.cursor_pos);
+                    self.error_message = if self.tag_name.is_empty() {
                         None
                     } else {
-                        Self::validate_branch_name(&self.branch_name)
+                        Self::validate_tag_name(&self.tag_name)
                     };
                     cx.notify();
                 }
             }
             "delete" => {
-                if self.cursor_pos < self.branch_name.len() {
-                    self.branch_name.remove(self.cursor_pos);
-                    self.error_message = if self.branch_name.is_empty() {
+                if self.cursor_pos < self.tag_name.len() {
+                    self.tag_name.remove(self.cursor_pos);
+                    self.error_message = if self.tag_name.is_empty() {
                         None
                     } else {
-                        Self::validate_branch_name(&self.branch_name)
+                        Self::validate_tag_name(&self.tag_name)
                     };
                     cx.notify();
                 }
@@ -183,7 +181,7 @@ impl BranchDialog {
                 }
             }
             "right" => {
-                if self.cursor_pos < self.branch_name.len() {
+                if self.cursor_pos < self.tag_name.len() {
                     self.cursor_pos += 1;
                     cx.notify();
                 }
@@ -193,15 +191,14 @@ impl BranchDialog {
                 cx.notify();
             }
             "end" => {
-                self.cursor_pos = self.branch_name.len();
+                self.cursor_pos = self.tag_name.len();
                 cx.notify();
             }
             _ => {
-                // Handle character input
                 if let Some(key_char) = &keystroke.key_char {
-                    self.branch_name.insert_str(self.cursor_pos, key_char);
+                    self.tag_name.insert_str(self.cursor_pos, key_char);
                     self.cursor_pos += key_char.len();
-                    self.error_message = Self::validate_branch_name(&self.branch_name);
+                    self.error_message = Self::validate_tag_name(&self.tag_name);
                     cx.notify();
                 } else if key.len() == 1
                     && !keystroke.modifiers.control
@@ -209,9 +206,9 @@ impl BranchDialog {
                 {
                     let ch = key.chars().next().unwrap();
                     if ch.is_ascii_graphic() {
-                        self.branch_name.insert(self.cursor_pos, ch);
+                        self.tag_name.insert(self.cursor_pos, ch);
                         self.cursor_pos += 1;
-                        self.error_message = Self::validate_branch_name(&self.branch_name);
+                        self.error_message = Self::validate_tag_name(&self.tag_name);
                         cx.notify();
                     }
                 }
@@ -220,33 +217,33 @@ impl BranchDialog {
     }
 }
 
-impl Render for BranchDialog {
+impl Render for TagDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
         if !self.visible {
-            return div().id("branch-dialog").into_any_element();
+            return div().id("tag-dialog").into_any_element();
         }
 
         // Build the input display with cursor
-        let (before_cursor, cursor_char, after_cursor) = if self.branch_name.is_empty() {
+        let (before_cursor, cursor_char, after_cursor) = if self.tag_name.is_empty() {
             (String::new(), String::new(), String::new())
         } else {
-            let before = self.branch_name[..self.cursor_pos].to_string();
-            let cursor = if self.cursor_pos < self.branch_name.len() {
-                self.branch_name[self.cursor_pos..self.cursor_pos + 1].to_string()
+            let before = self.tag_name[..self.cursor_pos].to_string();
+            let cursor = if self.cursor_pos < self.tag_name.len() {
+                self.tag_name[self.cursor_pos..self.cursor_pos + 1].to_string()
             } else {
                 String::new()
             };
-            let after = if self.cursor_pos + 1 < self.branch_name.len() {
-                self.branch_name[self.cursor_pos + 1..].to_string()
+            let after = if self.cursor_pos + 1 < self.tag_name.len() {
+                self.tag_name[self.cursor_pos + 1..].to_string()
             } else {
                 String::new()
             };
             (before, cursor, after)
         };
 
-        let is_empty = self.branch_name.is_empty();
+        let is_empty = self.tag_name.is_empty();
         let has_error = self.error_message.is_some();
 
         let input_border_color = if has_error {
@@ -262,7 +259,7 @@ impl Render for BranchDialog {
             input_row = input_row
                 .child(div().w(px(2.)).h(px(16.)).bg(colors.text))
                 .child(
-                    Label::new("feature/my-branch")
+                    Label::new("v1.0.0")
                         .size(LabelSize::Small)
                         .color(Color::Placeholder),
                 );
@@ -285,7 +282,6 @@ impl Render for BranchDialog {
                     ),
                 );
             } else {
-                // Cursor at end
                 input_row = input_row.child(div().w(px(2.)).h(px(16.)).bg(colors.text));
             }
             if !after_cursor.is_empty() {
@@ -296,7 +292,7 @@ impl Render for BranchDialog {
 
         // Build the modal content
         let mut modal = div()
-            .id("branch-dialog-modal")
+            .id("tag-dialog-modal")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
@@ -319,25 +315,25 @@ impl Render for BranchDialog {
                 .gap_2()
                 .items_center()
                 .child(
-                    Icon::new(IconName::GitBranch)
+                    Icon::new(IconName::Tag)
                         .size(IconSize::Medium)
                         .color(Color::Accent),
                 )
                 .child(
-                    Label::new("Create Branch")
+                    Label::new("Create Tag")
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD)
                         .color(Color::Default),
                 ),
         );
 
-        // Branch name input
+        // Tag name input
         modal = modal.child(
             div()
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Branch name")
+                    Label::new("Tag name")
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -355,15 +351,15 @@ impl Render for BranchDialog {
                 ),
         );
 
-        // Base ref display as badge
-        let base_ref_str: SharedString = self.base_ref.clone().into();
+        // Target commit badge
+        let target_sha: SharedString = self.target_sha_short.clone().into();
         modal = modal.child(
             div()
                 .h_flex()
                 .gap_2()
                 .items_center()
                 .child(
-                    Label::new("Based on")
+                    Label::new("At commit")
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -382,7 +378,7 @@ impl Render for BranchDialog {
                                 .color(Color::Accent),
                         )
                         .child(
-                            Label::new(base_ref_str)
+                            Label::new(target_sha)
                                 .size(LabelSize::XSmall)
                                 .weight(gpui::FontWeight::MEDIUM)
                                 .color(Color::Accent),
@@ -400,7 +396,7 @@ impl Render for BranchDialog {
         }
 
         // Buttons
-        let can_create = !self.branch_name.is_empty() && self.error_message.is_none();
+        let can_create = !self.tag_name.is_empty() && self.error_message.is_none();
         modal = modal.child(
             div()
                 .h_flex()
@@ -416,7 +412,7 @@ impl Render for BranchDialog {
                         .h_flex()
                         .gap_2()
                         .child(
-                            Button::new("cancel-branch", "Cancel")
+                            Button::new("cancel-tag", "Cancel")
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -424,8 +420,8 @@ impl Render for BranchDialog {
                                 })),
                         )
                         .child(
-                            Button::new("create-branch", "Create Branch")
-                                .icon(IconName::GitBranch)
+                            Button::new("create-tag", "Create Tag")
+                                .icon(IconName::Tag)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)
                                 .color(Color::Accent)
@@ -439,7 +435,7 @@ impl Render for BranchDialog {
 
         // Backdrop + modal
         div()
-            .id("branch-dialog-backdrop")
+            .id("tag-dialog-backdrop")
             .absolute()
             .top_0()
             .left_0()

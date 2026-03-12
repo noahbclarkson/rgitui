@@ -162,6 +162,65 @@ pub struct CommitDiff {
     pub total_deletions: usize,
 }
 
+/// The current state of the repository (normal, mid-merge, mid-rebase, etc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoState {
+    Clean,
+    Merge,
+    Revert,
+    RevertSequence,
+    CherryPick,
+    CherryPickSequence,
+    Bisect,
+    Rebase,
+    RebaseInteractive,
+    RebaseMerge,
+    ApplyMailbox,
+    ApplyMailboxOrRebase,
+}
+
+impl RepoState {
+    /// Convert from git2::RepositoryState.
+    pub fn from_git2(state: git2::RepositoryState) -> Self {
+        match state {
+            git2::RepositoryState::Clean => RepoState::Clean,
+            git2::RepositoryState::Merge => RepoState::Merge,
+            git2::RepositoryState::Revert => RepoState::Revert,
+            git2::RepositoryState::RevertSequence => RepoState::RevertSequence,
+            git2::RepositoryState::CherryPick => RepoState::CherryPick,
+            git2::RepositoryState::CherryPickSequence => RepoState::CherryPickSequence,
+            git2::RepositoryState::Bisect => RepoState::Bisect,
+            git2::RepositoryState::Rebase => RepoState::Rebase,
+            git2::RepositoryState::RebaseInteractive => RepoState::RebaseInteractive,
+            git2::RepositoryState::RebaseMerge => RepoState::RebaseMerge,
+            git2::RepositoryState::ApplyMailbox => RepoState::ApplyMailbox,
+            git2::RepositoryState::ApplyMailboxOrRebase => RepoState::ApplyMailboxOrRebase,
+        }
+    }
+
+    pub fn is_clean(&self) -> bool {
+        matches!(self, RepoState::Clean)
+    }
+
+    /// Human-readable label for the repo state.
+    pub fn label(&self) -> &'static str {
+        match self {
+            RepoState::Clean => "Clean",
+            RepoState::Merge => "Merging",
+            RepoState::Revert => "Reverting",
+            RepoState::RevertSequence => "Reverting",
+            RepoState::CherryPick => "Cherry-picking",
+            RepoState::CherryPickSequence => "Cherry-picking",
+            RepoState::Bisect => "Bisecting",
+            RepoState::Rebase => "Rebasing",
+            RepoState::RebaseInteractive => "Rebasing (interactive)",
+            RepoState::RebaseMerge => "Rebasing",
+            RepoState::ApplyMailbox => "Applying patches",
+            RepoState::ApplyMailboxOrRebase => "Applying patches",
+        }
+    }
+}
+
 /// Result from a merge operation.
 #[derive(Debug)]
 pub enum MergeResult {

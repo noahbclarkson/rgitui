@@ -32,6 +32,11 @@ impl VerticalDivider {
 impl RenderOnce for VerticalDivider {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let border_color = cx.colors().border_variant;
-        div().h_full().w(px(1.)).bg(border_color)
+        div()
+            .h(px(16.))
+            .w(px(1.))
+            .mx(px(4.))
+            .bg(border_color)
+            .flex_shrink_0()
     }
 }

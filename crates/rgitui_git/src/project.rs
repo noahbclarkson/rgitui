@@ -328,7 +328,7 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
 
     let remote_names = repo.remotes()?;
     if remote_names.is_empty() {
-        anyhow::bail!("No git remotes are configured for this repository.")
+        anyhow::bail!("No remotes configured. Add one with: git remote add origin <url>")
     }
 
     if remote_names.iter().flatten().any(|name| name == "origin") {
@@ -394,6 +394,8 @@ fn push_target(
 /// be computed on a background thread and then applied on the main thread.
 pub struct RefreshData {
     pub head_branch: Option<String>,
+    pub head_detached: bool,
+    pub repo_state: RepoState,
     pub branches: Vec<BranchInfo>,
     pub tags: Vec<TagInfo>,
     pub remotes: Vec<RemoteInfo>,
@@ -538,6 +540,8 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
         .head()
         .ok()
         .and_then(|r| r.shorthand().map(String::from));
+    let head_detached = repo.head_detached().unwrap_or(false);
+    let repo_state = RepoState::from_git2(repo.state());
 
     // Branches
     let mut branches = Vec::new();
@@ -759,6 +763,8 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
         if !has_head && branches.is_empty() {
             return Ok(RefreshData {
                 head_branch,
+                head_detached,
+                repo_state,
                 branches,
                 tags,
                 remotes,
@@ -812,6 +818,8 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
 
     Ok(RefreshData {
         head_branch,
+        head_detached,
+        repo_state,
         branches,
         tags,
         remotes,
@@ -838,6 +846,8 @@ pub struct GitProject {
 
     // Cached state
     head_branch: Option<String>,
+    head_detached: bool,
+    repo_state: RepoState,
     branches: Vec<BranchInfo>,
     tags: Vec<TagInfo>,
     remotes: Vec<RemoteInfo>,
@@ -865,6 +875,8 @@ impl GitProject {
         let mut project = Self {
             repo_path,
             head_branch: None,
+            head_detached: false,
+            repo_state: RepoState::Clean,
             branches: Vec::new(),
             tags: Vec::new(),
             remotes: Vec::new(),
@@ -1065,6 +1077,14 @@ impl GitProject {
         self.head_branch.as_deref()
     }
 
+    pub fn is_head_detached(&self) -> bool {
+        self.head_detached
+    }
+
+    pub fn repo_state(&self) -> RepoState {
+        self.repo_state
+    }
+
     pub fn branches(&self) -> &[BranchInfo] {
         &self.branches
     }
@@ -1180,6 +1200,23 @@ impl GitProject {
         !self.status.staged.is_empty() || !self.status.unstaged.is_empty()
     }
 
+    /// Returns the list of conflicted file paths from the unstaged changes.
+    pub fn conflicted_files(&self) -> Vec<&FileStatus> {
+        self.status
+            .unstaged
+            .iter()
+            .filter(|f| f.kind == FileChangeKind::Conflicted)
+            .collect()
+    }
+
+    /// Whether the working tree has any conflicted files.
+    pub fn has_conflicts(&self) -> bool {
+        self.status
+            .unstaged
+            .iter()
+            .any(|f| f.kind == FileChangeKind::Conflicted)
+    }
+
     fn open_repo(&self) -> Result<Repository> {
         Repository::open(&self.repo_path)
             .with_context(|| format!("Failed to open repository at {}", self.repo_path.display()))
@@ -1201,6 +1238,8 @@ impl GitProject {
     /// Apply pre-gathered refresh data to self.
     fn apply_refresh_data(&mut self, data: RefreshData) {
         self.head_branch = data.head_branch;
+        self.head_detached = data.head_detached;
+        self.repo_state = data.repo_state;
         self.branches = data.branches;
         self.tags = data.tags;
         self.remotes = data.remotes;
@@ -1236,10 +1275,12 @@ impl GitProject {
     }
 
     fn refresh_head(&mut self, repo: &Repository) -> Result<()> {
-        self.head_branch = repo
-            .head()
-            .ok()
+        let head_ref = repo.head().ok();
+        self.head_branch = head_ref
+            .as_ref()
             .and_then(|r| r.shorthand().map(String::from));
+        self.head_detached = repo.head_detached().unwrap_or(false);
+        self.repo_state = RepoState::from_git2(repo.state());
         Ok(())
     }
 
@@ -2795,6 +2836,71 @@ impl GitProject {
         })
     }
 
+    /// Hard-reset the current branch to a specific commit.
+    pub fn reset_to_commit(
+        &mut self,
+        oid: git2::Oid,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let short_id = oid.to_string()[..7].to_string();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Reset,
+            format!("Resetting to {}...", short_id),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let commit = repo.find_commit(oid)?;
+                    repo.reset(commit.as_object(), git2::ResetType::Hard, None)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Reset,
+                                &format!("Reset to {}", short_id),
+                                Some("Working tree reset to the selected commit.".into()),
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Reset,
+                                &format!("Reset to {} failed", short_id),
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Revert a commit (creates a new commit that undoes the given commit).
     pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
@@ -2955,6 +3061,185 @@ impl GitProject {
                             );
                         }
                     }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Abort the current in-progress operation (merge, rebase, cherry-pick, revert).
+    /// Resets the working tree and index to HEAD and cleans up the repo state.
+    pub fn abort_operation(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let state_label = self.repo_state.label().to_string();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Merge, // closest match
+            format!("Aborting {}...", state_label.to_lowercase()),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    // Reset index and working tree to HEAD
+                    let head = repo.head()?.peel_to_commit()?;
+                    repo.reset(
+                        head.as_object(),
+                        git2::ResetType::Hard,
+                        Some(git2::build::CheckoutBuilder::new().force()),
+                    )?;
+                    repo.cleanup_state()?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Merge,
+                                format!("{} aborted", state_label),
+                                Some("Working tree has been reset to HEAD.".into()),
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Merge,
+                                format!("Failed to abort {}", state_label.to_lowercase()),
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Continue the current merge by committing with the default merge message.
+    /// This stages all files and creates the merge commit.
+    pub fn continue_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Merge,
+            "Continuing merge...",
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(String, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+
+                    // Ensure we're actually in a merge state
+                    let state = repo.state();
+                    if state == git2::RepositoryState::Clean {
+                        anyhow::bail!("Repository is not in a merge state");
+                    }
+
+                    // Check for remaining conflicts
+                    let mut index = repo.index()?;
+                    if index.has_conflicts() {
+                        anyhow::bail!(
+                            "There are still unresolved conflicts. Resolve all conflicts before continuing."
+                        );
+                    }
+
+                    // Stage everything and write tree
+                    index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+                    index.write()?;
+                    let tree_oid = index.write_tree()?;
+                    let tree = repo.find_tree(tree_oid)?;
+
+                    // Build the commit — need to find MERGE_HEAD for merge commits
+                    let sig = repo.signature()?;
+                    let head_commit = repo.head()?.peel_to_commit()?;
+
+                    // Read merge message if available
+                    let merge_msg_path = repo.path().join("MERGE_MSG");
+                    let message = if merge_msg_path.exists() {
+                        std::fs::read_to_string(&merge_msg_path)
+                            .unwrap_or_else(|_| "Merge commit".to_string())
+                    } else {
+                        "Merge commit".to_string()
+                    };
+
+                    // Collect parent commits (HEAD + MERGE_HEAD(s))
+                    let mut parents = vec![head_commit.clone()];
+                    let merge_head_path = repo.path().join("MERGE_HEAD");
+                    if merge_head_path.exists() {
+                        let contents = std::fs::read_to_string(&merge_head_path)?;
+                        for line in contents.lines() {
+                            let line = line.trim();
+                            if !line.is_empty() {
+                                let oid = git2::Oid::from_str(line)?;
+                                parents.push(repo.find_commit(oid)?);
+                            }
+                        }
+                    }
+
+                    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+                    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parent_refs)?;
+                    repo.cleanup_state()?;
+
+                    let summary = message.lines().next().unwrap_or("Merge commit").to_string();
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((summary, data))
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok((summary, data)) => {
+                            this.apply_refresh_data(data);
+                            this.complete_operation(
+                                operation_id,
+                                GitOperationKind::Merge,
+                                "Merge completed",
+                                Some(summary),
+                                None,
+                                branch_name.clone(),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_operation(
+                                operation_id,
+                                GitOperationKind::Merge,
+                                "Continue merge failed",
+                                e.to_string(),
+                                None,
+                                branch_name.clone(),
+                                false,
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
                     Ok(())
                 })
             })?
@@ -3274,8 +3559,13 @@ impl GitProject {
                                         task_branch_name, task_remote_name
                                     )
                                 } else {
-                                    anyhow::bail!(
-                                        "Pull produced conflicts. Resolve them in the working tree, then commit the merge manually."
+                                    let conflict_count = repo
+                                        .index()?
+                                        .conflicts()?
+                                        .count();
+                                    format!(
+                                        "CONFLICT:{} conflict(s) during pull from '{}/{}'. Resolve and continue.",
+                                        conflict_count, task_remote_name, task_branch_name
                                     )
                                 }
                             } else {
@@ -3294,16 +3584,33 @@ impl GitProject {
                 this.update(cx, |this, cx| {
                     match result {
                         Ok((msg, details, data)) => {
+                            let is_conflict = msg.starts_with("CONFLICT:");
                             this.apply_refresh_data(data);
-                            this.complete_operation(
-                                operation_id,
-                                GitOperationKind::Pull,
-                                msg,
-                                details.or(Some("Repository state refreshed after pull.".into())),
-                                Some(remote_name.clone()),
-                                Some(branch_name.clone()),
-                                cx,
-                            );
+                            if is_conflict {
+                                let user_msg = msg.trim_start_matches("CONFLICT:").to_string();
+                                this.fail_operation(
+                                    operation_id,
+                                    GitOperationKind::Pull,
+                                    format!("Pull from '{}' has conflicts", remote_name),
+                                    user_msg,
+                                    Some(remote_name.clone()),
+                                    Some(branch_name.clone()),
+                                    false,
+                                    cx,
+                                );
+                            } else {
+                                this.complete_operation(
+                                    operation_id,
+                                    GitOperationKind::Pull,
+                                    msg,
+                                    details.or(Some(
+                                        "Repository state refreshed after pull.".into(),
+                                    )),
+                                    Some(remote_name.clone()),
+                                    Some(branch_name.clone()),
+                                    cx,
+                                );
+                            }
                             cx.emit(GitProjectEvent::HeadChanged);
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
@@ -3559,34 +3866,42 @@ impl GitProject {
 
                             let has_conflicts = repo.index()?.has_conflicts();
                             if has_conflicts {
-                                return Err(anyhow::anyhow!(
-                                    "Merge conflicts detected. Resolve conflicts and commit manually."
-                                ));
+                                // Conflicts detected — repo is now in Merge state.
+                                // Don't error out; instead return a conflict message
+                                // and let the UI show the conflict banner.
+                                let conflict_count = repo
+                                    .index()?
+                                    .conflicts()?
+                                    .count();
+                                format!(
+                                    "CONFLICT:{} conflict(s) detected merging '{}'. Resolve and continue.",
+                                    conflict_count, task_branch_name
+                                )
+                            } else {
+                                let sig = repo.signature()?;
+                                let mut index = repo.index()?;
+                                let tree_oid = index.write_tree()?;
+                                let tree = repo.find_tree(tree_oid)?;
+                                let head_commit = repo.head()?.peel_to_commit()?;
+                                let merge_commit =
+                                    repo.find_commit(annotated_commit.id())?;
+                                repo.commit(
+                                    Some("HEAD"),
+                                    &sig,
+                                    &sig,
+                                    &format!(
+                                        "Merge branch '{}' into {}",
+                                        task_branch_name,
+                                        repo.head()?
+                                            .shorthand()
+                                            .unwrap_or("HEAD")
+                                    ),
+                                    &tree,
+                                    &[&head_commit, &merge_commit],
+                                )?;
+                                repo.cleanup_state()?;
+                                format!("Merged '{}' successfully", task_branch_name)
                             }
-
-                            let sig = repo.signature()?;
-                            let mut index = repo.index()?;
-                            let tree_oid = index.write_tree()?;
-                            let tree = repo.find_tree(tree_oid)?;
-                            let head_commit = repo.head()?.peel_to_commit()?;
-                            let merge_commit =
-                                repo.find_commit(annotated_commit.id())?;
-                            repo.commit(
-                                Some("HEAD"),
-                                &sig,
-                                &sig,
-                                &format!(
-                                    "Merge branch '{}' into {}",
-                                    task_branch_name,
-                                    repo.head()?
-                                        .shorthand()
-                                        .unwrap_or("HEAD")
-                                ),
-                                &tree,
-                                &[&head_commit, &merge_commit],
-                            )?;
-                            repo.cleanup_state()?;
-                            format!("Merged '{}' successfully", task_branch_name)
                         } else {
                             "Merge complete".to_string()
                         }
@@ -3602,16 +3917,32 @@ impl GitProject {
                 this.update(cx, |this, cx| {
                     match result {
                         Ok((msg, data)) => {
+                            let is_conflict = msg.starts_with("CONFLICT:");
                             this.apply_refresh_data(data);
-                            this.complete_operation(
-                                operation_id,
-                                GitOperationKind::Merge,
-                                msg,
-                                Some("Repository state refreshed after merge.".into()),
-                                None,
-                                current_branch.clone(),
-                                cx,
-                            );
+                            if is_conflict {
+                                // Strip the CONFLICT: prefix for the user-facing message
+                                let user_msg = msg.trim_start_matches("CONFLICT:").to_string();
+                                this.fail_operation(
+                                    operation_id,
+                                    GitOperationKind::Merge,
+                                    format!("Merge conflicts in '{}'", branch_name),
+                                    user_msg,
+                                    None,
+                                    current_branch.clone(),
+                                    false,
+                                    cx,
+                                );
+                            } else {
+                                this.complete_operation(
+                                    operation_id,
+                                    GitOperationKind::Merge,
+                                    msg,
+                                    Some("Repository state refreshed after merge.".into()),
+                                    None,
+                                    current_branch.clone(),
+                                    cx,
+                                );
+                            }
                             cx.emit(GitProjectEvent::RefsChanged);
                             cx.emit(GitProjectEvent::HeadChanged);
                             cx.emit(GitProjectEvent::StatusChanged);

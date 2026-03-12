@@ -9,6 +9,8 @@ pub struct TitleBar {
     repo_name: SharedString,
     branch_name: SharedString,
     has_changes: bool,
+    head_detached: bool,
+    repo_state_label: Option<SharedString>,
 }
 
 impl TitleBar {
@@ -17,11 +19,23 @@ impl TitleBar {
             repo_name: repo_name.into(),
             branch_name: branch_name.into(),
             has_changes: false,
+            head_detached: false,
+            repo_state_label: None,
         }
     }
 
     pub fn has_changes(mut self, has_changes: bool) -> Self {
         self.has_changes = has_changes;
+        self
+    }
+
+    pub fn head_detached(mut self, detached: bool) -> Self {
+        self.head_detached = detached;
+        self
+    }
+
+    pub fn repo_state(mut self, label: impl Into<SharedString>) -> Self {
+        self.repo_state_label = Some(label.into());
         self
     }
 }
@@ -30,21 +44,32 @@ impl RenderOnce for TitleBar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.colors();
 
-        div()
+        let branch_icon_color = if self.head_detached {
+            Color::Warning
+        } else {
+            Color::Accent
+        };
+        let branch_text_color = if self.head_detached {
+            Color::Warning
+        } else {
+            Color::Accent
+        };
+
+        let mut bar = div()
             .h_flex()
             .w_full()
-            .h(px(40.))
+            .h(px(34.))
             .bg(colors.title_bar_background)
             .border_b_1()
-            .border_color(colors.border_variant)
-            .px(px(16.))
-            .gap_2()
+            .border_color(colors.border)
+            .px(px(12.))
+            .gap(px(6.))
             .items_center()
             // App icon + name
             .child(
                 div()
                     .h_flex()
-                    .gap(px(6.))
+                    .gap(px(5.))
                     .items_center()
                     .child(
                         Icon::new(IconName::GitCommit)
@@ -58,13 +83,19 @@ impl RenderOnce for TitleBar {
                             .weight(gpui::FontWeight::BOLD),
                     ),
             )
-            // Separator
-            .child(div().w(px(1.)).h(px(16.)).bg(colors.border_variant))
+            // Separator — slightly taller, more visible
+            .child(
+                div()
+                    .w(px(1.))
+                    .h(px(14.))
+                    .rounded(px(0.5))
+                    .bg(colors.border),
+            )
             // Repo icon + name
             .child(
                 div()
                     .h_flex()
-                    .gap(px(6.))
+                    .gap(px(5.))
                     .items_center()
                     .child(
                         Icon::new(IconName::Folder)
@@ -78,29 +109,42 @@ impl RenderOnce for TitleBar {
                     ),
             )
             // Separator
-            .child(div().w(px(1.)).h(px(16.)).bg(colors.border_variant))
+            .child(
+                div()
+                    .w(px(1.))
+                    .h(px(14.))
+                    .rounded(px(0.5))
+                    .bg(colors.border),
+            )
             // Branch indicator - pill style
             .child(
                 div()
                     .h_flex()
-                    .h(px(24.))
-                    .px(px(10.))
-                    .gap(px(6.))
+                    .h(px(20.))
+                    .px(px(6.))
+                    .gap(px(4.))
                     .items_center()
-                    .rounded(px(12.))
+                    .rounded(px(3.))
                     .bg(colors.ghost_element_hover)
                     .child(
                         Icon::new(IconName::GitBranch)
                             .size(IconSize::Small)
-                            .color(Color::Accent),
+                            .color(branch_icon_color),
                     )
                     .child(
                         Label::new(self.branch_name)
                             .size(LabelSize::Small)
-                            .color(Color::Accent)
+                            .color(branch_text_color)
                             .weight(gpui::FontWeight::SEMIBOLD),
                     )
-                    .when(self.has_changes, |el| {
+                    .when(self.head_detached, |el| {
+                        el.child(
+                            Label::new("(detached)")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Warning),
+                        )
+                    })
+                    .when(self.has_changes && !self.head_detached, |el| {
                         el.child(
                             div()
                                 .w(px(6.))
@@ -109,8 +153,94 @@ impl RenderOnce for TitleBar {
                                 .bg(colors.vc_modified),
                         )
                     }),
-            )
-            // Spacer
-            .child(div().flex_1())
+            );
+
+        // Repo state badge (merging, rebasing, etc.)
+        if let Some(state_label) = self.repo_state_label {
+            bar = bar.child(
+                div()
+                    .h_flex()
+                    .h(px(20.))
+                    .px(px(6.))
+                    .gap(px(4.))
+                    .items_center()
+                    .rounded(px(3.))
+                    .bg(colors.ghost_element_selected)
+                    .child(
+                        Icon::new(IconName::FileConflict)
+                            .size(IconSize::XSmall)
+                            .color(Color::Warning),
+                    )
+                    .child(
+                        Label::new(state_label)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Warning)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
+            );
+        }
+
+        // Spacer
+        bar = bar.child(div().flex_1());
+
+        // Right side — keyboard shortcut hints
+        bar.child(
+            div()
+                .h_flex()
+                .gap(px(8.))
+                .items_center()
+                .child(
+                    div()
+                        .h_flex()
+                        .gap(px(3.))
+                        .items_center()
+                        .child(
+                            div()
+                                .h(px(16.))
+                                .px(px(4.))
+                                .rounded(px(3.))
+                                .bg(colors.ghost_element_hover)
+                                .flex()
+                                .items_center()
+                                .child(
+                                    Label::new("Ctrl+Shift+P")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .weight(gpui::FontWeight::MEDIUM),
+                                ),
+                        )
+                        .child(
+                            Label::new("Commands")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .gap(px(3.))
+                        .items_center()
+                        .child(
+                            div()
+                                .h(px(16.))
+                                .px(px(4.))
+                                .rounded(px(3.))
+                                .bg(colors.ghost_element_hover)
+                                .flex()
+                                .items_center()
+                                .child(
+                                    Label::new("?")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .weight(gpui::FontWeight::MEDIUM),
+                                ),
+                        )
+                        .child(
+                            Label::new("Help")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
+                ),
+        )
     }
 }

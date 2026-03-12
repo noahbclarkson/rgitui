@@ -219,7 +219,9 @@ impl RenderOnce for Button {
             container = container.border_1().border_color(border);
         }
 
-        if !self.disabled {
+        if self.disabled {
+            container = container.opacity(0.5);
+        } else {
             if let Some(hover_bg) = hover_bg {
                 container = container.hover(|s| s.bg(hover_bg));
             }
@@ -368,7 +370,9 @@ impl RenderOnce for IconButton {
             _ => {}
         }
 
-        if !self.disabled {
+        if self.disabled {
+            container = container.opacity(0.5);
+        } else {
             container = container
                 .hover(|s| s.bg(colors.ghost_element_hover))
                 .active(|s| s.bg(colors.ghost_element_active));
@@ -380,6 +384,13 @@ impl RenderOnce for IconButton {
             }
         }
 
-        container.child(Icon::new(self.icon).size(IconSize::Small).color(icon_color))
+        let icon_size = match self.size {
+            ButtonSize::Large => IconSize::Medium,
+            ButtonSize::Default => IconSize::Small,
+            ButtonSize::Compact => IconSize::XSmall,
+            ButtonSize::None => IconSize::XSmall,
+        };
+
+        container.child(Icon::new(self.icon).size(icon_size).color(icon_color))
     }
 }
