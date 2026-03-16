@@ -661,7 +661,7 @@ impl Render for GraphView {
                         let mut ref_badges: Vec<Badge> = Vec::new();
                         for r in &commit.refs {
                             let badge = match r {
-                                RefLabel::Head => Badge::new("HEAD").color(Color::Accent).bold(),
+                                RefLabel::Head => Badge::new("HEAD").color(Color::Warning).bold(),
                                 RefLabel::LocalBranch(name) => {
                                     Badge::new(name.clone()).color(Color::Success)
                                 }
@@ -669,7 +669,7 @@ impl Render for GraphView {
                                     Badge::new(name.clone()).color(Color::Info).italic()
                                 }
                                 RefLabel::Tag(name) => {
-                                    Badge::new(name.clone()).color(Color::Warning).prefix("tag")
+                                    Badge::new(name.clone()).color(Color::Accent).prefix("tag")
                                 }
                             };
                             ref_badges.push(badge);

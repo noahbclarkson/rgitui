@@ -368,9 +368,9 @@ impl Render for DetailPanel {
             for ref_label in &refs {
                 let badge_color = match ref_label {
                     RefLabel::Head => Color::Warning,
-                    RefLabel::LocalBranch(_) => Color::Accent,
+                    RefLabel::LocalBranch(_) => Color::Success,
                     RefLabel::RemoteBranch(_) => Color::Info,
-                    RefLabel::Tag(_) => Color::Success,
+                    RefLabel::Tag(_) => Color::Accent,
                 };
                 let name: SharedString = ref_label.display_name().to_string().into();
                 let badge = Badge::new(name).color(badge_color).bold();
