@@ -68,7 +68,7 @@ fn default_diff_viewer_height() -> f32 {
     300.0
 }
 fn default_commit_input_height() -> f32 {
-    200.0
+    260.0
 }
 
 impl Default for LayoutSettings {

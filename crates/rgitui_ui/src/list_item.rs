@@ -37,7 +37,7 @@ pub struct ListItem {
     end_slot: Option<AnyElement>,
     end_hover_slot: Option<AnyElement>,
     children: SmallVec<[AnyElement; 2]>,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<crate::ClickHandler>,
 }
 
 impl ListItem {

@@ -70,7 +70,7 @@ async fn resolve_single(name: &str, email: &str, http: &Arc<dyn HttpClient>) -> 
     // 2. Try the git author name as a GitHub username.
     //    Many developers use their GitHub username as their git author name.
     if !name.is_empty() && !name.contains(' ') {
-        let name_url = format!("https://github.com/{}.png?size=256", name);
+        let name_url = format!("https://github.com/{}.png?size=48", name);
         if check_url_exists(http, &name_url).await {
             return Some(name_url);
         }
@@ -84,7 +84,7 @@ async fn resolve_single(name: &str, email: &str, http: &Arc<dyn HttpClient>) -> 
     }
 
     // 4. Try Gravatar as last resort
-    let gravatar = gravatar_url(email, 256);
+    let gravatar = gravatar_url(email, 48);
     if check_url_exists(http, &gravatar).await {
         return Some(gravatar);
     }
@@ -113,7 +113,7 @@ fn parse_github_noreply(email: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!("https://github.com/{}.png?size=256", username))
+    Some(format!("https://github.com/{}.png?size=48", username))
 }
 
 /// Check if a URL returns 200 OK (HEAD-like: we read minimal data).
@@ -155,12 +155,12 @@ async fn github_api_search(http: &Arc<dyn HttpClient>, email: &str) -> Option<St
 
     // Use login for the direct .png URL (most reliable, handles redirects)
     if let Some(login) = first.get("login").and_then(|v| v.as_str()) {
-        return Some(format!("https://github.com/{}.png?size=256", login));
+        return Some(format!("https://github.com/{}.png?size=48", login));
     }
 
     // Fallback to avatar_url from API
     let avatar_url = first.get("avatar_url")?.as_str()?;
-    Some(format!("{}?s=256", avatar_url))
+    Some(format!("{}?s=48", avatar_url))
 }
 
 fn gravatar_url(email: &str, size: u32) -> String {

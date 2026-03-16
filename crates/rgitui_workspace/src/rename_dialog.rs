@@ -423,7 +423,7 @@ impl Render for RenameDialog {
 
         div()
             .id("rename-dialog-backdrop")
-            .absolute()
+            .occlude().absolute()
             .top_0()
             .left_0()
             .size_full()

@@ -221,6 +221,24 @@ impl RepoState {
     }
 }
 
+/// The action to perform on a commit during interactive rebase.
+#[derive(Debug, Clone)]
+pub enum RebaseEntryAction {
+    Pick,
+    Reword(String),
+    Squash,
+    Fixup,
+    Drop,
+}
+
+/// A single entry in an interactive rebase plan.
+#[derive(Debug, Clone)]
+pub struct RebasePlanEntry {
+    pub oid: String,
+    pub message: String,
+    pub action: RebaseEntryAction,
+}
+
 /// Result from a merge operation.
 #[derive(Debug)]
 pub enum MergeResult {
@@ -257,6 +275,7 @@ pub enum GitOperationKind {
     Branch,
     Tag,
     Discard,
+    Rebase,
 }
 
 impl GitOperationKind {
@@ -278,6 +297,7 @@ impl GitOperationKind {
             GitOperationKind::Branch => "Branch",
             GitOperationKind::Tag => "Tag",
             GitOperationKind::Discard => "Discard",
+            GitOperationKind::Rebase => "Rebase",
         }
     }
 }

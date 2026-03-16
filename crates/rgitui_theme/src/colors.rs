@@ -267,7 +267,7 @@ pub fn catppuccin_mocha_colors() -> ThemeColors {
             a: 0.0,
         },
         ghost_element_hover: hsla(237.0, 16.0, 23.0, 0.5),
-        ghost_element_active: hsla(234.0, 13.0, 31.0, 0.5),
+        ghost_element_active: hsla(234.0, 13.0, 31.0, 0.7),
         ghost_element_selected: hsla(234.0, 13.0, 31.0, 0.7),
 
         text,
@@ -371,7 +371,7 @@ pub fn catppuccin_latte_colors() -> ThemeColors {
             a: 0.0,
         },
         ghost_element_hover: hsla(223.0, 16.0, 83.0, 0.5),
-        ghost_element_active: hsla(225.0, 14.0, 77.0, 0.5),
+        ghost_element_active: hsla(225.0, 14.0, 77.0, 0.7),
         ghost_element_selected: hsla(225.0, 14.0, 77.0, 0.7),
 
         text,
@@ -474,7 +474,7 @@ pub fn one_dark_colors() -> ThemeColors {
             a: 0.0,
         },
         ghost_element_hover: hsla(220.0, 13.0, 24.0, 0.5),
-        ghost_element_active: hsla(220.0, 10.0, 30.0, 0.5),
+        ghost_element_active: hsla(220.0, 10.0, 30.0, 0.7),
         ghost_element_selected: hsla(220.0, 10.0, 30.0, 0.7),
 
         text,
@@ -576,7 +576,7 @@ pub fn github_dark_colors() -> ThemeColors {
             a: 0.0,
         },
         ghost_element_hover: hsla(215.0, 14.0, 15.0, 0.5),
-        ghost_element_active: hsla(215.0, 14.0, 21.0, 0.5),
+        ghost_element_active: hsla(215.0, 14.0, 21.0, 0.7),
         ghost_element_selected: hsla(215.0, 14.0, 21.0, 0.7),
 
         text,
@@ -678,7 +678,7 @@ pub fn dracula_colors() -> ThemeColors {
             a: 0.0,
         },
         ghost_element_hover: hsla(232.0, 14.0, 31.0, 0.5),
-        ghost_element_active: hsla(232.0, 14.0, 37.0, 0.5),
+        ghost_element_active: hsla(232.0, 14.0, 37.0, 0.7),
         ghost_element_selected: hsla(232.0, 14.0, 31.0, 0.7),
 
         text,

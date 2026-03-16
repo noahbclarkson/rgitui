@@ -53,6 +53,12 @@ struct EditableGitProvider {
     use_for_https: bool,
 }
 
+struct TextInputCfg {
+    placeholder: &'static str,
+    masked: bool,
+    icon: IconName,
+}
+
 /// The settings modal.
 pub struct SettingsModal {
     visible: bool,
@@ -372,7 +378,7 @@ impl SettingsModal {
 
         match result {
             Ok(()) => {
-                self.feedback_message = Some("Saved settings and synced keychain secrets.".into());
+                self.feedback_message = None;
                 self.feedback_is_error = false;
                 cx.emit(SettingsModalEvent::SettingsChanged);
             }
@@ -853,7 +859,6 @@ impl SettingsModal {
                     }
                 }
             }
-            return;
         }
     }
 
@@ -984,17 +989,17 @@ impl SettingsModal {
         row
     }
 
-    // ── Helper: clickable text input field ─────────────────────────────
     fn text_input(
         &self,
         id: &'static str,
         field: FocusedField,
         value: &str,
-        placeholder: &'static str,
-        masked: bool,
-        icon: IconName,
+        cfg: TextInputCfg,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let placeholder = cfg.placeholder;
+        let masked = cfg.masked;
+        let icon = cfg.icon;
         let colors = cx.colors();
         let is_focused = self.focused_field == field;
         let cursor_pos = self.cursor_pos;
@@ -1460,9 +1465,7 @@ impl SettingsModal {
                 "ai-api-key-input",
                 FocusedField::AiApiKey,
                 &self.ai_api_key,
-                "Click to enter API key...",
-                true,
-                IconName::Eye,
+                TextInputCfg { placeholder: "Click to enter API key...", masked: true, icon: IconName::Eye },
                 cx,
             ));
         section = section.child(key_card);
@@ -1832,9 +1835,7 @@ impl SettingsModal {
                     "provider-display-name",
                     FocusedField::ProviderDisplayName,
                     &provider.display_name,
-                    "Work / Personal / Client",
-                    false,
-                    IconName::User,
+                    TextInputCfg { placeholder: "Work / Personal / Client", masked: false, icon: IconName::User },
                     cx,
                 ))
                 .child(Self::setting_label(
@@ -1851,9 +1852,7 @@ impl SettingsModal {
                     "provider-host",
                     FocusedField::ProviderHost,
                     &provider.host,
-                    default_host,
-                    false,
-                    IconName::ExternalLink,
+                    TextInputCfg { placeholder: default_host, masked: false, icon: IconName::ExternalLink },
                     cx,
                 ))
                 .child(Self::setting_label(
@@ -1864,9 +1863,7 @@ impl SettingsModal {
                     "provider-token",
                     FocusedField::ProviderToken,
                     &provider.token,
-                    "Paste the access token for this account...",
-                    true,
-                    IconName::Eye,
+                    TextInputCfg { placeholder: "Paste the access token for this account...", masked: true, icon: IconName::Eye },
                     cx,
                 ))
                 .when(show_manual_username, |el| {
@@ -1878,9 +1875,7 @@ impl SettingsModal {
                         "provider-username",
                         FocusedField::ProviderUsername,
                         &provider.username,
-                        "Usually left empty",
-                        false,
-                        IconName::User,
+                        TextInputCfg { placeholder: "Usually left empty", masked: false, icon: IconName::User },
                         cx,
                     ))
                 })
@@ -1932,9 +1927,7 @@ impl SettingsModal {
                 "git-https-token-input",
                 FocusedField::GitHttpsToken,
                 &self.git_https_token,
-                "Paste a generic HTTPS token only if you need a fallback...",
-                true,
-                IconName::Eye,
+                TextInputCfg { placeholder: "Paste a generic HTTPS token only if you need a fallback...", masked: true, icon: IconName::Eye },
                 cx,
             ));
         section = section.child(https_card);
@@ -1997,9 +1990,7 @@ impl SettingsModal {
                 "git-ssh-key-input",
                 FocusedField::GitSshKeyPath,
                 &self.git_ssh_key_path,
-                "~/.ssh/id_ed25519 (default)",
-                false,
-                IconName::File,
+                TextInputCfg { placeholder: "~/.ssh/id_ed25519 (default)", masked: false, icon: IconName::File },
                 cx,
             ))
             .when_some(detected_ssh_key, |el, key_path| {
@@ -2119,9 +2110,7 @@ impl SettingsModal {
                 "git-gpg-key-input",
                 FocusedField::GitGpgKeyId,
                 &self.git_gpg_key_id,
-                "No explicit GPG key configured",
-                false,
-                IconName::Eye,
+                TextInputCfg { placeholder: "No explicit GPG key configured", masked: false, icon: IconName::Eye },
                 cx,
             ));
         section = section.child(gpg_card);
@@ -2445,6 +2434,7 @@ impl Render for SettingsModal {
 
         let backdrop = div()
             .id("settings-modal-backdrop")
+            .occlude()
             .absolute()
             .top_0()
             .left_0()
@@ -2462,6 +2452,9 @@ impl Render for SettingsModal {
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.dismiss(cx);
             }))
+            .on_mouse_move(|_, _, cx| {
+                cx.stop_propagation();
+            })
             .on_scroll_wheel(|_, _, cx| {
                 cx.stop_propagation();
             });

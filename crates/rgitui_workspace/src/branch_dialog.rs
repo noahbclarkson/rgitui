@@ -440,7 +440,7 @@ impl Render for BranchDialog {
         // Backdrop + modal
         div()
             .id("branch-dialog-backdrop")
-            .absolute()
+            .occlude().absolute()
             .top_0()
             .left_0()
             .size_full()

@@ -4,6 +4,11 @@ use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize, Tooltip, VerticalDivider};
 
+struct ToolbarButtonState {
+    disabled: bool,
+    loading: bool,
+}
+
 /// Events emitted by the toolbar.
 #[derive(Debug, Clone)]
 pub enum ToolbarEvent {
@@ -34,6 +39,12 @@ pub struct Toolbar {
 }
 
 impl EventEmitter<ToolbarEvent> for Toolbar {}
+
+impl Default for Toolbar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Toolbar {
     pub fn new() -> Self {
@@ -93,10 +104,11 @@ impl Toolbar {
         icon: IconName,
         label: &'static str,
         tooltip_text: &'static str,
-        disabled: bool,
-        loading: bool,
+        state: ToolbarButtonState,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let disabled = state.disabled;
+        let loading = state.loading;
         let colors = cx.colors();
         let hover_bg = colors.ghost_element_hover;
         let active_bg = colors.ghost_element_active;
@@ -118,7 +130,9 @@ impl Toolbar {
             Color::Default
         };
 
-        let el = div()
+        
+
+        div()
             .id(id)
             .h_flex()
             .h(px(26.))
@@ -139,9 +153,7 @@ impl Toolbar {
                 Label::new(label)
                     .size(LabelSize::XSmall)
                     .color(text_color),
-            );
-
-        el
+            )
     }
 
     /// Small icon-only button for the right side.
@@ -212,8 +224,7 @@ impl Render for Toolbar {
                     IconName::Refresh,
                     fetch_label,
                     "Fetch from remote (Ctrl+Shift+F)",
-                    self.is_fetching,
-                    self.is_fetching,
+                    ToolbarButtonState { disabled: self.is_fetching, loading: self.is_fetching },
                     cx,
                 )
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Fetch))),
@@ -225,8 +236,7 @@ impl Render for Toolbar {
                         IconName::ArrowDown,
                         pull_label,
                         "Pull from remote",
-                        !self.can_pull,
-                        self.is_pulling,
+                        ToolbarButtonState { disabled: !self.can_pull, loading: self.is_pulling },
                         cx,
                     )
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Pull)));
@@ -244,8 +254,7 @@ impl Render for Toolbar {
                         IconName::ArrowUp,
                         push_label,
                         "Push to remote",
-                        !self.can_push,
-                        self.is_pushing,
+                        ToolbarButtonState { disabled: !self.can_push, loading: self.is_pushing },
                         cx,
                     )
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Push)));
@@ -265,8 +274,7 @@ impl Render for Toolbar {
                     IconName::GitBranch,
                     "Branch",
                     "Create new branch (Ctrl+B)",
-                    false,
-                    false,
+                    ToolbarButtonState { disabled: false, loading: false },
                     cx,
                 )
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch))),
@@ -279,8 +287,7 @@ impl Render for Toolbar {
                     IconName::Stash,
                     "Stash",
                     "Stash working changes",
-                    !self.has_changes,
-                    false,
+                    ToolbarButtonState { disabled: !self.has_changes, loading: false },
                     cx,
                 )
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashSave))),
@@ -291,8 +298,7 @@ impl Render for Toolbar {
                     IconName::Undo,
                     "Pop",
                     "Pop top stash entry",
-                    !self.has_stashes,
-                    false,
+                    ToolbarButtonState { disabled: !self.has_stashes, loading: false },
                     cx,
                 )
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashPop))),

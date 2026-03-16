@@ -68,6 +68,13 @@ enum SidebarItem {
     UnstagedFile(usize),  // index into unstaged files
 }
 
+struct FileRowCtx<'a> {
+    staged: bool,
+    indent: gpui::Pixels,
+    file_idx: usize,
+    colors: &'a rgitui_theme::ThemeColors,
+}
+
 /// The left sidebar panel with branches, tags, stashes, and working tree status.
 pub struct Sidebar {
     expanded_sections: Vec<SidebarSection>,
@@ -514,12 +521,13 @@ impl Sidebar {
         &self,
         body: gpui::Stateful<gpui::Div>,
         file: &FileStatus,
-        staged: bool,
-        indent: gpui::Pixels,
-        file_idx: &mut usize,
-        colors: &rgitui_theme::ThemeColors,
+        ctx: &mut FileRowCtx<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let staged = ctx.staged;
+        let indent = ctx.indent;
+        let colors = ctx.colors;
+        let file_idx = &mut ctx.file_idx;
         let i = *file_idx;
         *file_idx += 1;
 
@@ -541,7 +549,7 @@ impl Sidebar {
         let is_selected = self
             .selected_file
             .as_ref()
-            .map_or(false, |(p, s)| p == &file_path && *s == staged);
+            .is_some_and(|(p, s)| p == &file_path && *s == staged);
         let has_stats = additions > 0 || deletions > 0;
 
         let mut row = div()
@@ -553,6 +561,7 @@ impl Sidebar {
                 },
                 i as u64,
             ))
+            .group("sidebar-file-row")
             .h_flex()
             .w_full()
             .h(px(24.))
@@ -561,10 +570,9 @@ impl Sidebar {
             .pl(indent)
             .gap_1()
             .items_center()
-            .overflow_hidden()
             .when(is_selected, |el| el.bg(colors.ghost_element_selected))
             .hover(|s| s.bg(colors.ghost_element_hover))
-            .active(|s| s.bg(colors.ghost_element_active))
+            .active(|s| s.bg(colors.ghost_element_selected))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.selected_file = Some((file_path_select.clone(), staged));
@@ -606,6 +614,14 @@ impl Sidebar {
             );
         }
 
+        let stage_color = if staged {
+            Color::Deleted.color(cx)
+        } else {
+            Color::Added.color(cx)
+        };
+        let discard_color = Color::Deleted.color(cx);
+        let ghost_hover = colors.ghost_element_hover;
+
         row = row.child(
             div()
                 .id(ElementId::NamedInteger(
@@ -617,38 +633,62 @@ impl Sidebar {
                     i as u64,
                 ))
                 .h_flex()
-                .gap(px(4.))
+                .gap(px(2.))
+                .invisible()
+                .group_hover("sidebar-file-row", |s| s.visible())
                 .child(
-                    Button::new(
-                        SharedString::from(format!(
+                    div()
+                        .id(SharedString::from(format!(
                             "{}-{}",
                             if staged { "unstage" } else { "stage" },
                             i
-                        )),
-                        if staged { "−" } else { "+" },
-                    )
-                    .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Subtle)
-                    .on_click(cx.listener(
-                        move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(if staged {
-                                SidebarEvent::UnstageFile(file_path_primary.clone())
-                            } else {
-                                SidebarEvent::StageFile(file_path_primary.clone())
-                            });
-                        },
-                    )),
+                        )))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(18.))
+                        .h(px(18.))
+                        .rounded(px(3.))
+                        .text_color(stage_color)
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .hover(move |s| s.bg(ghost_hover))
+                        .cursor_pointer()
+                        .on_click(cx.listener(
+                            move |_this, _: &ClickEvent, _, cx| {
+                                cx.emit(if staged {
+                                    SidebarEvent::UnstageFile(file_path_primary.clone())
+                                } else {
+                                    SidebarEvent::StageFile(file_path_primary.clone())
+                                });
+                            },
+                        ))
+                        .child(if staged { "\u{2212}" } else { "+" }),
                 ),
         );
 
         if !staged {
+            let ghost_hover2 = colors.ghost_element_hover;
             row = row.child(
-                Button::new(SharedString::from(format!("discard-{}", i)), "×")
-                    .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Subtle)
+                div()
+                    .id(SharedString::from(format!("discard-{}", i)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(18.))
+                    .h(px(18.))
+                    .rounded(px(3.))
+                    .text_color(discard_color)
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .hover(move |s| s.bg(ghost_hover2))
+                    .cursor_pointer()
+                    .invisible()
+                    .group_hover("sidebar-file-row", |s| s.visible())
                     .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                         cx.emit(SidebarEvent::DiscardFile(file_path_secondary.clone()));
-                    })),
+                    }))
+                    .child("\u{00d7}"),
             );
         }
 
@@ -659,14 +699,11 @@ impl Sidebar {
         &self,
         mut body: gpui::Stateful<gpui::Div>,
         node: &FileTreeNode<'_>,
-        prefix: &str,
-        parent_path: &str,
-        staged: bool,
-        depth: usize,
-        file_idx: &mut usize,
-        colors: &rgitui_theme::ThemeColors,
+        tree_ctx: (&str, &str, usize),
+        ctx: &mut FileRowCtx<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let (prefix, parent_path, depth) = tree_ctx;
         let file_indent = px(if depth == 0 {
             16.0
         } else {
@@ -674,8 +711,10 @@ impl Sidebar {
         });
 
         for file in &node.files {
-            body = self.render_file_row(body, file, staged, file_indent, file_idx, colors, cx);
+            ctx.indent = file_indent;
+            body = self.render_file_row(body, file, ctx, cx);
         }
+        let colors = ctx.colors;
 
         for (dir_name, child) in &node.children {
             let mut full_dir = if parent_path.is_empty() {
@@ -761,12 +800,8 @@ impl Sidebar {
                 body = self.render_file_tree(
                     body,
                     display_node,
-                    prefix,
-                    &full_dir,
-                    staged,
-                    depth + 1,
-                    file_idx,
-                    colors,
+                    (prefix, &full_dir, depth + 1),
+                    ctx,
                     cx,
                 );
             }
@@ -1825,17 +1860,13 @@ impl Render for Sidebar {
                 nav_idx += self.staged.len(); // Track file items in nav index
                 let staged_files = self.staged.clone();
                 let tree = Self::build_file_tree(&staged_files);
-                let mut file_idx: usize = 0;
+                let mut ctx = FileRowCtx { staged: true, indent: px(16.0), file_idx: 0, colors: &colors };
                 let staged_body = div().id("staged-body").v_flex().w_full().flex_shrink_0();
                 panel = panel.child(self.render_file_tree(
                     staged_body,
                     &tree,
-                    "staged",
-                    "",
-                    true,
-                    0,
-                    &mut file_idx,
-                    &colors,
+                    ("staged", "", 0),
+                    &mut ctx,
                     cx,
                 ));
             }
@@ -1952,17 +1983,13 @@ impl Render for Sidebar {
                 nav_idx += self.unstaged.len(); // Track file items in nav index
                 let unstaged_files = self.unstaged.clone();
                 let tree = Self::build_file_tree(&unstaged_files);
-                let mut file_idx: usize = 0;
+                let mut ctx = FileRowCtx { staged: false, indent: px(16.0), file_idx: 0, colors: &colors };
                 let unstaged_body = div().id("unstaged-body").v_flex().w_full().flex_shrink_0();
                 panel = panel.child(self.render_file_tree(
                     unstaged_body,
                     &tree,
-                    "unstaged",
-                    "",
-                    false,
-                    0,
-                    &mut file_idx,
-                    &colors,
+                    ("unstaged", "", 0),
+                    &mut ctx,
                     cx,
                 ));
             }

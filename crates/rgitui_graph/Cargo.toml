@@ -13,3 +13,4 @@ smallvec.workspace = true
 anyhow.workspace = true
 log.workspace = true
 chrono.workspace = true
+smol.workspace = true

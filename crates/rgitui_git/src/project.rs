@@ -408,30 +408,26 @@ pub struct RefreshData {
 
 /// Compute line-level diff stats (additions/deletions) for a single file.
 /// For staged files, diffs HEAD vs index. For unstaged files, diffs index vs workdir.
-fn compute_file_diff_stats(repo: &Repository, path: &Path, staged: bool) -> (usize, usize) {
-    let pathspec = path.to_str().unwrap_or("");
-    let mut diff_opts = DiffOptions::new();
-    diff_opts.pathspec(pathspec);
-
+fn batch_diff_stats(repo: &Repository, staged: bool) -> std::collections::HashMap<PathBuf, (usize, usize)> {
     let diff_result = if staged {
-        // Staged: diff HEAD tree vs index
         let head_tree = repo.head().ok().and_then(|r| r.peel_to_tree().ok());
-        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))
+        repo.diff_tree_to_index(head_tree.as_ref(), None, None)
     } else {
-        // Unstaged: diff index vs workdir
-        repo.diff_index_to_workdir(None, Some(&mut diff_opts))
+        repo.diff_index_to_workdir(None, None)
     };
-
-    match diff_result {
-        Ok(diff) => {
-            let stats = diff.stats().ok();
-            match stats {
-                Some(s) => (s.insertions(), s.deletions()),
-                None => (0, 0),
+    let mut stats_map = std::collections::HashMap::new();
+    if let Ok(diff) = diff_result {
+        let num_deltas = diff.deltas().len();
+        for i in 0..num_deltas {
+            if let Ok(Some(patch)) = git2::Patch::from_diff(&diff, i) {
+                let (_, adds, dels) = patch.line_stats().unwrap_or((0, 0, 0));
+                if let Some(path) = patch.delta().new_file().path() {
+                    stats_map.insert(path.to_path_buf(), (adds, dels));
+                }
             }
         }
-        Err(_) => (0, 0),
     }
+    stats_map
 }
 
 fn generate_hunk_patch_for_repo(
@@ -648,6 +644,8 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
             .include_unmodified(false);
 
         let statuses = repo.statuses(Some(&mut opts))?;
+        let staged_stats = batch_diff_stats(&repo, true);
+        let unstaged_stats = batch_diff_stats(&repo, false);
         for entry in statuses.iter() {
             let path = PathBuf::from(entry.path().unwrap_or(""));
             let st = entry.status();
@@ -670,7 +668,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                 } else {
                     FileChangeKind::TypeChange
                 };
-                let (additions, deletions) = compute_file_diff_stats(&repo, &path, true);
+                let &(additions, deletions) = staged_stats.get(&path).unwrap_or(&(0, 0));
                 wt_status.staged.push(FileStatus {
                     path: path.clone(),
                     kind,
@@ -698,7 +696,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                 } else {
                     FileChangeKind::TypeChange
                 };
-                let (additions, deletions) = compute_file_diff_stats(&repo, &path, false);
+                let &(additions, deletions) = unstaged_stats.get(&path).unwrap_or(&(0, 0));
                 wt_status.unstaged.push(FileStatus {
                     path: path.clone(),
                     kind,
@@ -776,9 +774,8 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
         }
         revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
 
-        let mut count = 0;
         let mut has_more = false;
-        for oid_result in revwalk {
+        for (count, oid_result) in revwalk.enumerate() {
             if count >= limit {
                 has_more = true;
                 break;
@@ -809,8 +806,6 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                 parent_oids: commit.parent_ids().collect(),
                 refs,
             });
-
-            count += 1;
         }
 
         (commits, has_more)
@@ -840,7 +835,6 @@ pub enum GitProjectEvent {
 }
 
 /// The core Git project state holder.
-/// Wraps a git2::Repository and provides async operations.
 pub struct GitProject {
     repo_path: PathBuf,
 
@@ -887,8 +881,6 @@ impl GitProject {
             next_operation_id: 1,
             _watcher: None,
         };
-
-        project.refresh_sync()?;
 
         // Set up filesystem watching
         project.start_watcher(cx);
@@ -993,14 +985,12 @@ impl GitProject {
         id
     }
 
-    fn complete_operation(
+    fn complete_op(
         &self,
         id: u64,
         kind: GitOperationKind,
         summary: impl Into<String>,
-        details: Option<String>,
-        remote_name: Option<String>,
-        branch_name: Option<String>,
+        names: (Option<String>, Option<String>, Option<String>),
         cx: &mut Context<Self>,
     ) {
         cx.emit(GitProjectEvent::OperationUpdated(GitOperationUpdate {
@@ -1008,22 +998,20 @@ impl GitProject {
             kind,
             state: GitOperationState::Succeeded,
             summary: summary.into(),
-            details,
-            remote_name,
-            branch_name,
+            details: names.0,
+            remote_name: names.1,
+            branch_name: names.2,
             retryable: false,
         }));
     }
 
-    fn fail_operation(
+    fn fail_op(
         &self,
         id: u64,
         kind: GitOperationKind,
         summary: impl Into<String>,
         error: impl Into<String>,
-        remote_name: Option<String>,
-        branch_name: Option<String>,
-        retryable: bool,
+        names: (Option<String>, Option<String>, bool),
         cx: &mut Context<Self>,
     ) {
         cx.emit(GitProjectEvent::OperationUpdated(GitOperationUpdate {
@@ -1032,9 +1020,9 @@ impl GitProject {
             state: GitOperationState::Failed,
             summary: summary.into(),
             details: Some(error.into()),
-            remote_name,
-            branch_name,
-            retryable,
+            remote_name: names.0,
+            branch_name: names.1,
+            retryable: names.2,
         }));
     }
 
@@ -1049,14 +1037,12 @@ impl GitProject {
         let summary = summary.into();
         let operation_id =
             self.begin_operation(kind, summary.clone(), None, self.head_branch.clone(), cx);
-        self.fail_operation(
+        self.fail_op(
             operation_id,
             kind,
             summary,
             error.to_string(),
-            None,
-            self.head_branch.clone(),
-            retryable,
+            (None, self.head_branch.clone(), retryable),
             cx,
         );
         cx.spawn(async move |_this: WeakEntity<Self>, _cx: &mut AsyncApp| Err(error))
@@ -1222,19 +1208,6 @@ impl GitProject {
             .with_context(|| format!("Failed to open repository at {}", self.repo_path.display()))
     }
 
-    /// Refresh all cached state synchronously.
-    fn refresh_sync(&mut self) -> Result<()> {
-        let repo = self.open_repo()?;
-        self.refresh_head(&repo)?;
-        self.refresh_branches(&repo)?;
-        self.refresh_tags(&repo)?;
-        self.refresh_remotes(&repo)?;
-        self.refresh_stashes(&repo)?;
-        self.refresh_status(&repo)?;
-        self.refresh_recent_commits(&repo, 1000)?;
-        Ok(())
-    }
-
     /// Apply pre-gathered refresh data to self.
     fn apply_refresh_data(&mut self, data: RefreshData) {
         self.head_branch = data.head_branch;
@@ -1272,288 +1245,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    fn refresh_head(&mut self, repo: &Repository) -> Result<()> {
-        let head_ref = repo.head().ok();
-        self.head_branch = head_ref
-            .as_ref()
-            .and_then(|r| r.shorthand().map(String::from));
-        self.head_detached = repo.head_detached().unwrap_or(false);
-        self.repo_state = RepoState::from_git2(repo.state());
-        Ok(())
-    }
-
-    fn refresh_branches(&mut self, repo: &Repository) -> Result<()> {
-        self.branches.clear();
-        let branches = repo.branches(None)?;
-        for branch_result in branches {
-            let (branch, branch_type) = branch_result?;
-            let name = branch.name()?.unwrap_or("").to_string();
-            if name.is_empty() {
-                continue;
-            }
-
-            let is_head = branch.is_head();
-            let is_remote = branch_type == git2::BranchType::Remote;
-            let tip_oid = branch.get().target();
-
-            let upstream = branch
-                .upstream()
-                .ok()
-                .and_then(|u| u.name().ok().flatten().map(String::from));
-
-            let (ahead, behind) =
-                if let (Some(local_oid), Ok(upstream_ref)) = (tip_oid, branch.upstream()) {
-                    if let Some(remote_oid) = upstream_ref.get().target() {
-                        repo.graph_ahead_behind(local_oid, remote_oid)
-                            .unwrap_or((0, 0))
-                    } else {
-                        (0, 0)
-                    }
-                } else {
-                    (0, 0)
-                };
-
-            self.branches.push(BranchInfo {
-                name,
-                is_head,
-                is_remote,
-                upstream,
-                ahead,
-                behind,
-                tip_oid,
-            });
-        }
-
-        // Sort: HEAD first, then local, then remote
-        self.branches.sort_by(|a, b| {
-            b.is_head
-                .cmp(&a.is_head)
-                .then(a.is_remote.cmp(&b.is_remote))
-                .then(a.name.cmp(&b.name))
-        });
-
-        Ok(())
-    }
-
-    fn refresh_tags(&mut self, repo: &Repository) -> Result<()> {
-        self.tags.clear();
-        // tag_foreach can fail on empty repos — ignore errors
-        let _ = repo.tag_foreach(|oid, name_bytes| {
-            if let Ok(name) = std::str::from_utf8(name_bytes) {
-                let name = name.strip_prefix("refs/tags/").unwrap_or(name).to_string();
-                self.tags.push(TagInfo {
-                    name,
-                    oid,
-                    message: None,
-                });
-            }
-            true
-        });
-        self.tags.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(())
-    }
-
-    fn refresh_remotes(&mut self, repo: &Repository) -> Result<()> {
-        self.remotes.clear();
-        let remote_names = repo.remotes()?;
-        for name in remote_names.iter().flatten() {
-            if let Ok(remote) = repo.find_remote(name) {
-                self.remotes.push(RemoteInfo {
-                    name: name.to_string(),
-                    url: remote.url().map(String::from),
-                    push_url: remote.pushurl().map(String::from),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn refresh_stashes(&mut self, _repo: &Repository) -> Result<()> {
-        self.stashes.clear();
-        // stash_foreach requires &mut, so open a fresh handle
-        let mut repo_mut = Repository::open(&self.repo_path)?;
-        repo_mut.stash_foreach(|stash_index, message, oid| {
-            self.stashes.push(StashEntry {
-                index: stash_index,
-                message: message.to_string(),
-                oid: *oid,
-            });
-            true
-        })?;
-        Ok(())
-    }
-
-    fn refresh_status(&mut self, repo: &Repository) -> Result<()> {
-        self.status = WorkingTreeStatus::default();
-
-        let mut opts = StatusOptions::new();
-        opts.include_untracked(true)
-            .recurse_untracked_dirs(true)
-            .include_unmodified(false);
-
-        let statuses = repo.statuses(Some(&mut opts))?;
-        for entry in statuses.iter() {
-            let path = PathBuf::from(entry.path().unwrap_or(""));
-            let status = entry.status();
-
-            // Index (staged) changes
-            if status.intersects(
-                git2::Status::INDEX_NEW
-                    | git2::Status::INDEX_MODIFIED
-                    | git2::Status::INDEX_DELETED
-                    | git2::Status::INDEX_RENAMED
-                    | git2::Status::INDEX_TYPECHANGE,
-            ) {
-                let kind = if status.contains(git2::Status::INDEX_NEW) {
-                    FileChangeKind::Added
-                } else if status.contains(git2::Status::INDEX_MODIFIED) {
-                    FileChangeKind::Modified
-                } else if status.contains(git2::Status::INDEX_DELETED) {
-                    FileChangeKind::Deleted
-                } else if status.contains(git2::Status::INDEX_RENAMED) {
-                    FileChangeKind::Renamed
-                } else {
-                    FileChangeKind::TypeChange
-                };
-                let (additions, deletions) = compute_file_diff_stats(repo, &path, true);
-                self.status.staged.push(FileStatus {
-                    path: path.clone(),
-                    kind,
-                    old_path: None,
-                    additions,
-                    deletions,
-                });
-            }
-
-            // Working tree (unstaged) changes
-            if status.intersects(
-                git2::Status::WT_NEW
-                    | git2::Status::WT_MODIFIED
-                    | git2::Status::WT_DELETED
-                    | git2::Status::WT_RENAMED
-                    | git2::Status::WT_TYPECHANGE,
-            ) {
-                let kind = if status.contains(git2::Status::WT_NEW) {
-                    FileChangeKind::Untracked
-                } else if status.contains(git2::Status::WT_MODIFIED) {
-                    FileChangeKind::Modified
-                } else if status.contains(git2::Status::WT_DELETED) {
-                    FileChangeKind::Deleted
-                } else if status.contains(git2::Status::WT_RENAMED) {
-                    FileChangeKind::Renamed
-                } else {
-                    FileChangeKind::TypeChange
-                };
-                let (additions, deletions) = compute_file_diff_stats(repo, &path, false);
-                self.status.unstaged.push(FileStatus {
-                    path: path.clone(),
-                    kind,
-                    old_path: None,
-                    additions,
-                    deletions,
-                });
-            }
-
-            // Conflicts
-            if status.contains(git2::Status::CONFLICTED) {
-                self.status.unstaged.push(FileStatus {
-                    path,
-                    kind: FileChangeKind::Conflicted,
-                    old_path: None,
-                    additions: 0,
-                    deletions: 0,
-                });
-            }
-        }
-
-        Ok(())
-    }
-
-    fn refresh_recent_commits(&mut self, repo: &Repository, limit: usize) -> Result<()> {
-        self.recent_commits.clear();
-
-        // Build ref map: oid -> list of ref labels
-        let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
-
-        if let Ok(head) = repo.head() {
-            if let Some(oid) = head.target() {
-                ref_map.entry(oid).or_default().push(RefLabel::Head);
-            }
-        }
-
-        for branch in &self.branches {
-            if let Some(oid) = branch.tip_oid {
-                let label = if branch.is_remote {
-                    RefLabel::RemoteBranch(branch.name.clone())
-                } else {
-                    RefLabel::LocalBranch(branch.name.clone())
-                };
-                ref_map.entry(oid).or_default().push(label);
-            }
-        }
-
-        for tag in &self.tags {
-            ref_map
-                .entry(tag.oid)
-                .or_default()
-                .push(RefLabel::Tag(tag.name.clone()));
-        }
-
-        // Walk commits from all refs so all branches appear in the graph.
-        let mut revwalk = repo.revwalk()?;
-        let has_head = revwalk.push_head().is_ok();
-        // Push all local and remote branch tips so branches ahead of HEAD are visible.
-        for branch in &self.branches {
-            if let Some(oid) = branch.tip_oid {
-                revwalk.push(oid).ok();
-            }
-        }
-        if !has_head && self.branches.is_empty() {
-            // Completely empty repo
-            return Ok(());
-        }
-        revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
-
-        let mut count = 0;
-        self.has_more_commits = false;
-        for oid_result in revwalk {
-            if count >= limit {
-                self.has_more_commits = true;
-                break;
-            }
-            let oid = oid_result?;
-            let commit = repo.find_commit(oid)?;
-
-            let author = commit.author();
-            let committer = commit.committer();
-            let time = Utc.timestamp_opt(commit.time().seconds(), 0).single();
-
-            let refs = ref_map.remove(&oid).unwrap_or_default();
-
-            self.recent_commits.push(CommitInfo {
-                oid,
-                short_id: format!("{:.7}", oid),
-                summary: commit.summary().unwrap_or("").to_string(),
-                message: commit.message().unwrap_or("").to_string(),
-                author: Signature {
-                    name: author.name().unwrap_or("").to_string(),
-                    email: author.email().unwrap_or("").to_string(),
-                },
-                committer: Signature {
-                    name: committer.name().unwrap_or("").to_string(),
-                    email: committer.email().unwrap_or("").to_string(),
-                },
-                time: time.unwrap_or_else(Utc::now),
-                parent_oids: commit.parent_ids().collect(),
-                refs,
-            });
-
-            count += 1;
-        }
-
-        Ok(())
     }
 
     // -- Write operations --
@@ -1598,7 +1289,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
                                 if paths.len() == 1 {
@@ -1606,22 +1297,18 @@ impl GitProject {
                                 } else {
                                     format!("Staged {} files", paths.len())
                                 },
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
                                 "Stage failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -1673,7 +1360,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
                                 if paths.len() == 1 {
@@ -1681,22 +1368,18 @@ impl GitProject {
                                 } else {
                                     format!("Unstaged {} files", paths.len())
                                 },
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
                                 "Unstage failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -1736,26 +1419,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
                                 "Staged all changes",
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
                                 "Stage all failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -1796,26 +1475,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
                                 "Unstaged all changes",
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
                                 "Unstage all failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -1892,7 +1567,7 @@ impl GitProject {
                 this.update(cx, |this, cx| match result {
                     Ok((oid, data)) => {
                         this.apply_refresh_data(data);
-                        this.complete_operation(
+                        this.complete_op(
                             operation_id,
                             GitOperationKind::Commit,
                             if amend {
@@ -1900,9 +1575,7 @@ impl GitProject {
                             } else {
                                 format!("Created commit {}", &oid.to_string()[..7])
                             },
-                            Some(commit_summary.clone()),
-                            None,
-                            branch_name.clone(),
+                            (Some(commit_summary.clone()), None, branch_name.clone()),
                             cx,
                         );
                         cx.emit(GitProjectEvent::HeadChanged);
@@ -1911,7 +1584,7 @@ impl GitProject {
                         Ok(oid)
                     }
                     Err(e) => {
-                        this.fail_operation(
+                        this.fail_op(
                             operation_id,
                             GitOperationKind::Commit,
                             if amend {
@@ -1920,9 +1593,7 @@ impl GitProject {
                                 "Commit failed"
                             },
                             e.to_string(),
-                            None,
-                            branch_name.clone(),
-                            false,
+                            (None, branch_name.clone(), false),
                             cx,
                         );
                         Err(e)
@@ -1998,7 +1669,7 @@ impl GitProject {
                 let header = String::from_utf8_lossy(hunk.header()).to_string();
                 let expected_start = hunk.new_start();
                 // Check if this is a new hunk
-                let needs_new = current_hunks.last().map_or(true, |h| {
+                let needs_new = current_hunks.last().is_none_or(|h| {
                     h.new_start != expected_start || h.header != header
                 });
                 if needs_new {
@@ -2113,7 +1784,7 @@ impl GitProject {
             if let Some(hunk) = hunk {
                 let header = String::from_utf8_lossy(hunk.header()).to_string();
                 let expected_start = hunk.new_start();
-                let needs_new = current_hunks.last().map_or(true, |h| {
+                let needs_new = current_hunks.last().is_none_or(|h| {
                     h.new_start != expected_start || h.header != header
                 });
                 if needs_new {
@@ -2206,13 +1877,11 @@ impl GitProject {
                     match result {
                         Ok((msg, data)) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
                                 msg,
-                                Some("Working tree updated for the selected branch.".into()),
-                                None,
-                                Some(name.clone()),
+                                (Some("Working tree updated for the selected branch.".into()), None, Some(name.clone())),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::HeadChanged);
@@ -2221,14 +1890,12 @@ impl GitProject {
                             cx.notify();
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
                                 format!("Checkout of '{}' failed", name),
                                 e.to_string(),
-                                None,
-                                Some(name.clone()),
-                                true,
+                                (None, Some(name.clone()), true),
                                 cx,
                             );
                         }
@@ -2291,26 +1958,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Branch,
                                 format!("Created branch '{}'", name),
-                                base_ref.as_ref().map(|value| format!("Base: {}", value)),
-                                None,
-                                Some(name.clone()),
+                                (base_ref.as_ref().map(|value| format!("Base: {}", value)), None, Some(name.clone())),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
                                 format!("Branch '{}' could not be created", name),
                                 e.to_string(),
-                                None,
-                                Some(name.clone()),
-                                false,
+                                (None, Some(name.clone()), false),
                                 cx,
                             );
                         }
@@ -2350,26 +2013,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Branch,
                                 format!("Deleted branch '{}'", name),
-                                None,
-                                None,
-                                Some(name.clone()),
+                                (None, None, Some(name.clone())),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
                                 format!("Delete branch '{}' failed", name),
                                 e.to_string(),
-                                None,
-                                Some(name.clone()),
-                                false,
+                                (None, Some(name.clone()), false),
                                 cx,
                             );
                         }
@@ -2416,27 +2075,23 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Branch,
                                 format!("Renamed '{}' to '{}'", old_name, new_name),
-                                None,
-                                None,
-                                Some(new_name.clone()),
+                                (None, None, Some(new_name.clone())),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                             cx.emit(GitProjectEvent::HeadChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
                                 format!("Rename branch '{}' failed", old_name),
                                 e.to_string(),
-                                None,
-                                Some(old_name.clone()),
-                                false,
+                                (None, Some(old_name.clone()), false),
                                 cx,
                             );
                         }
@@ -2481,26 +2136,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Tag,
                                 format!("Created tag '{}'", name),
-                                None,
-                                None,
-                                this.head_branch.clone(),
+                                (None, None, this.head_branch.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Tag,
                                 format!("Tag '{}' could not be created", name),
                                 e.to_string(),
-                                None,
-                                this.head_branch.clone(),
-                                false,
+                                (None, this.head_branch.clone(), false),
                                 cx,
                             );
                         }
@@ -2539,26 +2190,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Tag,
                                 format!("Deleted tag '{}'", name),
-                                None,
-                                None,
-                                this.head_branch.clone(),
+                                (None, None, this.head_branch.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Tag,
                                 format!("Delete tag '{}' failed", name),
                                 e.to_string(),
-                                None,
-                                this.head_branch.clone(),
-                                false,
+                                (None, this.head_branch.clone(), false),
                                 cx,
                             );
                         }
@@ -2596,26 +2243,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
                                 format!("Dropped stash #{}", index),
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
                                 format!("Drop stash #{} failed", index),
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -2653,26 +2296,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
                                 format!("Applied stash #{}", index),
-                                Some("The stash entry was kept.".into()),
-                                None,
-                                branch_name.clone(),
+                                (Some("The stash entry was kept.".into()), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
                                 format!("Apply stash #{} failed", index),
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -2702,71 +2341,60 @@ impl GitProject {
             self.head_branch.clone(),
             cx,
         );
+        let repo_path = self.repo_path.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = cx.background_executor().spawn(async move {
+                let repo = Repository::open(&repo_path)?;
+                let workdir = repo
+                    .workdir()
+                    .ok_or_else(|| anyhow::anyhow!("Bare repository has no working directory"))?
+                    .to_path_buf();
+                let mut checkout_opts = git2::build::CheckoutBuilder::new();
+                checkout_opts.force();
+                let mut has_tracked = false;
+                for path in &paths {
+                    let is_untracked = repo
+                        .status_file(path)
+                        .map(|s| s.contains(git2::Status::WT_NEW))
+                        .unwrap_or(false);
+                    if is_untracked {
+                        let full = workdir.join(path);
+                        if full.is_file() {
+                            std::fs::remove_file(&full).with_context(|| format!("Failed to delete {}", full.display()))?;
+                        }
+                    } else {
+                        checkout_opts.path(path);
+                        has_tracked = true;
+                    }
+                }
+                if has_tracked {
+                    repo.checkout_head(Some(&mut checkout_opts))?;
+                }
+                let data = gather_refresh_data(&repo_path)?;
+                Ok::<_, anyhow::Error>(data)
+            }).await;
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let result: Result<()> = (|| {
-                        let repo = this.open_repo()?;
-                        let workdir = repo
-                            .workdir()
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("Bare repository has no working directory")
-                            })?
-                            .to_path_buf();
-                        let mut checkout_opts = git2::build::CheckoutBuilder::new();
-                        checkout_opts.force();
-                        let mut has_tracked = false;
-                        for path in &paths {
-                            // Untracked (new) files must be deleted; checkout_head can't restore them
-                            let is_untracked = repo
-                                .status_file(path)
-                                .map(|s| s.contains(git2::Status::WT_NEW))
-                                .unwrap_or(false);
-                            if is_untracked {
-                                let full = workdir.join(path);
-                                if full.is_file() {
-                                    std::fs::remove_file(&full).with_context(|| {
-                                        format!("Failed to delete {}", full.display())
-                                    })?;
-                                }
-                            } else {
-                                checkout_opts.path(path);
-                                has_tracked = true;
-                            }
-                        }
-                        if has_tracked {
-                            repo.checkout_head(Some(&mut checkout_opts))?;
-                        }
-                        this.refresh_status(&repo)?;
-                        Ok(())
-                    })();
                     match result {
-                        Ok(()) => {
-                            this.complete_operation(
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Discard,
-                                if paths.len() == 1 {
-                                    format!("Discarded changes in {}", paths[0].display())
-                                } else {
-                                    format!("Discarded changes in {} files", paths.len())
-                                },
-                                None,
-                                None,
-                                this.head_branch.clone(),
+                                "Discarded changes",
+                                (None, None, this.head_branch.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                             cx.notify();
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Discard,
                                 "Discard changes failed",
                                 e.to_string(),
-                                None,
-                                this.head_branch.clone(),
-                                false,
+                                (None, this.head_branch.clone(), false),
                                 cx,
                             );
                         }
@@ -2804,13 +2432,11 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Reset,
                                 "Reset working tree to HEAD",
-                                Some("All staged and unstaged changes were discarded.".into()),
-                                None,
-                                branch_name.clone(),
+                                (Some("All staged and unstaged changes were discarded.".into()), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
@@ -2818,14 +2444,12 @@ impl GitProject {
                             cx.notify();
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
                                 "Reset to HEAD failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -2868,13 +2492,11 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                &format!("Reset to {}", short_id),
-                                Some("Working tree reset to the selected commit.".into()),
-                                None,
-                                branch_name.clone(),
+                                format!("Reset to {}", short_id),
+                                (Some("Working tree reset to the selected commit.".into()), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
@@ -2883,14 +2505,12 @@ impl GitProject {
                             cx.notify();
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                &format!("Reset to {} failed", short_id),
+                                format!("Reset to {} failed", short_id),
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -2939,41 +2559,35 @@ impl GitProject {
                             this.apply_refresh_data(data);
                             cx.emit(GitProjectEvent::StatusChanged);
                             if has_conflicts {
-                                this.fail_operation(
+                                this.fail_op(
                                     operation_id,
                                     GitOperationKind::Revert,
                                     format!("Revert of {} needs conflict resolution", short_id),
                                     "Resolve the conflicts in the working tree, then commit the revert manually.".to_string(),
-                                    None,
-                                    branch_name.clone(),
-                                    false,
+                                    (None, branch_name.clone(), false),
                                     cx,
                                 );
                             } else {
-                                this.complete_operation(
+                                this.complete_op(
                                     operation_id,
                                     GitOperationKind::Revert,
                                     format!("Reverted {}", short_id),
-                                    Some(format!(
+                                    (Some(format!(
                                         "Revert for '{}' has been applied. Review the changes and commit them manually.",
                                         summary
-                                    )),
-                                    None,
-                                    branch_name.clone(),
+                                    )), None, branch_name.clone()),
                                     cx,
                                 );
                             }
                             cx.notify();
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Revert,
                                 format!("Revert of {} failed", short_id),
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -3022,41 +2636,35 @@ impl GitProject {
                             this.apply_refresh_data(data);
                             cx.emit(GitProjectEvent::StatusChanged);
                             if has_conflicts {
-                                this.fail_operation(
+                                this.fail_op(
                                     operation_id,
                                     GitOperationKind::CherryPick,
                                     format!("Cherry-pick of {} needs conflict resolution", short_id),
                                     "Resolve the conflicts in the working tree, then commit the cherry-pick manually.".to_string(),
-                                    None,
-                                    branch_name.clone(),
-                                    false,
+                                    (None, branch_name.clone(), false),
                                     cx,
                                 );
                             } else {
-                                this.complete_operation(
+                                this.complete_op(
                                     operation_id,
                                     GitOperationKind::CherryPick,
                                     format!("Cherry-picked {}", short_id),
-                                    Some(format!(
+                                    (Some(format!(
                                         "Cherry-pick for '{}' has been applied. Review the changes and commit them manually.",
                                         summary
-                                    )),
-                                    None,
-                                    branch_name.clone(),
+                                    )), None, branch_name.clone()),
                                     cx,
                                 );
                             }
                             cx.notify();
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::CherryPick,
                                 format!("Cherry-pick of {} failed", short_id),
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -3102,27 +2710,23 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Merge,
                                 format!("{} aborted", state_label),
-                                Some("Working tree has been reset to HEAD.".into()),
-                                None,
-                                branch_name.clone(),
+                                (Some("Working tree has been reset to HEAD.".into()), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Merge,
                                 format!("Failed to abort {}", state_label.to_lowercase()),
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -3214,27 +2818,237 @@ impl GitProject {
                     match result {
                         Ok((summary, data)) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Merge,
                                 "Merge completed",
-                                Some(summary),
-                                None,
-                                branch_name.clone(),
+                                (Some(summary), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Merge,
                                 "Continue merge failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Perform an interactive rebase using a prepared plan.
+    ///
+    /// Writes the desired todo list to a temp file and invokes `git rebase -i`
+    /// with `GIT_SEQUENCE_EDITOR` set to a command that replaces the editor file
+    /// with the prepared plan. For reword actions, uses `exec git commit --amend`
+    /// lines after the pick.
+    pub fn rebase_interactive(
+        &mut self,
+        entries: Vec<RebasePlanEntry>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let entry_count = entries.len();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Rebase,
+            format!("Rebasing {} commits...", entry_count),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(String, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    if entries.is_empty() {
+                        anyhow::bail!("No entries provided for interactive rebase");
+                    }
+
+                    let base_oid = {
+                        let repo = Repository::open(&repo_path)?;
+                        ensure_clean_worktree(&repo, "Interactive rebase")?;
+                        let last_oid = &entries.last().unwrap().oid;
+                        let last_commit =
+                            repo.find_commit(git2::Oid::from_str(last_oid)?)?;
+                        let base_commit =
+                            last_commit.parent(0).with_context(|| {
+                                format!("Commit {} has no parent", last_oid)
+                            })?;
+                        base_commit.id().to_string()
+                    };
+
+                    let mut todo_lines = Vec::new();
+                    for entry in entries.iter().rev() {
+                        let short_oid = if entry.oid.len() >= 7 {
+                            &entry.oid[..7]
+                        } else {
+                            &entry.oid
+                        };
+
+                        match &entry.action {
+                            RebaseEntryAction::Pick => {
+                                todo_lines.push(format!(
+                                    "pick {} {}",
+                                    short_oid, entry.message
+                                ));
+                            }
+                            RebaseEntryAction::Reword(new_msg) => {
+                                todo_lines.push(format!(
+                                    "pick {} {}",
+                                    short_oid, entry.message
+                                ));
+                                let escaped = new_msg
+                                    .replace('\\', "\\\\")
+                                    .replace('"', "\\\"");
+                                todo_lines.push(format!(
+                                    "exec git commit --amend -m \"{}\"",
+                                    escaped
+                                ));
+                            }
+                            RebaseEntryAction::Squash => {
+                                todo_lines.push(format!(
+                                    "squash {} {}",
+                                    short_oid, entry.message
+                                ));
+                            }
+                            RebaseEntryAction::Fixup => {
+                                todo_lines.push(format!(
+                                    "fixup {} {}",
+                                    short_oid, entry.message
+                                ));
+                            }
+                            RebaseEntryAction::Drop => {
+                                todo_lines.push(format!(
+                                    "drop {} {}",
+                                    short_oid, entry.message
+                                ));
+                            }
+                        }
+                    }
+
+                    let todo_content = todo_lines.join("\n") + "\n";
+
+                    let temp_dir = std::env::temp_dir();
+                    let todo_file = temp_dir.join(format!(
+                        "rgitui_rebase_todo_{}",
+                        std::process::id()
+                    ));
+                    std::fs::write(&todo_file, &todo_content)?;
+
+                    let sequence_editor = if cfg!(windows) {
+                        format!(
+                            "cmd /c copy /y \"{}\" ",
+                            todo_file.to_string_lossy().replace('/', "\\")
+                        )
+                    } else {
+                        format!(
+                            "cp \"{}\" ",
+                            todo_file.to_string_lossy()
+                        )
+                    };
+
+                    let output = Command::new("git")
+                        .current_dir(&repo_path)
+                        .env("GIT_SEQUENCE_EDITOR", &sequence_editor)
+                        .env("GIT_EDITOR", "true")
+                        .args(["rebase", "-i", &base_oid])
+                        .output()
+                        .with_context(|| "Failed to execute git rebase -i")?;
+
+                    let _ = std::fs::remove_file(&todo_file);
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    if output.status.success() {
+                        let data = gather_refresh_data(&repo_path)?;
+                        Ok((
+                            format!(
+                                "Rebased {} commits successfully",
+                                entry_count
+                            ),
+                            data,
+                        ))
+                    } else if stderr.contains("CONFLICT")
+                        || stderr.contains("could not apply")
+                    {
+                        let data = gather_refresh_data(&repo_path)?;
+                        let detail: String = stderr
+                            .lines()
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        Ok((
+                            format!(
+                                "CONFLICT:Rebase paused due to conflicts. \
+                                 Resolve conflicts and use Continue or Abort. {}",
+                                detail
+                            ),
+                            data,
+                        ))
+                    } else {
+                        anyhow::bail!(
+                            "git rebase -i failed:\nstdout: {}\nstderr: {}",
+                            stdout.trim(),
+                            stderr.trim()
+                        );
+                    }
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok((msg, data)) => {
+                            let is_conflict = msg.starts_with("CONFLICT:");
+                            this.apply_refresh_data(data);
+                            if is_conflict {
+                                let user_msg = msg
+                                    .trim_start_matches("CONFLICT:")
+                                    .to_string();
+                                this.fail_op(
+                                    operation_id,
+                                    GitOperationKind::Rebase,
+                                    "Rebase paused due to conflicts",
+                                    user_msg,
+                                    (None, branch_name.clone(), false),
+                                    cx,
+                                );
+                            } else {
+                                this.complete_op(
+                                    operation_id,
+                                    GitOperationKind::Rebase,
+                                    msg,
+                                    (Some(
+                                        "Repository state refreshed after rebase."
+                                            .into(),
+                                    ), None, branch_name.clone()),
+                                    cx,
+                                );
+                            }
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Rebase,
+                                "Interactive rebase failed",
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -3278,13 +3092,11 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
                                 format!("Checked out {}", short_id),
-                                Some("HEAD is now detached at the selected commit.".into()),
-                                None,
-                                Some(short_id.clone()),
+                                (Some("HEAD is now detached at the selected commit.".into()), None, Some(short_id.clone())),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::HeadChanged);
@@ -3293,14 +3105,12 @@ impl GitProject {
                             cx.notify();
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
                                 format!("Checkout of {} failed", short_id),
                                 e.to_string(),
-                                None,
-                                Some(short_id.clone()),
-                                true,
+                                (None, Some(short_id.clone()), true),
                                 cx,
                             );
                         }
@@ -3322,38 +3132,36 @@ impl GitProject {
             branch_name.clone(),
             cx,
         );
+        let repo_path = self.repo_path.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = cx.background_executor().spawn(async move {
+                let repo = Repository::open(&repo_path)?;
+                repo.remote_delete(&name)?;
+                let data = gather_refresh_data(&repo_path)?;
+                Ok::<_, anyhow::Error>((data, name))
+            }).await;
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    let result: Result<()> = (|| {
-                        let repo = this.open_repo()?;
-                        repo.remote_delete(&name)?;
-                        this.refresh_sync()?;
-                        Ok(())
-                    })();
                     match result {
-                        Ok(()) => {
-                            this.complete_operation(
+                        Ok((data, name)) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::RemoveRemote,
                                 format!("Removed remote '{}'", name),
-                                Some("Remote list refreshed.".into()),
-                                Some(name.clone()),
-                                branch_name.clone(),
+                                (Some("Remote list refreshed.".into()), Some(name.clone()), branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                             cx.notify();
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::RemoveRemote,
-                                format!("Removing remote '{}' failed", name),
+                                "Removing remote failed",
                                 e.to_string(),
-                                Some(name.clone()),
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -3405,27 +3213,23 @@ impl GitProject {
                     match result {
                         Ok((details, data)) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Fetch,
                                 format!("Fetched from '{}'", remote_name),
-                                details.or(Some("Remote refs refreshed.".into())),
-                                Some(remote_name.clone()),
-                                this.head_branch.clone(),
+                                (details.or(Some("Remote refs refreshed.".into())), Some(remote_name.clone()), this.head_branch.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                         }
                         Err(e) => {
                             log::error!("Fetch failed: {}", e);
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Fetch,
                                 format!("Fetch from '{}' failed", remote_name),
                                 e.to_string(),
-                                Some(remote_name.clone()),
-                                this.head_branch.clone(),
-                                true,
+                                (Some(remote_name.clone()), this.head_branch.clone(), true),
                                 cx,
                             );
                         }
@@ -3588,26 +3392,22 @@ impl GitProject {
                             this.apply_refresh_data(data);
                             if is_conflict {
                                 let user_msg = msg.trim_start_matches("CONFLICT:").to_string();
-                                this.fail_operation(
+                                this.fail_op(
                                     operation_id,
                                     GitOperationKind::Pull,
                                     format!("Pull from '{}' has conflicts", remote_name),
                                     user_msg,
-                                    Some(remote_name.clone()),
-                                    Some(branch_name.clone()),
-                                    false,
+                                    (Some(remote_name.clone()), Some(branch_name.clone()), false),
                                     cx,
                                 );
                             } else {
-                                this.complete_operation(
+                                this.complete_op(
                                     operation_id,
                                     GitOperationKind::Pull,
                                     msg,
-                                    details.or(Some(
+                                    (details.or(Some(
                                         "Repository state refreshed after pull.".into(),
-                                    )),
-                                    Some(remote_name.clone()),
-                                    Some(branch_name.clone()),
+                                    )), Some(remote_name.clone()), Some(branch_name.clone())),
                                     cx,
                                 );
                             }
@@ -3616,14 +3416,12 @@ impl GitProject {
                         }
                         Err(e) => {
                             log::error!("Pull failed: {}", e);
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Pull,
                                 format!("Pull from '{}' failed", remote_name),
                                 e.to_string(),
-                                Some(remote_name.clone()),
-                                Some(branch_name.clone()),
-                                true,
+                                (Some(remote_name.clone()), Some(branch_name.clone()), true),
                                 cx,
                             );
                         }
@@ -3779,27 +3577,23 @@ impl GitProject {
                     match result {
                         Ok((msg, details, data)) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Push,
                                 msg,
-                                details.or(Some("Remote refs refreshed after push.".into())),
-                                Some(remote_name.clone()),
-                                Some(remote_branch_name.clone()),
+                                (details.or(Some("Remote refs refreshed after push.".into())), Some(remote_name.clone()), Some(remote_branch_name.clone())),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
                         }
                         Err(e) => {
                             log::error!("Push failed: {}", e);
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Push,
                                 format!("Push to '{}' failed", remote_name),
                                 e.to_string(),
-                                Some(remote_name.clone()),
-                                Some(remote_branch_name.clone()),
-                                true,
+                                (Some(remote_name.clone()), Some(remote_branch_name.clone()), true),
                                 cx,
                             );
                         }
@@ -3922,24 +3716,20 @@ impl GitProject {
                             if is_conflict {
                                 // Strip the CONFLICT: prefix for the user-facing message
                                 let user_msg = msg.trim_start_matches("CONFLICT:").to_string();
-                                this.fail_operation(
+                                this.fail_op(
                                     operation_id,
                                     GitOperationKind::Merge,
                                     format!("Merge conflicts in '{}'", branch_name),
                                     user_msg,
-                                    None,
-                                    current_branch.clone(),
-                                    false,
+                                    (None, current_branch.clone(), false),
                                     cx,
                                 );
                             } else {
-                                this.complete_operation(
+                                this.complete_op(
                                     operation_id,
                                     GitOperationKind::Merge,
                                     msg,
-                                    Some("Repository state refreshed after merge.".into()),
-                                    None,
-                                    current_branch.clone(),
+                                    (Some("Repository state refreshed after merge.".into()), None, current_branch.clone()),
                                     cx,
                                 );
                             }
@@ -3948,14 +3738,12 @@ impl GitProject {
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Merge,
                                 format!("Merge of '{}' failed", branch_name),
                                 e.to_string(),
-                                None,
-                                current_branch.clone(),
-                                false,
+                                (None, current_branch.clone(), false),
                                 cx,
                             );
                         }
@@ -3999,26 +3787,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
                                 "Saved stash",
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
                                 "Save stash failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -4056,26 +3840,22 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
                                 format!("Popped stash #{}", index),
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
                                 format!("Pop stash #{} failed", index),
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -4128,7 +3908,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
                                 format!(
@@ -4136,22 +3916,18 @@ impl GitProject {
                                     hunk_index + 1,
                                     file_path.display()
                                 ),
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
                                 "Stage hunk failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -4204,7 +3980,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
-                            this.complete_operation(
+                            this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
                                 format!(
@@ -4212,22 +3988,18 @@ impl GitProject {
                                     hunk_index + 1,
                                     file_path.display()
                                 ),
-                                None,
-                                None,
-                                branch_name.clone(),
+                                (None, None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
                         }
                         Err(e) => {
-                            this.fail_operation(
+                            this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
                                 "Unstage hunk failed",
                                 e.to_string(),
-                                None,
-                                branch_name.clone(),
-                                false,
+                                (None, branch_name.clone(), false),
                                 cx,
                             );
                         }
@@ -4289,7 +4061,7 @@ fn parse_file_diff(path: &Path, diff: &git2::Diff) -> Result<FileDiff> {
         if let Some(hunk) = hunk {
             let header = String::from_utf8_lossy(hunk.header()).to_string();
             let expected_start = hunk.new_start();
-            let needs_new = file_diff.hunks.last().map_or(true, |h| {
+            let needs_new = file_diff.hunks.last().is_none_or(|h| {
                 h.new_start != expected_start || h.header != header
             });
             if needs_new {
@@ -4330,4 +4102,89 @@ fn parse_file_diff(path: &Path, diff: &git2::Diff) -> Result<FileDiff> {
     })?;
 
     Ok(file_diff)
+}
+
+pub fn compute_file_diff(repo_path: &Path, file_path: &Path, staged: bool) -> Result<FileDiff> {
+    let repo = Repository::open(repo_path)?;
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.pathspec(file_path);
+    let diff = if staged {
+        let head_tree = repo.head()?.peel_to_tree().ok();
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))?
+    } else {
+        repo.diff_index_to_workdir(None, Some(&mut diff_opts))?
+    };
+    parse_file_diff(file_path, &diff)
+}
+
+pub fn compute_commit_diff(repo_path: &Path, oid: git2::Oid) -> Result<CommitDiff> {
+    let repo = Repository::open(repo_path)?;
+    let commit = repo.find_commit(oid)?;
+    let tree = commit.tree()?;
+    let parent_tree = if commit.parent_count() > 0 {
+        Some(commit.parent(0)?.tree()?)
+    } else {
+        None
+    };
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+    let stats = diff.stats()?;
+    let mut files: Vec<FileDiff> = Vec::new();
+    let mut current_hunks: Vec<DiffHunk> = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    let mut current_additions: usize = 0;
+    let mut current_deletions: usize = 0;
+    diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
+        let delta_path = delta.new_file().path().unwrap_or(Path::new("")).to_path_buf();
+        if current_path.as_ref() != Some(&delta_path) {
+            if let Some(prev_path) = current_path.take() {
+                files.push(FileDiff { path: prev_path, hunks: std::mem::take(&mut current_hunks), additions: current_additions, deletions: current_deletions });
+            }
+            current_path = Some(delta_path);
+            current_additions = 0;
+            current_deletions = 0;
+        }
+        if let Some(hunk) = hunk {
+            let header = String::from_utf8_lossy(hunk.header()).to_string();
+            let expected_start = hunk.new_start();
+            let needs_new = current_hunks.last().is_none_or(|h| h.new_start != expected_start || h.header != header);
+            if needs_new {
+                current_hunks.push(DiffHunk { old_start: hunk.old_start(), old_lines: hunk.old_lines(), new_start: hunk.new_start(), new_lines: hunk.new_lines(), header, lines: Vec::new() });
+            }
+        }
+        let content = String::from_utf8_lossy(line.content()).to_string();
+        match line.origin() {
+            '+' => { if let Some(h) = current_hunks.last_mut() { h.lines.push(DiffLine::Addition(content)); } current_additions += 1; }
+            '-' => { if let Some(h) = current_hunks.last_mut() { h.lines.push(DiffLine::Deletion(content)); } current_deletions += 1; }
+            ' ' => { if let Some(h) = current_hunks.last_mut() { h.lines.push(DiffLine::Context(content)); } }
+            _ => {}
+        }
+        true
+    })?;
+    if let Some(path) = current_path {
+        files.push(FileDiff { path, hunks: current_hunks, additions: current_additions, deletions: current_deletions });
+    }
+    Ok(CommitDiff { total_additions: stats.insertions(), total_deletions: stats.deletions(), files })
+}
+
+pub fn compute_stash_diff(repo_path: &Path, index: usize) -> Result<CommitDiff> {
+    let mut repo = Repository::open(repo_path)?;
+    let mut stash_oids: Vec<git2::Oid> = Vec::new();
+    repo.stash_foreach(|_idx, _msg, oid| { stash_oids.push(*oid); true })?;
+    let stash_oid = stash_oids.get(index).copied().ok_or_else(|| anyhow::anyhow!("Stash index {} out of range", index))?;
+    compute_commit_diff(repo_path, stash_oid)
+}
+
+pub fn compute_staged_diff_text(repo_path: &Path) -> Result<String> {
+    let repo = Repository::open(repo_path)?;
+    let head_tree = repo.head()?.peel_to_tree().ok();
+    let diff = repo.diff_tree_to_index(head_tree.as_ref(), None, None)?;
+    let mut text = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        if let Ok(s) = std::str::from_utf8(line.content()) {
+            text.push(line.origin());
+            text.push_str(s);
+        }
+        true
+    })?;
+    Ok(text)
 }

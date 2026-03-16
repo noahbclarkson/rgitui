@@ -1,10 +1,10 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, SharedString, Window};
+use gpui::{div, px, Animation, AnimationExt, App, SharedString, Window};
 use rgitui_theme::{ActiveTheme, StyledExt};
+use std::time::Duration;
 
 use crate::{Label, LabelSize};
 
-/// A single item in a context menu.
 pub struct ContextMenuItem {
     label: SharedString,
     disabled: bool,
@@ -42,11 +42,16 @@ impl ContextMenuItem {
     }
 }
 
-/// A context menu that shows a list of actions.
 #[derive(IntoElement)]
 pub struct ContextMenu {
     items: Vec<ContextMenuItem>,
     min_width: f32,
+}
+
+impl Default for ContextMenu {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ContextMenu {
@@ -71,6 +76,10 @@ impl ContextMenu {
         self.min_width = width;
         self
     }
+}
+
+fn ease_out_quint(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(5)
 }
 
 impl RenderOnce for ContextMenu {
@@ -136,6 +145,10 @@ impl RenderOnce for ContextMenu {
             menu = menu.child(row);
         }
 
-        menu
+        menu.with_animation(
+            "context-menu-entrance",
+            Animation::new(Duration::from_millis(100)).with_easing(ease_out_quint),
+            |el, delta| el.opacity(delta),
+        )
     }
 }

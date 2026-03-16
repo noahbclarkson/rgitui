@@ -6,7 +6,7 @@ use gpui::{
     SharedString, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonStyle, Label, LabelSize};
+use rgitui_ui::{Button, ButtonStyle, IconName, Label, LabelSize};
 
 /// Events emitted by the repository opener dialog.
 #[derive(Debug, Clone)]
@@ -141,6 +141,29 @@ impl RepoOpener {
         cx.notify();
     }
 
+    fn browse_folder(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let folder = async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Select Git Repository")
+                    .pick_folder()
+                    .await
+                    .map(|handle| handle.path().to_path_buf())
+            }.await;
+            if let Some(path) = folder {
+                cx.update(|cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.visible = false;
+                        this.query.clear();
+                        this.cursor_pos = 0;
+                        cx.emit(RepoOpenerEvent::OpenRepo(path));
+                        cx.notify();
+                    });
+                });
+            }
+        }).detach();
+    }
+
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -149,6 +172,29 @@ impl RepoOpener {
     ) {
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
+
+        if keystroke.modifiers.control || keystroke.modifiers.platform {
+            match key {
+                "v" => {
+                    if let Some(clipboard) = cx.read_from_clipboard() {
+                        if let Some(text) = clipboard.text() {
+                            let line = text.lines().next().unwrap_or("").trim();
+                            self.query = line.to_string();
+                            self.cursor_pos = self.query.len();
+                            self.update_filter();
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
+                "a" => {
+                    self.cursor_pos = self.query.len();
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         match key {
             "escape" => {
@@ -332,7 +378,7 @@ impl Render for RepoOpener {
             ),
         );
 
-        // Path input
+        // Path input with browse button
         modal = modal.child(
             div()
                 .px_4()
@@ -347,21 +393,36 @@ impl Render for RepoOpener {
                 .child(
                     div()
                         .h_flex()
-                        .h(px(30.))
-                        .px_2()
-                        .bg(colors.editor_background)
-                        .border_1()
-                        .border_color(colors.border_focused)
-                        .rounded_md()
-                        .items_center()
-                        .child(input_row),
+                        .gap_2()
+                        .child(
+                            div()
+                                .h_flex()
+                                .flex_1()
+                                .h(px(30.))
+                                .px_2()
+                                .bg(colors.editor_background)
+                                .border_1()
+                                .border_color(colors.border_variant)
+                                .rounded_md()
+                                .items_center()
+                                .cursor_text()
+                                .child(input_row),
+                        )
+                        .child(
+                            Button::new("browse-folder", "Browse")
+                                .style(ButtonStyle::Subtle)
+                                .icon(IconName::Folder)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.browse_folder(cx);
+                                })),
+                        ),
                 ),
         );
 
         // Hint text
         modal = modal.child(
             div().px_4().pb_1().child(
-                Label::new("Press Enter to open path, or select a recent repository below")
+                Label::new("Type a path, browse for a folder, or select from recent repositories")
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             ),
@@ -410,8 +471,10 @@ impl Render for RepoOpener {
                     ))
                     .v_flex()
                     .w_full()
-                    .px_3()
-                    .py_1()
+                    .px(px(12.))
+                    .py(px(6.))
+                    .mx(px(4.))
+                    .rounded(px(6.))
                     .cursor_pointer()
                     .when(is_selected, |el| el.bg(colors.ghost_element_selected))
                     .hover(|s| s.bg(colors.ghost_element_hover))
@@ -492,6 +555,7 @@ impl Render for RepoOpener {
         // Backdrop + modal
         div()
             .id("repo-opener-backdrop")
+            .occlude()
             .absolute()
             .top_0()
             .left_0()

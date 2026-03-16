@@ -6,6 +6,12 @@ use rgitui_theme::ActiveTheme;
 #[derive(IntoElement)]
 pub struct Divider;
 
+impl Default for Divider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Divider {
     pub fn new() -> Self {
         Self
@@ -22,6 +28,12 @@ impl RenderOnce for Divider {
 /// A vertical divider line.
 #[derive(IntoElement)]
 pub struct VerticalDivider;
+
+impl Default for VerticalDivider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl VerticalDivider {
     pub fn new() -> Self {

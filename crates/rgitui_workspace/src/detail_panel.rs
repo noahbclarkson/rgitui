@@ -346,7 +346,7 @@ impl Render for DetailPanel {
                 .items_start()
                 .gap_2()
                 .child(
-                    div().flex_1().child(
+                    div().flex_1().min_w_0().child(
                         Label::new(summary)
                             .size(LabelSize::Small)
                             .weight(gpui::FontWeight::BOLD),
@@ -385,6 +385,7 @@ impl Render for DetailPanel {
             card = card.child(
                 div()
                     .w_full()
+                    .min_w_0()
                     .pt_1()
                     .border_t_1()
                     .border_color(colors.border_variant)
@@ -564,8 +565,10 @@ impl Render for DetailPanel {
                 if file_count == 1 { "" } else { "s" },
             )
             .into();
-            let additions_text: SharedString = format!("+{}", diff.total_additions).into();
-            let deletions_text: SharedString = format!("-{}", diff.total_deletions).into();
+            let additions_text: SharedString =
+                format!("+\u{2009}{}", diff.total_additions).into();
+            let deletions_text: SharedString =
+                format!("\u{2012}\u{2009}{}", diff.total_deletions).into();
 
             // Section header with colored +/- stats
             content = content.child(
@@ -610,12 +613,36 @@ impl Render for DetailPanel {
                     ),
             );
 
+            let mut file_list = div()
+                .id("detail-files-list")
+                .v_flex()
+                .w_full()
+                .flex_shrink_0()
+                .pb_2();
+
             let files = diff.files.clone();
             for (i, file) in files.iter().enumerate() {
                 let path_str = file.path.display().to_string();
-                let path_label: SharedString = path_str.clone().into();
-                let additions_str: SharedString = format!("+{}", file.additions).into();
-                let deletions_str: SharedString = format!("-{}", file.deletions).into();
+                let file_name: SharedString = file
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path_str)
+                    .to_string()
+                    .into();
+                let dir_path: SharedString = file
+                    .path
+                    .parent()
+                    .map(|p| {
+                        let s = p.display().to_string();
+                        if s.is_empty() { s } else { format!("{}/", s) }
+                    })
+                    .unwrap_or_default()
+                    .into();
+                let additions_str: SharedString =
+                    format!("+\u{2009}{}", file.additions).into();
+                let deletions_str: SharedString =
+                    format!("\u{2012}\u{2009}{}", file.deletions).into();
                 let selected = self.selected_file_index == Some(i);
                 let file_diff = file.clone();
                 let path_for_event = path_str.clone();
@@ -630,15 +657,16 @@ impl Render for DetailPanel {
                     (IconName::FileModified, Color::Modified)
                 };
 
-                content = content.child(
+                file_list = file_list.child(
                     div()
                         .id(ElementId::NamedInteger("detail-file".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(24.))
+                        .h(px(26.))
                         .px_3()
                         .gap(px(6.))
                         .items_center()
+                        .flex_shrink_0()
                         .border_l_2()
                         .when(selected, |el| {
                             el.bg(colors.ghost_element_selected)
@@ -653,7 +681,6 @@ impl Render for DetailPanel {
                             })
                         })
                         .hover(|s| s.bg(colors.ghost_element_hover))
-                        .active(|s| s.bg(colors.ghost_element_active))
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.selected_file_index = Some(i);
@@ -663,13 +690,32 @@ impl Render for DetailPanel {
                             ));
                             cx.notify();
                         }))
-                        .child(Icon::new(icon_name).size(IconSize::Small).color(icon_color))
-                        .child(Label::new(path_label).size(LabelSize::XSmall).truncate())
-                        .child(div().flex_1())
+                        .child(Icon::new(icon_name).size(IconSize::XSmall).color(icon_color))
+                        .child(
+                            div()
+                                .h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(2.))
+                                .overflow_hidden()
+                                .when(!dir_path.is_empty(), |el| {
+                                    el.child(
+                                        Label::new(dir_path)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    )
+                                })
+                                .child(
+                                    Label::new(file_name)
+                                        .size(LabelSize::XSmall)
+                                        .truncate(),
+                                ),
+                        )
                         .child(
                             div()
                                 .h_flex()
                                 .gap_1()
+                                .flex_shrink_0()
                                 .child(
                                     Label::new(additions_str)
                                         .size(LabelSize::XSmall)
@@ -683,6 +729,7 @@ impl Render for DetailPanel {
                         ),
                 );
             }
+            content = content.child(file_list);
         }
 
         panel = panel.child(content);

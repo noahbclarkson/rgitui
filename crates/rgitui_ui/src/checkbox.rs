@@ -17,7 +17,7 @@ pub struct Checkbox {
     id: ElementId,
     state: CheckState,
     disabled: bool,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<crate::ClickHandler>,
 }
 
 impl Checkbox {

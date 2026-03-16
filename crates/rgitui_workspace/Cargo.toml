@@ -22,3 +22,4 @@ smallvec.workspace = true
 md5.workspace = true
 http_client.workspace = true
 futures.workspace = true
+rfd = "0.17.2"

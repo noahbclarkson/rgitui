@@ -398,7 +398,7 @@ impl Render for InteractiveRebase {
             let is_editing = self
                 .editing_reword
                 .as_ref()
-                .map_or(false, |(edit_idx, _, _)| *edit_idx == idx);
+                .is_some_and(|(edit_idx, _, _)| *edit_idx == idx);
 
             let display_msg: SharedString = if is_editing {
                 let (_, ref msg, _) = self.editing_reword.as_ref().unwrap();
@@ -423,7 +423,7 @@ impl Render for InteractiveRebase {
                 if self
                     .editing_reword
                     .as_ref()
-                    .map_or(false, |(_, msg, _)| msg.is_empty())
+                    .is_some_and(|(_, msg, _)| msg.is_empty())
                 {
                     Color::Placeholder
                 } else {
@@ -690,7 +690,7 @@ impl Render for InteractiveRebase {
         // Backdrop
         div()
             .id("interactive-rebase-backdrop")
-            .absolute()
+            .occlude().absolute()
             .top_0()
             .left_0()
             .size_full()

@@ -193,7 +193,7 @@ impl Render for ShortcutsHelp {
 
         let backdrop = div()
             .id("shortcuts-help-backdrop")
-            .absolute()
+            .occlude().absolute()
             .top_0()
             .left_0()
             .size_full()

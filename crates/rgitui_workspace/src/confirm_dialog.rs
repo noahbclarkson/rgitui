@@ -160,7 +160,7 @@ impl Render for ConfirmDialog {
 
         let backdrop = div()
             .id("confirm-dialog-backdrop")
-            .absolute()
+            .occlude().absolute()
             .top_0()
             .left_0()
             .size_full()

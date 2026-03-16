@@ -1,17 +1,23 @@
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, App, Window};
+use gpui::{div, px, Animation, AnimationExt, AnyElement, App, Window};
 use rgitui_theme::StyledExt;
 use smallvec::SmallVec;
+use std::time::Duration;
 
 use crate::{Divider, Label, LabelSize};
 
-/// A modal dialog container with header, body, and optional footer.
 #[derive(IntoElement)]
 pub struct Modal {
     title: Option<String>,
     body: SmallVec<[AnyElement; 2]>,
     footer: Option<AnyElement>,
     width: f32,
+}
+
+impl Default for Modal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Modal {
@@ -45,6 +51,10 @@ impl Modal {
     }
 }
 
+fn ease_out_quint(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(5)
+}
+
 impl RenderOnce for Modal {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut container = div()
@@ -54,7 +64,6 @@ impl RenderOnce for Modal {
             .elevation_3(cx)
             .overflow_hidden();
 
-        // Header
         if let Some(title) = self.title {
             container = container
                 .child(
@@ -67,7 +76,6 @@ impl RenderOnce for Modal {
                 .child(Divider::new());
         }
 
-        // Body
         let mut body = div()
             .id("modal-body")
             .v_flex()
@@ -80,7 +88,6 @@ impl RenderOnce for Modal {
         }
         container = container.child(body);
 
-        // Footer
         if let Some(footer) = self.footer {
             container = container.child(Divider::new()).child(
                 div()
@@ -93,7 +100,6 @@ impl RenderOnce for Modal {
             );
         }
 
-        // Backdrop
         div()
             .size_full()
             .flex()
@@ -106,5 +112,10 @@ impl RenderOnce for Modal {
                 a: 0.5,
             })
             .child(container)
+            .with_animation(
+                "modal-entrance",
+                Animation::new(Duration::from_millis(150)).with_easing(ease_out_quint),
+                |el, delta| el.opacity(0.5 + delta * 0.5),
+            )
     }
 }

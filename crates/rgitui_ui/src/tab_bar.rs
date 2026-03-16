@@ -13,8 +13,8 @@ pub struct Tab {
     active: bool,
     dirty: bool,
     closeable: bool,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
-    on_close: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<crate::ClickHandler>,
+    on_close: Option<crate::ClickHandler>,
 }
 
 impl Tab {
@@ -150,6 +150,12 @@ impl RenderOnce for Tab {
 pub struct TabBar {
     tabs: SmallVec<[AnyElement; 4]>,
     end_slot: Option<AnyElement>,
+}
+
+impl Default for TabBar {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TabBar {

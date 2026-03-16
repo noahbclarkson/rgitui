@@ -436,7 +436,7 @@ impl Render for TagDialog {
         // Backdrop + modal
         div()
             .id("tag-dialog-backdrop")
-            .absolute()
+            .occlude().absolute()
             .top_0()
             .left_0()
             .size_full()

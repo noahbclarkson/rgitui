@@ -9,6 +9,7 @@ use rgitui_ai::{AiEvent, AiGenerator};
 use rgitui_diff::{DiffViewer, DiffViewerEvent};
 use rgitui_git::{
     GitOperationKind, GitOperationState, GitOperationUpdate, GitProject, GitProjectEvent,
+    RebaseEntryAction, RebasePlanEntry,
 };
 use rgitui_graph::{GraphView, GraphViewEvent};
 use rgitui_settings::{LayoutSettings, StoredWorkspace};
@@ -150,10 +151,42 @@ impl Workspace {
             &interactive_rebase,
             |this, _ir, event: &InteractiveRebaseEvent, cx| match event {
                 InteractiveRebaseEvent::Execute(entries) => {
-                    let count = entries.len();
-                    let msg = format!("Interactive rebase started with {} commits.", count);
-                    this.status_message = Some(msg.clone());
-                    this.show_toast(msg, ToastKind::Info, cx);
+                    use crate::interactive_rebase::RebaseAction;
+
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        let plan: Vec<RebasePlanEntry> = entries
+                            .iter()
+                            .map(|e| RebasePlanEntry {
+                                oid: e.oid.clone(),
+                                message: e.original_message.clone(),
+                                action: match &e.action {
+                                    RebaseAction::Pick => RebaseEntryAction::Pick,
+                                    RebaseAction::Reword(msg) => {
+                                        let m = if msg.is_empty() {
+                                            e.original_message.clone()
+                                        } else {
+                                            msg.clone()
+                                        };
+                                        RebaseEntryAction::Reword(m)
+                                    }
+                                    RebaseAction::Squash => RebaseEntryAction::Squash,
+                                    RebaseAction::Fixup => RebaseEntryAction::Fixup,
+                                    RebaseAction::Drop => RebaseEntryAction::Drop,
+                                },
+                            })
+                            .collect();
+
+                        let project = tab.project.clone();
+                        project.update(cx, |proj, cx| {
+                            proj.rebase_interactive(plan, cx).detach();
+                        });
+
+                        let count = entries.len();
+                        let msg =
+                            format!("Interactive rebase started with {} commits.", count);
+                        this.status_message = Some(msg.clone());
+                        this.show_toast(msg, ToastKind::Info, cx);
+                    }
                 }
                 InteractiveRebaseEvent::Cancel => {
                     cx.notify();
@@ -391,10 +424,10 @@ impl Workspace {
                     layout.sidebar_width,
                     layout.detail_panel_width,
                     layout.diff_viewer_height,
-                    layout.commit_input_height,
+                    layout.commit_input_height.max(240.0),
                 )
             } else {
-                (240.0, 320.0, 300.0, 200.0)
+                (240.0, 320.0, 300.0, 260.0)
             };
 
         Self {
@@ -494,7 +527,7 @@ impl Workspace {
             "commit" => {
                 let commit_panel = tab.commit_panel.clone();
                 commit_panel.update(cx, |cp, cx| {
-                    let msg = cp.message();
+                    let msg = cp.message(cx);
                     if !msg.is_empty() {
                         cx.emit(CommitPanelEvent::CommitRequested {
                             message: msg,
@@ -905,7 +938,7 @@ impl Workspace {
         self.sidebar_width = layout.sidebar_width;
         self.detail_panel_width = layout.detail_panel_width;
         self.diff_viewer_height = layout.diff_viewer_height;
-        self.commit_input_height = layout.commit_input_height;
+        self.commit_input_height = layout.commit_input_height.max(240.0);
     }
 
     fn persist_workspace_snapshot(&mut self, cx: &mut Context<Self>) {
@@ -1049,11 +1082,14 @@ impl Workspace {
         let project = cx.new(|cx| {
             GitProject::open(path.clone(), cx).expect("Already validated path is a git repo")
         });
+        project.update(cx, |proj, cx| {
+            proj.refresh(cx).detach();
+        });
 
-        let graph = cx.new(|cx| GraphView::new(cx));
-        let diff_viewer = cx.new(|cx| DiffViewer::new(cx));
-        let detail_panel = cx.new(|cx| DetailPanel::new(cx));
-        let sidebar = cx.new(|cx| Sidebar::new(cx));
+        let graph = cx.new(GraphView::new);
+        let diff_viewer = cx.new(DiffViewer::new);
+        let detail_panel = cx.new(DetailPanel::new);
+        let sidebar = cx.new(Sidebar::new);
         let commit_panel = cx.new(CommitPanel::new);
         let toolbar = cx.new(|_cx| Toolbar::new());
 
@@ -1202,21 +1238,25 @@ impl Workspace {
                 match event {
                     SidebarEvent::FileSelected { path, staged } => {
                         let path_buf = std::path::PathBuf::from(path);
+                        let p = path.clone();
                         let is_staged = *staged;
-                        let proj = project.read(cx);
-                        match proj.diff_file(&path_buf, is_staged) {
-                            Ok(diff) => {
-                                let p = path.clone();
-                                diff_viewer.update(cx, |dv, cx| {
-                                    dv.set_diff(diff, p, is_staged, cx);
-                                });
-                                // Clear detail panel when viewing working tree files
-                                detail_panel_ref.update(cx, |dp, cx| dp.clear(cx));
-                            }
-                            Err(e) => {
-                                log::error!("Failed to get diff for {}: {}", path, e);
-                            }
-                        }
+                        let repo_path = project.read(cx).repo_path().to_path_buf();
+                        let dv = diff_viewer.clone();
+                        let dp = detail_panel_ref.clone();
+                        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                            let result = cx.background_executor().spawn(async move {
+                                rgitui_git::compute_file_diff(&repo_path, &path_buf, is_staged)
+                            }).await;
+                            cx.update(|cx| {
+                                match result {
+                                    Ok(diff) => {
+                                        dv.update(cx, |dv, cx| dv.set_diff(diff, p, is_staged, cx));
+                                        dp.update(cx, |dp, cx| dp.clear(cx));
+                                    }
+                                    Err(e) => log::error!("Failed to get diff: {}", e),
+                                }
+                            });
+                        }).detach();
                     }
                     SidebarEvent::StageFile(path) => {
                         let path_buf = std::path::PathBuf::from(path);
@@ -1291,21 +1331,26 @@ impl Workspace {
                     }
                     SidebarEvent::StashSelected(index) => {
                         let idx = *index;
-                        let proj = project.read(cx);
-                        match proj.diff_stash(idx) {
-                            Ok(commit_diff) => {
-                                if let Some(first_file) = commit_diff.files.first() {
-                                    let path = first_file.path.display().to_string();
-                                    diff_viewer.update(cx, |dv, cx| {
-                                        dv.set_diff(first_file.clone(), path, false, cx);
-                                    });
+                        let repo_path = project.read(cx).repo_path().to_path_buf();
+                        let dv = diff_viewer.clone();
+                        let dp = detail_panel_ref.clone();
+                        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                            let result = cx.background_executor().spawn(async move {
+                                rgitui_git::compute_stash_diff(&repo_path, idx)
+                            }).await;
+                            cx.update(|cx| {
+                                match result {
+                                    Ok(commit_diff) => {
+                                        if let Some(first_file) = commit_diff.files.first() {
+                                            let path = first_file.path.display().to_string();
+                                            dv.update(cx, |dv, cx| dv.set_diff(first_file.clone(), path, false, cx));
+                                        }
+                                        dp.update(cx, |dp, cx| dp.clear(cx));
+                                    }
+                                    Err(e) => log::error!("Failed to get stash diff: {}", e),
                                 }
-                                detail_panel_ref.update(cx, |dp, cx| dp.clear(cx));
-                            }
-                            Err(e) => {
-                                log::error!("Failed to get stash diff: {}", e);
-                            }
-                        }
+                            });
+                        }).detach();
                     }
                     SidebarEvent::TagSelected(name) => {
                         let proj = project.read(cx);
@@ -1411,36 +1456,31 @@ impl Workspace {
             move |this, _graph, event: &GraphViewEvent, cx| {
                 match event {
                     GraphViewEvent::CommitSelected(oid) => {
+                        let commit_oid = *oid;
                         let proj = project.read(cx);
-
-                        // Find commit info for the detail panel
-                        let commit_info = proj
-                            .recent_commits()
-                            .iter()
-                            .find(|c| c.oid == *oid)
-                            .cloned();
-
-                        match proj.diff_commit(*oid) {
-                            Ok(commit_diff) => {
-                                // Update detail panel with commit metadata
-                                if let Some(info) = commit_info {
-                                    detail_panel_ref.update(cx, |dp, cx| {
-                                        dp.set_commit(info, commit_diff.clone(), cx);
-                                    });
+                        let commit_info = proj.recent_commits().iter().find(|c| c.oid == commit_oid).cloned();
+                        let repo_path = proj.repo_path().to_path_buf();
+                        let dv = diff_viewer.clone();
+                        let dp = detail_panel_ref.clone();
+                        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                            let result = cx.background_executor().spawn(async move {
+                                rgitui_git::compute_commit_diff(&repo_path, commit_oid)
+                            }).await;
+                            cx.update(|cx| {
+                                match result {
+                                    Ok(commit_diff) => {
+                                        if let Some(info) = commit_info {
+                                            dp.update(cx, |dp, cx| dp.set_commit(info, commit_diff.clone(), cx));
+                                        }
+                                        if let Some(first_file) = commit_diff.files.first() {
+                                            let path = first_file.path.display().to_string();
+                                            dv.update(cx, |dv, cx| dv.set_diff(first_file.clone(), path, false, cx));
+                                        }
+                                    }
+                                    Err(e) => log::error!("Failed to get commit diff: {}", e),
                                 }
-
-                                // Show the first file's diff if any
-                                if let Some(first_file) = commit_diff.files.first() {
-                                    let path = first_file.path.display().to_string();
-                                    diff_viewer.update(cx, |dv, cx| {
-                                        dv.set_diff(first_file.clone(), path, false, cx);
-                                    });
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("Failed to get commit diff: {}", e);
-                            }
-                        }
+                            });
+                        }).detach();
                     }
                     GraphViewEvent::CherryPick(oid) => {
                         let oid = *oid;
@@ -1544,7 +1584,7 @@ impl Workspace {
             let diff_viewer_ref = diff_viewer.clone();
             move |_this, _dv, event: &DiffViewerEvent, cx| {
                 let dv = diff_viewer_ref.read(cx);
-                let file_path = dv.file_path().map(|p| std::path::PathBuf::from(p));
+                let file_path = dv.file_path().map(std::path::PathBuf::from);
                 let _is_staged = dv.is_staged();
                 let _ = dv;
 
@@ -1590,15 +1630,19 @@ impl Workspace {
                     });
 
                     let proj = project.read(cx);
-                    let diff_text = proj.staged_diff_text().unwrap_or_default();
+                    let repo_path = proj.repo_path().to_path_buf();
                     let summary = proj.staged_summary();
-
                     let ai_entity = ai.clone();
-                    ai_entity.update(cx, |ai_gen, cx| {
-                        ai_gen
-                            .generate_commit_message(diff_text, summary, cx)
-                            .detach();
-                    });
+                    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                        let diff_text = cx.background_executor().spawn(async move {
+                            rgitui_git::compute_staged_diff_text(&repo_path).unwrap_or_default()
+                        }).await;
+                        cx.update(|cx| {
+                            ai_entity.update(cx, |ai_gen, cx| {
+                                ai_gen.generate_commit_message(diff_text, summary, cx).detach();
+                            });
+                        });
+                    }).detach();
                 }
             }
         })
@@ -2133,7 +2177,6 @@ impl Workspace {
             } else {
                 self.focus_next_panel(window, cx);
             }
-            return;
         }
 
         // (? shortcut is already handled above via shortcuts_help toggle)
@@ -2833,7 +2876,7 @@ impl Render for Workspace {
                         |this, e: &DragMoveEvent<CommitInputResize>, _, cx| {
                             let new_h =
                                 f32::from(this.right_panel_bounds.bottom() - e.event.position.y)
-                                    .clamp(100., 400.);
+                                    .clamp(240., 500.);
                             this.commit_input_height = new_h;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -3000,7 +3043,7 @@ impl Render for Workspace {
                                     .id("detail-panel-scroll")
                                     .flex_1()
                                     .min_h_0()
-                                    .overflow_y_scroll()
+                                    .overflow_hidden()
                                     .when(detail_focused, |el| {
                                         el.border_t_2().border_color(focus_accent)
                                     })

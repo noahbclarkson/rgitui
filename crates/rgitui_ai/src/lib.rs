@@ -2,7 +2,28 @@ use anyhow::{Context as _, Result};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use rgitui_settings::SettingsState;
 use serde::Deserialize;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn tokio_handle() -> tokio::runtime::Handle {
+    TOKIO_RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("Failed to create Tokio runtime for HTTP requests")
+        })
+        .handle()
+        .clone()
+}
+
+fn http_client() -> reqwest::Client {
+    let _guard = tokio_handle().enter();
+    reqwest::Client::new()
+}
 
 /// Commit message style options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -16,13 +37,15 @@ pub enum CommitStyle {
     Brief,
 }
 
-impl CommitStyle {
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for CommitStyle {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "conventional" => Self::Conventional,
             "brief" => Self::Brief,
             _ => Self::Descriptive,
-        }
+        })
     }
 }
 
@@ -46,6 +69,12 @@ pub struct AiGenerator {
 }
 
 impl EventEmitter<AiEvent> for AiGenerator {}
+
+impl Default for AiGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl AiGenerator {
     pub fn new() -> Self {
@@ -102,17 +131,18 @@ impl AiGenerator {
         let api_key = settings_state.ai_api_key();
         let model = settings.ai.model.clone();
         let provider = settings.ai.provider.clone();
-        let commit_style = CommitStyle::from_str(&settings.ai.commit_style);
+        let commit_style = settings.ai.commit_style.parse::<CommitStyle>().unwrap_or_default();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result = match provider.as_str() {
-                "gemini" => generate_gemini(&api_key, &model, &diff, &summary, commit_style).await,
-                "openai" => generate_openai(&api_key, &model, &diff, &summary, commit_style).await,
-                "anthropic" => {
-                    generate_anthropic(&api_key, &model, &diff, &summary, commit_style).await
+            let handle = tokio_handle();
+            let result = handle.spawn(async move {
+                match provider.as_str() {
+                    "gemini" => generate_gemini(&api_key, &model, &diff, &summary, commit_style).await,
+                    "openai" => generate_openai(&api_key, &model, &diff, &summary, commit_style).await,
+                    "anthropic" => generate_anthropic(&api_key, &model, &diff, &summary, commit_style).await,
+                    other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
                 }
-                other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
-            };
+            }).await.context("AI task panicked")?;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
@@ -164,12 +194,12 @@ async fn generate_gemini(
         }],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 512,
+            "maxOutputTokens": 2048,
             "topP": 0.8
         }
     });
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = client
         .post(&url)
         .json(&body)
@@ -219,10 +249,10 @@ async fn generate_openai(
             "content": prompt
         }],
         "temperature": 0.3,
-        "max_tokens": 512
+        "max_tokens": 2048
     });
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
@@ -266,14 +296,14 @@ async fn generate_anthropic(
 
     let body = serde_json::json!({
         "model": model,
-        "max_tokens": 512,
+        "max_tokens": 2048,
         "messages": [{
             "role": "user",
             "content": prompt
         }]
     });
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
@@ -309,12 +339,14 @@ fn build_prompt(diff: &str, summary: &str, commit_style: CommitStyle) -> String 
             "Use the Conventional Commits format: <type>(<scope>): <description>\n\
              Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore\n\
              Keep the first line under 72 characters.\n\
-             Add a blank line then a brief body if needed (2-3 lines max)."
+             Add a blank line then a detailed body that explains what changed and why.\n\
+             List the key changes as bullet points if there are multiple distinct changes."
         }
         CommitStyle::Descriptive => {
             "Write a clear, descriptive commit message.\n\
              First line: imperative mood summary under 72 characters.\n\
-             Add a blank line then a brief body if needed (2-3 lines max)."
+             Add a blank line then a detailed body that explains what changed and why.\n\
+             List the key changes as bullet points if there are multiple distinct changes."
         }
         CommitStyle::Brief => {
             "Write a concise commit message in imperative mood.\n\
@@ -322,10 +354,17 @@ fn build_prompt(diff: &str, summary: &str, commit_style: CommitStyle) -> String 
         }
     };
 
-    // Truncate diff if too large
-    let max_diff_len = 8000;
+    let max_diff_len = 200_000;
     let diff_text = if diff.len() > max_diff_len {
-        format!("{}...\n[diff truncated]", &diff[..max_diff_len])
+        let truncation_point = diff[..max_diff_len]
+            .rfind('\n')
+            .unwrap_or(max_diff_len);
+        format!(
+            "{}\n\n[diff truncated — showing {}/{} bytes]",
+            &diff[..truncation_point],
+            truncation_point,
+            diff.len()
+        )
     } else {
         diff.to_string()
     };

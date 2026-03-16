@@ -34,3 +34,6 @@ pub use tooltip::*;
 
 // Re-export theme helpers that UI components need
 pub use rgitui_theme::{ActiveTheme, Color, StyledExt};
+
+/// Common click handler type used across UI components.
+pub type ClickHandler = Box<dyn Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>;

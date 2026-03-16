@@ -22,6 +22,12 @@ pub struct AvatarCache {
 
 impl Global for AvatarCache {}
 
+impl Default for AvatarCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AvatarCache {
     pub fn new() -> Self {
         Self {

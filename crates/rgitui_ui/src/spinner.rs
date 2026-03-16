@@ -1,10 +1,10 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, SharedString, Window};
+use gpui::{div, px, svg, Animation, AnimationExt, App, SharedString, Svg, Transformation, Window};
 use rgitui_theme::{Color, StyledExt};
+use std::time::Duration;
 
 use crate::{Label, LabelSize};
 
-/// Spinner sizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpinnerSize {
     Small,
@@ -12,9 +12,6 @@ pub enum SpinnerSize {
     Medium,
 }
 
-/// A simple loading spinner indicator with an optional label.
-///
-/// Renders a colored dot with a text label to indicate loading state.
 #[derive(IntoElement)]
 pub struct Spinner {
     size: SpinnerSize,
@@ -48,24 +45,30 @@ impl Spinner {
 
 impl RenderOnce for Spinner {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let (dot_size, label_size, gap) = match self.size {
-            SpinnerSize::Small => (px(6.), LabelSize::XSmall, px(4.)),
-            SpinnerSize::Medium => (px(8.), LabelSize::Small, px(6.)),
+        let (icon_size, label_size, gap) = match self.size {
+            SpinnerSize::Small => (px(14.), LabelSize::XSmall, px(4.)),
+            SpinnerSize::Medium => (px(18.), LabelSize::Small, px(6.)),
         };
 
         let text_color = Color::Accent.color(cx);
+
+        let spinner_icon = svg()
+            .path("icons/refresh-cw.svg")
+            .size(icon_size)
+            .text_color(text_color)
+            .with_animation(
+                "spinner-rotate",
+                Animation::new(Duration::from_millis(1000)).repeat(),
+                |icon, delta| {
+                    icon.with_transformation(Transformation::rotate(gpui::percentage(delta)))
+                },
+            );
 
         let mut el = div()
             .h_flex()
             .gap(gap)
             .items_center()
-            .child(
-                div()
-                    .w(dot_size)
-                    .h(dot_size)
-                    .rounded_full()
-                    .bg(text_color),
-            );
+            .child(spinner_icon);
 
         if let Some(label_text) = self.label {
             el = el.child(

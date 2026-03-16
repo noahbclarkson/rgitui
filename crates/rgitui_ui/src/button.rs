@@ -62,7 +62,7 @@ pub struct Button {
     disabled: bool,
     selected: bool,
     full_width: bool,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<crate::ClickHandler>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -279,7 +279,7 @@ pub struct IconButton {
     size: ButtonSize,
     disabled: bool,
     selected: bool,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<crate::ClickHandler>,
 }
 
 impl IconButton {
