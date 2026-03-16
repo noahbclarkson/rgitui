@@ -60,15 +60,13 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
 /// Returns Some(url) on success, None if no avatar found.
 async fn resolve_single(name: &str, email: &str, http: &Arc<dyn HttpClient>) -> Option<String> {
     // 1. Parse GitHub noreply emails: {id}+{username}@users.noreply.github.com
-    //    These give us the username directly.
     if let Some(github_url) = parse_github_noreply(email) {
         if check_url_exists(http, &github_url).await {
             return Some(github_url);
         }
     }
 
-    // 2. Try the git author name as a GitHub username.
-    //    Many developers use their GitHub username as their git author name.
+    // 2. Try the git author name as a GitHub username (if single word).
     if !name.is_empty() && !name.contains(' ') {
         let name_url = format!("https://github.com/{}.png?size=48", name);
         if check_url_exists(http, &name_url).await {
@@ -76,14 +74,36 @@ async fn resolve_single(name: &str, email: &str, http: &Arc<dyn HttpClient>) -> 
         }
     }
 
-    // 3. Try GitHub API search by email (works for public emails)
+    // 3. Try the email local part as a GitHub username.
+    if let Some(local) = email.split('@').next() {
+        if !local.is_empty() && local != name {
+            let clean = local.split('+').next_back().unwrap_or(local);
+            if !clean.is_empty() {
+                let local_url = format!("https://github.com/{}.png?size=48", clean);
+                if check_url_exists(http, &local_url).await {
+                    return Some(local_url);
+                }
+            }
+        }
+    }
+
+    // 4. Try GitHub API search by email (works for public emails)
     if let Some(url) = github_api_search(http, email).await {
         if check_url_exists(http, &url).await {
             return Some(url);
         }
     }
 
-    // 4. Try Gravatar as last resort
+    // 5. Try GitHub API search by name
+    if !name.is_empty() && name.contains(' ') {
+        if let Some(url) = github_api_search_by_name(http, name).await {
+            if check_url_exists(http, &url).await {
+                return Some(url);
+            }
+        }
+    }
+
+    // 6. Try Gravatar as last resort
     let gravatar = gravatar_url(email, 48);
     if check_url_exists(http, &gravatar).await {
         return Some(gravatar);
@@ -159,6 +179,41 @@ async fn github_api_search(http: &Arc<dyn HttpClient>, email: &str) -> Option<St
     }
 
     // Fallback to avatar_url from API
+    let avatar_url = first.get("avatar_url")?.as_str()?;
+    Some(format!("{}?s=48", avatar_url))
+}
+
+async fn github_api_search_by_name(http: &Arc<dyn HttpClient>, name: &str) -> Option<String> {
+    let encoded_name = name.replace(' ', "+");
+    let url = format!(
+        "https://api.github.com/search/users?q={}+in:fullname&per_page=1",
+        encoded_name
+    );
+
+    let request = http_client::http::Request::builder()
+        .uri(&url)
+        .header("Accept", "application/vnd.github.v3+json")
+        .header("User-Agent", "rgitui")
+        .body(Default::default())
+        .ok()?;
+
+    let response = http.send(request).await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let mut body = String::new();
+    let mut reader = response.into_body();
+    reader.read_to_string(&mut body).await.ok()?;
+
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let items = json.get("items")?.as_array()?;
+    let first = items.first()?;
+
+    if let Some(login) = first.get("login").and_then(|v| v.as_str()) {
+        return Some(format!("https://github.com/{}.png?size=48", login));
+    }
+
     let avatar_url = first.get("avatar_url")?.as_str()?;
     Some(format!("{}?s=48", avatar_url))
 }

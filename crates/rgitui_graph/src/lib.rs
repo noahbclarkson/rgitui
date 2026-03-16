@@ -231,8 +231,11 @@ impl GraphView {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         commits.len().hash(&mut hasher);
         for c in commits {
-            // Hash OID bytes — this uniquely identifies the commit set
             c.oid.as_bytes().hash(&mut hasher);
+            c.refs.len().hash(&mut hasher);
+            for r in &c.refs {
+                r.display_name().hash(&mut hasher);
+            }
         }
         hasher.finish()
     }

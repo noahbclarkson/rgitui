@@ -7,8 +7,8 @@ use gpui::Global;
 pub enum AvatarState {
     /// Successfully resolved to a URL.
     Resolved(String),
-    /// Tried all sources, no avatar found.
-    NotFound,
+    /// Tried all sources, no avatar found. Tracks retry count.
+    NotFound(u8),
 }
 
 /// Global cache mapping email addresses to avatar image URLs.
@@ -46,9 +46,16 @@ impl AvatarCache {
         self.pending.contains(email)
     }
 
-    /// Returns true if we should start a fetch (not cached and not pending).
+    /// Returns true if we should start a fetch (not cached, not pending, or retry limit not hit).
     pub fn needs_fetch(&self, email: &str) -> bool {
-        !self.cache.contains_key(email) && !self.pending.contains(email)
+        if self.pending.contains(email) {
+            return false;
+        }
+        match self.cache.get(email) {
+            None => true,
+            Some(AvatarState::NotFound(retries)) => *retries < 3,
+            Some(AvatarState::Resolved(_)) => false,
+        }
     }
 
     /// Mark an email as having an in-flight fetch.
@@ -62,17 +69,21 @@ impl AvatarCache {
         self.cache.insert(email, AvatarState::Resolved(url));
     }
 
-    /// Mark an email as having no avatar.
+    /// Mark an email as having no avatar, incrementing the retry count.
     pub fn set_not_found(&mut self, email: String) {
         self.pending.remove(&email);
-        self.cache.insert(email, AvatarState::NotFound);
+        let retries = match self.cache.get(&email) {
+            Some(AvatarState::NotFound(n)) => n + 1,
+            _ => 1,
+        };
+        self.cache.insert(email, AvatarState::NotFound(retries));
     }
 
     /// Get the avatar URL for an email if resolved, None otherwise.
     pub fn avatar_url(&self, email: &str) -> Option<&str> {
         match self.cache.get(email)? {
             AvatarState::Resolved(url) => Some(url.as_str()),
-            AvatarState::NotFound => None,
+            AvatarState::NotFound(_) => None,
         }
     }
 }

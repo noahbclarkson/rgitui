@@ -3539,6 +3539,23 @@ impl GitProject {
                             remote.push(&[&refspec], Some(&mut push_opts))?;
                             drop(remote);
 
+                            // Update the local remote-tracking ref to match what we pushed.
+                            // libgit2's push() doesn't do this automatically.
+                            if let Ok(local_branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
+                                if let Some(tip) = local_branch.get().target() {
+                                    let remote_ref_name = format!(
+                                        "refs/remotes/{}/{}",
+                                        task_remote_name, task_remote_branch_name
+                                    );
+                                    let _ = repo.reference(
+                                        &remote_ref_name,
+                                        tip,
+                                        true,
+                                        &format!("push: update {} after push", remote_ref_name),
+                                    );
+                                }
+                            }
+
                             if set_upstream {
                                 let mut branch =
                                     repo.find_branch(&branch_name, git2::BranchType::Local)?;
