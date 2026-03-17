@@ -2561,7 +2561,11 @@ impl Render for Workspace {
                 .into_any_element();
         }
 
-        let active_tab = &self.tabs[self.active_tab];
+        let Some(active_tab) = self.tabs.get(self.active_tab) else {
+            self.active_tab = 0;
+            cx.notify();
+            return div().into_any_element();
+        };
         let project = active_tab.project.read(cx);
         let repo_name: SharedString = project.repo_name().to_string().into();
         let branch_name: SharedString = project
@@ -2617,8 +2621,10 @@ impl Render for Workspace {
                 .closeable(true)
                 .on_click(move |_event, _window, cx| {
                     ws.update(cx, |ws, cx| {
-                        ws.active_tab = i;
-                        cx.notify();
+                        if i < ws.tabs.len() {
+                            ws.active_tab = i;
+                            cx.notify();
+                        }
                     })
                     .ok();
                 })
