@@ -24,6 +24,7 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     text_layout: TextLayout,
     multiline: bool,
+    masked: bool,
 }
 
 impl TextInput {
@@ -37,12 +38,17 @@ impl TextInput {
             focus_handle: cx.focus_handle(),
             text_layout: TextLayout::default(),
             multiline: false,
+            masked: false,
         }
     }
 
     pub fn multiline(mut self) -> Self {
         self.multiline = true;
         self
+    }
+
+    pub fn set_masked(&mut self, masked: bool) {
+        self.masked = masked;
     }
 
     pub fn text(&self) -> &str { &self.text }
@@ -54,8 +60,7 @@ impl TextInput {
                 t.truncate(nl);
             }
         }
-        let trimmed = t.trim_end().to_string();
-        self.text = trimmed;
+        self.text = t;
         self.cursor = self.text.len();
         self.selection = None;
         cx.notify();
@@ -316,6 +321,10 @@ impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
         let is_focused = self.focus_handle.is_focused(window);
+        if !is_focused && self.selection.is_some() {
+            self.selection = None;
+            self.dragging = false;
+        }
         let border_color = if is_focused { colors.border_focused } else { colors.border };
         let hover_border = colors.border_focused;
         let bg = colors.editor_background;
@@ -331,6 +340,8 @@ impl Render for TextInput {
 
         let display_text: SharedString = if is_empty {
             self.placeholder.clone()
+        } else if self.masked {
+            "•".repeat(self.text.len()).into()
         } else {
             self.text.clone().into()
         };
@@ -347,7 +358,9 @@ impl Render for TextInput {
 
         let mut text_style = window.text_style();
         text_style.color = text_color_val;
-        let line_height_px = text_style.line_height_in_pixels(window.rem_size());
+        let font_size_px = text_style.font_size.to_pixels(window.rem_size());
+        let target_line_height = font_size_px + px(6.0);
+        text_style.line_height = gpui::DefiniteLength::Absolute(gpui::AbsoluteLength::Pixels(target_line_height));
         let text_element = if highlights.is_empty() {
             StyledText::new(display_text)
         } else {
@@ -362,16 +375,17 @@ impl Render for TextInput {
             move |bounds, _, window, _cx| {
                 if !is_focused { return; }
                 let idx = if is_empty { 0 } else { cursor_idx };
+                let cursor_h = target_line_height;
                 if let Some(pos) = layout_ref.position_for_index(idx) {
                     let cursor_rect = Bounds {
                         origin: pos,
-                        size: size(px(1.5), line_height_px),
+                        size: size(px(1.5), cursor_h),
                     };
                     window.paint_quad(fill(cursor_rect, cursor_color));
                 } else {
                     let cursor_rect = Bounds {
                         origin: bounds.origin,
-                        size: size(px(1.5), line_height_px),
+                        size: size(px(1.5), cursor_h),
                     };
                     window.paint_quad(fill(cursor_rect, cursor_color));
                 }
@@ -386,6 +400,7 @@ impl Render for TextInput {
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::handle_mouse_up))
             .on_mouse_move(cx.listener(Self::handle_mouse_move))
             .relative()
             .w_full()
@@ -400,6 +415,7 @@ impl Render for TextInput {
             .cursor_text()
             .text_color(text_color_val)
             .text_sm()
+            .line_height(target_line_height)
             .overflow_hidden()
             .when(self.multiline, |el| el.overflow_y_scroll())
             .child(text_element)

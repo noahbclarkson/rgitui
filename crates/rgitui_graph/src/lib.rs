@@ -26,6 +26,8 @@ pub enum GraphViewEvent {
     ResetToCommit(git2::Oid, String),
     /// Request to load more commits beyond the current set.
     LoadMoreCommits,
+    /// The virtual "working tree" row was selected.
+    WorkingTreeSelected,
 }
 
 /// State for the right-click context menu.
@@ -54,6 +56,8 @@ pub struct GraphView {
     all_commits_loaded: bool,
     cached_graph_hash: u64,
     search_debounce_task: Option<gpui::Task<()>>,
+    staged_count: usize,
+    unstaged_count: usize,
 }
 
 impl EventEmitter<GraphViewEvent> for GraphView {}
@@ -94,6 +98,8 @@ impl GraphView {
             all_commits_loaded: false,
             cached_graph_hash: 0,
             search_debounce_task: None,
+            staged_count: 0,
+            unstaged_count: 0,
         }
     }
 
@@ -124,14 +130,17 @@ impl GraphView {
         self.commits = Arc::new(commits);
 
         // Restore selection if the previously selected commit still exists
+        let offset = self.working_tree_offset();
         if let Some(prev_oid) = prev_selected_oid {
             if let Some(new_index) = self.commits.iter().position(|c| c.oid == prev_oid) {
-                self.selected_index = Some(new_index);
-                // Don't emit CommitSelected — the selection is unchanged
+                self.selected_index = Some(new_index + offset);
             } else {
                 self.selected_index = None;
                 self.selected_oid = None;
             }
+        } else if self.selected_index == Some(0) && offset > 0 {
+            // Working tree row was selected; keep it selected
+            self.selected_index = Some(0);
         } else {
             self.selected_index = None;
         }
@@ -147,8 +156,37 @@ impl GraphView {
         self.all_commits_loaded = loaded;
     }
 
+    /// Update the working tree status counts (staged/unstaged files).
+    pub fn set_working_tree_status(&mut self, staged: usize, unstaged: usize, cx: &mut Context<Self>) {
+        self.staged_count = staged;
+        self.unstaged_count = unstaged;
+        cx.notify();
+    }
+
+    /// Whether we show the virtual working tree row (only when there are uncommitted changes).
+    fn has_working_tree_row(&self) -> bool {
+        !self.commits.is_empty() && (self.staged_count > 0 || self.unstaged_count > 0)
+    }
+
+    /// The offset added to commit indices when the working tree row is visible.
+    fn working_tree_offset(&self) -> usize {
+        if self.has_working_tree_row() { 1 } else { 0 }
+    }
+
+    /// Total number of list items (working tree row + commits).
+    fn total_list_items(&self) -> usize {
+        self.commits.len() + self.working_tree_offset()
+    }
+
     pub fn selected_commit(&self) -> Option<&CommitInfo> {
-        self.selected_index.and_then(|i| self.commits.get(i))
+        self.selected_index.and_then(|i| {
+            let offset = self.working_tree_offset();
+            if i < offset {
+                None
+            } else {
+                self.commits.get(i - offset)
+            }
+        })
     }
 
     pub fn selected_index(&self) -> Option<usize> {
@@ -157,6 +195,11 @@ impl GraphView {
 
     pub fn commit_count(&self) -> usize {
         self.commits.len()
+    }
+
+    /// Total number of rows in the list (includes the virtual working tree row).
+    pub fn row_count(&self) -> usize {
+        self.total_list_items()
     }
 
     fn dismiss_context_menu(&mut self, cx: &mut Context<Self>) {
@@ -176,22 +219,41 @@ impl GraphView {
 
     /// Scroll to the commit with the given OID, selecting it and emitting CommitSelected.
     pub fn scroll_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) {
+        let offset = self.working_tree_offset();
         if let Some(index) = self.commits.iter().position(|c| c.oid == oid) {
-            self.select_index(index, cx);
+            let list_index = index + offset;
+            self.select_list_index(list_index, cx);
             self.scroll_handle
-                .scroll_to_item(index, ScrollStrategy::Top);
+                .scroll_to_item(list_index, ScrollStrategy::Top);
         }
     }
 
+    /// Select an item by its index in the uniform list.
+    /// This is the public API used by external callers (workspace vim-key navigation).
     pub fn select_index(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.commits.len() {
-            self.selected_index = Some(index);
-            if let Some(commit) = self.commits.get(index) {
+        self.select_list_index(index, cx);
+    }
+
+    /// Select an item by its index in the uniform list (accounts for working tree row).
+    fn select_list_index(&mut self, list_index: usize, cx: &mut Context<Self>) {
+        let offset = self.working_tree_offset();
+        let total = self.total_list_items();
+        if list_index >= total {
+            return;
+        }
+        self.selected_index = Some(list_index);
+        if list_index < offset {
+            // Working tree row selected
+            self.selected_oid = None;
+            cx.emit(GraphViewEvent::WorkingTreeSelected);
+        } else {
+            let commit_index = list_index - offset;
+            if let Some(commit) = self.commits.get(commit_index) {
                 self.selected_oid = Some(commit.oid);
                 cx.emit(GraphViewEvent::CommitSelected(commit.oid));
             }
-            cx.notify();
         }
+        cx.notify();
     }
 
     /// Toggle the search bar visibility. Clears query when hiding.
@@ -284,10 +346,11 @@ impl GraphView {
             return;
         }
         self.current_match = (self.current_match + 1) % self.filter_matches.len();
-        let index = self.filter_matches[self.current_match];
-        self.select_index(index, cx);
+        let commit_index = self.filter_matches[self.current_match];
+        let list_index = commit_index + self.working_tree_offset();
+        self.select_list_index(list_index, cx);
         self.scroll_handle
-            .scroll_to_item(index, ScrollStrategy::Top);
+            .scroll_to_item(list_index, ScrollStrategy::Top);
     }
 
     /// Jump to the previous search match.
@@ -300,20 +363,22 @@ impl GraphView {
         } else {
             self.current_match -= 1;
         }
-        let index = self.filter_matches[self.current_match];
-        self.select_index(index, cx);
+        let commit_index = self.filter_matches[self.current_match];
+        let list_index = commit_index + self.working_tree_offset();
+        self.select_list_index(list_index, cx);
         self.scroll_handle
-            .scroll_to_item(index, ScrollStrategy::Top);
+            .scroll_to_item(list_index, ScrollStrategy::Top);
     }
 
     /// Jump to first match after updating the search filter.
     fn jump_to_first_match(&mut self, cx: &mut Context<Self>) {
         if !self.filter_matches.is_empty() {
             self.current_match = 0;
-            let index = self.filter_matches[0];
-            self.select_index(index, cx);
+            let commit_index = self.filter_matches[0];
+            let list_index = commit_index + self.working_tree_offset();
+            self.select_list_index(list_index, cx);
             self.scroll_handle
-                .scroll_to_item(index, ScrollStrategy::Top);
+                .scroll_to_item(list_index, ScrollStrategy::Top);
         }
     }
 
@@ -340,58 +405,54 @@ impl GraphView {
         let key = keystroke.key.as_str();
         let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
 
+        let total = self.total_list_items();
         match key {
             "j" | "down" if !ctrl => {
-                // Move selection down
                 let next = match self.selected_index {
-                    Some(i) if i + 1 < self.commits.len() => i + 1,
-                    None if !self.commits.is_empty() => 0,
+                    Some(i) if i + 1 < total => i + 1,
+                    None if total > 0 => 0,
                     _ => return,
                 };
-                self.select_index(next, cx);
+                self.select_list_index(next, cx);
                 self.scroll_handle
                     .scroll_to_item(next, ScrollStrategy::Center);
             }
             "k" | "up" if !ctrl => {
-                // Move selection up
                 let next = match self.selected_index {
                     Some(i) if i > 0 => i - 1,
-                    None if !self.commits.is_empty() => 0,
+                    None if total > 0 => 0,
                     _ => return,
                 };
-                self.select_index(next, cx);
+                self.select_list_index(next, cx);
                 self.scroll_handle
                     .scroll_to_item(next, ScrollStrategy::Center);
             }
             "g" if !ctrl && !keystroke.modifiers.shift => {
-                // Jump to first commit
-                if !self.commits.is_empty() {
-                    self.select_index(0, cx);
+                if total > 0 {
+                    self.select_list_index(0, cx);
                     self.scroll_handle
                         .scroll_to_item(0, ScrollStrategy::Top);
                 }
             }
             "g" if keystroke.modifiers.shift => {
-                // Shift+G: jump to last commit (vim-style)
-                if !self.commits.is_empty() {
-                    let last = self.commits.len() - 1;
-                    self.select_index(last, cx);
+                if total > 0 {
+                    let last = total - 1;
+                    self.select_list_index(last, cx);
                     self.scroll_handle
                         .scroll_to_item(last, ScrollStrategy::Center);
                 }
             }
             "end" => {
-                // Jump to last commit
-                if !self.commits.is_empty() {
-                    let last = self.commits.len() - 1;
-                    self.select_index(last, cx);
+                if total > 0 {
+                    let last = total - 1;
+                    self.select_list_index(last, cx);
                     self.scroll_handle
                         .scroll_to_item(last, ScrollStrategy::Center);
                 }
             }
             "home" => {
-                if !self.commits.is_empty() {
-                    self.select_index(0, cx);
+                if total > 0 {
+                    self.select_list_index(0, cx);
                     self.scroll_handle
                         .scroll_to_item(0, ScrollStrategy::Top);
                 }
@@ -503,11 +564,25 @@ impl Render for GraphView {
             ..colors.text_accent
         };
 
+        // Working tree row color (warning/yellow tint)
+        let status_colors = cx.status();
+        let working_tree_bg = gpui::Hsla {
+            a: 0.08,
+            ..status_colors.warning
+        };
+        let working_tree_node_color = status_colors.warning;
+
         // Cheap Arc clones
         let commits = self.commits.clone();
         let graph_rows = self.graph_rows.clone();
         let selected_index = self.selected_index;
         let view: WeakEntity<GraphView> = cx.weak_entity();
+
+        // Working tree state for the closure
+        let wt_offset = self.working_tree_offset();
+        let wt_staged_count = self.staged_count;
+        let wt_unstaged_count = self.unstaged_count;
+        let total_list_items = self.total_list_items();
 
         // Search state for the render closure — use HashSet for O(1) lookup
         let filter_match_set: Arc<HashSet<usize>> = Arc::new(self.filter_match_set.clone());
@@ -610,15 +685,37 @@ impl Render for GraphView {
         // The virtualized list
         let list = uniform_list(
             "graph-commit-list",
-            commits.len(),
+            total_list_items,
             move |range: Range<usize>, _window: &mut Window, cx: &mut App| {
                 range
                     .map(|i| {
-                        let commit = commits[i].clone();
-                        let graph_row = graph_rows[i].clone();
+                        // Working tree virtual row
+                        if i < wt_offset {
+                            return render_working_tree_row(WorkingTreeRowParams {
+                                list_index: i,
+                                selected: selected_index == Some(i),
+                                staged_count: wt_staged_count,
+                                unstaged_count: wt_unstaged_count,
+                                row_height,
+                                lane_width,
+                                working_tree_bg,
+                                node_color: working_tree_node_color,
+                                selected_bg,
+                                hover_bg,
+                                active_bg,
+                                panel_bg,
+                                row_separator,
+                                accent_border,
+                                view: view.clone(),
+                            });
+                        }
+
+                        let commit_idx = i - wt_offset;
+                        let commit = commits[commit_idx].clone();
+                        let graph_row = graph_rows[commit_idx].clone();
                         let selected = selected_index == Some(i);
-                        let is_current_match = current_match_index == Some(i);
-                        let is_any_match = has_search_query && filter_match_set.contains(&i);
+                        let is_current_match = current_match_index == Some(commit_idx);
+                        let is_any_match = has_search_query && filter_match_set.contains(&commit_idx);
                         let is_head_row = graph_row.is_head;
                         let is_merge_commit = graph_row.is_merge;
 
@@ -723,7 +820,7 @@ impl Render for GraphView {
                                     view_clone
                                         .update(cx, |this, cx| {
                                             this.dismiss_context_menu(cx);
-                                            this.select_index(i, cx);
+                                            this.select_list_index(i, cx);
                                         })
                                         .ok();
                                 },
@@ -735,7 +832,7 @@ impl Render for GraphView {
                                       cx: &mut App| {
                                     view_ctx_menu
                                         .update(cx, |this, cx| {
-                                            this.show_context_menu(i, event.position, cx);
+                                            this.show_context_menu(commit_idx, event.position, cx);
                                         })
                                         .ok();
                                 },
@@ -808,13 +905,10 @@ impl Render for GraphView {
                                                 };
                                                 let end_y = origin.y + h + px(1.0);
 
-                                                let stroke_width =
-                                                    if edge.is_merge { px(1.0) } else { px(2.0) };
+                                                let stroke_width = px(2.0);
 
-                                                // Merge edges use dashed appearance via slightly
-                                                // transparent color
                                                 let edge_color = if edge.is_merge {
-                                                    gpui::Hsla { a: 0.7, ..color }
+                                                    gpui::Hsla { a: 0.85, ..color }
                                                 } else {
                                                     color
                                                 };
@@ -822,7 +916,6 @@ impl Render for GraphView {
                                                 let mut path = PathBuilder::stroke(stroke_width);
 
                                                 if from_x == to_x {
-                                                    // Straight vertical line
                                                     path.move_to(point(
                                                         origin.x + from_x,
                                                         start_y,
@@ -831,20 +924,54 @@ impl Render for GraphView {
                                                         origin.x + to_x,
                                                         end_y,
                                                     ));
+                                                } else if edge.from_lane != node_lane {
+                                                    // INCOMING: vertical down at from_x, curve into node at mid_y
+                                                    let horiz_y = origin.y + mid_y;
+                                                    let ry = (horiz_y - start_y).max(px(1.0));
+                                                    let rx = (from_x - to_x).abs().max(px(1.0));
+                                                    let bend_y = horiz_y - ry;
+                                                    let fx = origin.x + from_x;
+                                                    let tx = origin.x + to_x;
+                                                    let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
+
+                                                    path.move_to(point(fx, start_y));
+
+                                                    let segments = 12_usize;
+                                                    for s in 1..=segments {
+                                                        let t = s as f32 / segments as f32;
+                                                        let angle = t * std::f32::consts::FRAC_PI_2;
+                                                        let px_x = fx + rx * dir * angle.sin();
+                                                        let px_y = bend_y + ry * (1.0 - angle.cos());
+                                                        path.line_to(point(px_x, px_y));
+                                                    }
                                                 } else {
-                                                    // Smooth S-curve with cubic bezier
-                                                    let span = end_y - start_y;
-                                                    let ctrl_y1 = start_y + span * 0.4;
-                                                    let ctrl_y2 = start_y + span * 0.6;
-                                                    path.move_to(point(
-                                                        origin.x + from_x,
-                                                        start_y,
-                                                    ));
-                                                    path.cubic_bezier_to(
-                                                        point(origin.x + to_x, end_y),
-                                                        point(origin.x + from_x, ctrl_y1),
-                                                        point(origin.x + to_x, ctrl_y2),
-                                                    );
+                                                    // OUTGOING: from this node, curve to destination lane.
+                                                    // Horizontal from node center → quarter circle → vertical down
+                                                    let fx = origin.x + from_x;
+                                                    let tx = origin.x + to_x;
+                                                    let horiz_y = origin.y + mid_y;
+                                                    let avail = end_y - horiz_y;
+                                                    let r = avail.min(px(16.0)).max(px(1.0));
+                                                    let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
+
+                                                    // Horizontal from node toward destination
+                                                    path.move_to(point(fx, horiz_y));
+                                                    let horiz_end_x = tx - r * dir;
+                                                    path.line_to(point(horiz_end_x, horiz_y));
+
+                                                    // Quarter circle arc: horizontal → vertical
+                                                    let _bend_bottom = horiz_y + r;
+                                                    let segments = 12_usize;
+                                                    for s in 1..=segments {
+                                                        let t = s as f32 / segments as f32;
+                                                        let angle = t * std::f32::consts::FRAC_PI_2;
+                                                        let arc_x = horiz_end_x + r * dir * angle.sin();
+                                                        let arc_y = horiz_y + r * (1.0 - angle.cos());
+                                                        path.line_to(point(arc_x, arc_y));
+                                                    }
+
+                                                    // Vertical down at to_x
+                                                    path.line_to(point(tx, end_y));
                                                 }
 
                                                 if let Ok(built_path) = path.build() {
@@ -976,13 +1103,16 @@ impl Render for GraphView {
                                                 .with_fallback(move || {
                                                     div()
                                                         .size_full()
+                                                        .rounded_full()
+                                                        .border_1()
+                                                        .border_color(fb_color)
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
                                                         .child(
                                                             div()
                                                                 .text_color(fb_color)
-                                                                .text_xs()
+                                                                .text_size(px(8.0))
                                                                 .font_weight(
                                                                     gpui::FontWeight::BOLD,
                                                                 )
@@ -992,13 +1122,16 @@ impl Render for GraphView {
                                                 }),
                                         );
                                     } else {
-                                        avatar_container = avatar_container.child(
-                                            div()
-                                                .text_color(fallback_color)
-                                                .text_xs()
-                                                .font_weight(gpui::FontWeight::BOLD)
-                                                .child(initials_fallback),
-                                        );
+                                        avatar_container = avatar_container
+                                            .border_1()
+                                            .border_color(fallback_color)
+                                            .child(
+                                                div()
+                                                    .text_color(fallback_color)
+                                                    .text_size(px(8.0))
+                                                    .font_weight(gpui::FontWeight::BOLD)
+                                                    .child(initials_fallback),
+                                            );
                                     }
 
                                     avatar_container
@@ -1025,18 +1158,13 @@ impl Render for GraphView {
                                 .gap(px(5.))
                                 .overflow_x_hidden();
 
-                            // Ref badges inline before the summary
-                            if !ref_badges.is_empty() {
-                                let mut badges_container = div()
-                                    .h_flex()
-                                    .gap(px(3.))
-                                    .flex_shrink_0()
-                                    .max_w(px(300.))
-                                    .overflow_x_hidden();
-                                for badge in ref_badges {
-                                    badges_container = badges_container.child(badge);
-                                }
-                                message_col = message_col.child(badges_container);
+                            // Ref badges inline before the summary — each badge is
+                            // flex_shrink_0 so it either fully renders or is hidden
+                            // by the parent's overflow_x_hidden.
+                            for badge in ref_badges {
+                                message_col = message_col.child(
+                                    div().flex_shrink_0().child(badge),
+                                );
                             }
 
                             // Summary text — HEAD commits get slightly bolder text
@@ -1477,6 +1605,248 @@ impl Render for GraphView {
 
         container.into_any_element()
     }
+}
+
+/// Parameters for rendering the virtual working tree row.
+#[derive(Clone)]
+struct WorkingTreeRowParams {
+    list_index: usize,
+    selected: bool,
+    staged_count: usize,
+    unstaged_count: usize,
+    row_height: f32,
+    lane_width: f32,
+    working_tree_bg: gpui::Hsla,
+    node_color: gpui::Hsla,
+    selected_bg: gpui::Hsla,
+    hover_bg: gpui::Hsla,
+    active_bg: gpui::Hsla,
+    panel_bg: gpui::Hsla,
+    row_separator: gpui::Hsla,
+    accent_border: gpui::Hsla,
+    view: WeakEntity<GraphView>,
+}
+
+/// Render the virtual "Working Tree" row that appears at the top of the graph.
+fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
+    let WorkingTreeRowParams {
+        list_index,
+        selected,
+        staged_count,
+        unstaged_count,
+        row_height,
+        lane_width,
+        working_tree_bg,
+        node_color,
+        selected_bg,
+        hover_bg,
+        active_bg,
+        panel_bg,
+        row_separator,
+        accent_border,
+        view,
+    } = params;
+    let bg = if selected { selected_bg } else { working_tree_bg };
+    let row_hover_bg = if selected { selected_bg } else { hover_bg };
+    let row_active_bg = if selected { selected_bg } else { active_bg };
+    let left_tab_color = if selected {
+        accent_border
+    } else {
+        gpui::Hsla {
+            a: 0.7,
+            ..node_color
+        }
+    };
+
+    let has_changes = staged_count > 0 || unstaged_count > 0;
+    let message: SharedString = if has_changes {
+        let mut parts = Vec::new();
+        if staged_count > 0 {
+            parts.push(format!("{} staged", staged_count));
+        }
+        if unstaged_count > 0 {
+            parts.push(format!("{} unstaged", unstaged_count));
+        }
+        format!("Uncommitted Changes ({})", parts.join(", ")).into()
+    } else {
+        "Working Tree Clean".into()
+    };
+
+    let graph_width = lane_width.max(80.0);
+    let node_x = lane_width / 2.0;
+
+    let view_click = view.clone();
+
+    div()
+        .id(ElementId::NamedInteger("commit-row".into(), list_index as u64))
+        .h_flex()
+        .items_center()
+        .h(px(row_height))
+        .w_full()
+        .bg(bg)
+        .border_b_1()
+        .border_color(row_separator)
+        .cursor_pointer()
+        .hover(move |s| s.bg(row_hover_bg))
+        .active(move |s| s.bg(row_active_bg))
+        .on_click(
+            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                view_click
+                    .update(cx, |this, cx| {
+                        this.dismiss_context_menu(cx);
+                        this.select_list_index(list_index, cx);
+                    })
+                    .ok();
+            },
+        )
+        // Color tab on left edge
+        .child(
+            div()
+                .w(px(3.))
+                .h_full()
+                .flex_shrink_0()
+                .bg(left_tab_color),
+        )
+        // Gap between color tab and graph
+        .child(div().w(px(5.)).flex_shrink_0())
+        // Graph column with canvas (hollow circle node + connecting line down)
+        .child(
+            div()
+                .relative()
+                .w(px(graph_width))
+                .flex_shrink_0()
+                .h_full()
+                .child(
+                    canvas(
+                        |_bounds: Bounds<Pixels>, _window: &mut Window, _cx: &mut App| {},
+                        move |bounds: Bounds<Pixels>,
+                              _: (),
+                              window: &mut Window,
+                              _cx: &mut App| {
+                            let origin = bounds.origin;
+                            let h = bounds.size.height;
+                            let mid_y = px(row_height / 2.0);
+                            let node_x_px = px(node_x);
+                            let cx_x = origin.x + node_x_px;
+                            let cy_y = origin.y + mid_y;
+
+                            // Vertical line from node center to bottom (connects to HEAD row below)
+                            let mut line_down = PathBuilder::stroke(px(2.0));
+                            line_down.move_to(point(cx_x, cy_y));
+                            line_down.line_to(point(cx_x, origin.y + h + px(1.0)));
+                            if let Ok(built) = line_down.build() {
+                                window.paint_path(built, node_color);
+                            }
+
+                            // Background ring to occlude lines behind the dot
+                            let ring_r = 13.0_f32;
+                            let steps = 32_usize;
+                            let mut ring = PathBuilder::fill();
+                            for s in 0..steps {
+                                let angle =
+                                    (s as f32) * std::f32::consts::TAU / (steps as f32);
+                                let x = cx_x + px(ring_r * angle.cos());
+                                let y = cy_y + px(ring_r * angle.sin());
+                                if s == 0 {
+                                    ring.move_to(point(x, y));
+                                } else {
+                                    ring.line_to(point(x, y));
+                                }
+                            }
+                            ring.close();
+                            if let Ok(built_ring) = ring.build() {
+                                window.paint_path(built_ring, panel_bg);
+                            }
+
+                            // Hollow circle (stroke only, no fill) to distinguish from commits
+                            let dot_radius = 5.0_f32;
+                            let mut circle = PathBuilder::stroke(px(2.0));
+                            for s in 0..=steps {
+                                let angle =
+                                    (s as f32) * std::f32::consts::TAU / (steps as f32);
+                                let x = cx_x + px(dot_radius * angle.cos());
+                                let y = cy_y + px(dot_radius * angle.sin());
+                                if s == 0 {
+                                    circle.move_to(point(x, y));
+                                } else {
+                                    circle.line_to(point(x, y));
+                                }
+                            }
+                            if let Ok(built_circle) = circle.build() {
+                                window.paint_path(built_circle, node_color);
+                            }
+
+                            // Dashed outer ring to further distinguish
+                            let outer_r = dot_radius + 3.0;
+                            let dash_count = 8_usize;
+                            let arc_per_dash =
+                                std::f32::consts::TAU / (dash_count as f32 * 2.0);
+                            for d in 0..dash_count {
+                                let start_angle =
+                                    d as f32 * std::f32::consts::TAU / dash_count as f32;
+                                let end_angle = start_angle + arc_per_dash;
+                                let mut dash = PathBuilder::stroke(px(1.5));
+                                let sx = cx_x + px(outer_r * start_angle.cos());
+                                let sy = cy_y + px(outer_r * start_angle.sin());
+                                dash.move_to(point(sx, sy));
+                                let ex = cx_x + px(outer_r * end_angle.cos());
+                                let ey = cy_y + px(outer_r * end_angle.sin());
+                                dash.line_to(point(ex, ey));
+                                if let Ok(built_dash) = dash.build() {
+                                    let dash_color = gpui::Hsla {
+                                        a: 0.6,
+                                        ..node_color
+                                    };
+                                    window.paint_path(built_dash, dash_color);
+                                }
+                            }
+                        },
+                    )
+                    .size_full(),
+                ),
+        )
+        // Hash column: show a pencil/edit indicator
+        .child(
+            div().w(px(80.)).flex_shrink_0().child(
+                Label::new("working")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Warning)
+                    .weight(gpui::FontWeight::MEDIUM),
+            ),
+        )
+        // Message column
+        .child({
+            let mut message_col = div()
+                .flex_1()
+                .min_w_0()
+                .h_flex()
+                .items_center()
+                .gap(px(5.))
+                .overflow_x_hidden();
+
+            let badge_color = if has_changes { Color::Warning } else { Color::Muted };
+            message_col = message_col.child(
+                div()
+                    .h_flex()
+                    .gap(px(3.))
+                    .flex_shrink_0()
+                    .child(Badge::new("Working Tree").color(badge_color).bold()),
+            );
+
+            message_col = message_col.child(
+                Label::new(message)
+                    .size(LabelSize::Small)
+                    .color(if has_changes { Color::Warning } else { Color::Muted })
+                    .truncate(),
+            );
+
+            message_col
+        })
+        // Author column (empty for working tree)
+        .child(div().w(px(120.)).flex_shrink_0())
+        // Date column (empty for working tree)
+        .child(div().w(px(100.)).flex_shrink_0())
+        .into_any_element()
 }
 
 fn format_relative_time(time: &chrono::DateTime<chrono::Utc>) -> String {

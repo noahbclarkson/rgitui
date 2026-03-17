@@ -2,7 +2,7 @@ use gpui::prelude::*;
 use gpui::{div, App, ClickEvent, CursorStyle, ElementId, Hsla, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 
-use crate::{Icon, IconName, IconSize, Label, LabelSize};
+use crate::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
 /// Button visual styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -62,6 +62,7 @@ pub struct Button {
     disabled: bool,
     selected: bool,
     full_width: bool,
+    tooltip: Option<SharedString>,
     on_click: Option<crate::ClickHandler>,
 }
 
@@ -85,8 +86,14 @@ impl Button {
             disabled: false,
             selected: false,
             full_width: false,
+            tooltip: None,
             on_click: None,
         }
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
     }
 
     pub fn style(mut self, style: ButtonStyle) -> Self {
@@ -265,6 +272,10 @@ impl RenderOnce for Button {
             }
         }
 
+        if let Some(tip) = self.tooltip {
+            container = container.tooltip(Tooltip::text(tip));
+        }
+
         container
     }
 }
@@ -279,6 +290,7 @@ pub struct IconButton {
     size: ButtonSize,
     disabled: bool,
     selected: bool,
+    tooltip: Option<SharedString>,
     on_click: Option<crate::ClickHandler>,
 }
 
@@ -292,8 +304,14 @@ impl IconButton {
             size: ButtonSize::Default,
             disabled: false,
             selected: false,
+            tooltip: None,
             on_click: None,
         }
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
     }
 
     pub fn color(mut self, color: Color) -> Self {
@@ -391,6 +409,12 @@ impl RenderOnce for IconButton {
             ButtonSize::None => IconSize::XSmall,
         };
 
-        container.child(Icon::new(self.icon).size(icon_size).color(icon_color))
+        container = container.child(Icon::new(self.icon).size(icon_size).color(icon_color));
+
+        if let Some(tip) = self.tooltip {
+            container = container.tooltip(Tooltip::text(tip));
+        }
+
+        container
     }
 }

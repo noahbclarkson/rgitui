@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, Animation, AnimationExt, App, SharedString, Window};
+use gpui::{div, px, Animation, AnimationExt, App, ClickEvent, SharedString, Window};
 use rgitui_theme::{ActiveTheme, StyledExt};
 use std::time::Duration;
 
@@ -10,6 +10,7 @@ pub struct ContextMenuItem {
     disabled: bool,
     is_separator: bool,
     shortcut: Option<SharedString>,
+    on_click: Option<crate::ClickHandler>,
 }
 
 impl ContextMenuItem {
@@ -19,6 +20,7 @@ impl ContextMenuItem {
             disabled: false,
             is_separator: false,
             shortcut: None,
+            on_click: None,
         }
     }
 
@@ -28,6 +30,7 @@ impl ContextMenuItem {
             disabled: false,
             is_separator: true,
             shortcut: None,
+            on_click: None,
         }
     }
 
@@ -38,6 +41,14 @@ impl ContextMenuItem {
 
     pub fn shortcut(mut self, shortcut: impl Into<SharedString>) -> Self {
         self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(Box::new(handler));
         self
     }
 }
@@ -123,7 +134,14 @@ impl RenderOnce for ContextMenu {
             if !disabled {
                 row = row
                     .hover(|s| s.bg(colors.ghost_element_hover))
+                    .active(|s| s.bg(colors.ghost_element_active))
                     .cursor_pointer();
+            }
+
+            if let Some(on_click) = item.on_click {
+                if !disabled {
+                    row = row.on_click(on_click);
+                }
             }
 
             let text_color = if disabled {

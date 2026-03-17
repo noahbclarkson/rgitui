@@ -1,12 +1,9 @@
 use std::path::PathBuf;
 
 use gpui::prelude::*;
-use gpui::{
-    div, px, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, KeyDownEvent, Render,
-    SharedString, Window,
-};
+use gpui::{div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonStyle, IconName, Label, LabelSize};
+use rgitui_ui::{Button, ButtonStyle, IconName, Label, LabelSize, TextInput, TextInputEvent};
 
 /// Events emitted by the repository opener dialog.
 #[derive(Debug, Clone)]
@@ -17,8 +14,7 @@ pub enum RepoOpenerEvent {
 
 /// A modal dialog for opening a Git repository by path or from recent repos.
 pub struct RepoOpener {
-    query: String,
-    cursor_pos: usize,
+    editor: Entity<TextInput>,
     recent_repos: Vec<PathBuf>,
     filtered_indices: Vec<usize>,
     selected_index: Option<usize>,
@@ -30,9 +26,26 @@ impl EventEmitter<RepoOpenerEvent> for RepoOpener {}
 
 impl RepoOpener {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("/path/to/repository");
+            ti
+        });
+        cx.subscribe(&editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            match event {
+                TextInputEvent::Submit => {
+                    this.try_open(cx);
+                }
+                TextInputEvent::Changed(_) => {
+                    this.update_filter(cx);
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+
         Self {
-            query: String::new(),
-            cursor_pos: 0,
+            editor,
             recent_repos: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: None,
@@ -44,17 +57,15 @@ impl RepoOpener {
     pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.visible = !self.visible;
         if self.visible {
-            self.query.clear();
-            self.cursor_pos = 0;
+            self.editor.update(cx, |e, cx| e.clear(cx));
             self.selected_index = None;
-            // Load recent repos from settings
             self.recent_repos = cx
                 .global::<rgitui_settings::SettingsState>()
                 .settings()
                 .recent_repos
                 .clone();
-            self.update_filter();
-            self.focus_handle.focus(window, cx);
+            self.update_filter(cx);
+            self.editor.update(cx, |e, cx| e.focus(window, cx));
         }
         cx.notify();
     }
@@ -67,29 +78,27 @@ impl RepoOpener {
     pub fn toggle_visible(&mut self, cx: &mut Context<Self>) {
         self.visible = !self.visible;
         if self.visible {
-            self.query.clear();
-            self.cursor_pos = 0;
+            self.editor.update(cx, |e, cx| e.clear(cx));
             self.selected_index = None;
             self.recent_repos = cx
                 .global::<rgitui_settings::SettingsState>()
                 .settings()
                 .recent_repos
                 .clone();
-            self.update_filter();
+            self.update_filter(cx);
         }
         cx.notify();
     }
 
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         self.visible = false;
-        self.query.clear();
-        self.cursor_pos = 0;
+        self.editor.update(cx, |e, cx| e.clear(cx));
         cx.emit(RepoOpenerEvent::Dismissed);
         cx.notify();
     }
 
-    fn update_filter(&mut self) {
-        let query = self.query.to_lowercase();
+    fn update_filter(&mut self, cx: &mut Context<Self>) {
+        let query = self.editor.read(cx).text().to_lowercase();
         if query.is_empty() {
             self.filtered_indices = (0..self.recent_repos.len()).collect();
         } else {
@@ -112,18 +121,17 @@ impl RepoOpener {
     }
 
     fn try_open(&mut self, cx: &mut Context<Self>) {
-        let path = if !self.query.is_empty() {
-            // Use the typed path
-            let expanded = if self.query.starts_with('~') {
+        let query = self.editor.read(cx).text().to_string();
+        let path = if !query.is_empty() {
+            if let Some(stripped) = query.strip_prefix('~') {
                 if let Ok(home) = std::env::var("HOME") {
-                    PathBuf::from(home).join(self.query[1..].trim_start_matches('/'))
+                    PathBuf::from(home).join(stripped.trim_start_matches('/'))
                 } else {
-                    PathBuf::from(&self.query)
+                    PathBuf::from(&query)
                 }
             } else {
-                PathBuf::from(&self.query)
-            };
-            expanded
+                PathBuf::from(&query)
+            }
         } else if let Some(selected_index) = self.selected_index {
             if let Some(&idx) = self.filtered_indices.get(selected_index) {
                 self.recent_repos[idx].clone()
@@ -135,8 +143,7 @@ impl RepoOpener {
         };
 
         self.visible = false;
-        self.query.clear();
-        self.cursor_pos = 0;
+        self.editor.update(cx, |e, cx| e.clear(cx));
         cx.emit(RepoOpenerEvent::OpenRepo(path));
         cx.notify();
     }
@@ -154,8 +161,7 @@ impl RepoOpener {
                 cx.update(|cx| {
                     let _ = this.update(cx, |this, cx| {
                         this.visible = false;
-                        this.query.clear();
-                        this.cursor_pos = 0;
+                        this.editor.update(cx, |e, cx| e.clear(cx));
                         cx.emit(RepoOpenerEvent::OpenRepo(path));
                         cx.notify();
                     });
@@ -170,38 +176,11 @@ impl RepoOpener {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let keystroke = &event.keystroke;
-        let key = keystroke.key.as_str();
-
-        if keystroke.modifiers.control || keystroke.modifiers.platform {
-            match key {
-                "v" => {
-                    if let Some(clipboard) = cx.read_from_clipboard() {
-                        if let Some(text) = clipboard.text() {
-                            let line = text.lines().next().unwrap_or("").trim();
-                            self.query = line.to_string();
-                            self.cursor_pos = self.query.len();
-                            self.update_filter();
-                            cx.notify();
-                        }
-                    }
-                    return;
-                }
-                "a" => {
-                    self.cursor_pos = self.query.len();
-                    cx.notify();
-                    return;
-                }
-                _ => {}
-            }
-        }
+        let key = event.keystroke.key.as_str();
 
         match key {
             "escape" => {
                 self.dismiss(cx);
-            }
-            "enter" => {
-                self.try_open(cx);
             }
             "up" => {
                 if self.filtered_indices.is_empty() {
@@ -225,60 +204,7 @@ impl RepoOpener {
                 });
                 cx.notify();
             }
-            "backspace" => {
-                if self.cursor_pos > 0 {
-                    self.cursor_pos -= 1;
-                    self.query.remove(self.cursor_pos);
-                    self.update_filter();
-                    cx.notify();
-                }
-            }
-            "delete" => {
-                if self.cursor_pos < self.query.len() {
-                    self.query.remove(self.cursor_pos);
-                    self.update_filter();
-                    cx.notify();
-                }
-            }
-            "left" => {
-                if self.cursor_pos > 0 {
-                    self.cursor_pos -= 1;
-                    cx.notify();
-                }
-            }
-            "right" => {
-                if self.cursor_pos < self.query.len() {
-                    self.cursor_pos += 1;
-                    cx.notify();
-                }
-            }
-            "home" => {
-                self.cursor_pos = 0;
-                cx.notify();
-            }
-            "end" => {
-                self.cursor_pos = self.query.len();
-                cx.notify();
-            }
-            _ => {
-                if let Some(key_char) = &keystroke.key_char {
-                    self.query.insert_str(self.cursor_pos, key_char);
-                    self.cursor_pos += key_char.len();
-                    self.update_filter();
-                    cx.notify();
-                } else if key.len() == 1
-                    && !keystroke.modifiers.control
-                    && !keystroke.modifiers.platform
-                {
-                    let ch = key.chars().next().unwrap();
-                    if ch.is_ascii_graphic() || ch == ' ' {
-                        self.query.insert(self.cursor_pos, ch);
-                        self.cursor_pos += 1;
-                        self.update_filter();
-                        cx.notify();
-                    }
-                }
-            }
+            _ => {}
         }
     }
 }
@@ -289,65 +215,6 @@ impl Render for RepoOpener {
 
         if !self.visible {
             return div().id("repo-opener").into_any_element();
-        }
-
-        // Build the input display with cursor
-        let (before_cursor, cursor_char, after_cursor) = if self.query.is_empty() {
-            (String::new(), String::new(), String::new())
-        } else {
-            let before = self.query[..self.cursor_pos].to_string();
-            let cursor = if self.cursor_pos < self.query.len() {
-                self.query[self.cursor_pos..self.cursor_pos + 1].to_string()
-            } else {
-                String::new()
-            };
-            let after = if self.cursor_pos + 1 < self.query.len() {
-                self.query[self.cursor_pos + 1..].to_string()
-            } else {
-                String::new()
-            };
-            (before, cursor, after)
-        };
-
-        let is_empty = self.query.is_empty();
-
-        // Text input field
-        let mut input_row = div().h_flex().items_center().w_full();
-
-        if is_empty {
-            input_row = input_row
-                .child(div().w(px(2.)).h(px(16.)).bg(colors.text))
-                .child(
-                    Label::new("/path/to/repository")
-                        .size(LabelSize::Small)
-                        .color(Color::Placeholder),
-                );
-        } else {
-            if !before_cursor.is_empty() {
-                input_row = input_row
-                    .child(Label::new(SharedString::from(before_cursor)).size(LabelSize::Small));
-            }
-            if !cursor_char.is_empty() {
-                input_row = input_row.child(
-                    div().bg(colors.text).child(
-                        Label::new(SharedString::from(cursor_char))
-                            .size(LabelSize::Small)
-                            .color(Color::Custom(gpui::Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: 0.0,
-                                a: 1.0,
-                            })),
-                    ),
-                );
-            } else {
-                // Cursor at end
-                input_row = input_row.child(div().w(px(2.)).h(px(16.)).bg(colors.text));
-            }
-            if !after_cursor.is_empty() {
-                input_row = input_row
-                    .child(Label::new(SharedString::from(after_cursor)).size(LabelSize::Small));
-            }
         }
 
         // Build the modal content
@@ -396,17 +263,8 @@ impl Render for RepoOpener {
                         .gap_2()
                         .child(
                             div()
-                                .h_flex()
                                 .flex_1()
-                                .h(px(30.))
-                                .px_2()
-                                .bg(colors.editor_background)
-                                .border_1()
-                                .border_color(colors.border_variant)
-                                .rounded_md()
-                                .items_center()
-                                .cursor_text()
-                                .child(input_row),
+                                .child(self.editor.clone()),
                         )
                         .child(
                             Button::new("browse-folder", "Browse")
@@ -481,8 +339,7 @@ impl Render for RepoOpener {
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         let path = path_clone.clone();
                         this.visible = false;
-                        this.query.clear();
-                        this.cursor_pos = 0;
+                        this.editor.update(cx, |e, cx| e.clear(cx));
                         cx.emit(RepoOpenerEvent::OpenRepo(path));
                         cx.notify();
                     }))

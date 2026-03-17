@@ -9,9 +9,9 @@ mod label;
 mod list_item;
 mod modal;
 mod scroll_list;
+mod spinner;
 mod stack;
 mod tab_bar;
-mod text_area;
 mod text_input;
 mod tooltip;
 
@@ -26,9 +26,9 @@ pub use label::*;
 pub use list_item::*;
 pub use modal::*;
 pub use scroll_list::*;
+pub use spinner::*;
 pub use stack::*;
 pub use tab_bar::*;
-pub use text_area::*;
 pub use text_input::*;
 pub use tooltip::*;
 

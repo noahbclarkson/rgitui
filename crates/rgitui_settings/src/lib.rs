@@ -12,6 +12,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub theme: String,
+    #[serde(default)]
+    pub ui_font: String,
     pub ai: AiSettings,
     #[serde(default)]
     pub git: GitSettings,
@@ -205,6 +207,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: "Catppuccin Mocha".into(),
+            ui_font: String::new(),
             ai: AiSettings::default(),
             git: GitSettings::default(),
             recent_repos: Vec::new(),

@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, svg, Animation, AnimationExt, App, SharedString, Svg, Transformation, Window};
+use gpui::{div, px, svg, Animation, AnimationExt, App, SharedString, Transformation, Window};
 use rgitui_theme::{Color, StyledExt};
 use std::time::Duration;
 

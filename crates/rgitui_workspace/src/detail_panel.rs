@@ -1,16 +1,18 @@
+use std::collections::{BTreeMap, HashSet};
+
 use gpui::prelude::*;
 use gpui::{
     div, img, px, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter, FocusHandle,
     KeyDownEvent, ObjectFit, Render, SharedString, Window,
 };
-use rgitui_git::{CommitDiff, CommitInfo, FileDiff, RefLabel};
+use rgitui_git::{CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     AvatarCache, Badge, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label,
     LabelSize,
 };
 
-// Note: ButtonSize::Compact = small, ButtonStyle::Transparent = ghost-like
+use crate::markdown_view::render_markdown;
 
 /// Format a unix timestamp as a human-readable relative time.
 fn format_relative_time(timestamp: i64) -> String {
@@ -53,12 +55,93 @@ pub enum DetailPanelEvent {
     CherryPick(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileViewMode {
+    Flat,
+    Tree,
+}
+
+#[derive(Default)]
+struct FileDiffTreeNode<'a> {
+    files: Vec<(usize, &'a FileDiff)>,
+    children: BTreeMap<String, FileDiffTreeNode<'a>>,
+}
+
+fn build_file_diff_tree(files: &[FileDiff]) -> FileDiffTreeNode<'_> {
+    let mut root = FileDiffTreeNode::default();
+    for (i, file) in files.iter().enumerate() {
+        let path_str = file.path.display().to_string();
+        let parts: Vec<&str> = path_str.split('/').collect();
+        let mut node = &mut root;
+        for (pi, part) in parts.iter().enumerate() {
+            if pi == parts.len() - 1 {
+                node.files.push((i, file));
+            } else {
+                node = node
+                    .children
+                    .entry(part.to_string())
+                    .or_default();
+            }
+        }
+    }
+    sort_file_diff_tree(&mut root);
+    root
+}
+
+fn sort_file_diff_tree(node: &mut FileDiffTreeNode<'_>) {
+    node.files.sort_by(|a, b| {
+        let a_name = a.1.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let b_name = b.1.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        a_name.to_lowercase().cmp(&b_name.to_lowercase())
+    });
+    for child in node.children.values_mut() {
+        sort_file_diff_tree(child);
+    }
+}
+
+fn file_diff_tree_count(node: &FileDiffTreeNode<'_>) -> usize {
+    node.files.len()
+        + node
+            .children
+            .values()
+            .map(file_diff_tree_count)
+            .sum::<usize>()
+}
+
+fn file_change_icon(kind: FileChangeKind) -> IconName {
+    match kind {
+        FileChangeKind::Added => IconName::FileAdded,
+        FileChangeKind::Modified => IconName::FileModified,
+        FileChangeKind::Deleted => IconName::FileDeleted,
+        FileChangeKind::Renamed => IconName::FileRenamed,
+        FileChangeKind::Copied => IconName::FileRenamed,
+        FileChangeKind::TypeChange => IconName::FileModified,
+        FileChangeKind::Untracked => IconName::FileAdded,
+        FileChangeKind::Conflicted => IconName::FileConflict,
+    }
+}
+
+fn file_change_color(kind: FileChangeKind) -> Color {
+    match kind {
+        FileChangeKind::Added => Color::Added,
+        FileChangeKind::Modified => Color::Modified,
+        FileChangeKind::Deleted => Color::Deleted,
+        FileChangeKind::Renamed => Color::Renamed,
+        FileChangeKind::Copied => Color::Info,
+        FileChangeKind::TypeChange => Color::Warning,
+        FileChangeKind::Untracked => Color::Untracked,
+        FileChangeKind::Conflicted => Color::Conflict,
+    }
+}
+
 /// Displays commit metadata and changed files list.
 pub struct DetailPanel {
     commit: Option<CommitInfo>,
     commit_diff: Option<CommitDiff>,
     selected_file_index: Option<usize>,
     focus_handle: FocusHandle,
+    file_view_mode: FileViewMode,
+    collapsed_dirs: HashSet<String>,
 }
 
 impl EventEmitter<DetailPanelEvent> for DetailPanel {}
@@ -70,6 +153,8 @@ impl DetailPanel {
             commit_diff: None,
             selected_file_index: None,
             focus_handle: cx.focus_handle(),
+            file_view_mode: FileViewMode::Flat,
+            collapsed_dirs: HashSet::new(),
         }
     }
 
@@ -171,14 +256,297 @@ impl DetailPanel {
         self.selected_file_index = None;
         cx.notify();
     }
+
+    fn is_dir_collapsed(&self, dir: &str) -> bool {
+        self.collapsed_dirs.contains(dir)
+    }
+
+    fn toggle_dir(&mut self, dir: &str, cx: &mut Context<Self>) {
+        let key = dir.to_string();
+        if self.collapsed_dirs.contains(&key) {
+            self.collapsed_dirs.remove(&key);
+        } else {
+            self.collapsed_dirs.insert(key);
+        }
+        cx.notify();
+    }
+
+    fn render_flat_file_list(
+        &self,
+        files: &[FileDiff],
+        colors: &rgitui_theme::ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let mut file_list = div()
+            .id("detail-files-list")
+            .v_flex()
+            .w_full()
+            .flex_shrink_0()
+            .pb_2();
+
+        for (i, file) in files.iter().enumerate() {
+            file_list = self.render_file_row(file_list, i, file, colors, px(12.), cx);
+        }
+
+        file_list
+    }
+
+    fn render_file_row(
+        &self,
+        file_list: gpui::Stateful<gpui::Div>,
+        i: usize,
+        file: &FileDiff,
+        colors: &rgitui_theme::ThemeColors,
+        indent: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let path_str = file.path.display().to_string();
+        let file_name: SharedString = file
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&path_str)
+            .to_string()
+            .into();
+
+        let show_dir_path = matches!(self.file_view_mode, FileViewMode::Flat);
+        let dir_path: SharedString = if show_dir_path {
+            file.path
+                .parent()
+                .map(|p| {
+                    let s = p.display().to_string();
+                    if s.is_empty() {
+                        s
+                    } else {
+                        format!("{}/", s)
+                    }
+                })
+                .unwrap_or_default()
+                .into()
+        } else {
+            SharedString::default()
+        };
+
+        let additions_str: SharedString = format!("+\u{2009}{}", file.additions).into();
+        let deletions_str: SharedString = format!("\u{2012}\u{2009}{}", file.deletions).into();
+        let selected = self.selected_file_index == Some(i);
+        let file_diff = file.clone();
+        let path_for_event = path_str;
+
+        let icon_name = file_change_icon(file.kind);
+        let icon_color = file_change_color(file.kind);
+
+        file_list.child(
+            div()
+                .id(ElementId::NamedInteger("detail-file".into(), i as u64))
+                .h_flex()
+                .w_full()
+                .h(px(26.))
+                .pl(indent)
+                .pr(px(12.))
+                .gap(px(6.))
+                .items_center()
+                .flex_shrink_0()
+                .border_l_2()
+                .when(selected, |el| {
+                    el.bg(colors.ghost_element_selected)
+                        .border_color(colors.text_accent)
+                })
+                .when(!selected, |el| {
+                    el.border_color(gpui::Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.0,
+                    })
+                })
+                .hover(|s| s.bg(colors.ghost_element_hover))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.selected_file_index = Some(i);
+                    cx.emit(DetailPanelEvent::FileSelected(
+                        file_diff.clone(),
+                        path_for_event.clone(),
+                    ));
+                    cx.notify();
+                }))
+                .child(Icon::new(icon_name).size(IconSize::XSmall).color(icon_color))
+                .child(
+                    div()
+                        .h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(2.))
+                        .overflow_hidden()
+                        .when(!dir_path.is_empty(), |el| {
+                            el.child(
+                                Label::new(dir_path)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            )
+                        })
+                        .child(
+                            Label::new(file_name)
+                                .size(LabelSize::XSmall)
+                                .truncate(),
+                        ),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .child(
+                            Label::new(additions_str)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Added),
+                        )
+                        .child(
+                            Label::new(deletions_str)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Deleted),
+                        ),
+                ),
+        )
+    }
+
+    fn render_tree_file_list(
+        &self,
+        files: &[FileDiff],
+        colors: &rgitui_theme::ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let tree = build_file_diff_tree(files);
+        let mut file_list = div()
+            .id("detail-files-list")
+            .v_flex()
+            .w_full()
+            .flex_shrink_0()
+            .pb_2();
+
+        file_list = self.render_tree_node(file_list, &tree, "", 0, colors, cx);
+        file_list
+    }
+
+    fn render_tree_node(
+        &self,
+        mut container: gpui::Stateful<gpui::Div>,
+        node: &FileDiffTreeNode<'_>,
+        parent_path: &str,
+        depth: usize,
+        colors: &rgitui_theme::ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let file_indent = px(if depth == 0 {
+            16.0
+        } else {
+            16.0 + depth as f32 * 14.0
+        });
+
+        for &(i, file) in &node.files {
+            container = self.render_file_row(container, i, file, colors, file_indent, cx);
+        }
+
+        for (dir_name, child) in &node.children {
+            let mut full_dir = if parent_path.is_empty() {
+                dir_name.clone()
+            } else {
+                format!("{}/{}", parent_path, dir_name)
+            };
+            let mut display_label = format!("{dir_name}/");
+            let mut display_node = child;
+
+            while display_node.files.is_empty() && display_node.children.len() == 1 {
+                let (next_name, next_child) = display_node.children.iter().next().unwrap();
+                full_dir = format!("{full_dir}/{next_name}");
+                display_label = format!("{display_label}{next_name}/");
+                display_node = next_child;
+            }
+
+            let dir_collapsed = self.is_dir_collapsed(&full_dir);
+            let dir_icon = if dir_collapsed {
+                IconName::ChevronRight
+            } else {
+                IconName::ChevronDown
+            };
+            let dir_clone = full_dir.clone();
+            let dir_indent = px(16.0 + depth as f32 * 14.0);
+            let file_count = file_diff_tree_count(display_node);
+
+            container = container.child(
+                div()
+                    .id(SharedString::from(format!("detail-dir-{full_dir}")))
+                    .h_flex()
+                    .w_full()
+                    .h(px(26.))
+                    .flex_shrink_0()
+                    .px_2()
+                    .pl(dir_indent)
+                    .gap_1()
+                    .items_center()
+                    .overflow_hidden()
+                    .hover(|s| s.bg(colors.ghost_element_hover))
+                    .active(|s| s.bg(colors.ghost_element_selected))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.toggle_dir(&dir_clone, cx);
+                    }))
+                    .child(
+                        Icon::new(dir_icon)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Icon::new(IconName::Folder)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new(SharedString::from(display_label))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .truncate(),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .h_flex()
+                            .h(px(16.))
+                            .min_w(px(20.))
+                            .px(px(6.))
+                            .rounded(px(8.))
+                            .bg(colors.ghost_element_hover)
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                Label::new(SharedString::from(format!("{file_count}")))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                    ),
+            );
+
+            if !dir_collapsed {
+                container = self.render_tree_node(
+                    container,
+                    display_node,
+                    &full_dir,
+                    depth + 1,
+                    colors,
+                    cx,
+                );
+            }
+        }
+
+        container
+    }
 }
 
 impl Render for DetailPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
 
         let Some(commit) = &self.commit else {
-            // Empty state: header bar + centered message
             return div()
                 .id("detail-panel")
                 .v_flex()
@@ -260,7 +628,6 @@ impl Render for DetailPanel {
         .into();
         let refs = commit.refs.clone();
 
-        // Split message into summary (first line) and description (rest)
         let (summary, description) = {
             let msg = &commit.message;
             match msg.find('\n') {
@@ -273,7 +640,6 @@ impl Render for DetailPanel {
         };
         let summary: SharedString = summary.into();
 
-        // Author initials for avatar
         let initials: SharedString = commit
             .author
             .name
@@ -292,7 +658,6 @@ impl Render for DetailPanel {
             .size_full()
             .bg(colors.panel_background);
 
-        // Panel header bar
         panel = panel.child(
             div()
                 .h_flex()
@@ -317,14 +682,12 @@ impl Render for DetailPanel {
                 ),
         );
 
-        // Scrollable content area
         let mut content = div()
             .id("detail-content")
             .v_flex()
             .flex_1()
             .overflow_y_scroll();
 
-        // Commit header card with rounded corners
         let mut card = div()
             .v_flex()
             .w_full()
@@ -338,7 +701,6 @@ impl Render for DetailPanel {
             .border_1()
             .border_color(colors.border_variant);
 
-        // Top row: summary + cherry-pick button
         card = card.child(
             div()
                 .h_flex()
@@ -362,7 +724,6 @@ impl Render for DetailPanel {
                 ),
         );
 
-        // Ref labels (branches, tags, HEAD)
         if !refs.is_empty() {
             let mut refs_row = div().h_flex().gap_1().flex_wrap();
             for ref_label in &refs {
@@ -379,9 +740,7 @@ impl Render for DetailPanel {
             card = card.child(refs_row);
         }
 
-        // Description (if multi-line commit message)
         if !description.is_empty() {
-            let desc: SharedString = description.into();
             card = card.child(
                 div()
                     .w_full()
@@ -389,11 +748,12 @@ impl Render for DetailPanel {
                     .pt_1()
                     .border_t_1()
                     .border_color(colors.border_variant)
-                    .child(Label::new(desc).size(LabelSize::XSmall).color(Color::Muted)),
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .child(render_markdown(&description, _window, cx)),
             );
         }
 
-        // Author row with avatar
         let avatar_url = cx
             .try_global::<AvatarCache>()
             .and_then(|cache| cache.avatar_url(&commit.author.email))
@@ -472,7 +832,6 @@ impl Render for DetailPanel {
                 ),
         );
 
-        // SHA row with prominent short SHA + copy button
         let sha_copy_clone = sha_for_copy.clone();
         card = card.child(
             div()
@@ -527,7 +886,6 @@ impl Render for DetailPanel {
                 ),
         );
 
-        // Parents
         if !commit.parent_oids.is_empty() {
             let parents_text: SharedString = commit
                 .parent_oids
@@ -556,7 +914,6 @@ impl Render for DetailPanel {
 
         content = content.child(card);
 
-        // Changed files list
         if let Some(diff) = &self.commit_diff {
             let file_count = diff.files.len();
             let file_count_text: SharedString = format!(
@@ -570,7 +927,9 @@ impl Render for DetailPanel {
             let deletions_text: SharedString =
                 format!("\u{2012}\u{2009}{}", diff.total_deletions).into();
 
-            // Section header with colored +/- stats
+            let is_flat = matches!(self.file_view_mode, FileViewMode::Flat);
+            let is_tree = matches!(self.file_view_mode, FileViewMode::Tree);
+
             content = content.child(
                 div()
                     .h_flex()
@@ -597,6 +956,31 @@ impl Render for DetailPanel {
                     .child(
                         div()
                             .h_flex()
+                            .gap_1()
+                            .child(
+                                IconButton::new("flat-view", IconName::Menu)
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Transparent)
+                                    .selected(is_flat)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.file_view_mode = FileViewMode::Flat;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                IconButton::new("tree-view", IconName::Folder)
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Transparent)
+                                    .selected(is_tree)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.file_view_mode = FileViewMode::Tree;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h_flex()
                             .gap_2()
                             .child(
                                 Label::new(additions_text)
@@ -613,122 +997,11 @@ impl Render for DetailPanel {
                     ),
             );
 
-            let mut file_list = div()
-                .id("detail-files-list")
-                .v_flex()
-                .w_full()
-                .flex_shrink_0()
-                .pb_2();
-
             let files = diff.files.clone();
-            for (i, file) in files.iter().enumerate() {
-                let path_str = file.path.display().to_string();
-                let file_name: SharedString = file
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&path_str)
-                    .to_string()
-                    .into();
-                let dir_path: SharedString = file
-                    .path
-                    .parent()
-                    .map(|p| {
-                        let s = p.display().to_string();
-                        if s.is_empty() { s } else { format!("{}/", s) }
-                    })
-                    .unwrap_or_default()
-                    .into();
-                let additions_str: SharedString =
-                    format!("+\u{2009}{}", file.additions).into();
-                let deletions_str: SharedString =
-                    format!("\u{2012}\u{2009}{}", file.deletions).into();
-                let selected = self.selected_file_index == Some(i);
-                let file_diff = file.clone();
-                let path_for_event = path_str.clone();
-
-                let (icon_name, icon_color) = if file.additions > 0 && file.deletions == 0 {
-                    (IconName::FileAdded, Color::Added)
-                } else if file.deletions > 0 && file.additions == 0 {
-                    (IconName::FileDeleted, Color::Deleted)
-                } else if file.additions == 0 && file.deletions == 0 {
-                    (IconName::FileRenamed, Color::Renamed)
-                } else {
-                    (IconName::FileModified, Color::Modified)
-                };
-
-                file_list = file_list.child(
-                    div()
-                        .id(ElementId::NamedInteger("detail-file".into(), i as u64))
-                        .h_flex()
-                        .w_full()
-                        .h(px(26.))
-                        .px_3()
-                        .gap(px(6.))
-                        .items_center()
-                        .flex_shrink_0()
-                        .border_l_2()
-                        .when(selected, |el| {
-                            el.bg(colors.ghost_element_selected)
-                                .border_color(colors.text_accent)
-                        })
-                        .when(!selected, |el| {
-                            el.border_color(gpui::Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: 0.0,
-                                a: 0.0,
-                            })
-                        })
-                        .hover(|s| s.bg(colors.ghost_element_hover))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.selected_file_index = Some(i);
-                            cx.emit(DetailPanelEvent::FileSelected(
-                                file_diff.clone(),
-                                path_for_event.clone(),
-                            ));
-                            cx.notify();
-                        }))
-                        .child(Icon::new(icon_name).size(IconSize::XSmall).color(icon_color))
-                        .child(
-                            div()
-                                .h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap(px(2.))
-                                .overflow_hidden()
-                                .when(!dir_path.is_empty(), |el| {
-                                    el.child(
-                                        Label::new(dir_path)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
-                                    )
-                                })
-                                .child(
-                                    Label::new(file_name)
-                                        .size(LabelSize::XSmall)
-                                        .truncate(),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h_flex()
-                                .gap_1()
-                                .flex_shrink_0()
-                                .child(
-                                    Label::new(additions_str)
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Added),
-                                )
-                                .child(
-                                    Label::new(deletions_str)
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Deleted),
-                                ),
-                        ),
-                );
-            }
+            let file_list = match self.file_view_mode {
+                FileViewMode::Flat => self.render_flat_file_list(&files, &colors, cx),
+                FileViewMode::Tree => self.render_tree_file_list(&files, &colors, cx),
+            };
             content = content.child(file_list);
         }
 

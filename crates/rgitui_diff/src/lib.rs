@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    FontWeight, KeyDownEvent, ListSizingBehavior, Render, ScrollStrategy, SharedString,
-    UniformListScrollHandle, WeakEntity, Window,
+    div, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
+    FocusHandle, FontWeight, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render,
+    ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{DiffLine, FileDiff};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
@@ -85,6 +85,10 @@ pub struct DiffViewer {
     focus_handle: FocusHandle,
     /// Currently highlighted row index for keyboard navigation.
     highlighted_row: Option<usize>,
+    /// Range of selected line indices for copy support.
+    selected_lines: Option<Range<usize>>,
+    /// The first clicked line index, used as anchor for shift-click range selection.
+    selection_anchor: Option<usize>,
 }
 
 impl EventEmitter<DiffViewerEvent> for DiffViewer {}
@@ -101,6 +105,8 @@ impl DiffViewer {
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             highlighted_row: None,
+            selected_lines: None,
+            selection_anchor: None,
         }
     }
 
@@ -122,6 +128,8 @@ impl DiffViewer {
         self.file_path = Some(path);
         self.is_staged = staged;
         self.highlighted_row = None;
+        self.selected_lines = None;
+        self.selection_anchor = None;
         cx.notify();
     }
 
@@ -131,7 +139,94 @@ impl DiffViewer {
         self.display_rows = Arc::new(Vec::new());
         self.sbs_rows = Arc::new(Vec::new());
         self.highlighted_row = None;
+        self.selected_lines = None;
+        self.selection_anchor = None;
         cx.notify();
+    }
+
+    fn handle_line_click(&mut self, row_ix: usize, shift: bool, cx: &mut Context<Self>) {
+        if shift {
+            if let Some(anchor) = self.selection_anchor {
+                let start = anchor.min(row_ix);
+                let end = anchor.max(row_ix) + 1;
+                self.selected_lines = Some(start..end);
+            } else {
+                self.selection_anchor = Some(row_ix);
+                self.selected_lines = Some(row_ix..row_ix + 1);
+            }
+        } else {
+            self.selection_anchor = Some(row_ix);
+            self.selected_lines = Some(row_ix..row_ix + 1);
+        }
+        cx.notify();
+    }
+
+    fn copy_selected_lines(&self, cx: &mut Context<Self>) {
+        let range = match &self.selected_lines {
+            Some(r) => r.clone(),
+            None => return,
+        };
+
+        let mut text = String::new();
+        match self.display_mode {
+            DiffDisplayMode::Unified => {
+                for i in range {
+                    if i < self.display_rows.len() {
+                        match &self.display_rows[i] {
+                            DisplayRow::HunkHeader { header, .. } => {
+                                text.push_str(header);
+                                text.push('\n');
+                            }
+                            DisplayRow::Line { content, .. } => {
+                                text.push_str(content.trim_end());
+                                text.push('\n');
+                            }
+                        }
+                    }
+                }
+            }
+            DiffDisplayMode::SideBySide => {
+                for i in range {
+                    if i < self.sbs_rows.len() {
+                        match &self.sbs_rows[i] {
+                            SideBySideRow::HunkHeader { header, .. } => {
+                                text.push_str(header);
+                                text.push('\n');
+                            }
+                            SideBySideRow::Pair {
+                                left_content,
+                                left_kind,
+                                right_content,
+                                right_kind,
+                                ..
+                            } => {
+                                if *left_kind != SideBySideLineKind::Empty {
+                                    text.push_str(left_content.trim_end());
+                                }
+                                if *left_kind != SideBySideLineKind::Empty
+                                    && *right_kind != SideBySideLineKind::Empty
+                                    && *left_kind != SideBySideLineKind::Context
+                                {
+                                    text.push('\t');
+                                }
+                                if *right_kind != SideBySideLineKind::Empty
+                                    && *right_kind != SideBySideLineKind::Context
+                                {
+                                    text.push_str(right_content.trim_end());
+                                } else if *left_kind == SideBySideLineKind::Context {
+                                    // Context lines show same content on both sides
+                                }
+                                text.push('\n');
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 
     fn row_count(&self) -> usize {
@@ -194,6 +289,16 @@ impl DiffViewer {
             }
             "d" if !ctrl => {
                 self.toggle_display_mode(cx);
+            }
+            "c" if ctrl => {
+                self.copy_selected_lines(cx);
+            }
+            "a" if ctrl => {
+                if row_count > 0 {
+                    self.selection_anchor = Some(0);
+                    self.selected_lines = Some(0..row_count);
+                    cx.notify();
+                }
             }
             _ => {}
         }
@@ -516,6 +621,11 @@ impl Render for DiffViewer {
             a: 0.04,
             ..colors.text
         };
+        let selection_bg = gpui::Hsla {
+            a: 0.15,
+            ..colors.text_accent
+        };
+        let selected_lines = self.selected_lines.clone();
 
         // ── Build the list based on display mode ─────────────────────
         let list = match display_mode {
@@ -538,6 +648,15 @@ impl Render for DiffViewer {
                                         };
                                         let idx = *hunk_index;
                                         let view_clone = view.clone();
+                                        let view_hunk = view.clone();
+                                        let is_hunk_selected = selected_lines
+                                            .as_ref()
+                                            .is_some_and(|r| r.contains(&i));
+                                        let hunk_bg = if is_hunk_selected {
+                                            selection_bg
+                                        } else {
+                                            hunk_header_bg
+                                        };
 
                                         div()
                                             .id(ElementId::NamedInteger(
@@ -549,9 +668,22 @@ impl Render for DiffViewer {
                                             .w_full()
                                             .px_2()
                                             .items_center()
-                                            .bg(hunk_header_bg)
+                                            .bg(hunk_bg)
                                             .border_b_1()
                                             .border_color(border_variant)
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                move |event: &MouseDownEvent,
+                                                      _window: &mut Window,
+                                                      cx: &mut App| {
+                                                    let shift = event.modifiers.shift;
+                                                    view_hunk
+                                                        .update(cx, |this, cx| {
+                                                            this.handle_line_click(i, shift, cx);
+                                                        })
+                                                        .ok();
+                                                },
+                                            )
                                             .child(
                                                 div()
                                                     .text_xs()
@@ -627,18 +759,41 @@ impl Render for DiffViewer {
                                         let content_text: SharedString =
                                             content.trim_end().to_string().into();
                                         let is_highlighted = highlighted_row == Some(i);
-                                        let effective_bg = if is_highlighted {
+                                        let is_selected = selected_lines
+                                            .as_ref()
+                                            .is_some_and(|r| r.contains(&i));
+                                        let effective_bg = if is_selected {
+                                            selection_bg
+                                        } else if is_highlighted {
                                             highlight_bg
                                         } else {
                                             line_bg
                                         };
 
+                                        let view_line = view.clone();
                                         div()
+                                            .id(ElementId::NamedInteger(
+                                                "diff-line".into(),
+                                                i as u64,
+                                            ))
                                             .h_flex()
                                             .h(px(row_height))
                                             .w_full()
                                             .bg(effective_bg)
                                             .hover(move |s| s.bg(row_hover_bg))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                move |event: &MouseDownEvent,
+                                                      _window: &mut Window,
+                                                      cx: &mut App| {
+                                                    let shift = event.modifiers.shift;
+                                                    view_line
+                                                        .update(cx, |this, cx| {
+                                                            this.handle_line_click(i, shift, cx);
+                                                        })
+                                                        .ok();
+                                                },
+                                            )
                                             // Old line number gutter
                                             .child(
                                                 div()
@@ -727,6 +882,15 @@ impl Render for DiffViewer {
                                         };
                                         let idx = *hunk_index;
                                         let view_clone = view.clone();
+                                        let view_sbs_hunk = view.clone();
+                                        let is_sbs_hunk_selected = selected_lines
+                                            .as_ref()
+                                            .is_some_and(|r| r.contains(&i));
+                                        let sbs_hunk_bg = if is_sbs_hunk_selected {
+                                            selection_bg
+                                        } else {
+                                            hunk_header_bg
+                                        };
 
                                         div()
                                             .id(ElementId::NamedInteger(
@@ -738,9 +902,22 @@ impl Render for DiffViewer {
                                             .w_full()
                                             .px_2()
                                             .items_center()
-                                            .bg(hunk_header_bg)
+                                            .bg(sbs_hunk_bg)
                                             .border_b_1()
                                             .border_color(border_variant)
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                move |event: &MouseDownEvent,
+                                                      _window: &mut Window,
+                                                      cx: &mut App| {
+                                                    let shift = event.modifiers.shift;
+                                                    view_sbs_hunk
+                                                        .update(cx, |this, cx| {
+                                                            this.handle_line_click(i, shift, cx);
+                                                        })
+                                                        .ok();
+                                                },
+                                            )
                                             .child(
                                                 div()
                                                     .text_xs()
@@ -838,22 +1015,47 @@ impl Render for DiffViewer {
                                             right_content.trim_end().to_string().into();
 
                                         let is_highlighted = highlighted_row == Some(i);
-                                        let effective_left_bg = if is_highlighted {
+                                        let is_sbs_selected = selected_lines
+                                            .as_ref()
+                                            .is_some_and(|r| r.contains(&i));
+                                        let effective_left_bg = if is_sbs_selected {
+                                            selection_bg
+                                        } else if is_highlighted {
                                             highlight_bg
                                         } else {
                                             left_bg
                                         };
-                                        let effective_right_bg = if is_highlighted {
+                                        let effective_right_bg = if is_sbs_selected {
+                                            selection_bg
+                                        } else if is_highlighted {
                                             highlight_bg
                                         } else {
                                             right_bg
                                         };
 
+                                        let view_sbs_line = view.clone();
                                         div()
+                                            .id(ElementId::NamedInteger(
+                                                "sbs-line".into(),
+                                                i as u64,
+                                            ))
                                             .h_flex()
                                             .h(px(row_height))
                                             .w_full()
                                             .hover(move |s| s.bg(row_hover_bg))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                move |event: &MouseDownEvent,
+                                                      _window: &mut Window,
+                                                      cx: &mut App| {
+                                                    let shift = event.modifiers.shift;
+                                                    view_sbs_line
+                                                        .update(cx, |this, cx| {
+                                                            this.handle_line_click(i, shift, cx);
+                                                        })
+                                                        .ok();
+                                                },
+                                            )
                                             // ── Left half ──
                                             .child(
                                                 div()

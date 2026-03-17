@@ -1,10 +1,14 @@
+use std::ops::Range;
+use std::sync::Arc;
+
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, KeyDownEvent, Render,
-    SharedString, Window,
+    div, px, uniform_list, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle,
+    KeyDownEvent, Render, ScrollStrategy, SharedString,
+    UniformListScrollHandle, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent};
 
 #[derive(Debug, Clone)]
 pub struct PaletteCommand {
@@ -22,11 +26,11 @@ pub enum CommandPaletteEvent {
 
 pub struct CommandPalette {
     visible: bool,
-    query: String,
-    cursor_pos: usize,
+    query_editor: Entity<TextInput>,
     commands: Vec<PaletteCommand>,
     filtered_indices: Vec<usize>,
     selected_index: usize,
+    scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
 }
 
@@ -71,13 +75,32 @@ impl CommandPalette {
 
         let filtered_indices = (0..commands.len()).collect();
 
+        let query_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Type a command...");
+            ti
+        });
+
+        cx.subscribe(&query_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            match event {
+                TextInputEvent::Changed(_) => {
+                    this.update_filter(cx);
+                    cx.notify();
+                }
+                TextInputEvent::Submit => {
+                    this.select_current(cx);
+                }
+            }
+        })
+        .detach();
+
         Self {
             visible: false,
-            query: String::new(),
-            cursor_pos: 0,
+            query_editor,
             commands,
             filtered_indices,
             selected_index: 0,
+            scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -85,11 +108,14 @@ impl CommandPalette {
     pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.visible = !self.visible;
         if self.visible {
-            self.query.clear();
-            self.cursor_pos = 0;
+            self.query_editor.update(cx, |editor, cx| {
+                editor.clear(cx);
+            });
             self.selected_index = 0;
-            self.update_filter();
-            self.focus_handle.focus(window, cx);
+            self.update_filter(cx);
+            self.query_editor.update(cx, |editor, cx| {
+                editor.focus(window, cx);
+            });
         }
         cx.notify();
     }
@@ -104,8 +130,8 @@ impl CommandPalette {
         cx.notify();
     }
 
-    fn update_filter(&mut self) {
-        let query = self.query.to_lowercase();
+    fn update_filter(&mut self, cx: &mut Context<Self>) {
+        let query = self.query_editor.read(cx).text().to_lowercase();
         if query.is_empty() {
             self.filtered_indices = (0..self.commands.len()).collect();
         } else {
@@ -122,6 +148,7 @@ impl CommandPalette {
                 .collect();
         }
         self.selected_index = 0;
+        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
     }
 
     fn select_current(&mut self, cx: &mut Context<Self>) {
@@ -155,67 +182,29 @@ impl CommandPalette {
         let key = event.keystroke.key.as_str();
 
         match key {
-            "escape" => self.dismiss(cx),
-            "enter" => self.select_current(cx),
+            "escape" => {
+                self.dismiss(cx);
+                cx.stop_propagation();
+            }
             "up" => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
+                    self.scroll_handle
+                        .scroll_to_item(self.selected_index, ScrollStrategy::Nearest);
                     cx.notify();
                 }
+                cx.stop_propagation();
             }
             "down" => {
                 if self.selected_index + 1 < self.filtered_indices.len() {
                     self.selected_index += 1;
+                    self.scroll_handle
+                        .scroll_to_item(self.selected_index, ScrollStrategy::Nearest);
                     cx.notify();
                 }
+                cx.stop_propagation();
             }
-            "backspace" => {
-                if self.cursor_pos > 0 {
-                    self.cursor_pos -= 1;
-                    self.query.remove(self.cursor_pos);
-                    self.update_filter();
-                    cx.notify();
-                }
-            }
-            "home" => {
-                self.cursor_pos = 0;
-                cx.notify();
-            }
-            "end" => {
-                self.cursor_pos = self.query.len();
-                cx.notify();
-            }
-            "left" => {
-                if self.cursor_pos > 0 {
-                    self.cursor_pos -= 1;
-                    cx.notify();
-                }
-            }
-            "right" => {
-                if self.cursor_pos < self.query.len() {
-                    self.cursor_pos += 1;
-                    cx.notify();
-                }
-            }
-            _ => {
-                if let Some(key_char) = &event.keystroke.key_char {
-                    self.query.insert_str(self.cursor_pos, key_char);
-                    self.cursor_pos += key_char.len();
-                    self.update_filter();
-                    cx.notify();
-                } else if key.len() == 1
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.platform
-                {
-                    let ch = key.chars().next().unwrap();
-                    if ch.is_ascii_graphic() || ch == ' ' {
-                        self.query.insert(self.cursor_pos, ch);
-                        self.cursor_pos += 1;
-                        self.update_filter();
-                        cx.notify();
-                    }
-                }
-            }
+            _ => {}
         }
     }
 }
@@ -228,20 +217,8 @@ impl Render for CommandPalette {
             return div().id("command-palette").into_any_element();
         }
 
-        // Build query display with cursor
-        let query_display: SharedString = if self.query.is_empty() {
-            "Type a command...".into()
-        } else {
-            let mut display = self.query.clone();
-            let pos = self.cursor_pos.min(display.len());
-            display.insert(pos, '|');
-            display.into()
-        };
-        let query_color = if self.query.is_empty() {
-            Color::Placeholder
-        } else {
-            Color::Default
-        };
+        let query_is_empty = self.query_editor.read(cx).is_empty();
+        let filtered_count = self.filtered_indices.len();
 
         // Modal container
         let mut modal = div()
@@ -286,15 +263,11 @@ impl Render for CommandPalette {
                         .color(Color::Muted),
                 )
                 .child(
-                    div().flex_1().child(
-                        Label::new(query_display)
-                            .size(LabelSize::default())
-                            .color(query_color),
-                    ),
+                    div().flex_1().child(self.query_editor.clone()),
                 )
-                .when(!self.query.is_empty(), |el| {
+                .when(!query_is_empty, |el| {
                     let count_text: SharedString =
-                        format!("{} results", self.filtered_indices.len()).into();
+                        format!("{} results", filtered_count).into();
                     el.child(
                         Label::new(count_text)
                             .size(LabelSize::XSmall)
@@ -303,118 +276,123 @@ impl Render for CommandPalette {
                 }),
         );
 
-        // Results list
-        let mut results = div()
-            .id("palette-results")
-            .v_flex()
-            .w_full()
-            .overflow_y_scroll()
-            .flex_1()
-            .py_1();
-
-        let mut last_category: Option<&str> = None;
-
-        for (display_idx, &cmd_idx) in self.filtered_indices.iter().enumerate() {
-            let cmd = &self.commands[cmd_idx];
-            let is_selected = display_idx == self.selected_index;
-
-            // Category separator
-            if self.query.is_empty() && last_category != Some(cmd.category) {
-                last_category = Some(cmd.category);
-                if display_idx > 0 {
-                    results = results.child(
-                        div()
-                            .w_full()
-                            .h(px(1.))
-                            .mx(px(10.))
-                            .my(px(4.))
-                            .bg(colors.border_variant),
-                    );
-                }
-                results = results.child(
-                    div()
-                        .w_full()
-                        .px(px(14.))
-                        .pt(px(6.))
-                        .pb(px(2.))
-                        .child(
-                            Label::new(SharedString::from(cmd.category))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .weight(gpui::FontWeight::SEMIBOLD),
-                        ),
-                );
-            }
-
-            let label: SharedString = cmd.label.into();
-            let cmd_id = cmd.id.to_string();
-            let icon = Self::category_icon(cmd.category);
+        // Results list via uniform_list for scroll-to-item support
+        if filtered_count > 0 {
+            let selected_index = self.selected_index;
             let selected_bg = colors.ghost_element_selected;
             let hover_bg = colors.ghost_element_hover;
 
-            let mut row = div()
-                .id(ElementId::NamedInteger(
-                    "palette-cmd".into(),
-                    display_idx as u64,
-                ))
-                .h_flex()
-                .w_full()
-                .h(px(36.))
-                .px(px(10.))
-                .mx(px(4.))
-                .gap(px(10.))
-                .items_center()
-                .rounded(px(6.))
-                .cursor_pointer()
-                .when(is_selected, move |el| el.bg(selected_bg))
-                .hover(move |s| s.bg(hover_bg))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.visible = false;
-                    cx.emit(CommandPaletteEvent::CommandSelected(cmd_id.clone()));
-                    cx.notify();
-                }));
+            let commands: Arc<Vec<PaletteCommand>> = Arc::new(self.commands.clone());
+            let filtered: Arc<Vec<usize>> = Arc::new(self.filtered_indices.clone());
+            let view = cx.weak_entity();
 
-            row = row.child(
-                Icon::new(icon)
-                    .size(IconSize::Small)
-                    .color(if is_selected { Color::Accent } else { Color::Muted }),
-            );
+            let list = uniform_list(
+                "palette-results",
+                filtered_count,
+                move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                    range
+                        .map(|display_idx| {
+                            let cmd_idx = filtered[display_idx];
+                            let cmd = &commands[cmd_idx];
+                            let is_selected = display_idx == selected_index;
 
-            row = row.child(
-                Label::new(label)
-                    .size(LabelSize::Small)
-                    .when(is_selected, |l| l.weight(gpui::FontWeight::MEDIUM)),
-            );
+                            let label: SharedString = cmd.label.into();
+                            let cmd_id = cmd.id.to_string();
+                            let icon = CommandPalette::category_icon(cmd.category);
+                            let shortcut = cmd.shortcut;
+                            let category: SharedString = cmd.category.into();
 
-            row = row.child(div().flex_1());
+                            let view_click = view.clone();
 
-            if let Some(shortcut) = cmd.shortcut {
-                let shortcut_bg = gpui::Hsla { a: 0.08, ..colors.text };
-                let shortcut_border = gpui::Hsla { a: 0.15, ..colors.text };
-                row = row.child(
-                    div()
-                        .h_flex()
-                        .gap(px(3.))
-                        .px(px(6.))
-                        .py(px(2.))
-                        .bg(shortcut_bg)
-                        .border_1()
-                        .border_color(shortcut_border)
-                        .rounded(px(4.))
-                        .child(
-                            Label::new(SharedString::from(shortcut))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
-                        ),
-                );
-            }
+                            let mut row = div()
+                                .id(ElementId::NamedInteger(
+                                    "palette-cmd".into(),
+                                    display_idx as u64,
+                                ))
+                                .h_flex()
+                                .w_full()
+                                .h(px(36.))
+                                .px(px(10.))
+                                .mx(px(4.))
+                                .gap(px(10.))
+                                .items_center()
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .when(is_selected, move |el| el.bg(selected_bg))
+                                .hover(move |s| s.bg(hover_bg))
+                                .on_click(move |_: &ClickEvent, _, cx| {
+                                    view_click
+                                        .update(cx, |this, cx| {
+                                            this.visible = false;
+                                            cx.emit(CommandPaletteEvent::CommandSelected(
+                                                cmd_id.clone(),
+                                            ));
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                });
 
-            results = results.child(row);
-        }
+                            row = row.child(
+                                Icon::new(icon)
+                                    .size(IconSize::Small)
+                                    .color(if is_selected {
+                                        Color::Accent
+                                    } else {
+                                        Color::Muted
+                                    }),
+                            );
 
-        if self.filtered_indices.is_empty() {
-            results = results.child(
+                            row = row.child(
+                                div()
+                                    .h_flex()
+                                    .gap(px(8.))
+                                    .items_center()
+                                    .child(
+                                        Label::new(label)
+                                            .size(LabelSize::Small)
+                                            .when(is_selected, |l| {
+                                                l.weight(gpui::FontWeight::MEDIUM)
+                                            }),
+                                    )
+                                    .child(
+                                        Label::new(category)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    ),
+                            );
+
+                            row = row.child(div().flex_1());
+
+                            if let Some(shortcut_text) = shortcut {
+                                row = row.child(
+                                    div()
+                                        .h_flex()
+                                        .gap(px(3.))
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .child(
+                                            Label::new(SharedString::from(shortcut_text))
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Muted),
+                                        ),
+                                );
+                            }
+
+                            row.into_any_element()
+                        })
+                        .collect()
+                },
+            )
+            .flex_1()
+            .min_h(px(36.))
+            .track_scroll(&self.scroll_handle);
+
+            modal = modal.child(list);
+        } else {
+            modal = modal.child(
                 div()
+                    .id("palette-empty")
                     .w_full()
                     .py(px(24.))
                     .flex()
@@ -434,8 +412,6 @@ impl Render for CommandPalette {
                     ),
             );
         }
-
-        modal = modal.child(results);
 
         // Footer hint
         modal = modal.child(

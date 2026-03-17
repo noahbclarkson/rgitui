@@ -409,11 +409,14 @@ pub struct RefreshData {
 /// Compute line-level diff stats (additions/deletions) for a single file.
 /// For staged files, diffs HEAD vs index. For unstaged files, diffs index vs workdir.
 fn batch_diff_stats(repo: &Repository, staged: bool) -> std::collections::HashMap<PathBuf, (usize, usize)> {
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true);
+    opts.show_untracked_content(true);
     let diff_result = if staged {
         let head_tree = repo.head().ok().and_then(|r| r.peel_to_tree().ok());
-        repo.diff_tree_to_index(head_tree.as_ref(), None, None)
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
     } else {
-        repo.diff_index_to_workdir(None, None)
+        repo.diff_index_to_workdir(None, Some(&mut opts))
     };
     let mut stats_map = std::collections::HashMap::new();
     if let Ok(diff) = diff_result {
@@ -1608,6 +1611,8 @@ impl GitProject {
         let repo = self.open_repo()?;
         let mut diff_opts = DiffOptions::new();
         diff_opts.pathspec(path);
+        diff_opts.include_untracked(true);
+        diff_opts.show_untracked_content(true);
 
         let diff = if staged {
             let head_tree = repo.head()?.peel_to_tree().ok();
@@ -1639,8 +1644,8 @@ impl GitProject {
         let mut current_path: Option<PathBuf> = None;
         let mut current_additions: usize = 0;
         let mut current_deletions: usize = 0;
+        let mut current_kind = FileChangeKind::Modified;
 
-        // Use print which handles the callback ordering correctly
         diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
             let delta_path = delta
                 .new_file()
@@ -1648,27 +1653,25 @@ impl GitProject {
                 .unwrap_or(Path::new(""))
                 .to_path_buf();
 
-            // Check if we've moved to a new file
             if current_path.as_ref() != Some(&delta_path) {
-                // Save previous file
                 if let Some(prev_path) = current_path.take() {
                     files.push(FileDiff {
                         path: prev_path,
                         hunks: std::mem::take(&mut current_hunks),
                         additions: current_additions,
                         deletions: current_deletions,
+                        kind: current_kind,
                     });
                 }
                 current_path = Some(delta_path);
                 current_additions = 0;
                 current_deletions = 0;
+                current_kind = delta_to_file_change_kind(delta.status());
             }
 
             if let Some(hunk) = hunk {
-                // Ensure we have a hunk entry
                 let header = String::from_utf8_lossy(hunk.header()).to_string();
                 let expected_start = hunk.new_start();
-                // Check if this is a new hunk
                 let needs_new = current_hunks.last().is_none_or(|h| {
                     h.new_start != expected_start || h.header != header
                 });
@@ -1709,13 +1712,13 @@ impl GitProject {
             true
         })?;
 
-        // Don't forget the last file
         if let Some(path) = current_path {
             files.push(FileDiff {
                 path,
                 hunks: current_hunks,
                 additions: current_additions,
                 deletions: current_deletions,
+                kind: current_kind,
             });
         }
 
@@ -1759,6 +1762,7 @@ impl GitProject {
         let mut current_path: Option<PathBuf> = None;
         let mut current_additions: usize = 0;
         let mut current_deletions: usize = 0;
+        let mut current_kind = FileChangeKind::Modified;
 
         diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
             let delta_path = delta
@@ -1774,11 +1778,13 @@ impl GitProject {
                         hunks: std::mem::take(&mut current_hunks),
                         additions: current_additions,
                         deletions: current_deletions,
+                        kind: current_kind,
                     });
                 }
                 current_path = Some(delta_path);
                 current_additions = 0;
                 current_deletions = 0;
+                current_kind = delta_to_file_change_kind(delta.status());
             }
 
             if let Some(hunk) = hunk {
@@ -1830,6 +1836,7 @@ impl GitProject {
                 hunks: current_hunks,
                 additions: current_additions,
                 deletions: current_deletions,
+                kind: current_kind,
             });
         }
 
@@ -2361,6 +2368,8 @@ impl GitProject {
                         let full = workdir.join(path);
                         if full.is_file() {
                             std::fs::remove_file(&full).with_context(|| format!("Failed to delete {}", full.display()))?;
+                        } else if full.is_dir() {
+                            std::fs::remove_dir_all(&full).with_context(|| format!("Failed to delete directory {}", full.display()))?;
                         }
                     } else {
                         checkout_opts.path(path);
@@ -4065,6 +4074,17 @@ impl GitProject {
     }
 }
 
+fn delta_to_file_change_kind(delta: git2::Delta) -> FileChangeKind {
+    match delta {
+        git2::Delta::Added | git2::Delta::Untracked => FileChangeKind::Added,
+        git2::Delta::Deleted => FileChangeKind::Deleted,
+        git2::Delta::Modified | git2::Delta::Typechange => FileChangeKind::Modified,
+        git2::Delta::Renamed => FileChangeKind::Renamed,
+        git2::Delta::Copied => FileChangeKind::Modified,
+        _ => FileChangeKind::Modified,
+    }
+}
+
 /// Parse a git2::Diff into a FileDiff using the print API to avoid borrow issues.
 fn parse_file_diff(path: &Path, diff: &git2::Diff) -> Result<FileDiff> {
     let mut file_diff = FileDiff {
@@ -4072,9 +4092,11 @@ fn parse_file_diff(path: &Path, diff: &git2::Diff) -> Result<FileDiff> {
         hunks: Vec::new(),
         additions: 0,
         deletions: 0,
+        kind: FileChangeKind::Modified,
     };
 
-    diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
+    diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
+        file_diff.kind = delta_to_file_change_kind(delta.status());
         if let Some(hunk) = hunk {
             let header = String::from_utf8_lossy(hunk.header()).to_string();
             let expected_start = hunk.new_start();
@@ -4125,6 +4147,8 @@ pub fn compute_file_diff(repo_path: &Path, file_path: &Path, staged: bool) -> Re
     let repo = Repository::open(repo_path)?;
     let mut diff_opts = DiffOptions::new();
     diff_opts.pathspec(file_path);
+    diff_opts.include_untracked(true);
+    diff_opts.show_untracked_content(true);
     let diff = if staged {
         let head_tree = repo.head()?.peel_to_tree().ok();
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))?
@@ -4150,15 +4174,17 @@ pub fn compute_commit_diff(repo_path: &Path, oid: git2::Oid) -> Result<CommitDif
     let mut current_path: Option<PathBuf> = None;
     let mut current_additions: usize = 0;
     let mut current_deletions: usize = 0;
+    let mut current_kind = FileChangeKind::Modified;
     diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
         let delta_path = delta.new_file().path().unwrap_or(Path::new("")).to_path_buf();
         if current_path.as_ref() != Some(&delta_path) {
             if let Some(prev_path) = current_path.take() {
-                files.push(FileDiff { path: prev_path, hunks: std::mem::take(&mut current_hunks), additions: current_additions, deletions: current_deletions });
+                files.push(FileDiff { path: prev_path, hunks: std::mem::take(&mut current_hunks), additions: current_additions, deletions: current_deletions, kind: current_kind });
             }
             current_path = Some(delta_path);
             current_additions = 0;
             current_deletions = 0;
+            current_kind = delta_to_file_change_kind(delta.status());
         }
         if let Some(hunk) = hunk {
             let header = String::from_utf8_lossy(hunk.header()).to_string();
@@ -4178,7 +4204,7 @@ pub fn compute_commit_diff(repo_path: &Path, oid: git2::Oid) -> Result<CommitDif
         true
     })?;
     if let Some(path) = current_path {
-        files.push(FileDiff { path, hunks: current_hunks, additions: current_additions, deletions: current_deletions });
+        files.push(FileDiff { path, hunks: current_hunks, additions: current_additions, deletions: current_deletions, kind: current_kind });
     }
     Ok(CommitDiff { total_additions: stats.insertions(), total_deletions: stats.deletions(), files })
 }

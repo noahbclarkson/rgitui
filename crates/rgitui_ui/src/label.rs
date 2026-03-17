@@ -85,6 +85,14 @@ impl RenderOnce for Label {
             el = el.font_weight(weight);
         }
 
+        if self.italic {
+            el = el.italic();
+        }
+
+        if self.strikethrough {
+            el = el.line_through();
+        }
+
         if self.truncate {
             el = el
                 .min_w_0()

@@ -152,6 +152,7 @@ pub struct FileDiff {
     pub hunks: Vec<DiffHunk>,
     pub additions: usize,
     pub deletions: usize,
+    pub kind: FileChangeKind,
 }
 
 /// A complete commit diff (all files).

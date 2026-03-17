@@ -819,7 +819,7 @@ impl Render for Sidebar {
         let _nav_items = self.navigable_items();
         let keyboard_index = self.keyboard_index;
 
-        let mut panel = div()
+        let panel = div()
             .id("sidebar-panel")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
@@ -828,8 +828,13 @@ impl Render for Sidebar {
             .h_full()
             .bg(colors.panel_background)
             .border_r_1()
-            .border_color(colors.border_variant)
-            .overflow_y_scroll();
+            .border_color(colors.border_variant);
+
+        let mut content = div()
+            .id("sidebar-content")
+            .v_flex()
+            .w_full()
+            .flex_shrink_0();
 
         // -- Sidebar Header: repo name + open repo button --
         {
@@ -839,7 +844,7 @@ impl Render for Sidebar {
                 self.repo_name.clone().into()
             };
 
-            panel = panel.child(
+            content = content.child(
                 div()
                     .id("sidebar-header")
                     .h_flex()
@@ -896,7 +901,7 @@ impl Render for Sidebar {
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        panel = panel.child(
+        content = content.child(
             div()
                 .id("section-local-branches")
                 .h_flex()
@@ -952,7 +957,7 @@ impl Render for Sidebar {
 
         if local_expanded {
             if local_branches.is_empty() {
-                panel = panel.child(
+                content = content.child(
                     div()
                         .h_flex()
                         .w_full()
@@ -1149,7 +1154,7 @@ impl Render for Sidebar {
                     );
                 }
 
-                panel = panel.child(item);
+                content = content.child(item);
             }
         }
 
@@ -1163,7 +1168,7 @@ impl Render for Sidebar {
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        panel = panel.child(
+        content = content.child(
             div()
                 .id("section-remotes")
                 .h_flex()
@@ -1219,7 +1224,7 @@ impl Render for Sidebar {
 
         if remotes_expanded {
             if self.remotes.is_empty() {
-                panel = panel.child(
+                content = content.child(
                     div()
                         .h_flex()
                         .w_full()
@@ -1249,7 +1254,7 @@ impl Render for Sidebar {
                 let push_remote = name.clone();
                 let remove_remote = name.clone();
 
-                panel = panel.child(
+                content = content.child(
                     div()
                         .id(ElementId::NamedInteger("remote-item".into(), i as u64))
                         .v_flex()
@@ -1364,7 +1369,7 @@ impl Render for Sidebar {
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        panel = panel.child(
+        content = content.child(
             div()
                 .id("section-remote-branches")
                 .h_flex()
@@ -1419,7 +1424,7 @@ impl Render for Sidebar {
                 nav_idx += 1;
                 let name: SharedString = branch.name.clone().into();
                 let remote_branch_name = branch.name.clone();
-                panel = panel.child(
+                content = content.child(
                     div()
                         .id(ElementId::NamedInteger("remote-branch".into(), i as u64))
                         .h_flex()
@@ -1461,7 +1466,7 @@ impl Render for Sidebar {
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        panel = panel.child(
+        content = content.child(
             div()
                 .id("section-tags")
                 .h_flex()
@@ -1517,7 +1522,7 @@ impl Render for Sidebar {
 
         if tags_expanded {
             if self.tags.is_empty() {
-                panel = panel.child(
+                content = content.child(
                     div()
                         .h_flex()
                         .w_full()
@@ -1537,7 +1542,7 @@ impl Render for Sidebar {
                 let name: SharedString = tag.name.clone().into();
                 let tag_name = tag.name.clone();
                 let tag_name_delete = tag.name.clone();
-                panel = panel.child(
+                content = content.child(
                     div()
                         .id(ElementId::NamedInteger("tag-item".into(), i as u64))
                         .h_flex()
@@ -1594,7 +1599,7 @@ impl Render for Sidebar {
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        panel = panel.child(
+        content = content.child(
             div()
                 .id("section-stashes")
                 .h_flex()
@@ -1650,7 +1655,7 @@ impl Render for Sidebar {
 
         if stashes_expanded {
             if self.stashes.is_empty() {
-                panel = panel.child(
+                content = content.child(
                     div()
                         .h_flex()
                         .w_full()
@@ -1671,7 +1676,7 @@ impl Render for Sidebar {
                 let stash_index = stash.index;
                 let stash_index_apply = stash.index;
                 let stash_index_drop = stash.index;
-                panel = panel.child(
+                content = content.child(
                     div()
                         .id(ElementId::NamedInteger("stash-item".into(), i as u64))
                         .h_flex()
@@ -1741,7 +1746,7 @@ impl Render for Sidebar {
         }
 
         // Separator between refs and file changes
-        panel = panel.child(
+        content = content.child(
             div()
                 .w_full()
                 .h(px(1.))
@@ -1761,7 +1766,7 @@ impl Render for Sidebar {
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        panel = panel.child(
+        content = content.child(
             div()
                 .id("section-staged")
                 .h_flex()
@@ -1843,7 +1848,7 @@ impl Render for Sidebar {
 
         if staged_expanded {
             if self.staged.is_empty() {
-                panel = panel.child(
+                content = content.child(
                     div()
                         .h_flex()
                         .w_full()
@@ -1862,7 +1867,7 @@ impl Render for Sidebar {
                 let tree = Self::build_file_tree(&staged_files);
                 let mut ctx = FileRowCtx { staged: true, indent: px(16.0), file_idx: 0, colors: &colors };
                 let staged_body = div().id("staged-body").v_flex().w_full().flex_shrink_0();
-                panel = panel.child(self.render_file_tree(
+                content = content.child(self.render_file_tree(
                     staged_body,
                     &tree,
                     ("staged", "", 0),
@@ -1884,7 +1889,7 @@ impl Render for Sidebar {
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        panel = panel.child(
+        content = content.child(
             div()
                 .id("section-unstaged")
                 .h_flex()
@@ -1966,7 +1971,7 @@ impl Render for Sidebar {
 
         if unstaged_expanded {
             if self.unstaged.is_empty() {
-                panel = panel.child(
+                content = content.child(
                     div()
                         .h_flex()
                         .w_full()
@@ -1985,7 +1990,7 @@ impl Render for Sidebar {
                 let tree = Self::build_file_tree(&unstaged_files);
                 let mut ctx = FileRowCtx { staged: false, indent: px(16.0), file_idx: 0, colors: &colors };
                 let unstaged_body = div().id("unstaged-body").v_flex().w_full().flex_shrink_0();
-                panel = panel.child(self.render_file_tree(
+                content = content.child(self.render_file_tree(
                     unstaged_body,
                     &tree,
                     ("unstaged", "", 0),
@@ -1996,6 +2001,14 @@ impl Render for Sidebar {
         }
 
         let _ = nav_idx; // Suppress unused warning
-        panel
+        panel.child(
+            div()
+                .id("sidebar-scroll")
+                .v_flex()
+                .w_full()
+                .flex_1()
+                .overflow_y_scroll()
+                .child(content),
+        )
     }
 }

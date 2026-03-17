@@ -4,17 +4,10 @@ use rgitui_theme::{ActiveTheme, Color, StyledExt};
 
 use crate::Label;
 
-/// A simple text tooltip (stateless, for inline use).
-#[derive(IntoElement)]
-pub struct Tooltip {
-    text: SharedString,
-}
+/// Factory for creating tooltip closures suitable for GPUI's `.tooltip()` API.
+pub struct Tooltip;
 
 impl Tooltip {
-    pub fn new(text: impl Into<SharedString>) -> Self {
-        Self { text: text.into() }
-    }
-
     /// Create a tooltip closure suitable for GPUI's `.tooltip()` method.
     /// Returns a closure that constructs a `TooltipView` as an `AnyView`.
     pub fn text(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView {
@@ -45,16 +38,6 @@ impl Tooltip {
             })
             .into()
         }
-    }
-}
-
-impl RenderOnce for Tooltip {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        div()
-            .elevation_2(cx)
-            .px_2()
-            .py_1()
-            .child(Label::new(self.text).size(crate::LabelSize::Small))
     }
 }
 

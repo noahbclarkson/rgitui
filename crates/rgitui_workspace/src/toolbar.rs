@@ -18,8 +18,6 @@ pub enum ToolbarEvent {
     Branch,
     StashSave,
     StashPop,
-    Undo,
-    Redo,
     Refresh,
     Settings,
     Search,

@@ -1,13 +1,13 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, FontWeight, KeyDownEvent,
-    Render, SharedString, Window,
+    div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, FontWeight,
+    KeyDownEvent, Render, SharedString, Window,
 };
 use rgitui_settings::{AiSettings, GitProviderSettings, GitSettings, SettingsState};
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, Icon, IconName, IconSize, Label,
-    LabelSize,
+    LabelSize, TextInput, TextInputEvent,
 };
 
 /// Events emitted by the settings modal.
@@ -27,17 +27,10 @@ enum SettingsSection {
     General,
 }
 
-/// Which text field is currently focused for editing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FocusedField {
-    None,
+enum MaskedField {
     AiApiKey,
     GitHttpsToken,
-    GitSshKeyPath,
-    GitGpgKeyId,
-    ProviderDisplayName,
-    ProviderHost,
-    ProviderUsername,
     ProviderToken,
 }
 
@@ -53,21 +46,11 @@ struct EditableGitProvider {
     use_for_https: bool,
 }
 
-struct TextInputCfg {
-    placeholder: &'static str,
-    masked: bool,
-    icon: IconName,
-}
-
 /// The settings modal.
 pub struct SettingsModal {
     visible: bool,
     focus_handle: FocusHandle,
     active_section: SettingsSection,
-
-    // Text input state
-    focused_field: FocusedField,
-    cursor_pos: usize,
 
     // Theme state
     selected_theme: String,
@@ -75,15 +58,14 @@ pub struct SettingsModal {
 
     // AI state
     ai_provider: String,
-    ai_api_key: String,
     ai_model: String,
     ai_commit_style: String,
     ai_enabled: bool,
 
+    // AI text editors
+    ai_api_key_editor: Entity<TextInput>,
+
     // Git state
-    git_https_token: String,
-    git_ssh_key_path: String,
-    git_gpg_key_id: String,
     git_sign_commits: bool,
     git_providers: Vec<EditableGitProvider>,
     selected_provider_index: usize,
@@ -92,6 +74,17 @@ pub struct SettingsModal {
     show_ai_api_key: bool,
     show_git_https_token: bool,
     show_provider_token: bool,
+
+    // Git text editors
+    git_https_token_editor: Entity<TextInput>,
+    git_ssh_key_path_editor: Entity<TextInput>,
+    git_gpg_key_id_editor: Entity<TextInput>,
+
+    // Provider text editors (slot editors for the currently selected provider)
+    provider_display_name_editor: Entity<TextInput>,
+    provider_host_editor: Entity<TextInput>,
+    provider_username_editor: Entity<TextInput>,
+    provider_token_editor: Entity<TextInput>,
 
     // General state
     max_recent_repos: usize,
@@ -146,59 +139,212 @@ impl SettingsModal {
             (settings, themes)
         });
 
+        let ai_api_key_val = cx.global::<SettingsState>().ai_api_key().unwrap_or_default();
+        let git_https_token_val = cx
+            .global::<SettingsState>()
+            .git_https_token()
+            .unwrap_or_default();
+        let git_ssh_key_path_val = settings.git.ssh_key_path.clone().unwrap_or_default();
+        let git_gpg_key_id_val = settings.git.gpg_key_id.clone().unwrap_or_default();
+
+        let git_providers: Vec<EditableGitProvider> = settings
+            .git
+            .providers
+            .iter()
+            .map(|provider| EditableGitProvider {
+                id: provider.id.clone(),
+                kind: provider.kind.clone(),
+                display_name: provider.display_name.clone(),
+                host: provider.host.clone(),
+                username: if provider.username
+                    == Self::default_provider_username(&provider.kind)
+                {
+                    String::new()
+                } else {
+                    provider.username.clone()
+                },
+                token: cx
+                    .global::<SettingsState>()
+                    .provider_token(&provider.id)
+                    .unwrap_or_default(),
+                has_token: provider.has_token,
+                use_for_https: provider.use_for_https,
+            })
+            .collect();
+
+        let ai_api_key_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Click to enter API key...");
+            ti.set_masked(true);
+            if !ai_api_key_val.is_empty() {
+                ti.set_text(&ai_api_key_val, cx);
+            }
+            ti
+        });
+
+        let git_https_token_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Paste a generic HTTPS token only if you need a fallback...");
+            ti.set_masked(true);
+            if !git_https_token_val.is_empty() {
+                ti.set_text(&git_https_token_val, cx);
+            }
+            ti
+        });
+
+        let git_ssh_key_path_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("~/.ssh/id_ed25519 (default)");
+            if !git_ssh_key_path_val.is_empty() {
+                ti.set_text(&git_ssh_key_path_val, cx);
+            }
+            ti
+        });
+
+        let git_gpg_key_id_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("No explicit GPG key configured");
+            if !git_gpg_key_id_val.is_empty() {
+                ti.set_text(&git_gpg_key_id_val, cx);
+            }
+            ti
+        });
+
+        let first_provider = git_providers.first();
+
+        let provider_display_name_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Work / Personal / Client");
+            if let Some(p) = first_provider {
+                ti.set_text(&p.display_name, cx);
+            }
+            ti
+        });
+
+        let provider_host_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("github.com");
+            if let Some(p) = first_provider {
+                ti.set_text(&p.host, cx);
+            }
+            ti
+        });
+
+        let provider_username_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Usually left empty");
+            if let Some(p) = first_provider {
+                ti.set_text(&p.username, cx);
+            }
+            ti
+        });
+
+        let provider_token_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Paste the access token for this account...");
+            ti.set_masked(true);
+            if let Some(p) = first_provider {
+                ti.set_text(&p.token, cx);
+            }
+            ti
+        });
+
+        cx.subscribe(&ai_api_key_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(_) = event {
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
+        cx.subscribe(&git_https_token_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(_) = event {
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
+        cx.subscribe(&git_ssh_key_path_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(_) = event {
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
+        cx.subscribe(&git_gpg_key_id_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(_) = event {
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
+        cx.subscribe(&provider_display_name_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(text) = event {
+                if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index) {
+                    provider.display_name = text.clone();
+                }
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
+        cx.subscribe(&provider_host_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(text) = event {
+                if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index) {
+                    provider.host = text.clone();
+                }
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
+        cx.subscribe(&provider_username_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(text) = event {
+                if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index) {
+                    provider.username = text.clone();
+                }
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
+        cx.subscribe(&provider_token_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(text) = event {
+                if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index) {
+                    provider.token = text.clone();
+                    provider.has_token = !provider.token.is_empty();
+                }
+                this.complete_browser_onboarding_for_current_provider();
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
         Self {
             visible: false,
             focus_handle: cx.focus_handle(),
             active_section: SettingsSection::Theme,
-            focused_field: FocusedField::None,
-            cursor_pos: 0,
             selected_theme: settings.theme.clone(),
             available_themes,
             ai_provider: settings.ai.provider.clone(),
-            ai_api_key: cx
-                .global::<SettingsState>()
-                .ai_api_key()
-                .unwrap_or_default(),
             ai_model: settings.ai.model.clone(),
             ai_commit_style: settings.ai.commit_style.clone(),
             ai_enabled: settings.ai.enabled,
-            git_https_token: cx
-                .global::<SettingsState>()
-                .git_https_token()
-                .unwrap_or_default(),
-            git_ssh_key_path: settings.git.ssh_key_path.clone().unwrap_or_default(),
-            git_gpg_key_id: settings.git.gpg_key_id.clone().unwrap_or_default(),
+            ai_api_key_editor,
             git_sign_commits: settings.git.sign_commits,
-            git_providers: settings
-                .git
-                .providers
-                .iter()
-                .map(|provider| EditableGitProvider {
-                    id: provider.id.clone(),
-                    kind: provider.kind.clone(),
-                    display_name: provider.display_name.clone(),
-                    host: provider.host.clone(),
-                    username: if provider.username
-                        == Self::default_provider_username(&provider.kind)
-                    {
-                        String::new()
-                    } else {
-                        provider.username.clone()
-                    },
-                    token: cx
-                        .global::<SettingsState>()
-                        .provider_token(&provider.id)
-                        .unwrap_or_default(),
-                    has_token: provider.has_token,
-                    use_for_https: provider.use_for_https,
-                })
-                .collect(),
+            git_providers,
             selected_provider_index: 0,
             expanded_provider_kind: None,
             pending_browser_auth_provider_id: None,
             show_ai_api_key: false,
             show_git_https_token: false,
             show_provider_token: false,
+            git_https_token_editor,
+            git_ssh_key_path_editor,
+            git_gpg_key_id_editor,
+            provider_display_name_editor,
+            provider_host_editor,
+            provider_username_editor,
+            provider_token_editor,
             max_recent_repos: settings.max_recent_repos,
             feedback_message: None,
             feedback_is_error: false,
@@ -233,51 +379,65 @@ impl SettingsModal {
     }
 
     fn reload_from_settings(&mut self, cx: &mut Context<Self>) {
-        cx.read_global::<SettingsState, _>(|state, _cx| {
-            let s = state.settings();
-            self.selected_theme = s.theme.clone();
-            self.ai_provider = s.ai.provider.clone();
-            self.ai_api_key = state.ai_api_key().unwrap_or_default();
-            self.ai_model = s.ai.model.clone();
-            self.ai_commit_style = s.ai.commit_style.clone();
-            self.ai_enabled = s.ai.enabled;
-            self.git_https_token = state.git_https_token().unwrap_or_default();
-            self.git_ssh_key_path = s.git.ssh_key_path.clone().unwrap_or_default();
-            self.git_gpg_key_id = s.git.gpg_key_id.clone().unwrap_or_default();
-            self.git_sign_commits = s.git.sign_commits;
-            self.git_providers = s
-                .git
-                .providers
-                .iter()
-                .map(|provider| EditableGitProvider {
-                    id: provider.id.clone(),
-                    kind: provider.kind.clone(),
-                    display_name: provider.display_name.clone(),
-                    host: provider.host.clone(),
-                    username: if provider.username
-                        == Self::default_provider_username(&provider.kind)
-                    {
-                        String::new()
-                    } else {
-                        provider.username.clone()
-                    },
-                    token: state.provider_token(&provider.id).unwrap_or_default(),
-                    has_token: provider.has_token,
-                    use_for_https: provider.use_for_https,
-                })
-                .collect();
-            self.selected_provider_index = self
-                .selected_provider_index
-                .min(self.git_providers.len().saturating_sub(1));
-            self.expanded_provider_kind = None;
-            self.pending_browser_auth_provider_id = None;
-            self.show_ai_api_key = false;
-            self.show_git_https_token = false;
-            self.show_provider_token = false;
-            self.max_recent_repos = s.max_recent_repos;
-            self.feedback_message = None;
-            self.feedback_is_error = false;
-        });
+        let (ai_api_key_val, git_https_token_val, git_ssh_key_path_val, git_gpg_key_id_val) =
+            cx.read_global::<SettingsState, _>(|state, _cx| {
+                let s = state.settings();
+                self.selected_theme = s.theme.clone();
+                self.ai_provider = s.ai.provider.clone();
+                self.ai_model = s.ai.model.clone();
+                self.ai_commit_style = s.ai.commit_style.clone();
+                self.ai_enabled = s.ai.enabled;
+                self.git_sign_commits = s.git.sign_commits;
+                self.git_providers = s
+                    .git
+                    .providers
+                    .iter()
+                    .map(|provider| EditableGitProvider {
+                        id: provider.id.clone(),
+                        kind: provider.kind.clone(),
+                        display_name: provider.display_name.clone(),
+                        host: provider.host.clone(),
+                        username: if provider.username
+                            == Self::default_provider_username(&provider.kind)
+                        {
+                            String::new()
+                        } else {
+                            provider.username.clone()
+                        },
+                        token: state.provider_token(&provider.id).unwrap_or_default(),
+                        has_token: provider.has_token,
+                        use_for_https: provider.use_for_https,
+                    })
+                    .collect();
+                self.selected_provider_index = self
+                    .selected_provider_index
+                    .min(self.git_providers.len().saturating_sub(1));
+                self.expanded_provider_kind = None;
+                self.pending_browser_auth_provider_id = None;
+                self.show_ai_api_key = false;
+                self.show_git_https_token = false;
+                self.show_provider_token = false;
+                self.max_recent_repos = s.max_recent_repos;
+                self.feedback_message = None;
+                self.feedback_is_error = false;
+                (
+                    state.ai_api_key().unwrap_or_default(),
+                    state.git_https_token().unwrap_or_default(),
+                    s.git.ssh_key_path.clone().unwrap_or_default(),
+                    s.git.gpg_key_id.clone().unwrap_or_default(),
+                )
+            });
+
+        self.ai_api_key_editor
+            .update(cx, |e, cx| e.set_text(ai_api_key_val, cx));
+        self.git_https_token_editor
+            .update(cx, |e, cx| e.set_text(git_https_token_val, cx));
+        self.git_ssh_key_path_editor
+            .update(cx, |e, cx| e.set_text(git_ssh_key_path_val, cx));
+        self.git_gpg_key_id_editor
+            .update(cx, |e, cx| e.set_text(git_gpg_key_id_val, cx));
+
+        self.sync_provider_editors(cx);
     }
 
     fn apply_theme(&mut self, theme_name: String, cx: &mut Context<Self>) {
@@ -296,6 +456,11 @@ impl SettingsModal {
     }
 
     fn save_settings(&mut self, cx: &mut Context<Self>) {
+        let ai_api_key = self.ai_api_key_editor.read(cx).text().to_string();
+        let git_https_token = self.git_https_token_editor.read(cx).text().to_string();
+        let git_ssh_key_path = self.git_ssh_key_path_editor.read(cx).text().to_string();
+        let git_gpg_key_id = self.git_gpg_key_id_editor.read(cx).text().to_string();
+
         let result = cx.update_global::<SettingsState, _>(|state, _cx| -> anyhow::Result<()> {
             let providers: Vec<GitProviderSettings> = self
                 .git_providers
@@ -320,32 +485,33 @@ impl SettingsModal {
             state.settings_mut().ai = AiSettings {
                 provider: self.ai_provider.clone(),
                 legacy_api_key: None,
-                has_api_key: !self.ai_api_key.trim().is_empty(),
+                has_api_key: !ai_api_key.trim().is_empty(),
                 model: self.ai_model.clone(),
                 commit_style: self.ai_commit_style.clone(),
                 enabled: self.ai_enabled,
             };
             state.settings_mut().git = GitSettings {
                 legacy_https_token: None,
-                has_https_token: !self.git_https_token.trim().is_empty(),
-                ssh_key_path: if self.git_ssh_key_path.trim().is_empty() {
+                has_https_token: !git_https_token.trim().is_empty(),
+                ssh_key_path: if git_ssh_key_path.trim().is_empty() {
                     None
                 } else {
-                    Some(self.git_ssh_key_path.trim().to_string())
+                    Some(git_ssh_key_path.trim().to_string())
                 },
-                gpg_key_id: if self.git_gpg_key_id.trim().is_empty() {
+                gpg_key_id: if git_gpg_key_id.trim().is_empty() {
                     None
                 } else {
-                    Some(self.git_gpg_key_id.trim().to_string())
+                    Some(git_gpg_key_id.trim().to_string())
                 },
                 sign_commits: self.git_sign_commits,
                 providers,
             };
             state.settings_mut().max_recent_repos = self.max_recent_repos;
 
-            state.set_ai_api_key(Some(self.ai_api_key.trim()).filter(|v| !v.is_empty()))?;
-            state
-                .set_git_https_token(Some(self.git_https_token.trim()).filter(|v| !v.is_empty()))?;
+            state.set_ai_api_key(Some(ai_api_key.trim()).filter(|v| !v.is_empty()))?;
+            state.set_git_https_token(
+                Some(git_https_token.trim()).filter(|v| !v.is_empty()),
+            )?;
             state.replace_git_providers(
                 self.git_providers
                     .iter()
@@ -391,40 +557,29 @@ impl SettingsModal {
         cx.notify();
     }
 
-    /// Get a mutable reference to the currently focused text field.
-    fn focus_field(&mut self, field: FocusedField, cx: &mut Context<Self>) {
-        self.focused_field = field;
-        // Set cursor to end of the focused field
-        self.cursor_pos = match field {
-            FocusedField::None => 0,
-            FocusedField::AiApiKey => self.ai_api_key.len(),
-            FocusedField::GitHttpsToken => self.git_https_token.len(),
-            FocusedField::GitSshKeyPath => self.git_ssh_key_path.len(),
-            FocusedField::GitGpgKeyId => self.git_gpg_key_id.len(),
-            FocusedField::ProviderDisplayName => self
-                .current_provider()
-                .map(|provider| provider.display_name.len())
-                .unwrap_or(0),
-            FocusedField::ProviderHost => self
-                .current_provider()
-                .map(|provider| provider.host.len())
-                .unwrap_or(0),
-            FocusedField::ProviderUsername => self
-                .current_provider()
-                .map(|provider| provider.username.len())
-                .unwrap_or(0),
-            FocusedField::ProviderToken => self
-                .current_provider()
-                .map(|provider| provider.token.len())
-                .unwrap_or(0),
-        };
-        cx.notify();
-    }
-
-    fn clear_focused_field(&mut self, cx: &mut Context<Self>) {
-        if self.focused_field != FocusedField::None {
-            self.focused_field = FocusedField::None;
-            cx.notify();
+    fn sync_provider_editors(&self, cx: &mut Context<Self>) {
+        if let Some(provider) = self.current_provider() {
+            let dn = provider.display_name.clone();
+            let host = provider.host.clone();
+            let uname = provider.username.clone();
+            let token = provider.token.clone();
+            self.provider_display_name_editor
+                .update(cx, |e, cx| e.set_text(dn, cx));
+            self.provider_host_editor
+                .update(cx, |e, cx| e.set_text(host, cx));
+            self.provider_username_editor
+                .update(cx, |e, cx| e.set_text(uname, cx));
+            self.provider_token_editor
+                .update(cx, |e, cx| e.set_text(token, cx));
+        } else {
+            self.provider_display_name_editor
+                .update(cx, |e, cx| e.clear(cx));
+            self.provider_host_editor
+                .update(cx, |e, cx| e.clear(cx));
+            self.provider_username_editor
+                .update(cx, |e, cx| e.clear(cx));
+            self.provider_token_editor
+                .update(cx, |e, cx| e.clear(cx));
         }
     }
 
@@ -443,13 +598,20 @@ impl SettingsModal {
             .unwrap_or(false)
     }
 
-    fn focus_provider_token_for_kind(&mut self, kind: &str, cx: &mut Context<Self>) {
+    fn focus_provider_token_for_kind(
+        &mut self,
+        kind: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.provider_indices_for_kind(kind).is_empty() {
             self.add_provider(kind, cx);
         } else {
             self.select_provider_kind(kind, cx);
         }
-        self.focus_field(FocusedField::ProviderToken, cx);
+        self.sync_provider_editors(cx);
+        self.provider_token_editor
+            .update(cx, |e, cx| e.focus(window, cx));
         self.feedback_message = Some(
             "Paste the token into the selected profile. It will be saved to your OS keychain."
                 .into(),
@@ -458,7 +620,12 @@ impl SettingsModal {
         cx.notify();
     }
 
-    fn paste_provider_token_for_kind(&mut self, kind: &str, cx: &mut Context<Self>) {
+    fn paste_provider_token_for_kind(
+        &mut self,
+        kind: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.provider_indices_for_kind(kind).is_empty() {
             self.add_provider(kind, cx);
         } else {
@@ -473,13 +640,15 @@ impl SettingsModal {
 
         if let Some(token) = clipboard_text {
             if let Some(provider) = self.current_provider_mut() {
-                provider.token = token;
+                provider.token = token.clone();
                 provider.has_token = !provider.token.is_empty();
             }
+            self.provider_token_editor
+                .update(cx, |e, cx| e.set_text(token, cx));
             self.complete_browser_onboarding_for_current_provider();
             self.save_settings(cx);
         } else {
-            self.focus_provider_token_for_kind(kind, cx);
+            self.focus_provider_token_for_kind(kind, window, cx);
         }
     }
 
@@ -519,7 +688,7 @@ impl SettingsModal {
         if let Some(index) = self.provider_indices_for_kind(kind).first().copied() {
             self.selected_provider_index = index;
         }
-        self.focused_field = FocusedField::None;
+        self.sync_provider_editors(cx);
         cx.notify();
     }
 
@@ -562,6 +731,7 @@ impl SettingsModal {
         });
         self.selected_provider_index = self.git_providers.len().saturating_sub(1);
         self.expanded_provider_kind = Some(kind.to_string());
+        self.sync_provider_editors(cx);
         self.feedback_message = Some("Added a new auth profile.".into());
         self.feedback_is_error = false;
         self.save_settings(cx);
@@ -591,31 +761,42 @@ impl SettingsModal {
         self.selected_provider_index = self
             .selected_provider_index
             .min(self.git_providers.len().saturating_sub(1));
+        self.sync_provider_editors(cx);
         self.feedback_message = Some(format!("Removed provider '{}'.", provider.display_name));
         self.feedback_is_error = false;
         self.save_settings(cx);
     }
 
-    fn is_field_unmasked(&self, field: FocusedField) -> bool {
+    fn is_field_unmasked(&self, field: MaskedField) -> bool {
         match field {
-            FocusedField::AiApiKey => self.show_ai_api_key,
-            FocusedField::GitHttpsToken => self.show_git_https_token,
-            FocusedField::ProviderToken => self.show_provider_token,
-            _ => true,
+            MaskedField::AiApiKey => self.show_ai_api_key,
+            MaskedField::GitHttpsToken => self.show_git_https_token,
+            MaskedField::ProviderToken => self.show_provider_token,
         }
     }
 
-    fn toggle_mask_visibility(&mut self, field: FocusedField, cx: &mut Context<Self>) {
+    fn toggle_mask_visibility(&mut self, field: MaskedField, cx: &mut Context<Self>) {
         match field {
-            FocusedField::AiApiKey => self.show_ai_api_key = !self.show_ai_api_key,
-            FocusedField::GitHttpsToken => self.show_git_https_token = !self.show_git_https_token,
-            FocusedField::ProviderToken => self.show_provider_token = !self.show_provider_token,
-            _ => {}
+            MaskedField::AiApiKey => {
+                self.show_ai_api_key = !self.show_ai_api_key;
+                let masked = !self.show_ai_api_key;
+                self.ai_api_key_editor.update(cx, |e, _cx| e.set_masked(masked));
+            }
+            MaskedField::GitHttpsToken => {
+                self.show_git_https_token = !self.show_git_https_token;
+                let masked = !self.show_git_https_token;
+                self.git_https_token_editor.update(cx, |e, _cx| e.set_masked(masked));
+            }
+            MaskedField::ProviderToken => {
+                self.show_provider_token = !self.show_provider_token;
+                let masked = !self.show_provider_token;
+                self.provider_token_editor.update(cx, |e, _cx| e.set_masked(masked));
+            }
         }
         cx.notify();
     }
 
-    fn import_from_clipboard(&mut self, field: FocusedField, cx: &mut Context<Self>) {
+    fn import_from_clipboard(&mut self, field: MaskedField, cx: &mut Context<Self>) {
         let Some(clipboard) = cx.read_from_clipboard() else {
             self.feedback_message = Some("Clipboard did not contain text.".into());
             self.feedback_is_error = true;
@@ -632,16 +813,23 @@ impl SettingsModal {
 
         let imported = text.lines().next().unwrap_or("").trim().to_string();
         match field {
-            FocusedField::AiApiKey => self.ai_api_key = imported,
-            FocusedField::GitHttpsToken => self.git_https_token = imported,
-            FocusedField::ProviderToken => {
+            MaskedField::AiApiKey => {
+                self.ai_api_key_editor
+                    .update(cx, |e, cx| e.set_text(&imported, cx));
+            }
+            MaskedField::GitHttpsToken => {
+                self.git_https_token_editor
+                    .update(cx, |e, cx| e.set_text(&imported, cx));
+            }
+            MaskedField::ProviderToken => {
                 if let Some(provider) = self.current_provider_mut() {
-                    provider.token = imported;
+                    provider.token = imported.clone();
                     provider.has_token = !provider.token.is_empty();
                 }
+                self.provider_token_editor
+                    .update(cx, |e, cx| e.set_text(&imported, cx));
                 self.complete_browser_onboarding_for_current_provider();
             }
-            _ => {}
         }
 
         self.feedback_message = Some("Imported secret from clipboard.".into());
@@ -712,153 +900,9 @@ impl SettingsModal {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let keystroke = &event.keystroke;
-        let key = keystroke.key.as_str();
-        let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
-
+        let key = event.keystroke.key.as_str();
         if key == "escape" {
-            if self.focused_field != FocusedField::None {
-                self.focused_field = FocusedField::None;
-                cx.notify();
-            } else {
-                self.dismiss(cx);
-            }
-            return;
-        }
-
-        // If a text field is focused, handle text input.
-        // We use a macro to get a mutable reference to the focused field's string
-        // without borrowing all of `self`, so we can still access `self.cursor_pos`.
-        macro_rules! focused_text {
-            ($self:ident) => {
-                match $self.focused_field {
-                    FocusedField::None => None,
-                    FocusedField::AiApiKey => Some(&mut $self.ai_api_key),
-                    FocusedField::GitHttpsToken => Some(&mut $self.git_https_token),
-                    FocusedField::GitSshKeyPath => Some(&mut $self.git_ssh_key_path),
-                    FocusedField::GitGpgKeyId => Some(&mut $self.git_gpg_key_id),
-                    FocusedField::ProviderDisplayName => $self
-                        .git_providers
-                        .get_mut($self.selected_provider_index)
-                        .map(|provider| &mut provider.display_name),
-                    FocusedField::ProviderHost => $self
-                        .git_providers
-                        .get_mut($self.selected_provider_index)
-                        .map(|provider| &mut provider.host),
-                    FocusedField::ProviderUsername => $self
-                        .git_providers
-                        .get_mut($self.selected_provider_index)
-                        .map(|provider| &mut provider.username),
-                    FocusedField::ProviderToken => $self
-                        .git_providers
-                        .get_mut($self.selected_provider_index)
-                        .map(|provider| &mut provider.token),
-                }
-            };
-        }
-
-        if self.focused_field != FocusedField::None {
-            if ctrl {
-                match key {
-                    "a" => {
-                        if let Some(text) = focused_text!(self) {
-                            self.cursor_pos = text.len();
-                        }
-                        cx.notify();
-                        return;
-                    }
-                    "v" => {
-                        if let Some(clipboard) = cx.read_from_clipboard() {
-                            if let Some(paste) = clipboard.text() {
-                                let line = paste.lines().next().unwrap_or("");
-                                if let Some(text) = focused_text!(self) {
-                                    let pos = self.cursor_pos.min(text.len());
-                                    text.insert_str(pos, line);
-                                    self.cursor_pos = pos + line.len();
-                                }
-                                if self.focused_field == FocusedField::ProviderToken {
-                                    self.complete_browser_onboarding_for_current_provider();
-                                }
-                                self.save_settings(cx);
-                            }
-                        }
-                        return;
-                    }
-                    _ => {}
-                }
-                return;
-            }
-
-            match key {
-                "backspace" => {
-                    if self.cursor_pos > 0 {
-                        if let Some(text) = focused_text!(self) {
-                            let prev = prev_char_boundary(text, self.cursor_pos);
-                            text.drain(prev..self.cursor_pos);
-                            self.cursor_pos = prev;
-                        }
-                        if self.focused_field == FocusedField::ProviderToken {
-                            self.complete_browser_onboarding_for_current_provider();
-                        }
-                        self.save_settings(cx);
-                    }
-                }
-                "delete" => {
-                    if let Some(text) = focused_text!(self) {
-                        if self.cursor_pos < text.len() {
-                            let next = next_char_boundary(text, self.cursor_pos);
-                            text.drain(self.cursor_pos..next);
-                            if self.focused_field == FocusedField::ProviderToken {
-                                self.complete_browser_onboarding_for_current_provider();
-                            }
-                            self.save_settings(cx);
-                        }
-                    }
-                }
-                "left" => {
-                    if self.cursor_pos > 0 {
-                        if let Some(text) = focused_text!(self) {
-                            self.cursor_pos = prev_char_boundary(text, self.cursor_pos);
-                        }
-                        cx.notify();
-                    }
-                }
-                "right" => {
-                    if let Some(text) = focused_text!(self) {
-                        if self.cursor_pos < text.len() {
-                            self.cursor_pos = next_char_boundary(text, self.cursor_pos);
-                        }
-                    }
-                    cx.notify();
-                }
-                "home" => {
-                    self.cursor_pos = 0;
-                    cx.notify();
-                }
-                "end" => {
-                    if let Some(text) = focused_text!(self) {
-                        self.cursor_pos = text.len();
-                    }
-                    cx.notify();
-                }
-                "tab" | "enter" => {
-                    self.focused_field = FocusedField::None;
-                    cx.notify();
-                }
-                _ => {
-                    if let Some(key_char) = &keystroke.key_char {
-                        if let Some(text) = focused_text!(self) {
-                            let pos = self.cursor_pos.min(text.len());
-                            text.insert_str(pos, key_char);
-                            self.cursor_pos = pos + key_char.len();
-                        }
-                        if self.focused_field == FocusedField::ProviderToken {
-                            self.complete_browser_onboarding_for_current_provider();
-                        }
-                        self.save_settings(cx);
-                    }
-                }
-            }
+            self.dismiss(cx);
         }
     }
 
@@ -989,127 +1033,66 @@ impl SettingsModal {
         row
     }
 
-    fn text_input(
+    fn masked_editor_row(
         &self,
         id: &'static str,
-        field: FocusedField,
-        value: &str,
-        cfg: TextInputCfg,
+        editor: &Entity<TextInput>,
+        masked_field: MaskedField,
+        icon: IconName,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let placeholder = cfg.placeholder;
-        let masked = cfg.masked;
-        let icon = cfg.icon;
-        let colors = cx.colors();
-        let is_focused = self.focused_field == field;
-        let cursor_pos = self.cursor_pos;
-        let show_unmasked = self.is_field_unmasked(field);
-        let display_value = if masked && !show_unmasked {
-            "*".repeat(value.len())
-        } else {
-            value.to_string()
-        };
-        let cursor_pos = cursor_pos.min(display_value.len());
-        let (before_cursor, after_cursor) = if is_focused {
-            (
-                display_value[..cursor_pos].to_string(),
-                display_value[cursor_pos..].to_string(),
-            )
-        } else {
-            (display_value.clone(), String::new())
-        };
-
-        let mut input_content = div().h_flex().items_center().min_w_0();
-        if value.is_empty() && !is_focused {
-            input_content = input_content.child(
-                Label::new(placeholder)
-                    .size(LabelSize::Small)
-                    .color(Color::Placeholder),
-            );
-        } else {
-            if !before_cursor.is_empty() {
-                input_content = input_content.child(
-                    Label::new(SharedString::from(before_cursor))
-                        .size(LabelSize::Small)
-                        .color(Color::Default),
-                );
-            }
-            if is_focused {
-                input_content = input_content.child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(18.))
-                        .bg(colors.border_focused)
-                        .mr(px(1.)),
-                );
-            }
-            if !after_cursor.is_empty() {
-                input_content = input_content.child(
-                    Label::new(SharedString::from(after_cursor))
-                        .size(LabelSize::Small)
-                        .color(Color::Default),
-                );
-            }
-        }
-
+    ) -> gpui::Div {
+        let show_unmasked = self.is_field_unmasked(masked_field);
         div()
-            .id(id)
             .h_flex()
             .w_full()
-            .h(px(36.))
-            .px(px(12.))
+            .gap(px(8.))
             .items_center()
-            .bg(colors.editor_background)
-            .border_1()
-            .border_color(if is_focused {
-                colors.border_focused
-            } else {
-                colors.border
-            })
-            .rounded(px(6.))
-            .cursor_text()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                this.focus_field(field, cx);
-            }))
             .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
-            .child(div().flex_1().min_w_0().pl(px(8.)).child(input_content))
-            .when(masked, |el| {
-                el.child(
-                    Button::new(
-                        ElementId::Name(SharedString::from(format!("{id}-import"))),
-                        "Paste",
-                    )
-                    .style(ButtonStyle::Subtle)
-                    .size(ButtonSize::Compact)
-                    .icon(IconName::Copy)
-                    .on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.import_from_clipboard(field, cx);
-                        },
-                    )),
+            .child(div().flex_1().min_w_0().child(editor.clone()))
+            .child(
+                Button::new(
+                    ElementId::Name(SharedString::from(format!("{id}-import"))),
+                    "Paste",
                 )
-                .child(
-                    Button::new(
-                        ElementId::Name(SharedString::from(format!("{id}-toggle-mask"))),
-                        if show_unmasked { "Hide" } else { "Show" },
-                    )
-                    .style(ButtonStyle::Subtle)
-                    .size(ButtonSize::Compact)
-                    .icon(if show_unmasked {
-                        IconName::EyeOff
-                    } else {
-                        IconName::Eye
-                    })
-                    .on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_mask_visibility(field, cx);
-                        },
-                    )),
+                .style(ButtonStyle::Subtle)
+                .size(ButtonSize::Compact)
+                .icon(IconName::Copy)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.import_from_clipboard(masked_field, cx);
+                })),
+            )
+            .child(
+                Button::new(
+                    ElementId::Name(SharedString::from(format!("{id}-toggle-mask"))),
+                    if show_unmasked { "Hide" } else { "Show" },
                 )
-            })
+                .style(ButtonStyle::Subtle)
+                .size(ButtonSize::Compact)
+                .icon(if show_unmasked {
+                    IconName::EyeOff
+                } else {
+                    IconName::Eye
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_mask_visibility(masked_field, cx);
+                })),
+            )
+    }
+
+    fn icon_editor_row(
+        &self,
+        editor: &Entity<TextInput>,
+        icon: IconName,
+    ) -> gpui::Div {
+        div()
+            .h_flex()
+            .w_full()
+            .gap(px(8.))
+            .items_center()
+            .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
+            .child(div().flex_1().min_w_0().child(editor.clone()))
     }
 
     // ── Sidebar navigation ──────────────────────────────────────────────
@@ -1134,10 +1117,7 @@ impl SettingsModal {
             .pt(px(12.))
             .pb(px(12.))
             .gap(px(2.))
-            .px(px(8.))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.clear_focused_field(cx);
-            }));
+            .px(px(8.));
 
         // Header
         sidebar = sidebar.child(
@@ -1461,11 +1441,11 @@ impl SettingsModal {
                 "API Key",
                 "Stored in your OS keychain and only materialized in memory when needed.",
             ))
-            .child(self.text_input(
+            .child(self.masked_editor_row(
                 "ai-api-key-input",
-                FocusedField::AiApiKey,
-                &self.ai_api_key,
-                TextInputCfg { placeholder: "Click to enter API key...", masked: true, icon: IconName::Eye },
+                &self.ai_api_key_editor,
+                MaskedField::AiApiKey,
+                IconName::Eye,
                 cx,
             ));
         section = section.child(key_card);
@@ -1640,7 +1620,7 @@ impl SettingsModal {
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.selected_provider_index = index;
-                            this.focused_field = FocusedField::None;
+                            this.sync_provider_editors(cx);
                             cx.notify();
                         }))
                         .child(
@@ -1721,10 +1701,13 @@ impl SettingsModal {
                                         IconName::ExternalLink
                                     })
                                     .on_click(cx.listener(
-                                        move |this, _: &ClickEvent, _, cx| {
+                                        move |this, _: &ClickEvent, window, cx| {
                                             this.selected_provider_index = remove_index;
+                                            this.sync_provider_editors(cx);
                                             if connect_kind == "custom" {
-                                                this.focus_field(FocusedField::ProviderHost, cx);
+                                                this.provider_host_editor.update(cx, |e, cx| {
+                                                    e.focus(window, cx);
+                                                });
                                             } else {
                                                 this.connect_provider_in_browser(
                                                     &connect_kind,
@@ -1809,9 +1792,11 @@ impl SettingsModal {
                             } else {
                                 IconName::ExternalLink
                             })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 if connect_kind == "custom" {
-                                    this.focus_field(FocusedField::ProviderHost, cx);
+                                    this.provider_host_editor.update(cx, |e, cx| {
+                                        e.focus(window, cx);
+                                    });
                                 } else {
                                     this.connect_provider_in_browser(&connect_kind, false, cx);
                                 }
@@ -1822,8 +1807,8 @@ impl SettingsModal {
                                 .style(ButtonStyle::Outlined)
                                 .size(ButtonSize::Compact)
                                 .icon(IconName::Copy)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.paste_provider_token_for_kind(&paste_kind, cx);
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.paste_provider_token_for_kind(&paste_kind, window, cx);
                                 })),
                         ),
                 )
@@ -1831,12 +1816,9 @@ impl SettingsModal {
                     "Account Label",
                     "Use a clear label like Work, Personal, or Client so switching is obvious.",
                 ))
-                .child(self.text_input(
-                    "provider-display-name",
-                    FocusedField::ProviderDisplayName,
-                    &provider.display_name,
-                    TextInputCfg { placeholder: "Work / Personal / Client", masked: false, icon: IconName::User },
-                    cx,
+                .child(self.icon_editor_row(
+                    &self.provider_display_name_editor,
+                    IconName::User,
                 ))
                 .child(Self::setting_label(
                     "Host",
@@ -1848,22 +1830,19 @@ impl SettingsModal {
                         "Hostname to match against remote URLs, for example git.example.com."
                     },
                 ))
-                .child(self.text_input(
-                    "provider-host",
-                    FocusedField::ProviderHost,
-                    &provider.host,
-                    TextInputCfg { placeholder: default_host, masked: false, icon: IconName::ExternalLink },
-                    cx,
+                .child(self.icon_editor_row(
+                    &self.provider_host_editor,
+                    IconName::ExternalLink,
                 ))
                 .child(Self::setting_label(
                     "Access Token",
                     "Stored in your OS keychain. Use Paste Token if the browser flow does not return credentials automatically.",
                 ))
-                .child(self.text_input(
+                .child(self.masked_editor_row(
                     "provider-token",
-                    FocusedField::ProviderToken,
-                    &provider.token,
-                    TextInputCfg { placeholder: "Paste the access token for this account...", masked: true, icon: IconName::Eye },
+                    &self.provider_token_editor,
+                    MaskedField::ProviderToken,
+                    IconName::Eye,
                     cx,
                 ))
                 .when(show_manual_username, |el| {
@@ -1871,12 +1850,9 @@ impl SettingsModal {
                         "Advanced HTTPS Username",
                         "Leave this empty unless your server explicitly requires a custom username. Built-in providers infer the correct default automatically.",
                     ))
-                    .child(self.text_input(
-                        "provider-username",
-                        FocusedField::ProviderUsername,
-                        &provider.username,
-                        TextInputCfg { placeholder: "Usually left empty", masked: false, icon: IconName::User },
-                        cx,
+                    .child(self.icon_editor_row(
+                        &self.provider_username_editor,
+                        IconName::User,
                     ))
                 })
                 .child(
@@ -1923,11 +1899,11 @@ impl SettingsModal {
                 "Fallback HTTPS Token / PAT",
                 "Used only when no profile-specific account matches the remote host. Leave this empty unless you truly need a generic fallback.",
             ))
-            .child(self.text_input(
+            .child(self.masked_editor_row(
                 "git-https-token-input",
-                FocusedField::GitHttpsToken,
-                &self.git_https_token,
-                TextInputCfg { placeholder: "Paste a generic HTTPS token only if you need a fallback...", masked: true, icon: IconName::Eye },
+                &self.git_https_token_editor,
+                MaskedField::GitHttpsToken,
+                IconName::Eye,
                 cx,
             ));
         section = section.child(https_card);
@@ -1986,15 +1962,13 @@ impl SettingsModal {
                 "SSH Key Path",
                 "Optional explicit private key path. Leave empty to use ssh-agent first and then fall back to automatically detected keys in ~/.ssh.",
             ))
-            .child(self.text_input(
-                "git-ssh-key-input",
-                FocusedField::GitSshKeyPath,
-                &self.git_ssh_key_path,
-                TextInputCfg { placeholder: "~/.ssh/id_ed25519 (default)", masked: false, icon: IconName::File },
-                cx,
+            .child(self.icon_editor_row(
+                &self.git_ssh_key_path_editor,
+                IconName::File,
             ))
             .when_some(detected_ssh_key, |el, key_path| {
-                let already_selected = self.git_ssh_key_path.trim() == key_path;
+                let ssh_path_val = self.git_ssh_key_path_editor.read(cx).text().to_string();
+                let already_selected = ssh_path_val.trim() == key_path;
                 el.child(
                     div()
                         .h_flex()
@@ -2046,7 +2020,8 @@ impl SettingsModal {
                             .size(ButtonSize::Compact)
                             .icon(IconName::Check)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.git_ssh_key_path = key_path.clone();
+                                this.git_ssh_key_path_editor
+                                    .update(cx, |e, cx| e.set_text(key_path.clone(), cx));
                                 this.feedback_message = Some(
                                     "Configured the detected SSH private key for SSH remotes."
                                         .into(),
@@ -2106,12 +2081,9 @@ impl SettingsModal {
                 "GPG Key ID",
                 "Leave empty to use your existing git config default signing key.",
             ))
-            .child(self.text_input(
-                "git-gpg-key-input",
-                FocusedField::GitGpgKeyId,
-                &self.git_gpg_key_id,
-                TextInputCfg { placeholder: "No explicit GPG key configured", masked: false, icon: IconName::Eye },
-                cx,
+            .child(self.icon_editor_row(
+                &self.git_gpg_key_id_editor,
+                IconName::Eye,
             ));
         section = section.child(gpg_card);
 
@@ -2484,9 +2456,6 @@ impl Render for SettingsModal {
                     .flex_1()
                     .h_full()
                     .min_w_0()
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.clear_focused_field(cx);
-                    }))
                     .child(
                         div()
                             .h_flex()
@@ -2545,24 +2514,3 @@ impl Render for SettingsModal {
     }
 }
 
-fn prev_char_boundary(s: &str, pos: usize) -> usize {
-    if pos == 0 {
-        return 0;
-    }
-    let mut p = pos - 1;
-    while p > 0 && !s.is_char_boundary(p) {
-        p -= 1;
-    }
-    p
-}
-
-fn next_char_boundary(s: &str, pos: usize) -> usize {
-    if pos >= s.len() {
-        return s.len();
-    }
-    let mut p = pos + 1;
-    while p < s.len() && !s.is_char_boundary(p) {
-        p += 1;
-    }
-    p
-}

@@ -2,8 +2,8 @@ use anyhow::Result;
 use chrono::Local;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, Bounds, Context, DragMoveEvent, ElementId, Entity, EventEmitter, KeyDownEvent,
-    MouseButton, MouseDownEvent, Pixels, Render, SharedString, Window,
+    canvas, div, px, Bounds, ClickEvent, Context, DragMoveEvent, ElementId, Entity, EventEmitter,
+    KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, SharedString, Window,
 };
 use rgitui_ai::{AiEvent, AiGenerator};
 use rgitui_diff::{DiffViewer, DiffViewerEvent};
@@ -22,10 +22,10 @@ use rgitui_ui::{
 use crate::{
     BranchDialog, BranchDialogEvent, CommandPalette, CommandPaletteEvent, CommitPanel,
     CommitPanelEvent, ConfirmAction, ConfirmDialog, ConfirmDialogEvent, DetailPanel,
-    DetailPanelEvent, InteractiveRebase, InteractiveRebaseEvent, RenameDialog, RenameDialogEvent,
-    RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent, ShortcutsHelp,
-    ShortcutsHelpEvent, Sidebar, SidebarEvent, StatusBar, TagDialog, TagDialogEvent, TitleBar,
-    ToastKind, ToastLayer, Toolbar, ToolbarEvent,
+    DetailPanelEvent, InteractiveRebase, InteractiveRebaseEvent, IssuesPanel, RenameDialog,
+    RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
+    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StatusBar, TagDialog,
+    TagDialogEvent, TitleBar, ToastKind, ToastLayer, Toolbar, ToolbarEvent,
 };
 
 /// Marker types for drag-resize handles — each implements Render to serve as the drag ghost view.
@@ -61,6 +61,13 @@ impl Render for CommitInputResize {
     }
 }
 
+/// Which view is active in the right panel column above the commit panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RightPanelMode {
+    Details,
+    Issues,
+}
+
 /// A single open project tab.
 struct ProjectTab {
     name: String,
@@ -71,6 +78,8 @@ struct ProjectTab {
     sidebar: Entity<Sidebar>,
     commit_panel: Entity<CommitPanel>,
     toolbar: Entity<Toolbar>,
+    issues_panel: Entity<IssuesPanel>,
+    right_panel_mode: RightPanelMode,
 }
 
 /// Events from the workspace.
@@ -1123,9 +1132,13 @@ impl Workspace {
                             .collect();
                         crate::avatar_resolver::resolve_avatars(authors, cx);
                         let has_more = project.read(cx).has_more_commits();
+                        let wt_status = project.read(cx).status().clone();
+                        let wt_staged = wt_status.staged.len();
+                        let wt_unstaged = wt_status.unstaged.len();
                         graph.update(cx, |g, cx| {
                             g.set_commits(commits, cx);
                             g.set_all_loaded(!has_more);
+                            g.set_working_tree_status(wt_staged, wt_unstaged, cx);
                         });
 
                         // Update sidebar
@@ -1133,7 +1146,7 @@ impl Workspace {
                         let tags = project.read(cx).tags().to_vec();
                         let remotes = project.read(cx).remotes().to_vec();
                         let stashes = project.read(cx).stashes().to_vec();
-                        let status = project.read(cx).status().clone();
+                        let status = wt_status;
 
                         sidebar.update(cx, |s, cx| {
                             s.update_branches(branches, cx);
@@ -1545,6 +1558,12 @@ impl Workspace {
                             cx,
                         );
                     }
+                    GraphViewEvent::WorkingTreeSelected => {
+                        let dp = detail_panel_ref.clone();
+                        let dv = diff_viewer.clone();
+                        dp.update(cx, |dp, cx| dp.clear(cx));
+                        dv.update(cx, |dv, cx| dv.clear(cx));
+                    }
                 }
             }
         })
@@ -1701,9 +1720,6 @@ impl Workspace {
                             });
                         }
                     }
-                    ToolbarEvent::Undo | ToolbarEvent::Redo => {
-                        // Not yet implemented
-                    }
                 }
             }
         })
@@ -1721,16 +1737,20 @@ impl Workspace {
                 .collect();
             crate::avatar_resolver::resolve_avatars(authors, cx);
             let has_more = project.read(cx).has_more_commits();
+            let init_status = project.read(cx).status().clone();
+            let init_staged = init_status.staged.len();
+            let init_unstaged = init_status.unstaged.len();
             graph.update(cx, |g, cx| {
                 g.set_commits(commits, cx);
                 g.set_all_loaded(!has_more);
+                g.set_working_tree_status(init_staged, init_unstaged, cx);
             });
 
             let branches = project.read(cx).branches().to_vec();
             let tags = project.read(cx).tags().to_vec();
             let remotes = project.read(cx).remotes().to_vec();
             let stashes = project.read(cx).stashes().to_vec();
-            let status = project.read(cx).status().clone();
+            let status = init_status;
 
             sidebar.update(cx, |s, cx| {
                 s.update_branches(branches, cx);
@@ -1744,6 +1764,35 @@ impl Workspace {
             commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
         }
 
+        let issues_panel = cx.new(IssuesPanel::new);
+
+        // Configure issues panel with GitHub remote info and token
+        {
+            let remotes = project.read(cx).remotes();
+            let remote_url = remotes
+                .iter()
+                .find(|r| r.name == "origin")
+                .or_else(|| remotes.first())
+                .and_then(|r| r.url.clone());
+
+            if let Some(url) = remote_url {
+                if let Some((owner, repo_name)) =
+                    crate::issues_panel::parse_github_owner_repo(&url)
+                {
+                    let token = rgitui_settings::current_auth_runtime()
+                        .git
+                        .providers
+                        .iter()
+                        .find(|p| p.host == "github.com")
+                        .and_then(|p| p.token.clone());
+
+                    issues_panel.update(cx, |ip, cx| {
+                        ip.configure(token, owner, repo_name, cx);
+                    });
+                }
+            }
+        }
+
         let name = project.read(cx).repo_name().to_string();
         self.tabs.push(ProjectTab {
             name,
@@ -1754,6 +1803,8 @@ impl Workspace {
             sidebar,
             commit_panel,
             toolbar,
+            issues_panel,
+            right_panel_mode: RightPanelMode::Details,
         });
         self.active_tab = self.tabs.len() - 1;
         self.persist_workspace_snapshot(cx);
@@ -2003,7 +2054,7 @@ impl Workspace {
                             graph.update(cx, |g, cx| {
                                 let next = g
                                     .selected_index()
-                                    .map(|i| (i + 1).min(g.commit_count().saturating_sub(1)))
+                                    .map(|i| (i + 1).min(g.row_count().saturating_sub(1)))
                                     .unwrap_or(0);
                                 g.select_index(next, cx);
                             });
@@ -2481,11 +2532,20 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
+        let ui_font: SharedString = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .and_then(|s| {
+                let f = &s.settings().ui_font;
+                if f.is_empty() { None } else { Some(SharedString::from(f.clone())) }
+            })
+            .unwrap_or_else(|| "JetBrainsMono Nerd Font".into());
+
         // If no tabs, show welcome screen
         if self.tabs.is_empty() {
             return div()
                 .id("workspace-root")
                 .size_full()
+                .font_family(ui_font)
                 .bg(colors.background)
                 .on_key_down(cx.listener(Self::handle_key_down))
                 .child(self.render_welcome_interactive(cx))
@@ -2716,6 +2776,7 @@ impl Render for Workspace {
             .id("workspace-root")
             .v_flex()
             .size_full()
+            .font_family(ui_font)
             .bg(colors.background)
             .on_key_down(cx.listener(Self::handle_key_down))
             // Title bar
@@ -3037,17 +3098,97 @@ impl Render for Workspace {
                                 .absolute()
                                 .size_full(),
                             )
-                            // Detail panel (commit info + file list) — takes remaining space
+                            // Right panel tab bar (Details / Issues)
+                            .child({
+                                let is_details = active_tab.right_panel_mode == RightPanelMode::Details;
+                                let is_issues = active_tab.right_panel_mode == RightPanelMode::Issues;
+                                let ws_details = cx.entity().downgrade();
+                                let ws_issues = cx.entity().downgrade();
+                                div()
+                                    .h_flex()
+                                    .w_full()
+                                    .h(px(26.))
+                                    .bg(colors.toolbar_background)
+                                    .border_b_1()
+                                    .border_color(colors.border_variant)
+                                    .child(
+                                        div()
+                                            .id("right-tab-details")
+                                            .h_flex()
+                                            .h_full()
+                                            .px(px(10.))
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .when(is_details, |el| {
+                                                el.border_b_2().border_color(colors.text_accent)
+                                            })
+                                            .hover(|s| s.bg(colors.ghost_element_hover))
+                                            .on_click(move |_: &ClickEvent, _, cx| {
+                                                ws_details.update(cx, |ws, cx| {
+                                                    if let Some(tab) = ws.tabs.get_mut(ws.active_tab) {
+                                                        tab.right_panel_mode = RightPanelMode::Details;
+                                                        cx.notify();
+                                                    }
+                                                }).ok();
+                                            })
+                                            .child(
+                                                Label::new("Details")
+                                                    .size(LabelSize::XSmall)
+                                                    .weight(gpui::FontWeight::SEMIBOLD)
+                                                    .color(if is_details { Color::Default } else { Color::Muted }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("right-tab-issues")
+                                            .h_flex()
+                                            .h_full()
+                                            .px(px(10.))
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .when(is_issues, |el| {
+                                                el.border_b_2().border_color(colors.text_accent)
+                                            })
+                                            .hover(|s| s.bg(colors.ghost_element_hover))
+                                            .on_click(move |_: &ClickEvent, _, cx| {
+                                                ws_issues.update(cx, |ws, cx| {
+                                                    if let Some(tab) = ws.tabs.get_mut(ws.active_tab) {
+                                                        tab.right_panel_mode = RightPanelMode::Issues;
+                                                        // Fetch issues if not already loaded
+                                                        let ip = tab.issues_panel.clone();
+                                                        ip.update(cx, |panel, cx| {
+                                                            if !panel.has_issues_loaded() && !panel.is_loading() {
+                                                                panel.fetch_issues(cx);
+                                                            }
+                                                        });
+                                                        cx.notify();
+                                                    }
+                                                }).ok();
+                                            })
+                                            .child(
+                                                Label::new("Issues")
+                                                    .size(LabelSize::XSmall)
+                                                    .weight(gpui::FontWeight::SEMIBOLD)
+                                                    .color(if is_issues { Color::Default } else { Color::Muted }),
+                                            ),
+                                    )
+                            })
+                            // Panel content area — shows either details or issues
                             .child(
                                 div()
-                                    .id("detail-panel-scroll")
+                                    .id("right-panel-content")
                                     .flex_1()
                                     .min_h_0()
                                     .overflow_hidden()
                                     .when(detail_focused, |el| {
                                         el.border_t_2().border_color(focus_accent)
                                     })
-                                    .child(active_tab.detail_panel.clone()),
+                                    .when(active_tab.right_panel_mode == RightPanelMode::Details, |el| {
+                                        el.child(active_tab.detail_panel.clone())
+                                    })
+                                    .when(active_tab.right_panel_mode == RightPanelMode::Issues, |el| {
+                                        el.child(active_tab.issues_panel.clone())
+                                    }),
                             )
                             // Resize handle between detail and commit input
                             .child(

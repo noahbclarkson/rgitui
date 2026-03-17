@@ -77,7 +77,8 @@ impl RenderOnce for Checkbox {
         if !self.disabled {
             container = container
                 .cursor(CursorStyle::PointingHand)
-                .hover(|s| s.opacity(0.8));
+                .hover(|s| s.opacity(0.8))
+                .active(|s| s.opacity(0.6));
         }
 
         if let Some(on_click) = self.on_click {

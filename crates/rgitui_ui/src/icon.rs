@@ -59,6 +59,9 @@ pub enum IconName {
     // AI
     Sparkle,
 
+    // Status
+    Info,
+
     // Misc
     Dot,
     DotOutline,
@@ -115,6 +118,7 @@ impl IconName {
             IconName::Stash => "icons/archive.svg",
             IconName::Terminal => "icons/terminal.svg",
             IconName::Sparkle => "icons/sparkle.svg",
+            IconName::Info => "icons/info.svg",
             IconName::Dot => "icons/dot.svg",
             IconName::DotOutline => "icons/dot-outline.svg",
             IconName::Menu => "icons/menu.svg",

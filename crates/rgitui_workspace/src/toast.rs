@@ -28,7 +28,7 @@ impl ToastKind {
         match self {
             ToastKind::Success => IconName::Check,
             ToastKind::Error => IconName::X,
-            ToastKind::Info => IconName::Search,
+            ToastKind::Info => IconName::Info,
             ToastKind::Warning => IconName::FileConflict,
         }
     }
@@ -111,7 +111,7 @@ impl Render for ToastLayer {
 
         let mut stack = div()
             .absolute()
-            .bottom(px(28.))
+            .bottom(px(36.))
             .right(px(12.))
             .v_flex()
             .gap(px(6.))
