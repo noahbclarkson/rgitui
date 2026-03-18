@@ -3,7 +3,7 @@ use gpui::{
     div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, FontWeight,
     KeyDownEvent, Render, SharedString, Window,
 };
-use rgitui_settings::{AiSettings, GitProviderSettings, GitSettings, SettingsState};
+use rgitui_settings::{AiSettings, Compactness, GitProviderSettings, GitSettings, SettingsState};
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, Icon, IconName, IconSize, Label,
@@ -46,6 +46,129 @@ struct EditableGitProvider {
     use_for_https: bool,
 }
 
+/// A detected application available on the system.
+#[derive(Debug, Clone)]
+struct DetectedApp {
+    display_name: String,
+    command: String,
+}
+
+fn is_command_available(cmd: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    let check = std::process::Command::new("where")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    #[cfg(not(target_os = "windows"))]
+    let check = std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    check.map(|s| s.success()).unwrap_or(false)
+}
+
+fn detect_available_terminals() -> Vec<DetectedApp> {
+    let candidates: &[(&str, &str)] = {
+        #[cfg(target_os = "windows")]
+        {
+            &[
+                ("Windows Terminal", "wt"),
+                ("PowerShell", "pwsh"),
+                ("PowerShell (Windows)", "powershell"),
+                ("Command Prompt", "cmd"),
+                ("Alacritty", "alacritty"),
+                ("WezTerm", "wezterm"),
+            ]
+        }
+        #[cfg(target_os = "macos")]
+        {
+            &[
+                ("Alacritty", "alacritty"),
+                ("WezTerm", "wezterm"),
+                ("Kitty", "kitty"),
+                ("iTerm", "iterm2"),
+            ]
+        }
+        #[cfg(target_os = "linux")]
+        {
+            &[
+                ("GNOME Terminal", "gnome-terminal"),
+                ("Konsole", "konsole"),
+                ("Alacritty", "alacritty"),
+                ("WezTerm", "wezterm"),
+                ("Kitty", "kitty"),
+                ("Foot", "foot"),
+                ("Xterm", "xterm"),
+            ]
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            &[]
+        }
+    };
+
+    let mut results = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    {
+        results.push(DetectedApp {
+            display_name: "Terminal.app".to_string(),
+            command: "Terminal.app".to_string(),
+        });
+    }
+
+    for &(name, cmd) in candidates {
+        if is_command_available(cmd) {
+            results.push(DetectedApp {
+                display_name: name.to_string(),
+                command: cmd.to_string(),
+            });
+        }
+    }
+    results
+}
+
+fn detect_available_editors() -> Vec<DetectedApp> {
+    let mut candidates: Vec<(&str, &str)> = vec![
+        ("VS Code", "code"),
+        ("Cursor", "cursor"),
+        ("Zed", "zed"),
+        ("Sublime Text", "subl"),
+        ("Neovim", "nvim"),
+        ("Vim", "vim"),
+        ("Nano", "nano"),
+        ("Emacs", "emacs"),
+    ];
+
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(("Notepad++", "notepad++"));
+        candidates.push(("Notepad", "notepad"));
+    }
+
+    let mut results = Vec::new();
+    for (name, cmd) in candidates {
+        if is_command_available(cmd) {
+            results.push(DetectedApp {
+                display_name: name.to_string(),
+                command: cmd.to_string(),
+            });
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        results.push(DetectedApp {
+            display_name: "TextEdit".to_string(),
+            command: "open -a TextEdit".to_string(),
+        });
+    }
+
+    results
+}
+
 /// The settings modal.
 pub struct SettingsModal {
     visible: bool,
@@ -61,6 +184,7 @@ pub struct SettingsModal {
     ai_model: String,
     ai_commit_style: String,
     ai_enabled: bool,
+    ai_inject_project_context: bool,
 
     // AI text editors
     ai_api_key_editor: Entity<TextInput>,
@@ -88,6 +212,13 @@ pub struct SettingsModal {
 
     // General state
     max_recent_repos: usize,
+    compactness: Compactness,
+    terminal_command_editor: Entity<TextInput>,
+    editor_command_editor: Entity<TextInput>,
+    detected_terminals: Vec<DetectedApp>,
+    detected_editors: Vec<DetectedApp>,
+    selected_terminal_index: Option<usize>,
+    selected_editor_index: Option<usize>,
     feedback_message: Option<String>,
     feedback_is_error: bool,
 }
@@ -249,6 +380,51 @@ impl SettingsModal {
             ti
         });
 
+        let terminal_command_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Custom command override...");
+            if !settings.terminal_command.is_empty() {
+                ti.set_text(&settings.terminal_command, cx);
+            }
+            ti
+        });
+
+        let editor_command_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Custom command override...");
+            if !settings.editor_command.is_empty() {
+                ti.set_text(&settings.editor_command, cx);
+            }
+            ti
+        });
+
+        let detected_terminals = detect_available_terminals();
+        let detected_editors = detect_available_editors();
+
+        let selected_terminal_index = if settings.terminal_command.is_empty() {
+            if detected_terminals.is_empty() {
+                None
+            } else {
+                Some(0)
+            }
+        } else {
+            detected_terminals
+                .iter()
+                .position(|app| app.command == settings.terminal_command)
+        };
+
+        let selected_editor_index = if settings.editor_command.is_empty() {
+            if detected_editors.is_empty() {
+                None
+            } else {
+                Some(0)
+            }
+        } else {
+            detected_editors
+                .iter()
+                .position(|app| app.command == settings.editor_command)
+        };
+
         cx.subscribe(&ai_api_key_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
             if let TextInputEvent::Changed(_) = event {
                 this.save_settings(cx);
@@ -319,6 +495,44 @@ impl SettingsModal {
         })
         .detach();
 
+        cx.subscribe(&terminal_command_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(text) = event {
+                if text.is_empty() {
+                    this.selected_terminal_index = if this.detected_terminals.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                } else {
+                    this.selected_terminal_index = this
+                        .detected_terminals
+                        .iter()
+                        .position(|app| app.command == *text);
+                }
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
+        cx.subscribe(&editor_command_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
+            if let TextInputEvent::Changed(text) = event {
+                if text.is_empty() {
+                    this.selected_editor_index = if this.detected_editors.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                } else {
+                    this.selected_editor_index = this
+                        .detected_editors
+                        .iter()
+                        .position(|app| app.command == *text);
+                }
+                this.save_settings(cx);
+            }
+        })
+        .detach();
+
         Self {
             visible: false,
             focus_handle: cx.focus_handle(),
@@ -329,6 +543,7 @@ impl SettingsModal {
             ai_model: settings.ai.model.clone(),
             ai_commit_style: settings.ai.commit_style.clone(),
             ai_enabled: settings.ai.enabled,
+            ai_inject_project_context: settings.ai.inject_project_context,
             ai_api_key_editor,
             git_sign_commits: settings.git.sign_commits,
             git_providers,
@@ -346,6 +561,13 @@ impl SettingsModal {
             provider_username_editor,
             provider_token_editor,
             max_recent_repos: settings.max_recent_repos,
+            compactness: settings.compactness,
+            terminal_command_editor,
+            editor_command_editor,
+            detected_terminals,
+            detected_editors,
+            selected_terminal_index,
+            selected_editor_index,
             feedback_message: None,
             feedback_is_error: false,
         }
@@ -387,6 +609,7 @@ impl SettingsModal {
                 self.ai_model = s.ai.model.clone();
                 self.ai_commit_style = s.ai.commit_style.clone();
                 self.ai_enabled = s.ai.enabled;
+                self.ai_inject_project_context = s.ai.inject_project_context;
                 self.git_sign_commits = s.git.sign_commits;
                 self.git_providers = s
                     .git
@@ -418,6 +641,7 @@ impl SettingsModal {
                 self.show_git_https_token = false;
                 self.show_provider_token = false;
                 self.max_recent_repos = s.max_recent_repos;
+                self.compactness = s.compactness;
                 self.feedback_message = None;
                 self.feedback_is_error = false;
                 (
@@ -427,6 +651,44 @@ impl SettingsModal {
                     s.git.gpg_key_id.clone().unwrap_or_default(),
                 )
             });
+
+        let terminal_cmd = cx.read_global::<SettingsState, _>(|state, _cx| {
+            state.settings().terminal_command.clone()
+        });
+        let editor_cmd = cx.read_global::<SettingsState, _>(|state, _cx| {
+            state.settings().editor_command.clone()
+        });
+        self.terminal_command_editor
+            .update(cx, |e, cx| e.set_text(&terminal_cmd, cx));
+        self.editor_command_editor
+            .update(cx, |e, cx| e.set_text(&editor_cmd, cx));
+
+        self.detected_terminals = detect_available_terminals();
+        self.detected_editors = detect_available_editors();
+
+        self.selected_terminal_index = if terminal_cmd.is_empty() {
+            if self.detected_terminals.is_empty() {
+                None
+            } else {
+                Some(0)
+            }
+        } else {
+            self.detected_terminals
+                .iter()
+                .position(|app| app.command == terminal_cmd)
+        };
+
+        self.selected_editor_index = if editor_cmd.is_empty() {
+            if self.detected_editors.is_empty() {
+                None
+            } else {
+                Some(0)
+            }
+        } else {
+            self.detected_editors
+                .iter()
+                .position(|app| app.command == editor_cmd)
+        };
 
         self.ai_api_key_editor
             .update(cx, |e, cx| e.set_text(ai_api_key_val, cx));
@@ -460,6 +722,8 @@ impl SettingsModal {
         let git_https_token = self.git_https_token_editor.read(cx).text().to_string();
         let git_ssh_key_path = self.git_ssh_key_path_editor.read(cx).text().to_string();
         let git_gpg_key_id = self.git_gpg_key_id_editor.read(cx).text().to_string();
+        let terminal_command = self.terminal_command_editor.read(cx).text().to_string();
+        let editor_command = self.editor_command_editor.read(cx).text().to_string();
 
         let result = cx.update_global::<SettingsState, _>(|state, _cx| -> anyhow::Result<()> {
             let providers: Vec<GitProviderSettings> = self
@@ -489,6 +753,7 @@ impl SettingsModal {
                 model: self.ai_model.clone(),
                 commit_style: self.ai_commit_style.clone(),
                 enabled: self.ai_enabled,
+                inject_project_context: self.ai_inject_project_context,
             };
             state.settings_mut().git = GitSettings {
                 legacy_https_token: None,
@@ -507,6 +772,9 @@ impl SettingsModal {
                 providers,
             };
             state.settings_mut().max_recent_repos = self.max_recent_repos;
+            state.settings_mut().compactness = self.compactness;
+            state.settings_mut().terminal_command = terminal_command.trim().to_string();
+            state.settings_mut().editor_command = editor_command.trim().to_string();
 
             state.set_ai_api_key(Some(ai_api_key.trim()).filter(|v| !v.is_empty()))?;
             state.set_git_https_token(
@@ -1354,6 +1622,52 @@ impl SettingsModal {
         );
         section = section.child(enable_card);
 
+        // Inject project context card
+        let inject_ctx = self.ai_inject_project_context;
+        let mut inject_ctx_card = Self::setting_card(cx);
+        inject_ctx_card = inject_ctx_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(
+                            Label::new("Inject project context")
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            Label::new(
+                                "Include README.md, CLAUDE.md, and AGENTS.md in the AI prompt",
+                            )
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("ai-inject-ctx-toggle")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.ai_inject_project_context = !this.ai_inject_project_context;
+                            this.save_settings(cx);
+                        }))
+                        .child(Checkbox::new(
+                            "ai-inject-ctx-cb",
+                            if inject_ctx {
+                                CheckState::Checked
+                            } else {
+                                CheckState::Unchecked
+                            },
+                        )),
+                ),
+        );
+        section = section.child(inject_ctx_card);
+
         // Provider + Model card
         let mut provider_card = Self::setting_card(cx);
         provider_card = provider_card
@@ -2195,7 +2509,8 @@ impl SettingsModal {
         );
         section = section.child(repos_card);
 
-        // UI density card (future)
+        // UI density card
+        let current_compactness = self.compactness;
         let mut density_card = Self::setting_card(cx);
         density_card = density_card.child(
             div()
@@ -2205,66 +2520,285 @@ impl SettingsModal {
                     "UI Density",
                     "Adjust the spacing and sizing of UI elements.",
                 ))
-                .child(
-                    div()
+                .child({
+                    let options: [(&str, &str, Compactness); 3] = [
+                        ("compact", "Compact", Compactness::Compact),
+                        ("default", "Default", Compactness::Default),
+                        ("comfortable", "Comfortable", Compactness::Comfortable),
+                    ];
+                    let mut row = div()
                         .h_flex()
                         .gap(px(4.))
                         .p(px(3.))
                         .rounded(px(8.))
-                        .bg(colors.element_background)
-                        .child(
-                            div()
-                                .h_flex()
-                                .h(px(28.))
-                                .px(px(12.))
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(6.))
-                                .child(
-                                    Label::new("Compact")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Disabled),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h_flex()
-                                .h(px(28.))
-                                .px(px(12.))
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(6.))
+                        .bg(colors.element_background);
+                    for (id, label, variant) in options {
+                        let is_selected = current_compactness == variant;
+                        let hover_bg = colors.ghost_element_hover;
+                        let mut btn = div()
+                            .id(id)
+                            .h_flex()
+                            .h(px(28.))
+                            .px(px(12.))
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .cursor_pointer();
+                        if is_selected {
+                            btn = btn
                                 .bg(colors.elevated_surface_background)
                                 .border_1()
                                 .border_color(colors.border)
                                 .child(
-                                    Label::new("Default")
+                                    Label::new(label)
                                         .size(LabelSize::XSmall)
                                         .weight(FontWeight::SEMIBOLD),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h_flex()
-                                .h(px(28.))
-                                .px(px(12.))
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(6.))
+                                );
+                        } else {
+                            btn = btn
+                                .hover(move |s| s.bg(hover_bg))
                                 .child(
-                                    Label::new("Comfortable")
+                                    Label::new(label)
                                         .size(LabelSize::XSmall)
-                                        .color(Color::Disabled),
-                                ),
-                        ),
-                )
-                .child(
-                    Label::new("Coming soon")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Placeholder),
-                ),
+                                        .color(Color::Muted),
+                                );
+                        }
+                        btn = btn.on_click(
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.compactness = variant;
+                                this.save_settings(cx);
+                            }),
+                        );
+                        row = row.child(btn);
+                    }
+                    row
+                }),
         );
         section = section.child(density_card);
+
+        // External tools card
+        let mut tools_card = Self::setting_card(cx);
+        let terminal_custom_text = self.terminal_command_editor.read(cx).text().to_string();
+        let editor_custom_text = self.editor_command_editor.read(cx).text().to_string();
+        let terminal_has_custom = !terminal_custom_text.is_empty()
+            && !self
+                .detected_terminals
+                .iter()
+                .any(|app| app.command == terminal_custom_text);
+        let editor_has_custom = !editor_custom_text.is_empty()
+            && !self
+                .detected_editors
+                .iter()
+                .any(|app| app.command == editor_custom_text);
+
+        let mut terminal_section = div().v_flex().gap(px(6.)).child(
+            Label::new("Terminal")
+                .size(LabelSize::XSmall)
+                .weight(FontWeight::SEMIBOLD),
+        );
+
+        if self.detected_terminals.is_empty() {
+            terminal_section = terminal_section.child(
+                Label::new("No terminals detected on this system.")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            );
+        } else {
+            let mut list = div()
+                .v_flex()
+                .gap(px(2.))
+                .p(px(4.))
+                .rounded(px(6.))
+                .bg(colors.element_background);
+
+            for (i, app) in self.detected_terminals.iter().enumerate() {
+                let is_selected =
+                    self.selected_terminal_index == Some(i) && !terminal_has_custom;
+                let display = SharedString::from(format!(
+                    "{} ({})",
+                    app.display_name, app.command
+                ));
+                let hover_bg = colors.ghost_element_hover;
+                let selected_bg = colors.elevated_surface_background;
+                let border_color = colors.border;
+                let accent = colors.text_accent;
+
+                let mut row = div()
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "terminal-{}",
+                        i
+                    ))))
+                    .h_flex()
+                    .gap(px(8.))
+                    .px(px(8.))
+                    .py(px(4.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .cursor_pointer();
+
+                if is_selected {
+                    row = row.bg(selected_bg).border_1().border_color(border_color);
+                } else {
+                    row = row.hover(move |s| s.bg(hover_bg));
+                }
+
+                let dot = div()
+                    .w(px(8.))
+                    .h(px(8.))
+                    .rounded(px(4.))
+                    .flex_shrink_0();
+                let dot = if is_selected {
+                    dot.bg(accent)
+                } else {
+                    dot.border_1().border_color(border_color)
+                };
+
+                let label_color = if is_selected {
+                    Color::Default
+                } else {
+                    Color::Muted
+                };
+
+                row = row
+                    .child(dot)
+                    .child(Label::new(display).size(LabelSize::XSmall).color(label_color));
+
+                row = row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.selected_terminal_index = Some(i);
+                    if let Some(app) = this.detected_terminals.get(i) {
+                        this.terminal_command_editor
+                            .update(cx, |e, cx| e.set_text(&app.command, cx));
+                    }
+                    this.save_settings(cx);
+                }));
+
+                list = list.child(row);
+            }
+            terminal_section = terminal_section.child(list);
+        }
+
+        terminal_section = terminal_section.child(
+            div()
+                .v_flex()
+                .gap(px(2.))
+                .child(
+                    Label::new("Custom command (overrides selection)")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(self.terminal_command_editor.clone()),
+        );
+
+        let mut editor_section = div().v_flex().gap(px(6.)).child(
+            Label::new("Editor")
+                .size(LabelSize::XSmall)
+                .weight(FontWeight::SEMIBOLD),
+        );
+
+        if self.detected_editors.is_empty() {
+            editor_section = editor_section.child(
+                Label::new("No editors detected on this system.")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            );
+        } else {
+            let mut list = div()
+                .v_flex()
+                .gap(px(2.))
+                .p(px(4.))
+                .rounded(px(6.))
+                .bg(colors.element_background);
+
+            for (i, app) in self.detected_editors.iter().enumerate() {
+                let is_selected =
+                    self.selected_editor_index == Some(i) && !editor_has_custom;
+                let display = SharedString::from(format!(
+                    "{} ({})",
+                    app.display_name, app.command
+                ));
+                let hover_bg = colors.ghost_element_hover;
+                let selected_bg = colors.elevated_surface_background;
+                let border_color = colors.border;
+                let accent = colors.text_accent;
+
+                let mut row = div()
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "editor-{}",
+                        i
+                    ))))
+                    .h_flex()
+                    .gap(px(8.))
+                    .px(px(8.))
+                    .py(px(4.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .cursor_pointer();
+
+                if is_selected {
+                    row = row.bg(selected_bg).border_1().border_color(border_color);
+                } else {
+                    row = row.hover(move |s| s.bg(hover_bg));
+                }
+
+                let dot = div()
+                    .w(px(8.))
+                    .h(px(8.))
+                    .rounded(px(4.))
+                    .flex_shrink_0();
+                let dot = if is_selected {
+                    dot.bg(accent)
+                } else {
+                    dot.border_1().border_color(border_color)
+                };
+
+                let label_color = if is_selected {
+                    Color::Default
+                } else {
+                    Color::Muted
+                };
+
+                row = row
+                    .child(dot)
+                    .child(Label::new(display).size(LabelSize::XSmall).color(label_color));
+
+                row = row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.selected_editor_index = Some(i);
+                    if let Some(app) = this.detected_editors.get(i) {
+                        this.editor_command_editor
+                            .update(cx, |e, cx| e.set_text(&app.command, cx));
+                    }
+                    this.save_settings(cx);
+                }));
+
+                list = list.child(row);
+            }
+            editor_section = editor_section.child(list);
+        }
+
+        editor_section = editor_section.child(
+            div()
+                .v_flex()
+                .gap(px(2.))
+                .child(
+                    Label::new("Custom command (overrides selection)")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(self.editor_command_editor.clone()),
+        );
+
+        tools_card = tools_card.child(
+            div()
+                .v_flex()
+                .gap(px(16.))
+                .child(Self::setting_label(
+                    "External Tools",
+                    "Select a detected application or enter a custom command.",
+                ))
+                .child(terminal_section)
+                .child(editor_section),
+        );
+        section = section.child(tools_card);
 
         // Keyboard shortcuts info card
         let mut shortcuts_card = Self::setting_card(cx);

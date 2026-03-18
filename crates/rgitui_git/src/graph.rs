@@ -258,6 +258,7 @@ mod tests {
                 name: "Test".to_string(),
                 email: "test@test.com".to_string(),
             },
+            co_authors: vec![],
             time: Utc::now(),
             parent_oids: parents.iter().map(|b| make_oid(*b)).collect(),
             refs,

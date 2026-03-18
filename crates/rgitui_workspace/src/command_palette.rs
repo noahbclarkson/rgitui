@@ -224,6 +224,7 @@ impl Render for CommandPalette {
         let mut modal = div()
             .id("command-palette-modal")
             .track_focus(&self.focus_handle)
+            .key_context("CommandPalette")
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
             .w(px(560.))
@@ -285,6 +286,9 @@ impl Render for CommandPalette {
             let commands: Arc<Vec<PaletteCommand>> = Arc::new(self.commands.clone());
             let filtered: Arc<Vec<usize>> = Arc::new(self.filtered_indices.clone());
             let view = cx.weak_entity();
+
+            let visible_items = filtered_count.min(10);
+            let list_height = visible_items as f32 * 36.0;
 
             let list = uniform_list(
                 "palette-results",
@@ -384,8 +388,8 @@ impl Render for CommandPalette {
                         .collect()
                 },
             )
-            .flex_1()
-            .min_h(px(36.))
+            .h(px(list_height))
+            .max_h(px(360.))
             .track_scroll(&self.scroll_handle);
 
             modal = modal.child(list);

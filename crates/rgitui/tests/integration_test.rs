@@ -114,6 +114,7 @@ fn test_compute_graph_with_real_commits() {
                 name: committer_sig.name().unwrap_or("").to_string(),
                 email: committer_sig.email().unwrap_or("").to_string(),
             },
+            co_authors: vec![],
             time,
             parent_oids: commit.parent_ids().collect(),
             refs: Vec::new(),

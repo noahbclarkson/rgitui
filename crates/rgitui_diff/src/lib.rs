@@ -293,13 +293,12 @@ impl DiffViewer {
             "c" if ctrl => {
                 self.copy_selected_lines(cx);
             }
-            "a" if ctrl => {
-                if row_count > 0 {
+            "a" if ctrl
+                && row_count > 0 => {
                     self.selection_anchor = Some(0);
                     self.selected_lines = Some(0..row_count);
                     cx.notify();
                 }
-            }
             _ => {}
         }
     }

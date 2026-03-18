@@ -1,17 +1,20 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, img, point, px, uniform_list, App, Bounds, ClickEvent, Context, ElementId,
-    Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, ListSizingBehavior, MouseButton,
-    MouseDownEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy, SharedString,
-    UniformListScrollHandle, WeakEntity, Window,
+    canvas, div, img, point, px, uniform_list, App, Bounds, ClickEvent, Context, CursorStyle,
+    ElementId, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, ListSizingBehavior,
+    MouseButton, MouseDownEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy,
+    SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
-use rgitui_git::{compute_graph, CommitInfo, GraphEdge, GraphRow, RefLabel};
+use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel};
+use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{AvatarCache, Badge, Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{
+    AvatarCache, Badge, CheckState, Checkbox, Icon, IconName, IconSize, Label, LabelSize,
+};
 
 /// Events emitted by the graph view.
 #[derive(Debug, Clone)]
@@ -58,6 +61,13 @@ pub struct GraphView {
     search_debounce_task: Option<gpui::Task<()>>,
     staged_count: usize,
     unstaged_count: usize,
+    staged_breakdown: HashMap<FileChangeKind, usize>,
+    unstaged_breakdown: HashMap<FileChangeKind, usize>,
+    show_settings_popover: bool,
+    show_full_hash: bool,
+    show_author_column: bool,
+    show_date_column: bool,
+    show_avatars: bool,
 }
 
 impl EventEmitter<GraphViewEvent> for GraphView {}
@@ -100,6 +110,13 @@ impl GraphView {
             search_debounce_task: None,
             staged_count: 0,
             unstaged_count: 0,
+            staged_breakdown: HashMap::new(),
+            unstaged_breakdown: HashMap::new(),
+            show_settings_popover: false,
+            show_full_hash: false,
+            show_author_column: true,
+            show_date_column: true,
+            show_avatars: true,
         }
     }
 
@@ -156,10 +173,19 @@ impl GraphView {
         self.all_commits_loaded = loaded;
     }
 
-    /// Update the working tree status counts (staged/unstaged files).
-    pub fn set_working_tree_status(&mut self, staged: usize, unstaged: usize, cx: &mut Context<Self>) {
+    /// Update the working tree status counts and file-type breakdowns.
+    pub fn set_working_tree_status(
+        &mut self,
+        staged: usize,
+        unstaged: usize,
+        staged_breakdown: HashMap<FileChangeKind, usize>,
+        unstaged_breakdown: HashMap<FileChangeKind, usize>,
+        cx: &mut Context<Self>,
+    ) {
         self.staged_count = staged;
         self.unstaged_count = unstaged;
+        self.staged_breakdown = staged_breakdown;
+        self.unstaged_breakdown = unstaged_breakdown;
         cx.notify();
     }
 
@@ -427,47 +453,42 @@ impl GraphView {
                 self.scroll_handle
                     .scroll_to_item(next, ScrollStrategy::Center);
             }
-            "g" if !ctrl && !keystroke.modifiers.shift => {
-                if total > 0 {
+            "g" if !ctrl && !keystroke.modifiers.shift
+                && total > 0 => {
                     self.select_list_index(0, cx);
                     self.scroll_handle
                         .scroll_to_item(0, ScrollStrategy::Top);
                 }
-            }
-            "g" if keystroke.modifiers.shift => {
-                if total > 0 {
+            "g" if keystroke.modifiers.shift
+                && total > 0 => {
                     let last = total - 1;
                     self.select_list_index(last, cx);
                     self.scroll_handle
                         .scroll_to_item(last, ScrollStrategy::Center);
                 }
-            }
-            "end" => {
-                if total > 0 {
+            "end"
+                if total > 0 => {
                     let last = total - 1;
                     self.select_list_index(last, cx);
                     self.scroll_handle
                         .scroll_to_item(last, ScrollStrategy::Center);
                 }
-            }
-            "home" => {
-                if total > 0 {
+            "home"
+                if total > 0 => {
                     self.select_list_index(0, cx);
                     self.scroll_handle
                         .scroll_to_item(0, ScrollStrategy::Top);
                 }
-            }
             "/" if !ctrl => {
                 self.show_search = true;
                 self.search_editor.update(cx, |e: &mut rgitui_ui::TextInput, cx| e.focus(window, cx));
                 cx.notify();
             }
-            "escape" => {
+            "escape"
                 // Dismiss context menu or deselect
-                if self.context_menu.is_some() {
+                if self.context_menu.is_some() => {
                     self.dismiss_context_menu(cx);
                 }
-            }
             _ => {}
         }
     }
@@ -542,11 +563,6 @@ impl Render for GraphView {
         let panel_bg = colors.panel_background;
         let border_color = colors.border_variant;
         let accent_border = colors.text_accent;
-        // Subtle row separator color (very faint border between rows)
-        let row_separator = gpui::Hsla {
-            a: 0.06,
-            ..colors.border_variant
-        };
 
         // Search highlight colors
         let search_match_bg = gpui::Hsla {
@@ -582,6 +598,7 @@ impl Render for GraphView {
         let wt_offset = self.working_tree_offset();
         let wt_staged_count = self.staged_count;
         let wt_unstaged_count = self.unstaged_count;
+        let wt_combined_breakdown = merge_breakdowns(&self.staged_breakdown, &self.unstaged_breakdown);
         let total_list_items = self.total_list_items();
 
         // Search state for the render closure — use HashSet for O(1) lookup
@@ -594,10 +611,29 @@ impl Render for GraphView {
         let has_search_query = self.show_search && !self.search_editor.read(cx).is_empty();
 
         let lane_width: f32 = 20.0;
-        let row_height = self.row_height;
+        let graph_padding_left: f32 = 10.0;
+        let compactness = cx.global::<SettingsState>().settings().compactness;
+        let compact_mul = compactness.multiplier();
+        let row_height = compactness.spacing(self.row_height);
+
+        let global_max_lane = self
+            .graph_rows
+            .iter()
+            .map(|r| r.lane_count)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let graph_col_width = ((global_max_lane as f32 + 1.0) * lane_width + graph_padding_left).max(80.0);
+
+        // Column visibility settings
+        let show_author_column = self.show_author_column;
+        let show_date_column = self.show_date_column;
+        let show_full_hash = self.show_full_hash;
+        let show_avatars = self.show_avatars;
 
         // Header row (not virtualized — always visible)
-        let header = div()
+        let view_settings_toggle = cx.weak_entity();
+        let mut header = div()
             .h_flex()
             .items_center()
             .w_full()
@@ -610,8 +646,9 @@ impl Render for GraphView {
             .border_color(border_color)
             .child(
                 div()
-                    .w(px(80.))
+                    .w(px(graph_col_width))
                     .flex_shrink_0()
+                    .overflow_hidden()
                     .h_flex()
                     .items_center()
                     .gap(px(4.))
@@ -643,7 +680,10 @@ impl Render for GraphView {
                         .weight(gpui::FontWeight::SEMIBOLD),
                 ),
             )
-            .child(
+;
+
+        if show_author_column {
+            header = header.child(
                 div()
                     .w(px(120.))
                     .flex_shrink_0()
@@ -661,8 +701,11 @@ impl Render for GraphView {
                             .color(Color::Muted)
                             .weight(gpui::FontWeight::SEMIBOLD),
                     ),
-            )
-            .child(
+            );
+        }
+
+        if show_date_column {
+            header = header.child(
                 div()
                     .w(px(100.))
                     .flex_shrink_0()
@@ -681,6 +724,39 @@ impl Render for GraphView {
                             .weight(gpui::FontWeight::SEMIBOLD),
                     ),
             );
+        }
+
+        header = header.child(
+            div()
+                .id("settings-gear-btn")
+                .flex_shrink_0()
+                .w(px(22.))
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.))
+                .cursor(CursorStyle::PointingHand)
+                .hover(|s| s.bg(hover_bg))
+                .active(|s| s.bg(active_bg))
+                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                })
+                .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                    view_settings_toggle
+                        .update(cx, |this: &mut GraphView, cx| {
+                            this.show_settings_popover = !this.show_settings_popover;
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .child(
+                    Icon::new(IconName::Settings)
+                        .size(IconSize::XSmall)
+                        .color(Color::Muted),
+                ),
+        );
 
         // The virtualized list
         let list = uniform_list(
@@ -696,17 +772,22 @@ impl Render for GraphView {
                                 selected: selected_index == Some(i),
                                 staged_count: wt_staged_count,
                                 unstaged_count: wt_unstaged_count,
+                                combined_breakdown: wt_combined_breakdown.clone(),
                                 row_height,
                                 lane_width,
+                                graph_padding_left,
+                                graph_col_width,
                                 working_tree_bg,
                                 node_color: working_tree_node_color,
                                 selected_bg,
                                 hover_bg,
                                 active_bg,
                                 panel_bg,
-                                row_separator,
                                 accent_border,
                                 view: view.clone(),
+                                show_author_column,
+                                show_date_column,
+                                compact_mul,
                             });
                         }
 
@@ -738,13 +819,13 @@ impl Render for GraphView {
                         let row_hover_bg = if selected { selected_bg } else { hover_bg };
                         let row_active_bg = if selected { selected_bg } else { active_bg };
 
-                        let max_lane = graph_row.lane_count.max(1);
-                        let graph_width = (max_lane as f32 * lane_width).max(80.0);
+                        let graph_width = graph_col_width;
                         let node_lane = graph_row.node_lane;
-                        let node_x = node_lane as f32 * lane_width + lane_width / 2.0;
+                        let node_x = node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
 
                         let node_color = rgitui_theme::lane_color(graph_row.node_color);
-                        let has_incoming = graph_row.has_incoming;
+                        let has_incoming = graph_row.has_incoming
+                            || (commit_idx == 0 && wt_offset > 0);
 
                         // Author initials for avatar
                         let initials: SharedString = commit
@@ -775,7 +856,11 @@ impl Render for GraphView {
                             ref_badges.push(badge);
                         }
 
-                        let short_id: SharedString = commit.short_id.clone().into();
+                        let hash_display: SharedString = if show_full_hash {
+                            format!("{}", commit.oid).into()
+                        } else {
+                            commit.short_id.clone().into()
+                        };
                         let summary: SharedString = commit.summary.clone().into();
                         let author: SharedString = commit.author.name.clone().into();
                         let time_str: SharedString = format_relative_time(&commit.time).into();
@@ -810,8 +895,6 @@ impl Render for GraphView {
                             .h(px(row_height))
                             .w_full()
                             .bg(bg)
-                            .border_b_1()
-                            .border_color(row_separator)
                             .cursor_pointer()
                             .hover(move |s| s.bg(row_hover_bg))
                             .active(move |s| s.bg(row_active_bg))
@@ -854,6 +937,7 @@ impl Render for GraphView {
                                 .relative()
                                 .w(px(graph_width))
                                 .flex_shrink_0()
+                                .overflow_x_hidden()
                                 .h_full()
                                 .child(
                                     canvas(
@@ -874,7 +958,7 @@ impl Render for GraphView {
                                                 let mut approach = PathBuilder::stroke(px(2.0));
                                                 approach.move_to(point(
                                                     origin.x + node_x_px,
-                                                    origin.y - px(1.0),
+                                                    origin.y - px(2.0),
                                                 ));
                                                 approach.line_to(point(
                                                     origin.x + node_x_px,
@@ -889,11 +973,13 @@ impl Render for GraphView {
                                             for edge in &edges {
                                                 let from_x = px(
                                                     edge.from_lane as f32 * lane_width
-                                                        + lane_width / 2.0,
+                                                        + lane_width / 2.0
+                                                        + graph_padding_left,
                                                 );
                                                 let to_x = px(
                                                     edge.to_lane as f32 * lane_width
-                                                        + lane_width / 2.0,
+                                                        + lane_width / 2.0
+                                                        + graph_padding_left,
                                                 );
                                                 let color =
                                                     rgitui_theme::lane_color(edge.color_index);
@@ -901,9 +987,9 @@ impl Render for GraphView {
                                                 let start_y = if edge.from_lane == node_lane {
                                                     origin.y + mid_y
                                                 } else {
-                                                    origin.y - px(1.0)
+                                                    origin.y - px(2.0)
                                                 };
-                                                let end_y = origin.y + h + px(1.0);
+                                                let end_y = origin.y + h + px(2.0);
 
                                                 let stroke_width = px(2.0);
 
@@ -960,7 +1046,6 @@ impl Render for GraphView {
                                                     path.line_to(point(horiz_end_x, horiz_y));
 
                                                     // Quarter circle arc: horizontal → vertical
-                                                    let _bend_bottom = horiz_y + r;
                                                     let segments = 12_usize;
                                                     for s in 1..=segments {
                                                         let t = s as f32 / segments as f32;
@@ -981,16 +1066,16 @@ impl Render for GraphView {
 
                                             // 3. Draw commit dot with background ring.
                                             let dot_radius = if is_merge_commit {
-                                                5.5_f32
+                                                5.5_f32 * compact_mul
                                             } else {
-                                                4.5_f32
+                                                4.5_f32 * compact_mul
                                             };
                                             let cx_x = origin.x + node_x_px;
                                             let cy_y = origin.y + mid_y;
                                             let steps = 32_usize;
 
                                             // Background ring to occlude lines passing behind the dot
-                                            let ring_r = 13.0_f32;
+                                            let ring_r = 13.0_f32 * compact_mul;
                                             let mut ring = PathBuilder::fill();
                                             for s in 0..steps {
                                                 let angle = (s as f32)
@@ -1012,7 +1097,7 @@ impl Render for GraphView {
 
                                             // For HEAD commit, draw a subtle glow ring
                                             if is_head_row {
-                                                let glow_r = dot_radius + 4.0;
+                                                let glow_r = dot_radius + 4.0 * compact_mul;
                                                 let mut glow = PathBuilder::stroke(px(2.0));
                                                 for s in 0..=steps {
                                                     let angle = (s as f32)
@@ -1070,7 +1155,7 @@ impl Render for GraphView {
                                     .size_full(),
                                 )
                                 // Avatar overlay: resolved image or initials fallback
-                                .child({
+                                .when(show_avatars, |el| el.child({
                                     let avatar_url = cx
                                         .try_global::<AvatarCache>()
                                         .and_then(|cache| cache.avatar_url(&commit.author.email))
@@ -1078,7 +1163,7 @@ impl Render for GraphView {
                                     let initials_fallback = initials.clone();
                                     let fallback_color = node_color;
 
-                                    let avatar_size = 24.0_f32;
+                                    let avatar_size = 24.0_f32 * compact_mul;
                                     let mut avatar_container = div()
                                         .absolute()
                                         .left(px(node_x - avatar_size / 2.0))
@@ -1135,16 +1220,17 @@ impl Render for GraphView {
                                     }
 
                                     avatar_container
-                                }),
+                                })),
                         );
 
                         // Hash column
                         row = row.child(
                             div().w(px(80.)).flex_shrink_0().child(
-                                Label::new(short_id)
+                                Label::new(hash_display)
                                     .size(LabelSize::XSmall)
                                     .color(Color::Accent)
-                                    .weight(gpui::FontWeight::MEDIUM),
+                                    .weight(gpui::FontWeight::MEDIUM)
+                                    .truncate(),
                             ),
                         );
 
@@ -1181,24 +1267,28 @@ impl Render for GraphView {
                             row = row.child(message_col);
                         }
 
-                        // Author column
-                        row = row.child(
-                            div().w(px(120.)).flex_shrink_0().px(px(4.)).child(
-                                Label::new(author)
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted)
-                                    .truncate(),
-                            ),
-                        );
+                        // Author column (conditional)
+                        if show_author_column {
+                            row = row.child(
+                                div().w(px(120.)).flex_shrink_0().px(px(4.)).child(
+                                    Label::new(author)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .truncate(),
+                                ),
+                            );
+                        }
 
-                        // Date column (relative time)
-                        row = row.child(
-                            div().w(px(100.)).flex_shrink_0().pr(px(8.)).child(
-                                Label::new(time_str)
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
-                            ),
-                        );
+                        // Date column (conditional)
+                        if show_date_column {
+                            row = row.child(
+                                div().w(px(100.)).flex_shrink_0().pr(px(8.)).child(
+                                    Label::new(time_str)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
+                            );
+                        }
 
                         row.into_any_element()
                     })
@@ -1212,6 +1302,7 @@ impl Render for GraphView {
         let mut container = div()
             .id("graph-view")
             .track_focus(&self.graph_focus)
+            .key_context("GraphView")
             .on_key_down(cx.listener(Self::handle_graph_key_down))
             .relative()
             .v_flex()
@@ -1224,6 +1315,10 @@ impl Render for GraphView {
                     view_dismiss
                         .update(cx, |this: &mut GraphView, cx| {
                             this.dismiss_context_menu(cx);
+                            if this.show_settings_popover {
+                                this.show_settings_popover = false;
+                                cx.notify();
+                            }
                         })
                         .ok();
                 }
@@ -1603,6 +1698,167 @@ impl Render for GraphView {
             }
         }
 
+        // Settings popover overlay
+        if self.show_settings_popover {
+            let popover_bg = colors.elevated_surface_background;
+            let popover_border = colors.border;
+            let popover_hover = colors.ghost_element_hover;
+
+            let view_full_hash = cx.weak_entity();
+            let view_author = cx.weak_entity();
+            let view_date = cx.weak_entity();
+            let view_avatars = cx.weak_entity();
+
+            let full_hash_state = if self.show_full_hash { CheckState::Checked } else { CheckState::Unchecked };
+            let author_state = if self.show_author_column { CheckState::Checked } else { CheckState::Unchecked };
+            let date_state = if self.show_date_column { CheckState::Checked } else { CheckState::Unchecked };
+            let avatars_state = if self.show_avatars { CheckState::Checked } else { CheckState::Unchecked };
+
+            let popover = div()
+                .id("graph-settings-popover")
+                .absolute()
+                .right(px(8.))
+                .top(px(28.))
+                .v_flex()
+                .min_w(px(180.))
+                .py(px(4.))
+                .bg(popover_bg)
+                .border_1()
+                .border_color(popover_border)
+                .rounded(px(6.))
+                .elevation_3(cx)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    },
+                )
+                .child(
+                    div()
+                        .px(px(10.))
+                        .py(px(4.))
+                        .child(
+                            Label::new("Display Settings")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted)
+                                .weight(gpui::FontWeight::SEMIBOLD),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(1.))
+                        .my(px(2.))
+                        .bg(colors.border_variant),
+                )
+                .child(
+                    div()
+                        .id("toggle-full-hash")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_full_hash
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_full_hash = !this.show_full_hash;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-full-hash", full_hash_state))
+                        .child(
+                            Label::new("Show full hash")
+                                .size(LabelSize::XSmall),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("toggle-author-col")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_author
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_author_column = !this.show_author_column;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-author-col", author_state))
+                        .child(
+                            Label::new("Show author column")
+                                .size(LabelSize::XSmall),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("toggle-date-col")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_date
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_date_column = !this.show_date_column;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-date-col", date_state))
+                        .child(
+                            Label::new("Show date column")
+                                .size(LabelSize::XSmall),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("toggle-avatars")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_avatars
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_avatars = !this.show_avatars;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-avatars", avatars_state))
+                        .child(
+                            Label::new("Show avatars")
+                                .size(LabelSize::XSmall),
+                        ),
+                );
+
+            container = container.child(popover);
+        }
+
         container.into_any_element()
     }
 }
@@ -1614,17 +1870,22 @@ struct WorkingTreeRowParams {
     selected: bool,
     staged_count: usize,
     unstaged_count: usize,
+    combined_breakdown: HashMap<FileChangeKind, usize>,
     row_height: f32,
     lane_width: f32,
+    graph_padding_left: f32,
+    graph_col_width: f32,
     working_tree_bg: gpui::Hsla,
     node_color: gpui::Hsla,
     selected_bg: gpui::Hsla,
     hover_bg: gpui::Hsla,
     active_bg: gpui::Hsla,
     panel_bg: gpui::Hsla,
-    row_separator: gpui::Hsla,
     accent_border: gpui::Hsla,
     view: WeakEntity<GraphView>,
+    show_author_column: bool,
+    show_date_column: bool,
+    compact_mul: f32,
 }
 
 /// Render the virtual "Working Tree" row that appears at the top of the graph.
@@ -1634,17 +1895,22 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         selected,
         staged_count,
         unstaged_count,
+        combined_breakdown,
         row_height,
         lane_width,
+        graph_padding_left,
+        graph_col_width,
         working_tree_bg,
         node_color,
         selected_bg,
         hover_bg,
         active_bg,
         panel_bg,
-        row_separator,
         accent_border,
         view,
+        show_author_column,
+        show_date_column,
+        compact_mul,
     } = params;
     let bg = if selected { selected_bg } else { working_tree_bg };
     let row_hover_bg = if selected { selected_bg } else { hover_bg };
@@ -1659,21 +1925,18 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
     };
 
     let has_changes = staged_count > 0 || unstaged_count > 0;
-    let message: SharedString = if has_changes {
-        let mut parts = Vec::new();
-        if staged_count > 0 {
-            parts.push(format!("{} staged", staged_count));
-        }
-        if unstaged_count > 0 {
-            parts.push(format!("{} unstaged", unstaged_count));
-        }
-        format!("Uncommitted Changes ({})", parts.join(", ")).into()
-    } else {
-        "Working Tree Clean".into()
-    };
 
-    let graph_width = lane_width.max(80.0);
-    let node_x = lane_width / 2.0;
+    let added_count = combined_breakdown.get(&FileChangeKind::Added).copied().unwrap_or(0)
+        + combined_breakdown.get(&FileChangeKind::Untracked).copied().unwrap_or(0);
+    let modified_count = combined_breakdown.get(&FileChangeKind::Modified).copied().unwrap_or(0)
+        + combined_breakdown.get(&FileChangeKind::Renamed).copied().unwrap_or(0)
+        + combined_breakdown.get(&FileChangeKind::Copied).copied().unwrap_or(0)
+        + combined_breakdown.get(&FileChangeKind::TypeChange).copied().unwrap_or(0);
+    let deleted_count = combined_breakdown.get(&FileChangeKind::Deleted).copied().unwrap_or(0);
+    let conflicted_count = combined_breakdown.get(&FileChangeKind::Conflicted).copied().unwrap_or(0);
+
+    let graph_width = graph_col_width;
+    let node_x = lane_width / 2.0 + graph_padding_left;
 
     let view_click = view.clone();
 
@@ -1684,8 +1947,6 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         .h(px(row_height))
         .w_full()
         .bg(bg)
-        .border_b_1()
-        .border_color(row_separator)
         .cursor_pointer()
         .hover(move |s| s.bg(row_hover_bg))
         .active(move |s| s.bg(row_active_bg))
@@ -1715,6 +1976,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 .relative()
                 .w(px(graph_width))
                 .flex_shrink_0()
+                .overflow_x_hidden()
                 .h_full()
                 .child(
                     canvas(
@@ -1733,13 +1995,13 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                             // Vertical line from node center to bottom (connects to HEAD row below)
                             let mut line_down = PathBuilder::stroke(px(2.0));
                             line_down.move_to(point(cx_x, cy_y));
-                            line_down.line_to(point(cx_x, origin.y + h + px(1.0)));
+                            line_down.line_to(point(cx_x, origin.y + h + px(2.0)));
                             if let Ok(built) = line_down.build() {
                                 window.paint_path(built, node_color);
                             }
 
                             // Background ring to occlude lines behind the dot
-                            let ring_r = 13.0_f32;
+                            let ring_r = 13.0_f32 * compact_mul;
                             let steps = 32_usize;
                             let mut ring = PathBuilder::fill();
                             for s in 0..steps {
@@ -1759,7 +2021,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                             }
 
                             // Hollow circle (stroke only, no fill) to distinguish from commits
-                            let dot_radius = 5.0_f32;
+                            let dot_radius = 5.0_f32 * compact_mul;
                             let mut circle = PathBuilder::stroke(px(2.0));
                             for s in 0..=steps {
                                 let angle =
@@ -1777,7 +2039,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                             }
 
                             // Dashed outer ring to further distinguish
-                            let outer_r = dot_radius + 3.0;
+                            let outer_r = dot_radius + 3.0 * compact_mul;
                             let dash_count = 8_usize;
                             let arc_per_dash =
                                 std::f32::consts::TAU / (dash_count as f32 * 2.0);
@@ -1833,20 +2095,89 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                     .child(Badge::new("Working Tree").color(badge_color).bold()),
             );
 
-            message_col = message_col.child(
-                Label::new(message)
-                    .size(LabelSize::Small)
-                    .color(if has_changes { Color::Warning } else { Color::Muted })
-                    .truncate(),
-            );
+            if has_changes {
+                let label_text: SharedString = "Uncommitted Changes".into();
+                message_col = message_col.child(
+                    Label::new(label_text)
+                        .size(LabelSize::Small)
+                        .color(Color::Warning),
+                );
+
+                let mut indicators = div().h_flex().gap(px(4.)).flex_shrink_0();
+
+                if added_count > 0 {
+                    indicators = indicators.child(
+                        Label::new(SharedString::from(format!("+{}", added_count)))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Success)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    );
+                }
+                if modified_count > 0 {
+                    indicators = indicators.child(
+                        Label::new(SharedString::from(format!("~{}", modified_count)))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Accent)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    );
+                }
+                if deleted_count > 0 {
+                    indicators = indicators.child(
+                        Label::new(SharedString::from(format!("-{}", deleted_count)))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Error)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    );
+                }
+                if conflicted_count > 0 {
+                    indicators = indicators.child(
+                        Label::new(SharedString::from(format!("!{}", conflicted_count)))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Error)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    );
+                }
+
+                message_col = message_col.child(indicators);
+            } else {
+                message_col = message_col.child(
+                    Label::new("Working Tree Clean")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted)
+                        .truncate(),
+                );
+            }
 
             message_col
         })
-        // Author column (empty for working tree)
-        .child(div().w(px(120.)).flex_shrink_0())
-        // Date column (empty for working tree)
-        .child(div().w(px(100.)).flex_shrink_0())
+        .when(show_author_column, |el| {
+            el.child(div().w(px(120.)).flex_shrink_0())
+        })
+        .when(show_date_column, |el| {
+            el.child(div().w(px(100.)).flex_shrink_0())
+        })
         .into_any_element()
+}
+
+/// Merge staged and unstaged file-kind breakdowns into a single combined map.
+fn merge_breakdowns(
+    staged: &HashMap<FileChangeKind, usize>,
+    unstaged: &HashMap<FileChangeKind, usize>,
+) -> HashMap<FileChangeKind, usize> {
+    let mut combined = staged.clone();
+    for (&kind, &count) in unstaged {
+        *combined.entry(kind).or_insert(0) += count;
+    }
+    combined
+}
+
+/// Compute a breakdown of file change kinds from a list of `FileStatus` entries.
+pub fn compute_breakdown(files: &[rgitui_git::FileStatus]) -> HashMap<FileChangeKind, usize> {
+    let mut map = HashMap::new();
+    for f in files {
+        *map.entry(f.kind).or_insert(0) += 1;
+    }
+    map
 }
 
 fn format_relative_time(time: &chrono::DateTime<chrono::Utc>) -> String {

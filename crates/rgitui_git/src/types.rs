@@ -38,6 +38,7 @@ pub struct CommitInfo {
     pub message: String,
     pub author: Signature,
     pub committer: Signature,
+    pub co_authors: Vec<Signature>,
     pub time: DateTime<Utc>,
     pub parent_oids: Vec<git2::Oid>,
     pub refs: Vec<RefLabel>,
@@ -80,7 +81,7 @@ pub struct StashEntry {
 }
 
 /// Status of a file in the working tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileChangeKind {
     Added,
     Modified,

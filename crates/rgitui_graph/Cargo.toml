@@ -8,6 +8,7 @@ gpui.workspace = true
 rgitui_theme.workspace = true
 rgitui_ui.workspace = true
 rgitui_git.workspace = true
+rgitui_settings.workspace = true
 git2.workspace = true
 smallvec.workspace = true
 anyhow.workspace = true

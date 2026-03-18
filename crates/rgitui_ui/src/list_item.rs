@@ -1,5 +1,6 @@
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, App, ClickEvent, CursorStyle, ElementId, Window};
+use gpui::{div, px, rems, AnyElement, App, ClickEvent, CursorStyle, ElementId, Window};
+use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, StyledExt};
 use smallvec::SmallVec;
 
@@ -109,7 +110,9 @@ impl ListItem {
 impl RenderOnce for ListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.colors();
-        let height = self.spacing.height();
+        let compactness = cx.global::<SettingsState>().settings().compactness;
+        let base_height = self.spacing.height();
+        let height = rems(base_height.0 * compactness.multiplier());
         let indent_px = self.indent_level as f32 * self.indent_step;
 
         let bg = if self.selected {

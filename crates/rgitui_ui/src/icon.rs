@@ -61,6 +61,9 @@ pub enum IconName {
 
     // Status
     Info,
+    CheckCircle,
+    XCircle,
+    AlertTriangle,
 
     // Misc
     Dot,
@@ -119,6 +122,9 @@ impl IconName {
             IconName::Terminal => "icons/terminal.svg",
             IconName::Sparkle => "icons/sparkle.svg",
             IconName::Info => "icons/info.svg",
+            IconName::CheckCircle => "icons/check-circle.svg",
+            IconName::XCircle => "icons/x-circle.svg",
+            IconName::AlertTriangle => "icons/alert-triangle.svg",
             IconName::Dot => "icons/dot.svg",
             IconName::DotOutline => "icons/dot-outline.svg",
             IconName::Menu => "icons/menu.svg",

@@ -394,7 +394,7 @@ impl Render for TextInput {
 
         let min_h = if self.multiline { px(60.0) } else { px(32.0) };
 
-        div()
+        let mut container = div()
             .id(if self.multiline { "native-text-area" } else { "native-text-input" })
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
@@ -416,9 +416,24 @@ impl Render for TextInput {
             .text_color(text_color_val)
             .text_sm()
             .line_height(target_line_height)
-            .overflow_hidden()
-            .when(self.multiline, |el| el.overflow_y_scroll())
-            .child(text_element)
-            .child(cursor_overlay)
+            .when(self.multiline, |el| el.flex().flex_col())
+            .overflow_hidden();
+
+        if self.multiline {
+            container = container.child(
+                div()
+                    .id("text-scroll-area")
+                    .relative()
+                    .w_full()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(text_element)
+                    .child(cursor_overlay),
+            );
+        } else {
+            container = container.child(text_element).child(cursor_overlay);
+        }
+
+        container
     }
 }

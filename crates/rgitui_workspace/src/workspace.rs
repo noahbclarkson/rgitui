@@ -1,9 +1,12 @@
+use std::time::Instant;
+
 use anyhow::Result;
 use chrono::Local;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, Bounds, ClickEvent, Context, DragMoveEvent, ElementId, Entity, EventEmitter,
-    KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, SharedString, Window,
+    canvas, div, font, px, Bounds, ClickEvent, Context, DragMoveEvent, ElementId, Entity,
+    EventEmitter, FontFallbacks, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render,
+    SharedString, Window,
 };
 use rgitui_ai::{AiEvent, AiGenerator};
 use rgitui_diff::{DiffViewer, DiffViewerEvent};
@@ -15,8 +18,8 @@ use rgitui_graph::{GraphView, GraphViewEvent};
 use rgitui_settings::{LayoutSettings, StoredWorkspace};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize, Tab,
-    TabBar,
+    Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
+    Spinner, SpinnerSize, Tab, TabBar,
 };
 
 use crate::{
@@ -97,6 +100,24 @@ enum FocusedPanel {
     DiffViewer,
 }
 
+/// Tracks a long-running git operation in progress.
+struct ActiveOperation {
+    id: u64,
+    label: SharedString,
+    started_at: Instant,
+}
+
+/// Stores the result of a completed git operation for display in the output bar.
+struct OperationOutput {
+    operation: SharedString,
+    output: String,
+    is_error: bool,
+    timestamp: Instant,
+    expanded: bool,
+}
+
+const OPERATION_OUTPUT_AUTO_HIDE_SECS: u64 = 10;
+
 /// The root workspace view.
 pub struct Workspace {
     tabs: Vec<ProjectTab>,
@@ -124,8 +145,9 @@ pub struct Workspace {
     loading_message: Option<String>,
     active_git_operation: Option<GitOperationUpdate>,
     last_failed_git_operation: Option<GitOperationUpdate>,
-    /// Tracks which panel was focused before a modal opened, for focus restoration.
+    active_operations: Vec<ActiveOperation>,
     last_focused_panel: Option<FocusedPanel>,
+    last_operation_output: Option<OperationOutput>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -465,7 +487,9 @@ impl Workspace {
             loading_message: None,
             active_git_operation: None,
             last_failed_git_operation: None,
+            active_operations: Vec::new(),
             last_focused_panel: None,
+            last_operation_output: None,
         }
     }
 
@@ -861,6 +885,163 @@ impl Workspace {
             .update(cx, |layer, cx| layer.show_toast(message.clone(), kind, cx));
     }
 
+    fn schedule_operation_output_auto_hide(
+        &mut self,
+        timestamp: Instant,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(OPERATION_OUTPUT_AUTO_HIDE_SECS))
+                .await;
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    if let Some(output) = &this.last_operation_output {
+                        if output.timestamp == timestamp && !output.expanded && !output.is_error {
+                            this.last_operation_output = None;
+                            cx.notify();
+                        }
+                    }
+                })
+                .ok();
+            })
+        })
+        .detach();
+    }
+
+    fn render_operation_output_bar(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let output = self.last_operation_output.as_ref()?;
+        let colors = cx.colors().clone();
+
+        let accent = if output.is_error {
+            cx.status().error
+        } else {
+            cx.status().success
+        };
+        let bg = if output.is_error {
+            cx.status().error_background
+        } else {
+            cx.status().success_background
+        };
+        let icon = if output.is_error {
+            IconName::FileConflict
+        } else {
+            IconName::Check
+        };
+        let icon_color = if output.is_error {
+            Color::Error
+        } else {
+            Color::Success
+        };
+
+        let operation_label = output.operation.clone();
+        let first_line: SharedString = output
+            .output
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string()
+            .into();
+        let full_output: SharedString = output.output.clone().into();
+        let expanded = output.expanded;
+        let has_multiple_lines = output.output.lines().count() > 1;
+
+        let mut bar = div()
+            .id("operation-output-bar")
+            .v_flex()
+            .w_full()
+            .bg(bg)
+            .border_b_1()
+            .border_color(accent);
+
+        let mut header = div()
+            .h_flex()
+            .w_full()
+            .min_h(px(28.))
+            .px(px(10.))
+            .py(px(2.))
+            .gap(px(6.))
+            .items_center()
+            .child(Icon::new(icon).size(IconSize::XSmall).color(icon_color))
+            .child(
+                Label::new(operation_label)
+                    .size(LabelSize::XSmall)
+                    .weight(gpui::FontWeight::SEMIBOLD),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(
+                        Label::new(first_line)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .truncate(),
+                    ),
+            );
+
+        if has_multiple_lines {
+            header = header.child(
+                IconButton::new(
+                    "output-expand",
+                    if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    },
+                )
+                .size(ButtonSize::Compact)
+                .style(ButtonStyle::Transparent)
+                .color(Color::Muted)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    if let Some(op_output) = &mut this.last_operation_output {
+                        op_output.expanded = !op_output.expanded;
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+
+        header = header.child(
+            IconButton::new("output-dismiss", IconName::X)
+                .size(ButtonSize::Compact)
+                .style(ButtonStyle::Transparent)
+                .color(Color::Muted)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.last_operation_output = None;
+                    cx.notify();
+                })),
+        );
+
+        bar = bar.child(header);
+
+        if expanded {
+            bar = bar.child(
+                div()
+                    .id("operation-output-content")
+                    .w_full()
+                    .max_h(px(120.))
+                    .overflow_y_scroll()
+                    .px(px(10.))
+                    .pb(px(6.))
+                    .child(
+                        div()
+                            .font_family("monospace")
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .whitespace_nowrap()
+                            .child(full_output),
+                    ),
+            );
+        }
+
+        Some(bar.into_any_element())
+    }
+
     fn retry_git_operation(&mut self, update: &GitOperationUpdate, cx: &mut Context<Self>) {
         let Some(project) = self.active_project().cloned() else {
             self.show_toast("No active repository to retry.", ToastKind::Warning, cx);
@@ -987,6 +1168,8 @@ impl Workspace {
         self.loading_message = None;
         self.active_git_operation = None;
         self.last_failed_git_operation = None;
+        self.active_operations.clear();
+        self.last_operation_output = None;
 
         if cx.try_global::<rgitui_settings::SettingsState>().is_some() {
             let settings = cx.global_mut::<rgitui_settings::SettingsState>();
@@ -1135,10 +1318,12 @@ impl Workspace {
                         let wt_status = project.read(cx).status().clone();
                         let wt_staged = wt_status.staged.len();
                         let wt_unstaged = wt_status.unstaged.len();
+                        let wt_staged_bd = rgitui_graph::compute_breakdown(&wt_status.staged);
+                        let wt_unstaged_bd = rgitui_graph::compute_breakdown(&wt_status.unstaged);
                         graph.update(cx, |g, cx| {
                             g.set_commits(commits, cx);
                             g.set_all_loaded(!has_more);
-                            g.set_working_tree_status(wt_staged, wt_unstaged, cx);
+                            g.set_working_tree_status(wt_staged, wt_unstaged, wt_staged_bd, wt_unstaged_bd, cx);
                         });
 
                         // Update sidebar
@@ -1190,11 +1375,22 @@ impl Workspace {
                                 this.loading_message = Some(update.summary.clone());
                                 this.status_message = Some(update.summary.clone());
                                 this.active_git_operation = Some(update.clone());
+                                this.active_operations.push(ActiveOperation {
+                                    id: operation_id,
+                                    label: update.summary.clone().into(),
+                                    started_at: Instant::now(),
+                                });
                                 this.show_toast(update.summary.clone(), ToastKind::Info, cx);
                             }
                             GitOperationState::Succeeded => {
-                                this.is_loading = false;
-                                this.loading_message = None;
+                                this.active_operations
+                                    .retain(|op| op.id != operation_id);
+                                this.is_loading =
+                                    !this.active_operations.is_empty();
+                                this.loading_message = this
+                                    .active_operations
+                                    .last()
+                                    .map(|op| op.label.to_string());
                                 this.status_message = Some(update.summary.clone());
                                 if this
                                     .active_git_operation
@@ -1210,11 +1406,34 @@ impl Workspace {
                                 {
                                     this.last_failed_git_operation = None;
                                 }
+                                let output_text = update
+                                    .details
+                                    .clone()
+                                    .unwrap_or_default();
+                                if !output_text.is_empty() {
+                                    let now = Instant::now();
+                                    this.last_operation_output = Some(OperationOutput {
+                                        operation: SharedString::from(
+                                            update.kind.display_name().to_string(),
+                                        ),
+                                        output: output_text,
+                                        is_error: false,
+                                        timestamp: now,
+                                        expanded: false,
+                                    });
+                                    this.schedule_operation_output_auto_hide(now, cx);
+                                }
                                 this.show_toast(update.summary.clone(), ToastKind::Success, cx);
                             }
                             GitOperationState::Failed => {
-                                this.is_loading = false;
-                                this.loading_message = None;
+                                this.active_operations
+                                    .retain(|op| op.id != operation_id);
+                                this.is_loading =
+                                    !this.active_operations.is_empty();
+                                this.loading_message = this
+                                    .active_operations
+                                    .last()
+                                    .map(|op| op.label.to_string());
                                 if this
                                     .active_git_operation
                                     .as_ref()
@@ -1224,6 +1443,19 @@ impl Workspace {
                                 }
                                 this.last_failed_git_operation = Some(update.clone());
                                 this.status_message = Some(failure_message.clone());
+                                let error_output = update
+                                    .details
+                                    .clone()
+                                    .unwrap_or_else(|| failure_message.clone());
+                                this.last_operation_output = Some(OperationOutput {
+                                    operation: SharedString::from(
+                                        update.kind.display_name().to_string(),
+                                    ),
+                                    output: error_output,
+                                    is_error: true,
+                                    timestamp: Instant::now(),
+                                    expanded: true,
+                                });
                                 this.show_toast(failure_message, ToastKind::Error, cx);
                             }
                         }
@@ -1652,13 +1884,14 @@ impl Workspace {
                     let repo_path = proj.repo_path().to_path_buf();
                     let summary = proj.staged_summary();
                     let ai_entity = ai.clone();
+                    let diff_repo_path = repo_path.clone();
                     cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                         let diff_text = cx.background_executor().spawn(async move {
-                            rgitui_git::compute_staged_diff_text(&repo_path).unwrap_or_default()
+                            rgitui_git::compute_staged_diff_text(&diff_repo_path).unwrap_or_default()
                         }).await;
                         cx.update(|cx| {
                             ai_entity.update(cx, |ai_gen, cx| {
-                                ai_gen.generate_commit_message(diff_text, summary, cx).detach();
+                                ai_gen.generate_commit_message(diff_text, summary, repo_path, cx).detach();
                             });
                         });
                     }).detach();
@@ -1713,12 +1946,33 @@ impl Workspace {
                         });
                     }
                     ToolbarEvent::Search => {
-                        // Toggle graph search if we have an active tab
                         if let Some(tab) = this.tabs.get(this.active_tab) {
                             tab.graph.update(cx, |g, cx| {
                                 g.toggle_search(cx);
                             });
                         }
+                    }
+                    ToolbarEvent::OpenFileExplorer => {
+                        let repo_path = project.read(cx).repo_path().to_path_buf();
+                        open_file_explorer(&repo_path);
+                    }
+                    ToolbarEvent::OpenTerminal => {
+                        let repo_path = project.read(cx).repo_path().to_path_buf();
+                        let terminal_cmd = cx
+                            .global::<rgitui_settings::SettingsState>()
+                            .settings()
+                            .terminal_command
+                            .clone();
+                        open_terminal(&repo_path, &terminal_cmd);
+                    }
+                    ToolbarEvent::OpenEditor => {
+                        let repo_path = project.read(cx).repo_path().to_path_buf();
+                        let editor_cmd = cx
+                            .global::<rgitui_settings::SettingsState>()
+                            .settings()
+                            .editor_command
+                            .clone();
+                        open_editor(&repo_path, &editor_cmd);
                     }
                 }
             }
@@ -1740,10 +1994,12 @@ impl Workspace {
             let init_status = project.read(cx).status().clone();
             let init_staged = init_status.staged.len();
             let init_unstaged = init_status.unstaged.len();
+            let init_staged_bd = rgitui_graph::compute_breakdown(&init_status.staged);
+            let init_unstaged_bd = rgitui_graph::compute_breakdown(&init_status.unstaged);
             graph.update(cx, |g, cx| {
                 g.set_commits(commits, cx);
                 g.set_all_loaded(!has_more);
-                g.set_working_tree_status(init_staged, init_unstaged, cx);
+                g.set_working_tree_status(init_staged, init_unstaged, init_staged_bd, init_unstaged_bd, cx);
             });
 
             let branches = project.read(cx).branches().to_vec();
@@ -2530,22 +2786,50 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
 
-        let ui_font: SharedString = cx
-            .try_global::<rgitui_settings::SettingsState>()
-            .and_then(|s| {
-                let f = &s.settings().ui_font;
-                if f.is_empty() { None } else { Some(SharedString::from(f.clone())) }
-            })
-            .unwrap_or_else(|| "JetBrainsMono Nerd Font".into());
+        let ui_font = {
+            let configured = cx
+                .try_global::<rgitui_settings::SettingsState>()
+                .and_then(|s| {
+                    let f = &s.settings().ui_font;
+                    if f.is_empty() {
+                        None
+                    } else {
+                        Some(f.clone())
+                    }
+                });
+
+            let primary = configured.unwrap_or_else(|| "JetBrainsMono Nerd Font".to_string());
+
+            let candidates = [
+                "JetBrainsMono Nerd Font",
+                "JetBrains Mono",
+                #[cfg(target_os = "windows")]
+                "Cascadia Code",
+                #[cfg(target_os = "macos")]
+                "SF Mono",
+                #[cfg(target_os = "linux")]
+                "DejaVu Sans Mono",
+                "monospace",
+            ];
+            let fallbacks: Vec<String> = candidates
+                .iter()
+                .filter(|c| **c != primary)
+                .map(|c| c.to_string())
+                .collect();
+
+            let mut f = font(SharedString::from(primary));
+            f.fallbacks = Some(FontFallbacks::from_fonts(fallbacks));
+            f
+        };
 
         // If no tabs, show welcome screen
         if self.tabs.is_empty() {
             return div()
                 .id("workspace-root")
                 .size_full()
-                .font_family(ui_font)
+                .font(ui_font.clone())
                 .bg(colors.background)
                 .on_key_down(cx.listener(Self::handle_key_down))
                 .child(self.render_welcome_interactive(cx))
@@ -2680,7 +2964,7 @@ impl Render for Workspace {
             .changes(staged_count, unstaged_count)
             .stash_count(stash_count)
             .repo_path(repo_path_display)
-            .loading(self.is_loading)
+            .loading(!self.active_operations.is_empty())
             .error(self.last_failed_git_operation.is_some())
             .head_detached(head_detached);
         if !repo_state.is_clean() {
@@ -2778,11 +3062,13 @@ impl Render for Workspace {
             None
         };
 
+        let operation_output_bar = self.render_operation_output_bar(cx);
+
         div()
             .id("workspace-root")
             .v_flex()
             .size_full()
-            .font_family(ui_font)
+            .font(ui_font)
             .bg(colors.background)
             .on_key_down(cx.listener(Self::handle_key_down))
             // Title bar
@@ -2798,6 +3084,7 @@ impl Render for Workspace {
             // Toolbar
             .child(active_tab.toolbar.clone())
             .when_some(operation_banner, |el, banner| el.child(banner))
+            .when_some(operation_output_bar, |el, bar| el.child(bar))
             // Conflict state banner (merge/rebase/cherry-pick/revert in progress)
             .when(!repo_state.is_clean(), |el| {
                 let has_conflicts = active_tab.project.read(cx).has_conflicts();
@@ -2997,10 +3284,24 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            // Loading indicator
-                            .when(self.is_loading, |el| {
-                                let msg: SharedString =
-                                    self.loading_message.clone().unwrap_or_default().into();
+                            // Loading indicator with spinner
+                            .when(!self.active_operations.is_empty(), |el| {
+                                let label: SharedString = self
+                                    .active_operations
+                                    .last()
+                                    .map(|op| {
+                                        let elapsed = op.started_at.elapsed().as_secs();
+                                        if elapsed >= 2 {
+                                            SharedString::from(format!(
+                                                "{} ({}s)",
+                                                op.label, elapsed
+                                            ))
+                                        } else {
+                                            op.label.clone()
+                                        }
+                                    })
+                                    .unwrap_or_else(|| "Loading...".into());
+
                                 el.child(
                                     div()
                                         .h_flex()
@@ -3013,17 +3314,9 @@ impl Render for Workspace {
                                         .border_b_1()
                                         .border_color(colors.border_variant)
                                         .child(
-                                            // Pulsing dot indicator
-                                            div()
-                                                .w(px(8.))
-                                                .h(px(8.))
-                                                .rounded_full()
-                                                .bg(colors.border_focused),
-                                        )
-                                        .child(
-                                            Label::new(msg)
-                                                .size(LabelSize::XSmall)
-                                                .color(Color::Accent),
+                                            Spinner::new()
+                                                .size(SpinnerSize::Small)
+                                                .label(label),
                                         ),
                                 )
                             })
@@ -3286,4 +3579,120 @@ impl Render for Workspace {
             .child(self.shortcuts_help.clone())
             .into_any_element()
     }
+}
+
+fn open_file_explorer(path: &std::path::Path) {
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("explorer.exe")
+                .arg(&path)
+                .spawn();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open").arg(&path).spawn();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+        }
+    });
+}
+
+fn open_terminal(path: &std::path::Path, custom_command: &str) {
+    let path = path.to_path_buf();
+    let custom_command = custom_command.to_string();
+    std::thread::spawn(move || {
+        if !custom_command.is_empty() {
+            let parts: Vec<&str> = custom_command.split_whitespace().collect();
+            if let Some((program, args)) = parts.split_first() {
+                let _ = std::process::Command::new(program)
+                    .args(args)
+                    .current_dir(&path)
+                    .spawn();
+            }
+        } else {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = std::process::Command::new("wt.exe")
+                    .arg("-d")
+                    .arg(&path)
+                    .spawn()
+                    .or_else(|_| {
+                        std::process::Command::new("cmd.exe")
+                            .arg("/K")
+                            .arg("cd")
+                            .arg("/d")
+                            .arg(&path)
+                            .spawn()
+                    });
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("open")
+                    .arg("-a")
+                    .arg("Terminal")
+                    .arg(&path)
+                    .spawn();
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let _ = std::process::Command::new("x-terminal-emulator")
+                    .current_dir(&path)
+                    .spawn()
+                    .or_else(|_| {
+                        std::process::Command::new("xterm")
+                            .current_dir(&path)
+                            .spawn()
+                    });
+            }
+        }
+    });
+}
+
+fn open_editor(path: &std::path::Path, custom_command: &str) {
+    let path = path.to_path_buf();
+    let custom_command = custom_command.to_string();
+    std::thread::spawn(move || {
+        if !custom_command.is_empty() {
+            let parts: Vec<&str> = custom_command.split_whitespace().collect();
+            if let Some((program, args)) = parts.split_first() {
+                let _ = std::process::Command::new(program)
+                    .args(args)
+                    .arg(&path)
+                    .spawn();
+            }
+        } else {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = std::process::Command::new("code").arg(&path).spawn();
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("code")
+                    .arg(&path)
+                    .spawn()
+                    .or_else(|_| {
+                        std::process::Command::new("open")
+                            .arg("-a")
+                            .arg("TextEdit")
+                            .arg(&path)
+                            .spawn()
+                    });
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let _ = std::process::Command::new("code")
+                    .arg(&path)
+                    .spawn()
+                    .or_else(|_| {
+                        std::process::Command::new("xdg-open")
+                            .arg(&path)
+                            .spawn()
+                    });
+            }
+        }
+    });
 }

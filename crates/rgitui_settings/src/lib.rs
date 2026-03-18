@@ -4,9 +4,58 @@ use gpui::{App, Global};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::{OnceLock, RwLock};
 use uuid::Uuid;
+
+/// Controls the compactness of the UI layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Compactness {
+    Compact,
+    #[default]
+    Default,
+    Comfortable,
+}
+
+impl Compactness {
+    pub fn multiplier(&self) -> f32 {
+        match self {
+            Compactness::Compact => 0.75,
+            Compactness::Default => 1.0,
+            Compactness::Comfortable => 1.25,
+        }
+    }
+
+    pub fn spacing(&self, base: f32) -> f32 {
+        base * self.multiplier()
+    }
+}
+
+impl fmt::Display for Compactness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Compactness::Compact => write!(f, "Compact"),
+            Compactness::Default => write!(f, "Default"),
+            Compactness::Comfortable => write!(f, "Comfortable"),
+        }
+    }
+}
+
+impl FromStr for Compactness {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "compact" => Ok(Compactness::Compact),
+            "default" => Ok(Compactness::Default),
+            "comfortable" => Ok(Compactness::Comfortable),
+            _ => Err(format!("Unknown compactness value: {}", s)),
+        }
+    }
+}
 
 /// Application settings persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +77,12 @@ pub struct AppSettings {
     pub workspaces: Vec<StoredWorkspace>,
     #[serde(default)]
     pub active_workspace_id: Option<String>,
+    #[serde(default)]
+    pub compactness: Compactness,
+    #[serde(default)]
+    pub terminal_command: String,
+    #[serde(default)]
+    pub editor_command: String,
 }
 
 /// A persisted local workspace snapshot.
@@ -100,8 +155,18 @@ pub struct AiSettings {
     pub model: String,
     #[serde(default = "default_commit_style")]
     pub commit_style: String,
-    #[serde(default)]
+    #[serde(default = "default_ai_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_inject_project_context")]
+    pub inject_project_context: bool,
+}
+
+fn default_ai_enabled() -> bool {
+    true
+}
+
+fn default_inject_project_context() -> bool {
+    true
 }
 
 fn default_ai_provider() -> String {
@@ -198,7 +263,8 @@ impl Default for AiSettings {
             has_api_key: false,
             model: default_ai_model(),
             commit_style: default_commit_style(),
-            enabled: false,
+            enabled: true,
+            inject_project_context: default_inject_project_context(),
         }
     }
 }
@@ -216,6 +282,9 @@ impl Default for AppSettings {
             layout: LayoutSettings::default(),
             workspaces: Vec::new(),
             active_workspace_id: None,
+            compactness: Compactness::default(),
+            terminal_command: String::new(),
+            editor_command: String::new(),
         }
     }
 }
@@ -261,7 +330,7 @@ impl SettingsState {
 
     pub fn recent_workspaces(&self, limit: usize) -> Vec<StoredWorkspace> {
         let mut workspaces = self.settings.workspaces.clone();
-        workspaces.sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
+        workspaces.sort_by_key(|w| std::cmp::Reverse(w.last_opened_at));
         if limit > 0 {
             workspaces.truncate(limit);
         }

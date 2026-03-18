@@ -528,6 +528,38 @@ fn generate_hunk_patch_for_repo(
     Ok(patch_text)
 }
 
+fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
+    let mut co_authors = Vec::new();
+    let mut cleaned_lines = Vec::new();
+    let prefix = "co-authored-by:";
+
+    for line in message.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if let Some(rest_lower) = lower.strip_prefix(prefix) {
+            let rest = &trimmed[prefix.len()..];
+            let rest = rest.trim();
+            if let Some(email_start) = rest.find('<') {
+                if let Some(email_end) = rest.find('>') {
+                    let name = rest[..email_start].trim().to_string();
+                    let email = rest[email_start + 1..email_end].trim().to_string();
+                    if !name.is_empty() && !email.is_empty() {
+                        co_authors.push(Signature { name, email });
+                        continue;
+                    }
+                }
+            }
+            let _ = rest_lower;
+        }
+        cleaned_lines.push(line);
+    }
+
+    let cleaned = cleaned_lines.join("\n");
+    let cleaned = cleaned.trim_end().to_string();
+
+    (cleaned, co_authors)
+}
+
 /// Gather all refresh data from a repository at the given path.
 /// This is a standalone function (no `&self`) so it can run on a background thread.
 pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
@@ -792,11 +824,14 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
 
             let refs = ref_map.remove(&oid).unwrap_or_default();
 
+            let raw_message = commit.message().unwrap_or("").to_string();
+            let (message, co_authors) = parse_co_authors(&raw_message);
+
             commits.push(CommitInfo {
                 oid,
                 short_id: format!("{:.7}", oid),
                 summary: commit.summary().unwrap_or("").to_string(),
-                message: commit.message().unwrap_or("").to_string(),
+                message,
                 author: Signature {
                     name: author.name().unwrap_or("").to_string(),
                     email: author.email().unwrap_or("").to_string(),
@@ -805,6 +840,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                     name: committer.name().unwrap_or("").to_string(),
                     email: committer.email().unwrap_or("").to_string(),
                 },
+                co_authors,
                 time: time.unwrap_or_else(Utc::now),
                 parent_oids: commit.parent_ids().collect(),
                 refs,

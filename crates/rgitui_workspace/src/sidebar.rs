@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use gpui::prelude::*;
@@ -7,8 +8,11 @@ use gpui::{
     SharedString, Window,
 };
 use rgitui_git::{BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo};
+use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonSize, ButtonStyle, IconButton, IconName, Label, LabelSize};
+use rgitui_ui::{
+    Button, ButtonSize, ButtonStyle, DiffStat, Disclosure, IconButton, IconName, Label, LabelSize,
+};
 
 /// Events from the sidebar.
 #[derive(Debug, Clone)]
@@ -397,7 +401,7 @@ impl Sidebar {
     }
 
     pub fn update_tags(&mut self, mut tags: Vec<TagInfo>, cx: &mut Context<Self>) {
-        tags.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        tags.sort_by_key(|a| a.name.to_lowercase());
         self.tags = tags;
         cx.notify();
     }
@@ -465,6 +469,27 @@ impl Sidebar {
         }
     }
 
+    fn file_change_symbol(kind: FileChangeKind) -> &'static str {
+        match kind {
+            FileChangeKind::Added => "+",
+            FileChangeKind::Modified => "~",
+            FileChangeKind::Deleted => "-",
+            FileChangeKind::Renamed => "R",
+            FileChangeKind::Copied => "C",
+            FileChangeKind::TypeChange => "T",
+            FileChangeKind::Untracked => "?",
+            FileChangeKind::Conflicted => "!",
+        }
+    }
+
+    fn file_kind_counts(files: &[FileStatus]) -> HashMap<FileChangeKind, usize> {
+        let mut counts: HashMap<FileChangeKind, usize> = HashMap::new();
+        for file in files {
+            *counts.entry(file.kind).or_insert(0) += 1;
+        }
+        counts
+    }
+
     /// Map a file change kind to an appropriate icon.
     fn file_change_icon(kind: FileChangeKind) -> IconName {
         match kind {
@@ -524,6 +549,7 @@ impl Sidebar {
         ctx: &mut FileRowCtx<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let item_h = cx.global::<SettingsState>().settings().compactness.spacing(24.0);
         let staged = ctx.staged;
         let indent = ctx.indent;
         let colors = ctx.colors;
@@ -564,7 +590,7 @@ impl Sidebar {
             .group("sidebar-file-row")
             .h_flex()
             .w_full()
-            .h(px(24.))
+            .h(px(item_h))
             .flex_shrink_0()
             .px_2()
             .pl(indent)
@@ -596,22 +622,7 @@ impl Sidebar {
             .child(div().flex_1());
 
         if has_stats {
-            row = row.child(
-                div()
-                    .h_flex()
-                    .gap(px(4.))
-                    .flex_shrink_0()
-                    .child(
-                        Label::new(SharedString::from(format!("+{}", additions)))
-                            .size(LabelSize::XSmall)
-                            .color(Color::Added),
-                    )
-                    .child(
-                        Label::new(SharedString::from(format!("-{}", deletions)))
-                            .size(LabelSize::XSmall)
-                            .color(Color::Deleted),
-                    ),
-            );
+            row = row.child(DiffStat::new(additions, deletions));
         }
 
         let stage_color = if staged {
@@ -703,6 +714,7 @@ impl Sidebar {
         ctx: &mut FileRowCtx<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let item_h = cx.global::<SettingsState>().settings().compactness.spacing(24.0);
         let (prefix, parent_path, depth) = tree_ctx;
         let file_indent = px(if depth == 0 {
             16.0
@@ -748,7 +760,7 @@ impl Sidebar {
                     .id(SharedString::from(format!("{prefix}-dir-{full_dir}")))
                     .h_flex()
                     .w_full()
-                    .h(px(24.))
+                    .h(px(item_h))
                     .flex_shrink_0()
                     .px_2()
                     .pl(dir_indent)
@@ -814,6 +826,9 @@ impl Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let compactness = cx.global::<SettingsState>().settings().compactness;
+        let item_h = compactness.spacing(24.0);
+        let header_h = compactness.spacing(26.0);
 
         // Compute navigable items for keyboard highlight matching
         let _nav_items = self.navigable_items();
@@ -822,6 +837,7 @@ impl Render for Sidebar {
         let panel = div()
             .id("sidebar-panel")
             .track_focus(&self.focus_handle)
+            .key_context("Sidebar")
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
             .w_full()
@@ -849,7 +865,7 @@ impl Render for Sidebar {
                     .id("sidebar-header")
                     .h_flex()
                     .w_full()
-                    .h(px(26.))
+                    .h(px(header_h))
                     .px(px(8.))
                     .gap(px(4.))
                     .items_center()
@@ -873,6 +889,7 @@ impl Render for Sidebar {
                         IconButton::new("sidebar-open-repo", IconName::Plus)
                             .size(ButtonSize::Compact)
                             .color(Color::Muted)
+                            .tooltip("Open repository")
                             .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                 cx.emit(SidebarEvent::OpenRepo);
                             })),
@@ -906,7 +923,7 @@ impl Render for Sidebar {
                 .id("section-local-branches")
                 .h_flex()
                 .w_full()
-                .h(px(24.))
+                .h(px(item_h))
                 .px(px(8.))
                 .gap(px(4.))
                 .items_center()
@@ -985,12 +1002,11 @@ impl Render for Sidebar {
                     .id(ElementId::NamedInteger("local-branch".into(), i as u64))
                     .h_flex()
                     .w_full()
-                    .h(px(24.))
+                    .h(px(item_h))
                     .px_2()
                     .pl(px(16.))
-                    .gap_1()
+                    .gap(px(4.))
                     .items_center()
-                    .overflow_hidden()
                     .when(kb_active, |el| el.bg(colors.ghost_element_hover).border_l_2().border_color(kb_accent))
                     .hover(|s| s.bg(colors.ghost_element_hover))
                     .active(|s| s.bg(colors.ghost_element_active))
@@ -1006,18 +1022,33 @@ impl Render for Sidebar {
                     }));
 
                 if is_head {
-                    // Active branch: filled dot icon + accent color + bold + highlight bg
                     item = item
                         .bg(colors.ghost_element_selected)
                         .child(
-                            rgitui_ui::Icon::new(IconName::Dot)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(Color::Accent),
+                            div()
+                                .w(px(14.))
+                                .h(px(14.))
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    rgitui_ui::Icon::new(IconName::Dot)
+                                        .size(rgitui_ui::IconSize::XSmall)
+                                        .color(Color::Accent),
+                                ),
                         )
                         .child(
-                            rgitui_ui::Icon::new(IconName::GitBranch)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(Color::Accent),
+                            div()
+                                .w(px(14.))
+                                .h(px(14.))
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    rgitui_ui::Icon::new(IconName::GitBranch)
+                                        .size(rgitui_ui::IconSize::XSmall)
+                                        .color(Color::Accent),
+                                ),
                         )
                         .child(
                             Label::new(name)
@@ -1027,17 +1058,32 @@ impl Render for Sidebar {
                                 .truncate(),
                         );
                 } else {
-                    // Non-HEAD branch: empty circle outline icon + muted color
                     item = item
                         .child(
-                            rgitui_ui::Icon::new(IconName::DotOutline)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(Color::Muted),
+                            div()
+                                .w(px(14.))
+                                .h(px(14.))
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    rgitui_ui::Icon::new(IconName::DotOutline)
+                                        .size(rgitui_ui::IconSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
                         )
                         .child(
-                            rgitui_ui::Icon::new(IconName::GitBranch)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(Color::Muted),
+                            div()
+                                .w(px(14.))
+                                .h(px(14.))
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    rgitui_ui::Icon::new(IconName::GitBranch)
+                                        .size(rgitui_ui::IconSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
                         )
                         .child(
                             Label::new(name)
@@ -1048,7 +1094,7 @@ impl Render for Sidebar {
                 }
 
                 if branch.ahead > 0 || branch.behind > 0 {
-                    item = item.child(
+                    item = item.child(div().flex_1()).child(
                         div()
                             .h_flex()
                             .gap(px(4.))
@@ -1113,6 +1159,7 @@ impl Render for Sidebar {
                                 )
                                 .size(ButtonSize::Compact)
                                 .color(Color::Muted)
+                                .tooltip("Merge into current branch")
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
                                         cx.emit(SidebarEvent::MergeBranch(
@@ -1128,6 +1175,7 @@ impl Render for Sidebar {
                                 )
                                 .size(ButtonSize::Compact)
                                 .color(Color::Muted)
+                                .tooltip("Rename branch")
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
                                         cx.emit(SidebarEvent::BranchRename(
@@ -1143,6 +1191,7 @@ impl Render for Sidebar {
                                 )
                                 .size(ButtonSize::Compact)
                                 .color(Color::Deleted)
+                                .tooltip("Delete branch")
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
                                         cx.emit(SidebarEvent::BranchDelete(
@@ -1173,7 +1222,7 @@ impl Render for Sidebar {
                 .id("section-remotes")
                 .h_flex()
                 .w_full()
-                .h(px(24.))
+                .h(px(item_h))
                 .px(px(8.))
                 .gap(px(4.))
                 .items_center()
@@ -1292,6 +1341,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Info)
+                                    .tooltip("Fetch from remote")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::RemoteFetch(
@@ -1307,6 +1357,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Warning)
+                                    .tooltip("Pull from remote")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::RemotePull(pull_remote.clone()));
@@ -1320,6 +1371,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Success)
+                                    .tooltip("Push to remote")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::RemotePush(push_remote.clone()));
@@ -1333,6 +1385,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Deleted)
+                                    .tooltip("Remove remote")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::RemoteRemove(
@@ -1374,7 +1427,7 @@ impl Render for Sidebar {
                 .id("section-remote-branches")
                 .h_flex()
                 .w_full()
-                .h(px(24.))
+                .h(px(item_h))
                 .px(px(8.))
                 .gap(px(4.))
                 .items_center()
@@ -1429,12 +1482,11 @@ impl Render for Sidebar {
                         .id(ElementId::NamedInteger("remote-branch".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(24.))
+                        .h(px(item_h))
                         .px_2()
                         .pl(px(16.))
-                        .gap_1()
+                        .gap(px(4.))
                         .items_center()
-                        .overflow_hidden()
                         .when(kb_active, |el| el.bg(colors.ghost_element_hover).border_l_2().border_color(kb_accent))
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
@@ -1442,9 +1494,17 @@ impl Render for Sidebar {
                             cx.emit(SidebarEvent::BranchSelected(remote_branch_name.clone()));
                         }))
                         .child(
-                            rgitui_ui::Icon::new(IconName::GitBranch)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(Color::Muted),
+                            div()
+                                .w(px(14.))
+                                .h(px(14.))
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    rgitui_ui::Icon::new(IconName::GitBranch)
+                                        .size(rgitui_ui::IconSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
                         )
                         .child(
                             Label::new(name)
@@ -1471,7 +1531,7 @@ impl Render for Sidebar {
                 .id("section-tags")
                 .h_flex()
                 .w_full()
-                .h(px(24.))
+                .h(px(item_h))
                 .px(px(8.))
                 .gap(px(4.))
                 .items_center()
@@ -1547,7 +1607,7 @@ impl Render for Sidebar {
                         .id(ElementId::NamedInteger("tag-item".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(24.))
+                        .h(px(item_h))
                         .px_2()
                         .pl(px(16.))
                         .gap_1()
@@ -1577,6 +1637,7 @@ impl Render for Sidebar {
                             )
                             .size(ButtonSize::Compact)
                             .color(Color::Deleted)
+                            .tooltip("Delete tag")
                             .on_click(cx.listener(
                                 move |_this, _: &ClickEvent, _, cx| {
                                     cx.emit(SidebarEvent::TagDelete(
@@ -1604,7 +1665,7 @@ impl Render for Sidebar {
                 .id("section-stashes")
                 .h_flex()
                 .w_full()
-                .h(px(24.))
+                .h(px(item_h))
                 .px(px(8.))
                 .gap(px(4.))
                 .items_center()
@@ -1681,7 +1742,7 @@ impl Render for Sidebar {
                         .id(ElementId::NamedInteger("stash-item".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(24.))
+                        .h(px(item_h))
                         .px_2()
                         .pl(px(16.))
                         .gap_1()
@@ -1714,6 +1775,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Success)
+                                    .tooltip("Apply stash")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::StashApply(
@@ -1732,6 +1794,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Deleted)
+                                    .tooltip("Drop stash")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::StashDrop(
@@ -1756,22 +1819,18 @@ impl Render for Sidebar {
 
         // -- Staged Changes --
         let staged_expanded = self.is_expanded(SidebarSection::StagedChanges);
-        let staged_icon = if staged_expanded {
-            IconName::ChevronDown
-        } else {
-            IconName::ChevronRight
-        };
         let staged_count = self.staged.len();
         let has_staged = staged_count > 0;
+        let staged_kind_counts = Self::file_kind_counts(&self.staged);
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        content = content.child(
-            div()
+
+        let mut staged_header = div()
                 .id("section-staged")
                 .h_flex()
                 .w_full()
-                .h(px(24.))
+                .h(px(item_h))
                 .px(px(8.))
                 .gap(px(4.))
                 .items_center()
@@ -1779,16 +1838,12 @@ impl Render for Sidebar {
                 .border_b_1()
                 .border_color(colors.border_variant)
                 .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
-                .hover(|s| s.bg(colors.ghost_element_hover))
-                .active(|s| s.bg(colors.ghost_element_active))
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.toggle_section(SidebarSection::StagedChanges, cx);
                 }))
                 .child(
-                    rgitui_ui::Icon::new(staged_icon)
-                        .size(rgitui_ui::IconSize::XSmall)
-                        .color(Color::Muted),
+                    Disclosure::new("staged-disclosure", "Staged", staged_expanded),
                 )
                 .child(
                     rgitui_ui::Icon::new(IconName::Check)
@@ -1798,13 +1853,38 @@ impl Render for Sidebar {
                         } else {
                             Color::Muted
                         }),
-                )
-                .child(
-                    Label::new("Staged")
-                        .size(LabelSize::XSmall)
-                        .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Muted),
-                )
+                );
+
+        if has_staged {
+            let kind_order = [
+                FileChangeKind::Added,
+                FileChangeKind::Modified,
+                FileChangeKind::Deleted,
+                FileChangeKind::Renamed,
+                FileChangeKind::Copied,
+                FileChangeKind::TypeChange,
+                FileChangeKind::Untracked,
+                FileChangeKind::Conflicted,
+            ];
+            let mut breakdown = div().h_flex().gap(px(3.));
+            for kind in &kind_order {
+                if let Some(&count) = staged_kind_counts.get(kind) {
+                    if count > 0 {
+                        let symbol = Self::file_change_symbol(*kind);
+                        let color = Self::file_change_color(*kind);
+                        let text: SharedString = format!("{}{}", symbol, count).into();
+                        breakdown = breakdown.child(
+                            Label::new(text)
+                                .size(LabelSize::XSmall)
+                                .color(color),
+                        );
+                    }
+                }
+            }
+            staged_header = staged_header.child(breakdown);
+        }
+
+        staged_header = staged_header
                 .child(div().flex_1())
                 .when(has_staged, |el| {
                     el.child(
@@ -1843,8 +1923,8 @@ impl Render for Sidebar {
                                     Color::Muted
                                 }),
                         ),
-                ),
-        );
+                );
+        content = content.child(staged_header);
 
         if staged_expanded {
             if self.staged.is_empty() {
@@ -1879,22 +1959,18 @@ impl Render for Sidebar {
 
         // -- Unstaged Changes --
         let unstaged_expanded = self.is_expanded(SidebarSection::UnstagedChanges);
-        let unstaged_icon = if unstaged_expanded {
-            IconName::ChevronDown
-        } else {
-            IconName::ChevronRight
-        };
         let unstaged_count = self.unstaged.len();
         let has_unstaged = unstaged_count > 0;
+        let unstaged_kind_counts = Self::file_kind_counts(&self.unstaged);
 
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
-        content = content.child(
-            div()
+
+        let mut unstaged_header = div()
                 .id("section-unstaged")
                 .h_flex()
                 .w_full()
-                .h(px(24.))
+                .h(px(item_h))
                 .px(px(8.))
                 .gap(px(4.))
                 .items_center()
@@ -1902,16 +1978,12 @@ impl Render for Sidebar {
                 .border_b_1()
                 .border_color(colors.border_variant)
                 .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
-                .hover(|s| s.bg(colors.ghost_element_hover))
-                .active(|s| s.bg(colors.ghost_element_active))
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.toggle_section(SidebarSection::UnstagedChanges, cx);
                 }))
                 .child(
-                    rgitui_ui::Icon::new(unstaged_icon)
-                        .size(rgitui_ui::IconSize::XSmall)
-                        .color(Color::Muted),
+                    Disclosure::new("unstaged-disclosure", "Unstaged", unstaged_expanded),
                 )
                 .child(
                     rgitui_ui::Icon::new(IconName::Edit)
@@ -1921,13 +1993,38 @@ impl Render for Sidebar {
                         } else {
                             Color::Muted
                         }),
-                )
-                .child(
-                    Label::new("Unstaged")
-                        .size(LabelSize::XSmall)
-                        .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Muted),
-                )
+                );
+
+        if has_unstaged {
+            let kind_order = [
+                FileChangeKind::Added,
+                FileChangeKind::Modified,
+                FileChangeKind::Deleted,
+                FileChangeKind::Renamed,
+                FileChangeKind::Copied,
+                FileChangeKind::TypeChange,
+                FileChangeKind::Untracked,
+                FileChangeKind::Conflicted,
+            ];
+            let mut breakdown = div().h_flex().gap(px(3.));
+            for kind in &kind_order {
+                if let Some(&count) = unstaged_kind_counts.get(kind) {
+                    if count > 0 {
+                        let symbol = Self::file_change_symbol(*kind);
+                        let color = Self::file_change_color(*kind);
+                        let text: SharedString = format!("{}{}", symbol, count).into();
+                        breakdown = breakdown.child(
+                            Label::new(text)
+                                .size(LabelSize::XSmall)
+                                .color(color),
+                        );
+                    }
+                }
+            }
+            unstaged_header = unstaged_header.child(breakdown);
+        }
+
+        unstaged_header = unstaged_header
                 .child(div().flex_1())
                 .when(has_unstaged, |el| {
                     el.child(
@@ -1966,8 +2063,8 @@ impl Render for Sidebar {
                                     Color::Muted
                                 }),
                         ),
-                ),
-        );
+                );
+        content = content.child(unstaged_header);
 
         if unstaged_expanded {
             if self.unstaged.is_empty() {

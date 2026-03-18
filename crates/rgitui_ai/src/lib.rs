@@ -2,6 +2,7 @@ use anyhow::{Context as _, Result};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use rgitui_settings::SettingsState;
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -103,6 +104,7 @@ impl AiGenerator {
         &mut self,
         diff: String,
         summary: String,
+        repo_path: PathBuf,
         cx: &mut Context<Self>,
     ) -> Task<Result<String>> {
         // Rate limiting: check if enough time has passed since last request
@@ -132,14 +134,22 @@ impl AiGenerator {
         let model = settings.ai.model.clone();
         let provider = settings.ai.provider.clone();
         let commit_style = settings.ai.commit_style.parse::<CommitStyle>().unwrap_or_default();
+        let inject_project_context = settings.ai.inject_project_context;
+
+        let project_context = if inject_project_context {
+            collect_project_context(&repo_path)
+        } else {
+            None
+        };
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let handle = tokio_handle();
             let result = handle.spawn(async move {
+                let ctx_ref = project_context.as_deref();
                 match provider.as_str() {
-                    "gemini" => generate_gemini(&api_key, &model, &diff, &summary, commit_style).await,
-                    "openai" => generate_openai(&api_key, &model, &diff, &summary, commit_style).await,
-                    "anthropic" => generate_anthropic(&api_key, &model, &diff, &summary, commit_style).await,
+                    "gemini" => generate_gemini(&api_key, &model, &diff, &summary, commit_style, ctx_ref).await,
+                    "openai" => generate_openai(&api_key, &model, &diff, &summary, commit_style, ctx_ref).await,
+                    "anthropic" => generate_anthropic(&api_key, &model, &diff, &summary, commit_style, ctx_ref).await,
                     other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
                 }
             }).await.context("AI task panicked")?;
@@ -174,12 +184,13 @@ async fn generate_gemini(
     diff: &str,
     summary: &str,
     commit_style: CommitStyle,
+    project_context: Option<&str>,
 ) -> Result<String> {
     let api_key = api_key
         .as_ref()
         .context("Gemini API key not configured. Set it in Settings > AI.")?;
 
-    let prompt = build_prompt(diff, summary, commit_style);
+    let prompt = build_prompt(diff, summary, commit_style, project_context);
 
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -235,12 +246,13 @@ async fn generate_openai(
     diff: &str,
     summary: &str,
     commit_style: CommitStyle,
+    project_context: Option<&str>,
 ) -> Result<String> {
     let api_key = api_key
         .as_ref()
         .context("OpenAI API key not configured. Set it in Settings > AI.")?;
 
-    let prompt = build_prompt(diff, summary, commit_style);
+    let prompt = build_prompt(diff, summary, commit_style, project_context);
 
     let body = serde_json::json!({
         "model": model,
@@ -287,12 +299,13 @@ async fn generate_anthropic(
     diff: &str,
     summary: &str,
     commit_style: CommitStyle,
+    project_context: Option<&str>,
 ) -> Result<String> {
     let api_key = api_key
         .as_ref()
         .context("Anthropic API key not configured. Set it in Settings > AI.")?;
 
-    let prompt = build_prompt(diff, summary, commit_style);
+    let prompt = build_prompt(diff, summary, commit_style, project_context);
 
     let body = serde_json::json!({
         "model": model,
@@ -333,7 +346,7 @@ async fn generate_anthropic(
     Ok(text)
 }
 
-fn build_prompt(diff: &str, summary: &str, commit_style: CommitStyle) -> String {
+fn build_prompt(diff: &str, summary: &str, commit_style: CommitStyle, project_context: Option<&str>) -> String {
     let style_instruction = match commit_style {
         CommitStyle::Conventional => {
             "Use the Conventional Commits format: <type>(<scope>): <description>\n\
@@ -369,13 +382,49 @@ fn build_prompt(diff: &str, summary: &str, commit_style: CommitStyle) -> String 
         diff.to_string()
     };
 
+    let context_section = match project_context {
+        Some(context) => format!("Project Context:\n{context}\n\n"),
+        None => String::new(),
+    };
+
     format!(
         "You are a Git commit message generator. Generate ONLY the commit message, nothing else.\n\
          No markdown formatting, no code blocks, no explanations.\n\n\
          {style_instruction}\n\n\
+         {context_section}\
          Files changed:\n{summary}\n\n\
          Diff:\n{diff_text}"
     )
+}
+
+const PROJECT_CONTEXT_FILES: &[&str] = &["README.md", "CLAUDE.md", "AGENTS.md"];
+const MAX_PROJECT_CONTEXT_BYTES: usize = 50_000;
+
+fn collect_project_context(repo_path: &Path) -> Option<String> {
+    let mut combined = String::new();
+
+    for filename in PROJECT_CONTEXT_FILES {
+        let file_path = repo_path.join(filename);
+        if let Ok(contents) = std::fs::read_to_string(&file_path) {
+            if !contents.trim().is_empty() {
+                combined.push_str(&format!("=== {filename} ===\n{contents}\n\n"));
+            }
+        }
+    }
+
+    if combined.is_empty() {
+        return None;
+    }
+
+    if combined.len() > MAX_PROJECT_CONTEXT_BYTES {
+        let truncation_point = combined[..MAX_PROJECT_CONTEXT_BYTES]
+            .rfind('\n')
+            .unwrap_or(MAX_PROJECT_CONTEXT_BYTES);
+        combined.truncate(truncation_point);
+        combined.push_str("\n\n[project context truncated]");
+    }
+
+    Some(combined)
 }
 
 // Gemini API response types

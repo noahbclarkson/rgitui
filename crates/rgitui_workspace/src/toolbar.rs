@@ -1,12 +1,19 @@
 use gpui::prelude::*;
 use gpui::SharedString;
 use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
+use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize, Tooltip, VerticalDivider};
+use rgitui_ui::{
+    Badge, Icon, IconName, IconSize, Indicator, Label, LabelSize, Tooltip, VerticalDivider,
+};
+
+type TooltipFactory = Box<dyn Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView>;
 
 struct ToolbarButtonState {
     disabled: bool,
     loading: bool,
+    tooltip_text: &'static str,
+    shortcut: Option<&'static str>,
 }
 
 /// Events emitted by the toolbar.
@@ -21,6 +28,9 @@ pub enum ToolbarEvent {
     Refresh,
     Settings,
     Search,
+    OpenFileExplorer,
+    OpenTerminal,
+    OpenEditor,
 }
 
 /// The main toolbar with quick action buttons.
@@ -95,13 +105,20 @@ impl Toolbar {
         cx.notify();
     }
 
-    /// Build a styled toolbar button with icon only (compact style).
+    fn build_tooltip(tooltip_text: &'static str, shortcut: Option<&'static str>) -> TooltipFactory {
+        if let Some(sc) = shortcut {
+            Box::new(Tooltip::with_shortcut(tooltip_text, sc))
+        } else {
+            Box::new(Tooltip::text(tooltip_text))
+        }
+    }
+
+    /// Build a styled toolbar button with icon and label.
     fn icon_button(
         &self,
         id: &'static str,
         icon: IconName,
         label: &'static str,
-        tooltip_text: &'static str,
         state: ToolbarButtonState,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -128,7 +145,7 @@ impl Toolbar {
             Color::Default
         };
 
-        
+        let tooltip_fn = Self::build_tooltip(state.tooltip_text, state.shortcut);
 
         div()
             .id(id)
@@ -145,7 +162,7 @@ impl Toolbar {
                     .active(move |s| s.bg(active_bg))
                     .cursor_pointer()
             })
-            .tooltip(Tooltip::text(tooltip_text))
+            .tooltip(move |window, cx| tooltip_fn(window, cx))
             .child(Icon::new(icon).size(IconSize::Small).color(icon_color))
             .child(
                 Label::new(label)
@@ -160,11 +177,14 @@ impl Toolbar {
         id: &'static str,
         icon: IconName,
         tooltip_text: &'static str,
+        shortcut: Option<&'static str>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let colors = cx.colors();
         let hover_bg = colors.ghost_element_hover;
         let active_bg = colors.ghost_element_active;
+
+        let tooltip_fn = Self::build_tooltip(tooltip_text, shortcut);
 
         div()
             .id(id)
@@ -177,7 +197,7 @@ impl Toolbar {
             .hover(move |s| s.bg(hover_bg))
             .active(move |s| s.bg(active_bg))
             .cursor_pointer()
-            .tooltip(Tooltip::text(tooltip_text))
+            .tooltip(move |window, cx| tooltip_fn(window, cx))
             .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
     }
 }
@@ -185,6 +205,8 @@ impl Toolbar {
 impl Render for Toolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
+        let compactness = cx.global::<SettingsState>().settings().compactness;
+        let toolbar_h = compactness.spacing(36.0);
 
         let fetch_label = if self.is_fetching {
             "Fetching..."
@@ -193,9 +215,6 @@ impl Render for Toolbar {
         };
         let pull_label: &str = if self.is_pulling {
             "Pulling..."
-        } else if self.behind > 0 {
-            // Will be shown with badge
-            "Pull"
         } else {
             "Pull"
         };
@@ -208,7 +227,7 @@ impl Render for Toolbar {
         div()
             .h_flex()
             .w_full()
-            .h(px(36.))
+            .h(px(toolbar_h))
             .px(px(8.))
             .gap(px(2.))
             .items_center()
@@ -221,8 +240,7 @@ impl Render for Toolbar {
                     "tb-fetch",
                     IconName::Refresh,
                     fetch_label,
-                    "Fetch from remote (Ctrl+Shift+F)",
-                    ToolbarButtonState { disabled: self.is_fetching, loading: self.is_fetching },
+                    ToolbarButtonState { disabled: self.is_fetching, loading: self.is_fetching, tooltip_text: "Fetch from remote", shortcut: None },
                     cx,
                 )
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Fetch))),
@@ -233,8 +251,7 @@ impl Render for Toolbar {
                         "tb-pull",
                         IconName::ArrowDown,
                         pull_label,
-                        "Pull from remote",
-                        ToolbarButtonState { disabled: !self.can_pull, loading: self.is_pulling },
+                        ToolbarButtonState { disabled: !self.can_pull, loading: self.is_pulling, tooltip_text: "Pull from remote", shortcut: None },
                         cx,
                     )
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Pull)));
@@ -251,8 +268,7 @@ impl Render for Toolbar {
                         "tb-push",
                         IconName::ArrowUp,
                         push_label,
-                        "Push to remote",
-                        ToolbarButtonState { disabled: !self.can_push, loading: self.is_pushing },
+                        ToolbarButtonState { disabled: !self.can_push, loading: self.is_pushing, tooltip_text: "Push to remote", shortcut: None },
                         cx,
                     )
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Push)));
@@ -264,6 +280,15 @@ impl Render for Toolbar {
                 }
                 btn
             })
+            .when(self.ahead > 0 && self.behind == 0, |el| {
+                el.child(Indicator::dot(Color::Success))
+            })
+            .when(self.behind > 0 && self.ahead == 0, |el| {
+                el.child(Indicator::dot(Color::Warning))
+            })
+            .when(self.ahead > 0 && self.behind > 0, |el| {
+                el.child(Indicator::dot(Color::Info))
+            })
             .child(VerticalDivider::new())
             // Branch operations
             .child(
@@ -271,8 +296,7 @@ impl Render for Toolbar {
                     "tb-branch",
                     IconName::GitBranch,
                     "Branch",
-                    "Create new branch (Ctrl+B)",
-                    ToolbarButtonState { disabled: false, loading: false },
+                    ToolbarButtonState { disabled: false, loading: false, tooltip_text: "Create new branch", shortcut: Some("Ctrl+B") },
                     cx,
                 )
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch))),
@@ -284,8 +308,7 @@ impl Render for Toolbar {
                     "tb-stash",
                     IconName::Stash,
                     "Stash",
-                    "Stash working changes",
-                    ToolbarButtonState { disabled: !self.has_changes, loading: false },
+                    ToolbarButtonState { disabled: !self.has_changes, loading: false, tooltip_text: "Stash working changes", shortcut: Some("Ctrl+Z") },
                     cx,
                 )
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashSave))),
@@ -295,29 +318,48 @@ impl Render for Toolbar {
                     "tb-pop",
                     IconName::Undo,
                     "Pop",
-                    "Pop top stash entry",
-                    ToolbarButtonState { disabled: !self.has_stashes, loading: false },
+                    ToolbarButtonState { disabled: !self.has_stashes, loading: false, tooltip_text: "Pop top stash entry", shortcut: Some("Ctrl+Shift+Z") },
                     cx,
                 )
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashPop))),
             )
             // Spacer
             .child(div().flex_1())
+            // External tools
+            .child(
+                self.icon_only_button("tb-explorer", IconName::Folder, "Open in file explorer", None, cx)
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        cx.emit(ToolbarEvent::OpenFileExplorer)
+                    })),
+            )
+            .child(
+                self.icon_only_button("tb-terminal", IconName::Terminal, "Open terminal", None, cx)
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        cx.emit(ToolbarEvent::OpenTerminal)
+                    })),
+            )
+            .child(
+                self.icon_only_button("tb-editor", IconName::ExternalLink, "Open in editor", None, cx)
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        cx.emit(ToolbarEvent::OpenEditor)
+                    })),
+            )
+            .child(VerticalDivider::new())
             // Right-aligned icon buttons
             .child(
-                self.icon_only_button("tb-search", IconName::Search, "Search commits (Ctrl+F)", cx)
+                self.icon_only_button("tb-search", IconName::Search, "Search commits", Some("Ctrl+F"), cx)
                     .on_click(
                         cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Search)),
                     ),
             )
             .child(
-                self.icon_only_button("tb-refresh", IconName::Refresh, "Refresh (F5)", cx)
+                self.icon_only_button("tb-refresh", IconName::Refresh, "Refresh", Some("F5"), cx)
                     .on_click(
                         cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Refresh)),
                     ),
             )
             .child(
-                self.icon_only_button("tb-settings", IconName::Settings, "Settings (Ctrl+,)", cx)
+                self.icon_only_button("tb-settings", IconName::Settings, "Settings", Some("Ctrl+,"), cx)
                     .on_click(
                         cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Settings)),
                     ),

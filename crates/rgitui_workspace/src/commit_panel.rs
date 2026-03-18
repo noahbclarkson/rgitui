@@ -128,6 +128,15 @@ impl Render for CommitPanel {
         let amend = self.amend;
         let message = self.message(cx);
 
+        let ai_settings = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| {
+                let settings = s.settings();
+                (settings.ai.enabled, s.ai_api_key().is_some())
+            })
+            .unwrap_or((false, false));
+        let (ai_enabled, has_api_key) = ai_settings;
+
         div()
             .v_flex()
             .size_full()
@@ -177,17 +186,24 @@ impl Render for CommitPanel {
                                 .child(Label::new("Generating...").size(LabelSize::XSmall).color(Color::Accent)),
                         )
                     })
-                    .when(!self.is_ai_generating, |el| {
+                    .when(!self.is_ai_generating && ai_enabled, |el| {
+                        let no_staged = self.staged_count == 0;
+                        let is_disabled = no_staged || !has_api_key;
+                        let mut btn = Button::new("ai-btn", "AI Message")
+                            .icon(IconName::Sparkle)
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Outlined)
+                            .color(Color::Accent)
+                            .disabled(is_disabled);
+                        if !has_api_key {
+                            btn = btn.tooltip("Set an API key in Settings to use AI");
+                        } else if no_staged {
+                            btn = btn.tooltip("Stage changes first to generate an AI message");
+                        }
                         el.child(
-                            Button::new("ai-btn", "AI Message")
-                                .icon(IconName::Sparkle)
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Outlined)
-                                .color(Color::Accent)
-                                .disabled(self.staged_count == 0)
-                                .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                                    cx.emit(CommitPanelEvent::GenerateAiMessage);
-                                })),
+                            btn.on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                cx.emit(CommitPanelEvent::GenerateAiMessage);
+                            })),
                         )
                     }),
             )
@@ -195,6 +211,7 @@ impl Render for CommitPanel {
                 div()
                     .id("commit-content-area")
                     .track_focus(&self.focus_handle)
+                    .key_context("CommitPanel")
                     .v_flex()
                     .flex_1()
                     .px(px(10.))

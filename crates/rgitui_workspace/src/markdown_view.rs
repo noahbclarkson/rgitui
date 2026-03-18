@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use gpui::prelude::*;
-use gpui::{div, px, FontStyle, FontWeight, HighlightStyle, SharedString, StyledText, Window};
+use gpui::{div, px, rems, FontStyle, FontWeight, HighlightStyle, SharedString, StyledText, Window};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use rgitui_theme::{ActiveTheme, StyledExt};
 use rgitui_ui::{Label, LabelSize};
@@ -356,20 +356,20 @@ fn render_block(block: &MarkdownBlock, window: &Window, cx: &gpui::App) -> gpui:
             let text = spans_to_plain_text(spans);
             let label = match level {
                 1 => Label::new(text)
-                    .size(LabelSize::Large)
-                    .weight(FontWeight::BOLD),
-                2 => Label::new(text)
-                    .size(LabelSize::Default)
-                    .weight(FontWeight::BOLD),
-                _ => Label::new(text)
                     .size(LabelSize::Small)
                     .weight(FontWeight::BOLD),
+                2 => Label::new(text)
+                    .size(LabelSize::XSmall)
+                    .weight(FontWeight::BOLD),
+                _ => Label::new(text)
+                    .size(LabelSize::XSmall)
+                    .weight(FontWeight::SEMIBOLD),
             };
-            div().pb(px(2.)).child(label).into_any_element()
+            div().pb(px(1.)).child(label).into_any_element()
         }
         MarkdownBlock::Paragraph { spans } => {
             div()
-                .text_sm()
+                .text_xs()
                 .child(render_inline_spans(spans, window, cx))
                 .into_any_element()
         }
@@ -378,10 +378,10 @@ fn render_block(block: &MarkdownBlock, window: &Window, cx: &gpui::App) -> gpui:
             div()
                 .w_full()
                 .bg(colors.editor_background)
-                .rounded(px(4.))
-                .p(px(8.))
+                .rounded(px(3.))
+                .p(px(6.))
                 .font_family("monospace")
-                .text_xs()
+                .text_size(rems(0.65))
                 .text_color(colors.text)
                 .child(code_text)
                 .into_any_element()
@@ -419,8 +419,8 @@ fn render_block(block: &MarkdownBlock, window: &Window, cx: &gpui::App) -> gpui:
                     div()
                         .h_flex()
                         .items_start()
-                        .gap(px(6.))
-                        .text_sm()
+                        .gap(px(4.))
+                        .text_xs()
                         .child(
                             div()
                                 .flex_shrink_0()
