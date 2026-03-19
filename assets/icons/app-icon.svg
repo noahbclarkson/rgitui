@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="trunkGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#0097A7"/>
+    </linearGradient>
+    <linearGradient id="branchGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#26C6DA"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00E5FF" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#00E5FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background: rounded square (Catppuccin Mocha base) -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="#1E1E2E"/>
+
+  <!-- Subtle speed accent streaks in upper-right corner -->
+  <line x1="332" y1="76" x2="396" y2="140" stroke="#00E5FF" stroke-opacity="0.05" stroke-width="22" stroke-linecap="round"/>
+  <line x1="356" y1="72" x2="420" y2="136" stroke="#00E5FF" stroke-opacity="0.035" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- Main trunk: vertical line (left column) -->
+  <line x1="196" y1="108" x2="196" y2="404" stroke="url(#trunkGrad)" stroke-width="26" stroke-linecap="round"/>
+
+  <!-- Branch path: smooth S-curve from trunk up to branch column, runs vertically, then S-curve back -->
+  <!-- Fork out: from trunk at y~180 curving right to branch column at y~220 -->
+  <path d="M 196 180 C 196 200, 316 200, 316 220"
+        stroke="url(#branchGrad)" stroke-width="26" stroke-linecap="round" fill="none"/>
+
+  <!-- Branch vertical segment -->
+  <line x1="316" y1="220" x2="316" y2="292" stroke="url(#branchGrad)" stroke-width="26" stroke-linecap="round"/>
+
+  <!-- Merge back: from branch column at y~292 curving left to trunk at y~332 -->
+  <path d="M 316 292 C 316 312, 196 312, 196 332"
+        stroke="url(#branchGrad)" stroke-width="26" stroke-linecap="round" fill="none"/>
+
+  <!-- Node glows (soft haloes behind each commit dot) -->
+  <circle cx="196" cy="132" r="36" fill="url(#glow)"/>
+  <circle cx="196" cy="180" r="36" fill="url(#glow)"/>
+  <circle cx="316" cy="256" r="36" fill="url(#glow)"/>
+  <circle cx="196" cy="332" r="36" fill="url(#glow)"/>
+  <circle cx="196" cy="380" r="36" fill="url(#glow)"/>
+
+  <!-- Commit nodes: trunk (hollow rings) -->
+  <circle cx="196" cy="132" r="18" fill="#1E1E2E" stroke="#00E5FF" stroke-width="9"/>
+  <circle cx="196" cy="180" r="18" fill="#1E1E2E" stroke="#00E5FF" stroke-width="9"/>
+  <circle cx="196" cy="332" r="18" fill="#1E1E2E" stroke="#00E5FF" stroke-width="9"/>
+  <circle cx="196" cy="380" r="18" fill="#1E1E2E" stroke="#00E5FF" stroke-width="9"/>
+
+  <!-- Commit node: branch (solid filled, stands out) -->
+  <circle cx="316" cy="256" r="18" fill="#00E5FF"/>
+
+  <!-- Speed diamonds: small geometric accents near the branch -->
+  <polygon points="370,244 382,256 370,268 358,256" fill="#00E5FF" opacity="0.4"/>
+  <polygon points="394,250 402,256 394,262 386,256" fill="#00E5FF" opacity="0.2"/>
+</svg>

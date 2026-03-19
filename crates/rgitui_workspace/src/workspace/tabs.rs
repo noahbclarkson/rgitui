@@ -6,7 +6,7 @@ use rgitui_settings::{LayoutSettings, StoredWorkspace};
 
 use crate::ToastKind;
 
-use super::{ProjectTab, RightPanelMode, Workspace};
+use super::{BottomPanelMode, ProjectTab, RightPanelMode, Workspace};
 
 impl Workspace {
     /// Open a repository as a new tab.
@@ -50,6 +50,7 @@ impl Workspace {
 
         let graph = cx.new(rgitui_graph::GraphView::new);
         let diff_viewer = cx.new(rgitui_diff::DiffViewer::new);
+        let blame_view = cx.new(crate::BlameView::new);
         let detail_panel = cx.new(crate::DetailPanel::new);
         let sidebar = cx.new(crate::Sidebar::new);
         let commit_panel = cx.new(crate::CommitPanel::new);
@@ -75,6 +76,7 @@ impl Workspace {
         super::events::subscribe_diff_viewer(cx, &project, &diff_viewer);
         super::events::subscribe_commit_panel(cx, &project, &self.ai.clone(), &commit_panel);
         super::events::subscribe_toolbar(cx, &project, &toolbar);
+        super::events::subscribe_blame_view(cx, &blame_view, &graph);
 
         // Initial sync
         {
@@ -158,12 +160,14 @@ impl Workspace {
             project,
             graph,
             diff_viewer,
+            blame_view,
             detail_panel,
             sidebar,
             commit_panel,
             toolbar,
             issues_panel,
             right_panel_mode: RightPanelMode::Details,
+            bottom_panel_mode: BottomPanelMode::Diff,
         });
         self.active_tab = self.tabs.len() - 1;
         self.persist_workspace_snapshot(cx);

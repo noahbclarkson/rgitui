@@ -10,15 +10,15 @@ use rgitui_git::{
 use rgitui_graph::{GraphView, GraphViewEvent};
 
 use crate::{
-    BranchDialog, BranchDialogEvent, CommandPalette, CommandPaletteEvent, CommitPanel,
-    CommitPanelEvent, ConfirmAction, ConfirmDialog, ConfirmDialogEvent, DetailPanel,
-    DetailPanelEvent, InteractiveRebase, InteractiveRebaseEvent, RenameDialog, RenameDialogEvent,
-    RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent, ShortcutsHelp,
-    ShortcutsHelpEvent, Sidebar, SidebarEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar,
-    ToolbarEvent,
+    BlameView, BlameViewEvent, BranchDialog, BranchDialogEvent, CommandPalette,
+    CommandPaletteEvent, CommitPanel, CommitPanelEvent, ConfirmAction, ConfirmDialog,
+    ConfirmDialogEvent, DetailPanel, DetailPanelEvent, InteractiveRebase,
+    InteractiveRebaseEvent, RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent,
+    SettingsModal, SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent,
+    TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
 };
 
-use super::{ActiveOperation, OperationOutput, Workspace};
+use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
 
 pub(super) fn subscribe_settings_modal(
     cx: &mut Context<Workspace>,
@@ -242,10 +242,33 @@ pub(super) fn subscribe_confirm_dialog(
                                 });
                             }
                             ConfirmAction::BranchDelete(name) => {
+                                let tip_oid = project
+                                    .read(cx)
+                                    .branches()
+                                    .iter()
+                                    .find(|b| b.name == *name)
+                                    .and_then(|b| b.tip_oid)
+                                    .map(|oid| oid.to_string());
                                 let name = name.clone();
                                 project.update(cx, |proj, cx| {
                                     proj.delete_branch(&name, cx).detach();
                                 });
+                                if let Some(oid_hex) = tip_oid {
+                                    this.last_undo = Some(UndoEntry {
+                                        label: format!("Deleted branch '{}'", name),
+                                        action: UndoAction::RecreateBranch {
+                                            name,
+                                            oid_hex,
+                                        },
+                                        created_at: Instant::now(),
+                                    });
+                                    this.schedule_undo_expiry(cx);
+                                    this.show_toast(
+                                        "Branch deleted. Use command palette 'Undo' to restore.",
+                                        ToastKind::Info,
+                                        cx,
+                                    );
+                                }
                             }
                             ConfirmAction::StashDrop(index) => {
                                 let index = *index;
@@ -254,26 +277,62 @@ pub(super) fn subscribe_confirm_dialog(
                                 });
                             }
                             ConfirmAction::DiscardAll => {
-                                let paths: Vec<std::path::PathBuf> = project
-                                    .read(cx)
-                                    .status()
-                                    .unstaged
-                                    .iter()
-                                    .map(|f| f.path.clone())
-                                    .collect();
-                                if !paths.is_empty() {
+                                let has_changes = project.read(cx).has_changes();
+                                if has_changes {
                                     project.update(cx, |proj, cx| {
-                                        proj.discard_changes(&paths, cx).detach();
+                                        proj.stash_save(
+                                            Some("rgitui-undo-discard"),
+                                            cx,
+                                        )
+                                        .detach();
                                     });
+                                    this.last_undo = Some(UndoEntry {
+                                        label: "Discarded all changes".into(),
+                                        action: UndoAction::PopStash(0),
+                                        created_at: Instant::now(),
+                                    });
+                                    this.schedule_undo_expiry(cx);
+                                    this.show_toast(
+                                        "Changes discarded. Use command palette 'Undo' to restore.",
+                                        ToastKind::Info,
+                                        cx,
+                                    );
                                 }
                             }
                             ConfirmAction::TagDelete(name) => {
+                                let tag_oid = project
+                                    .read(cx)
+                                    .tags()
+                                    .iter()
+                                    .find(|t| t.name == *name)
+                                    .map(|t| t.oid.to_string());
                                 let name = name.clone();
                                 project.update(cx, |proj, cx| {
                                     proj.delete_tag(&name, cx).detach();
                                 });
+                                if let Some(oid_hex) = tag_oid {
+                                    this.last_undo = Some(UndoEntry {
+                                        label: format!("Deleted tag '{}'", name),
+                                        action: UndoAction::RecreateTag {
+                                            name,
+                                            oid_hex,
+                                        },
+                                        created_at: Instant::now(),
+                                    });
+                                    this.schedule_undo_expiry(cx);
+                                    this.show_toast(
+                                        "Tag deleted. Use command palette 'Undo' to restore.",
+                                        ToastKind::Info,
+                                        cx,
+                                    );
+                                }
                             }
                             ConfirmAction::ResetHard(target) => {
+                                let previous_head_oid = project
+                                    .read(cx)
+                                    .recent_commits()
+                                    .first()
+                                    .map(|c| c.oid.to_string());
                                 let target = target.clone();
                                 project.update(cx, |proj, cx| {
                                     if let Ok(oid) = git2::Oid::from_str(&target) {
@@ -282,6 +341,19 @@ pub(super) fn subscribe_confirm_dialog(
                                         proj.reset_hard(cx).detach();
                                     }
                                 });
+                                if let Some(oid_hex) = previous_head_oid {
+                                    this.last_undo = Some(UndoEntry {
+                                        label: format!("Reset to {}", &target[..7.min(target.len())]),
+                                        action: UndoAction::ResetTo(oid_hex),
+                                        created_at: Instant::now(),
+                                    });
+                                    this.schedule_undo_expiry(cx);
+                                    this.show_toast(
+                                        "Reset complete. Use command palette 'Undo' to revert.",
+                                        ToastKind::Info,
+                                        cx,
+                                    );
+                                }
                             }
                             ConfirmAction::RemoveRemote(name) => {
                                 let name = name.clone();
@@ -985,16 +1057,31 @@ pub(super) fn subscribe_commit_panel(
     let commit_panel_ref = commit_panel.clone();
 
     cx.subscribe(commit_panel, {
-        move |_this, _cp, event: &CommitPanelEvent, cx| match event {
+        move |this, _cp, event: &CommitPanelEvent, cx| match event {
             CommitPanelEvent::CommitRequested { message, amend } => {
+                let previous_head_oid = project
+                    .read(cx)
+                    .recent_commits()
+                    .first()
+                    .map(|c| c.oid.to_string());
                 let msg = message.clone();
-                let amend = *amend;
+                let is_amend = *amend;
                 project.update(cx, |proj, cx| {
-                    proj.commit(&msg, amend, cx).detach();
+                    proj.commit(&msg, is_amend, cx).detach();
                 });
                 commit_panel_ref.update(cx, |cp, cx| {
                     cp.set_message(String::new(), cx);
                 });
+                if !is_amend {
+                    if let Some(oid_hex) = previous_head_oid {
+                        this.last_undo = Some(UndoEntry {
+                            label: "Created commit".into(),
+                            action: UndoAction::SoftResetHead(oid_hex),
+                            created_at: Instant::now(),
+                        });
+                        this.schedule_undo_expiry(cx);
+                    }
+                }
             }
             CommitPanelEvent::GenerateAiMessage => {
                 commit_panel_ref.update(cx, |cp, cx| {
@@ -1107,6 +1194,33 @@ pub(super) fn subscribe_toolbar(
                         .editor_command
                         .clone();
                     super::layout::open_editor(&repo_path, &editor_cmd);
+                }
+            }
+        }
+    })
+    .detach();
+}
+
+pub(super) fn subscribe_blame_view(
+    cx: &mut Context<Workspace>,
+    blame_view: &Entity<BlameView>,
+    graph: &Entity<GraphView>,
+) {
+    let graph = graph.clone();
+
+    cx.subscribe(blame_view, {
+        move |this, _bv, event: &BlameViewEvent, cx| match event {
+            BlameViewEvent::CommitSelected(oid_str) => {
+                if let Ok(oid) = git2::Oid::from_str(oid_str) {
+                    graph.update(cx, |g, cx| {
+                        g.scroll_to_commit(oid, cx);
+                    });
+                }
+            }
+            BlameViewEvent::Dismissed => {
+                if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                    tab.bottom_panel_mode = BottomPanelMode::Diff;
+                    cx.notify();
                 }
             }
         }

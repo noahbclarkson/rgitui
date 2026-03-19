@@ -13,8 +13,8 @@ use rgitui_ui::{
 use crate::{CommandId, StatusBar, TitleBar, ToastKind};
 
 use super::{
-    CommitInputResize, DetailPanelResize, DiffViewerResize, RightPanelMode, SidebarResize,
-    Workspace,
+    BottomPanelMode, CommitInputResize, DetailPanelResize, DiffViewerResize, RightPanelMode,
+    SidebarResize, Workspace,
 };
 
 impl Render for Workspace {
@@ -116,8 +116,10 @@ impl Render for Workspace {
         let sidebar_focused = active_tab.sidebar.read(cx).is_focused(window);
         let graph_focused = active_tab.graph.read(cx).is_focused(window);
         let detail_focused = active_tab.detail_panel.read(cx).is_focused(window);
-        let diff_focused = active_tab.diff_viewer.read(cx).is_focused(window);
+        let diff_focused = active_tab.diff_viewer.read(cx).is_focused(window)
+            || active_tab.blame_view.read(cx).is_focused(window);
         let focus_accent = colors.border_focused;
+        let bottom_panel_mode = active_tab.bottom_panel_mode;
 
         // Find head branch info for ahead/behind
         let (ahead, behind) = project
@@ -612,7 +614,7 @@ impl Render for Workspace {
                                             )
                                     }),
                             )
-                            // Diff viewer
+                            // Diff viewer / Blame view
                             .child(
                                 div()
                                     .h(px(self.layout.diff_viewer_height))
@@ -620,7 +622,12 @@ impl Render for Workspace {
                                     .when(diff_focused, |el| {
                                         el.border_t_2().border_color(focus_accent)
                                     })
-                                    .child(active_tab.diff_viewer.clone()),
+                                    .when(bottom_panel_mode == BottomPanelMode::Diff, |el| {
+                                        el.child(active_tab.diff_viewer.clone())
+                                    })
+                                    .when(bottom_panel_mode == BottomPanelMode::Blame, |el| {
+                                        el.child(active_tab.blame_view.clone())
+                                    }),
                             ),
                     )
                     // Right panel: detail + resize handle + commit input

@@ -45,6 +45,8 @@ pub enum CommandId {
     RestoreLastWorkspace,
     Shortcuts,
     SwitchBranch,
+    Blame,
+    Undo,
 }
 
 impl CommandId {
@@ -83,6 +85,8 @@ impl CommandId {
             Self::RestoreLastWorkspace => "restore_last_workspace",
             Self::Shortcuts => "shortcuts",
             Self::SwitchBranch => "switch_branch",
+            Self::Blame => "blame",
+            Self::Undo => "undo",
         }
     }
 
@@ -121,6 +125,8 @@ impl CommandId {
             Self::RestoreLastWorkspace => "restore last workspace",
             Self::Shortcuts => "shortcuts",
             Self::SwitchBranch => "switch branch",
+            Self::Blame => "blame file",
+            Self::Undo => "undo last operation",
         }
     }
 }
@@ -169,6 +175,8 @@ impl TryFrom<&str> for CommandId {
             "restore_last_workspace" => Ok(Self::RestoreLastWorkspace),
             "shortcuts" => Ok(Self::Shortcuts),
             "switch_branch" => Ok(Self::SwitchBranch),
+            "blame" => Ok(Self::Blame),
+            "undo" => Ok(Self::Undo),
             _ => Err(()),
         }
     }
@@ -236,6 +244,8 @@ impl CommandPalette {
             PaletteCommand { id: CommandId::WorkspaceHome, label: "Workspace: Home", shortcut: None, category: "Workspace" },
             PaletteCommand { id: CommandId::RestoreLastWorkspace, label: "Workspace: Restore Last", shortcut: None, category: "Workspace" },
             PaletteCommand { id: CommandId::Shortcuts, label: "Help: Keyboard Shortcuts", shortcut: Some("?"), category: "Help" },
+            PaletteCommand { id: CommandId::Blame, label: "View: Blame File", shortcut: Some("b"), category: "View" },
+            PaletteCommand { id: CommandId::Undo, label: "Edit: Undo Last Operation", shortcut: None, category: "Edit" },
         ];
 
         let filtered_indices = (0..commands.len()).collect();
@@ -334,6 +344,7 @@ impl CommandPalette {
             "File" => IconName::Folder,
             "Workspace" => IconName::Menu,
             "Help" => IconName::Star,
+            "Edit" => IconName::Undo,
             _ => IconName::Terminal,
         }
     }

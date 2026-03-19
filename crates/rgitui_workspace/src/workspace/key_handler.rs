@@ -194,6 +194,7 @@ impl Workspace {
                     tab.graph.read(cx).is_focused(window)
                         || tab.detail_panel.read(cx).is_focused(window)
                         || tab.diff_viewer.read(cx).is_focused(window)
+                        || tab.blame_view.read(cx).is_focused(window)
                 })
                 .unwrap_or(false);
 
@@ -245,6 +246,30 @@ impl Workspace {
                 .unwrap_or(false);
             if !sidebar_has_focus {
                 self.execute_command(CommandId::ToggleDiffMode, cx);
+                return;
+            }
+        }
+
+        // 'b' to toggle blame view (without modifiers, not when sidebar/detail/diff/blame has focus)
+        if !any_overlay_active
+            && key == "b"
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.shift
+            && !modifiers.platform
+        {
+            let panel_has_focus = self
+                .tabs
+                .get(self.active_tab)
+                .map(|tab| {
+                    tab.sidebar.read(cx).is_focused(window)
+                        || tab.detail_panel.read(cx).is_focused(window)
+                        || tab.diff_viewer.read(cx).is_focused(window)
+                        || tab.blame_view.read(cx).is_focused(window)
+                })
+                .unwrap_or(false);
+            if !panel_has_focus {
+                self.execute_command(CommandId::Blame, cx);
                 return;
             }
         }

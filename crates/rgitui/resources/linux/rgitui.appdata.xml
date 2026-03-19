@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.rgitui.app</id>
+  <name>rgitui</name>
+  <summary>GPU-accelerated Git client</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>rgitui is a GPU-accelerated Git client built with GPUI, featuring a commit graph, diff viewer, interactive rebase, AI commit messages, and more.</p>
+  </description>
+  <url type="homepage">https://github.com/mrnoa/rgitui</url>
+  <url type="bugtracker">https://github.com/mrnoa/rgitui/issues</url>
+  <provides>
+    <binary>rgitui</binary>
+  </provides>
+</component>

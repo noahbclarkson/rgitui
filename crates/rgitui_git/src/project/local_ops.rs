@@ -3,6 +3,8 @@ use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
 use std::path::PathBuf;
 
+use rgitui_settings::current_git_auth_runtime;
+
 use crate::types::*;
 
 use super::refresh::gather_refresh_data;
@@ -302,16 +304,38 @@ impl GitProject {
                     let tree_oid = index.write_tree()?;
                     let tree = repo.find_tree(tree_oid)?;
 
+                    let auth = current_git_auth_runtime();
                     let oid = if amend {
-                        let head = repo.head()?.peel_to_commit()?;
-                        head.amend(
-                            Some("HEAD"),
-                            Some(&sig),
-                            Some(&sig),
-                            None,
-                            Some(&task_message),
-                            Some(&tree),
-                        )?
+                        if auth.sign_commits {
+                            let gpg_key = auth.gpg_key_id.as_deref()
+                                .ok_or_else(|| anyhow::anyhow!("GPG signing enabled but no key ID configured in settings"))?;
+                            let head = repo.head()?.peel_to_commit()?;
+                            let parents: Vec<git2::Commit> = head.parents().collect();
+                            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+                            let buf = repo.commit_create_buffer(
+                                &sig, &sig, &task_message, &tree, &parent_refs,
+                            )?;
+                            let buf_str = std::str::from_utf8(&buf)
+                                .context("commit buffer contains invalid UTF-8")?;
+                            let signature = sign_with_gpg(buf_str, gpg_key)?;
+                            let commit_oid = repo.commit_signed(buf_str, &signature, Some("gpgsig"))?;
+                            if let Ok(mut head_ref) = repo.head() {
+                                head_ref.set_target(commit_oid, "commit (gpg signed amend)")?;
+                            } else {
+                                repo.reference("HEAD", commit_oid, true, "commit (gpg signed amend)")?;
+                            }
+                            commit_oid
+                        } else {
+                            let head = repo.head()?.peel_to_commit()?;
+                            head.amend(
+                                Some("HEAD"),
+                                Some(&sig),
+                                Some(&sig),
+                                None,
+                                Some(&task_message),
+                                Some(&tree),
+                            )?
+                        }
                     } else {
                         let parents: Vec<git2::Commit> = if let Ok(head) = repo.head() {
                             vec![head.peel_to_commit()?]
@@ -319,7 +343,25 @@ impl GitProject {
                             vec![]
                         };
                         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-                        repo.commit(Some("HEAD"), &sig, &sig, &task_message, &tree, &parent_refs)?
+                        if auth.sign_commits {
+                            let gpg_key = auth.gpg_key_id.as_deref()
+                                .ok_or_else(|| anyhow::anyhow!("GPG signing enabled but no key ID configured in settings"))?;
+                            let buf = repo.commit_create_buffer(
+                                &sig, &sig, &task_message, &tree, &parent_refs,
+                            )?;
+                            let buf_str = std::str::from_utf8(&buf)
+                                .context("commit buffer contains invalid UTF-8")?;
+                            let signature = sign_with_gpg(buf_str, gpg_key)?;
+                            let commit_oid = repo.commit_signed(buf_str, &signature, Some("gpgsig"))?;
+                            if let Ok(mut head_ref) = repo.head() {
+                                head_ref.set_target(commit_oid, "commit (gpg signed)")?;
+                            } else {
+                                repo.reference("HEAD", commit_oid, true, "commit (gpg signed)")?;
+                            }
+                            commit_oid
+                        } else {
+                            repo.commit(Some("HEAD"), &sig, &sig, &task_message, &tree, &parent_refs)?
+                        }
                     };
 
                     let data = gather_refresh_data(&repo_path)?;
@@ -1223,6 +1265,67 @@ impl GitProject {
         })
     }
 
+    /// Soft-reset the current branch to a specific commit, preserving changes in the index.
+    pub fn reset_soft(
+        &mut self,
+        oid: git2::Oid,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let short_id = oid.to_string()[..7].to_string();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Reset,
+            format!("Soft-resetting to {}...", short_id),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let commit = repo.find_commit(oid)?;
+                    repo.reset(commit.as_object(), git2::ResetType::Soft, None)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Reset,
+                                format!("Soft reset to {}", short_id),
+                                (Some("Changes preserved in index.".into()), None, branch_name.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Reset,
+                                format!("Soft reset to {} failed", short_id),
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Revert a commit (creates a new commit that undoes the given commit).
     pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
@@ -1734,4 +1837,27 @@ impl GitProject {
             })?
         })
     }
+}
+
+fn sign_with_gpg(content: &str, key_id: &str) -> Result<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("gpg")
+        .args(["--status-fd=2", "-bsau", key_id])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to start gpg. Is GPG installed?")?;
+
+    child.stdin.take().unwrap().write_all(content.as_bytes())?;
+    let output = child.wait_with_output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("GPG signing failed: {}", stderr);
+    }
+
+    Ok(String::from_utf8(output.stdout)?)
 }

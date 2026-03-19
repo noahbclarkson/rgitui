@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout rgitui
+        uses: actions/checkout@v4
+
+      - name: Checkout zed (GPUI dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: zed-industries/zed
+          path: ../zed
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --package rgitui
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Create installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "crates\rgitui\resources\windows\rgitui.iss"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: Output/*.exe
+
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rgitui
+        uses: actions/checkout@v4
+
+      - name: Checkout zed (GPUI dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: zed-industries/zed
+          path: ../zed
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            lld \
+            gcc \
+            g++ \
+            pkg-config \
+            libasound2-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
+            libgit2-dev \
+            libglib2.0-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libva-dev \
+            libvulkan1 \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxkbcommon-x11-dev \
+            libxkbcommon-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libzstd-dev \
+            vulkan-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --package rgitui
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create tarball
+        run: |
+          mkdir -p staging/rgitui
+          cp target/release/rgitui staging/rgitui/
+          cp LICENSE staging/rgitui/
+          cp README.md staging/rgitui/
+          tar -czf "rgitui-${{ steps.version.outputs.version }}-x86_64-linux.tar.gz" -C staging rgitui
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: "*.tar.gz"
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-linux]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display downloaded artifacts
+        run: ls -R artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            artifacts/windows-installer/*.exe
+            artifacts/linux-tarball/*.tar.gz

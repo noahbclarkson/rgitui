@@ -107,11 +107,45 @@ pub fn builtin_themes() -> Vec<Arc<Theme>> {
 
 /// Initialize the theme system. Must be called during app init.
 pub fn init(cx: &mut App) {
-    let themes = builtin_themes();
-    let active = themes[0].clone(); // Catppuccin Mocha default
+    let mut available = builtin_themes();
+
+    if let Some(config_dir) = dirs::config_dir() {
+        let themes_dir = config_dir.join("rgitui").join("themes");
+        if themes_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&themes_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|e| e == "json") {
+                        match std::fs::read_to_string(&path) {
+                            Ok(json) => {
+                                match crate::json_theme::load_theme_from_json(&json) {
+                                    Ok(theme) => {
+                                        log::info!("Loaded custom theme: {}", theme.name);
+                                        available.push(Arc::new(theme));
+                                    }
+                                    Err(e) => log::warn!(
+                                        "Failed to parse theme {}: {}",
+                                        path.display(),
+                                        e
+                                    ),
+                                }
+                            }
+                            Err(e) => log::warn!(
+                                "Failed to read theme {}: {}",
+                                path.display(),
+                                e
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let active = available[0].clone(); // Catppuccin Mocha default
     cx.set_global(ThemeState {
         active,
-        available: themes,
+        available,
     });
 }
 

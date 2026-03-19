@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=rgitui
+GenericName=Git Client
+Comment=GPU-accelerated Git client built with GPUI
+Exec=rgitui %U
+Icon=rgitui
+Categories=Development;RevisionControl;
+Keywords=git;version-control;vcs;
+StartupWMClass=rgitui
+Terminal=false

@@ -1,4 +1,5 @@
 pub(crate) mod avatar_resolver;
+mod blame_view;
 mod branch_dialog;
 mod command_palette;
 mod commit_panel;
@@ -19,6 +20,7 @@ mod toast;
 mod toolbar;
 mod workspace;
 
+pub use blame_view::*;
 pub use branch_dialog::*;
 pub use command_palette::*;
 pub use commit_panel::*;

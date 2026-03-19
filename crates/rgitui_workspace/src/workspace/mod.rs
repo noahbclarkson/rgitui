@@ -5,8 +5,10 @@ mod layout;
 mod operations;
 mod state;
 mod tabs;
+mod undo;
 
 pub(crate) use state::*;
+pub(crate) use undo::{UndoAction, UndoEntry};
 
 use std::time::Instant;
 
@@ -52,6 +54,13 @@ impl Render for CommitInputResize {
     }
 }
 
+/// Which view is active in the bottom panel (diff viewer area).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BottomPanelMode {
+    Diff,
+    Blame,
+}
+
 /// Which view is active in the right panel column above the commit panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RightPanelMode {
@@ -66,12 +75,14 @@ pub(super) struct ProjectTab {
     pub project: Entity<GitProject>,
     pub graph: Entity<rgitui_graph::GraphView>,
     pub diff_viewer: Entity<rgitui_diff::DiffViewer>,
+    pub blame_view: Entity<crate::BlameView>,
     pub detail_panel: Entity<crate::DetailPanel>,
     pub sidebar: Entity<crate::Sidebar>,
     pub commit_panel: Entity<crate::CommitPanel>,
     pub toolbar: Entity<crate::Toolbar>,
     pub issues_panel: Entity<crate::IssuesPanel>,
     pub right_panel_mode: RightPanelMode,
+    pub bottom_panel_mode: BottomPanelMode,
 }
 
 /// Events from the workspace.
@@ -120,6 +131,7 @@ pub struct Workspace {
     pub(super) toast_layer: Entity<ToastLayer>,
     pub(super) active_workspace_id: Option<String>,
     pub(super) status_message: Option<String>,
+    pub(super) last_undo: Option<UndoEntry>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -203,6 +215,7 @@ impl Workspace {
             toast_layer,
             active_workspace_id: None,
             status_message: None,
+            last_undo: None,
         }
     }
 
@@ -231,7 +244,9 @@ impl Workspace {
                 self.focus.last_focused_panel = Some(FocusedPanel::Graph);
             } else if tab.detail_panel.read(cx).is_focused(window) {
                 self.focus.last_focused_panel = Some(FocusedPanel::DetailPanel);
-            } else if tab.diff_viewer.read(cx).is_focused(window) {
+            } else if tab.diff_viewer.read(cx).is_focused(window)
+                || tab.blame_view.read(cx).is_focused(window)
+            {
                 self.focus.last_focused_panel = Some(FocusedPanel::DiffViewer);
             }
         }
@@ -253,7 +268,9 @@ impl Workspace {
             if tab.detail_panel.read(cx).is_focused(window) {
                 return Some(FocusedPanel::DetailPanel);
             }
-            if tab.diff_viewer.read(cx).is_focused(window) {
+            if tab.diff_viewer.read(cx).is_focused(window)
+                || tab.blame_view.read(cx).is_focused(window)
+            {
                 return Some(FocusedPanel::DiffViewer);
             }
         }
@@ -305,7 +322,11 @@ impl Workspace {
                     tab.detail_panel.update(cx, |d, cx| d.focus(window, cx));
                 }
                 FocusedPanel::DiffViewer => {
-                    tab.diff_viewer.update(cx, |d, cx| d.focus(window, cx));
+                    if tab.bottom_panel_mode == BottomPanelMode::Blame {
+                        tab.blame_view.update(cx, |bv, cx| bv.focus(window, cx));
+                    } else {
+                        tab.diff_viewer.update(cx, |d, cx| d.focus(window, cx));
+                    }
                 }
             }
         }

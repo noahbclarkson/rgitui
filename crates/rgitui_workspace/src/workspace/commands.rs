@@ -4,7 +4,7 @@ use crate::{
     CommandId, CommitPanelEvent, ConfirmAction, ToastKind,
 };
 
-use super::{ProjectTab, Workspace};
+use super::{BottomPanelMode, ProjectTab, Workspace};
 
 impl Workspace {
     pub(super) fn execute_command(&mut self, cmd: CommandId, cx: &mut Context<Self>) {
@@ -34,6 +34,9 @@ impl Workspace {
             }
             CommandId::RestoreLastWorkspace => {
                 self.restore_last_workspace(cx);
+            }
+            CommandId::Undo => {
+                self.execute_undo(cx);
             }
             cmd => {
                 let Some(tab) = self.tabs.get(self.active_tab).cloned() else {
@@ -282,12 +285,64 @@ impl Workspace {
                     cx,
                 );
             }
+            CommandId::Blame => {
+                self.toggle_blame_view(tab, cx);
+            }
             CommandId::Settings
             | CommandId::CreateBranch
             | CommandId::OpenRepo
             | CommandId::Shortcuts
             | CommandId::WorkspaceHome
-            | CommandId::RestoreLastWorkspace => {}
+            | CommandId::RestoreLastWorkspace
+            | CommandId::Undo => {}
+        }
+    }
+
+    fn toggle_blame_view(
+        &mut self,
+        tab: &ProjectTab,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+            if active_tab.bottom_panel_mode == BottomPanelMode::Blame {
+                active_tab.bottom_panel_mode = BottomPanelMode::Diff;
+                cx.notify();
+                return;
+            }
+        }
+
+        let file_path = tab.diff_viewer.read(cx).file_path().map(String::from);
+        let Some(file_path) = file_path else {
+            self.show_toast(
+                "No file selected. Select a file first to view blame.",
+                ToastKind::Info,
+                cx,
+            );
+            return;
+        };
+
+        let project = tab.project.clone();
+        let blame_view = tab.blame_view.clone();
+        let path_for_blame = std::path::PathBuf::from(&file_path);
+        let display_path = file_path.clone();
+
+        match project.read(cx).blame_file(&path_for_blame, None) {
+            Ok(lines) => {
+                blame_view.update(cx, |bv, cx| {
+                    bv.set_blame(lines, display_path, cx);
+                });
+                if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+                    active_tab.bottom_panel_mode = BottomPanelMode::Blame;
+                }
+                cx.notify();
+            }
+            Err(e) => {
+                self.show_toast(
+                    format!("Failed to compute blame: {}", e),
+                    ToastKind::Error,
+                    cx,
+                );
+            }
         }
     }
 }

@@ -60,6 +60,8 @@ impl FromStr for Compactness {
 /// Application settings persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default = "default_settings_version")]
+    pub version: u32,
     pub theme: String,
     #[serde(default)]
     pub ui_font: String,
@@ -83,6 +85,10 @@ pub struct AppSettings {
     pub terminal_command: String,
     #[serde(default)]
     pub editor_command: String,
+}
+
+fn default_settings_version() -> u32 {
+    1
 }
 
 /// A persisted local workspace snapshot.
@@ -272,6 +278,7 @@ impl Default for AiSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            version: default_settings_version(),
             theme: "Catppuccin Mocha".into(),
             ui_font: String::new(),
             ai: AiSettings::default(),
@@ -293,6 +300,7 @@ impl Default for AppSettings {
 pub struct SettingsState {
     pub settings: AppSettings,
     config_path: PathBuf,
+    load_warnings: Vec<String>,
 }
 
 impl Global for SettingsState {}
@@ -304,6 +312,10 @@ impl SettingsState {
 
     pub fn settings_mut(&mut self) -> &mut AppSettings {
         &mut self.settings
+    }
+
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.load_warnings)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -568,10 +580,24 @@ pub fn config_dir() -> PathBuf {
 /// Initialize settings. Must be called during app init.
 pub fn init(cx: &mut App) {
     let config_path = config_dir().join("settings.json");
+    let mut load_warnings = Vec::new();
     let settings = if config_path.exists() {
         match std::fs::read_to_string(&config_path) {
-            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-            Err(_) => AppSettings::default(),
+            Ok(json) => match serde_json::from_str::<AppSettings>(&json) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    let msg = format!("Settings parse error (using defaults): {}", e);
+                    log::warn!("{}", msg);
+                    load_warnings.push(msg);
+                    AppSettings::default()
+                }
+            },
+            Err(e) => {
+                let msg = format!("Failed to read settings file (using defaults): {}", e);
+                log::warn!("{}", msg);
+                load_warnings.push(msg);
+                AppSettings::default()
+            }
         }
     } else {
         AppSettings::default()
@@ -580,6 +606,7 @@ pub fn init(cx: &mut App) {
     let mut state = SettingsState {
         settings,
         config_path,
+        load_warnings,
     };
     state.migrate_legacy_workspace_data();
     if let Err(error) = state.migrate_legacy_secrets() {
@@ -773,6 +800,7 @@ mod tests {
         SettingsState {
             settings: AppSettings::default(),
             config_path: PathBuf::from("/tmp/rgitui-test-settings.json"),
+            load_warnings: Vec::new(),
         }
     }
 
