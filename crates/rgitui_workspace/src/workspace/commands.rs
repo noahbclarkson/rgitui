@@ -347,7 +347,7 @@ impl Workspace {
                     });
                 }
                 Err(e) => {
-                    cx.update(|cx| {
+                    let _ = cx.update(|cx| {
                         let _ = this.update(cx, |workspace, cx| {
                             workspace.show_toast(
                                 format!("Failed to compute blame: {}", e),
@@ -355,7 +355,7 @@ impl Workspace {
                                 cx,
                             );
                         });
-                    }).ok();
+                    });
                 }
             }
         })
