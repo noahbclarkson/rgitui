@@ -12,6 +12,7 @@ use git2::{Repository, StatusOptions};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use notify::RecommendedWatcher;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::types::*;
 
@@ -172,8 +173,8 @@ pub struct GitProject {
     tags: Vec<TagInfo>,
     remotes: Vec<RemoteInfo>,
     stashes: Vec<StashEntry>,
-    status: WorkingTreeStatus,
-    recent_commits: Vec<CommitInfo>,
+    status: Arc<WorkingTreeStatus>,
+    recent_commits: Arc<Vec<CommitInfo>>,
     /// Whether the repository has more commits beyond the loaded set.
     has_more_commits: bool,
     next_operation_id: u64,
@@ -198,8 +199,8 @@ impl GitProject {
             tags: Vec::new(),
             remotes: Vec::new(),
             stashes: Vec::new(),
-            status: WorkingTreeStatus::default(),
-            recent_commits: Vec::new(),
+            status: Arc::new(WorkingTreeStatus::default()),
+            recent_commits: Arc::new(Vec::new()),
             has_more_commits: false,
             next_operation_id: 1,
             _watcher: None,
@@ -222,8 +223,8 @@ impl GitProject {
             tags: Vec::new(),
             remotes: Vec::new(),
             stashes: Vec::new(),
-            status: WorkingTreeStatus::default(),
-            recent_commits: Vec::new(),
+            status: Arc::new(WorkingTreeStatus::default()),
+            recent_commits: Arc::new(Vec::new()),
             has_more_commits: false,
             next_operation_id: 1,
             _watcher: None,
@@ -401,8 +402,16 @@ impl GitProject {
         &self.status
     }
 
+    pub fn status_arc(&self) -> Arc<WorkingTreeStatus> {
+        Arc::clone(&self.status)
+    }
+
     pub fn recent_commits(&self) -> &[CommitInfo] {
         &self.recent_commits
+    }
+
+    pub fn recent_commits_arc(&self) -> Arc<Vec<CommitInfo>> {
+        Arc::clone(&self.recent_commits)
     }
 
     pub fn has_changes(&self) -> bool {
@@ -440,8 +449,8 @@ impl GitProject {
         self.tags = data.tags;
         self.remotes = data.remotes;
         self.stashes = data.stashes;
-        self.status = data.status;
-        self.recent_commits = data.recent_commits;
+        self.status = Arc::new(data.status);
+        self.recent_commits = Arc::new(data.recent_commits);
         self.has_more_commits = data.has_more_commits;
     }
 

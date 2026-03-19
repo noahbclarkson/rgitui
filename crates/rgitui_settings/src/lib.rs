@@ -319,12 +319,20 @@ impl SettingsState {
     }
 
     pub fn save(&self) -> Result<()> {
-        if let Some(parent) = self.config_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         sync_auth_runtime(&self.settings);
         let json = serde_json::to_string_pretty(&self.settings)?;
-        std::fs::write(&self.config_path, json)?;
+        let config_path = self.config_path.clone();
+        std::thread::spawn(move || {
+            if let Some(parent) = config_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    log::error!("Failed to create settings directory: {}", e);
+                    return;
+                }
+            }
+            if let Err(e) = std::fs::write(&config_path, json) {
+                log::error!("Failed to write settings file: {}", e);
+            }
+        });
         Ok(())
     }
 

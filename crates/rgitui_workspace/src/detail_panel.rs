@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
@@ -63,52 +64,6 @@ enum FileViewMode {
     Tree,
 }
 
-#[derive(Default)]
-struct FileDiffTreeNode<'a> {
-    files: Vec<(usize, &'a FileDiff)>,
-    children: BTreeMap<String, FileDiffTreeNode<'a>>,
-}
-
-fn build_file_diff_tree(files: &[FileDiff]) -> FileDiffTreeNode<'_> {
-    let mut root = FileDiffTreeNode::default();
-    for (i, file) in files.iter().enumerate() {
-        let path_str = file.path.display().to_string();
-        let parts: Vec<&str> = path_str.split('/').collect();
-        let mut node = &mut root;
-        for (pi, part) in parts.iter().enumerate() {
-            if pi == parts.len() - 1 {
-                node.files.push((i, file));
-            } else {
-                node = node
-                    .children
-                    .entry(part.to_string())
-                    .or_default();
-            }
-        }
-    }
-    sort_file_diff_tree(&mut root);
-    root
-}
-
-fn sort_file_diff_tree(node: &mut FileDiffTreeNode<'_>) {
-    node.files.sort_by(|a, b| {
-        let a_name = a.1.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let b_name = b.1.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        a_name.to_lowercase().cmp(&b_name.to_lowercase())
-    });
-    for child in node.children.values_mut() {
-        sort_file_diff_tree(child);
-    }
-}
-
-fn file_diff_tree_count(node: &FileDiffTreeNode<'_>) -> usize {
-    node.files.len()
-        + node
-            .children
-            .values()
-            .map(file_diff_tree_count)
-            .sum::<usize>()
-}
 
 fn file_change_icon(kind: FileChangeKind) -> IconName {
     match kind {
@@ -136,10 +91,119 @@ fn file_change_color(kind: FileChangeKind) -> Color {
     }
 }
 
+/// A cached, owned version of the file diff tree that can be stored across frames.
+struct CachedFileDiffTree {
+    /// Flat list of `(global_file_index, file_name, dir_path)` for each file in the tree,
+    /// sorted the same way as `build_file_diff_tree` would produce.
+    flat_entries: Vec<CachedFlatEntry>,
+    /// The owned tree structure for tree-mode rendering.
+    tree: CachedTreeNode,
+}
+
+struct CachedFlatEntry {
+    file_index: usize,
+    file_name: SharedString,
+    dir_path: SharedString,
+}
+
+#[derive(Default)]
+struct CachedTreeNode {
+    /// (global file index, file name)
+    files: Vec<(usize, SharedString)>,
+    children: BTreeMap<String, CachedTreeNode>,
+}
+
+fn build_cached_tree(files: &[FileDiff]) -> CachedTreeNode {
+    let mut root = CachedTreeNode::default();
+    for (i, file) in files.iter().enumerate() {
+        let path_str = file.path.display().to_string();
+        let parts: Vec<&str> = path_str.split('/').collect();
+        let file_name: SharedString = file
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&path_str)
+            .to_string()
+            .into();
+        let mut node = &mut root;
+        for (pi, part) in parts.iter().enumerate() {
+            if pi == parts.len() - 1 {
+                node.files.push((i, file_name.clone()));
+            } else {
+                node = node
+                    .children
+                    .entry(part.to_string())
+                    .or_default();
+            }
+        }
+    }
+    sort_cached_tree(&mut root);
+    root
+}
+
+fn sort_cached_tree(node: &mut CachedTreeNode) {
+    node.files.sort_by(|a, b| {
+        a.1.to_lowercase().cmp(&b.1.to_lowercase())
+    });
+    for child in node.children.values_mut() {
+        sort_cached_tree(child);
+    }
+}
+
+fn cached_tree_count(node: &CachedTreeNode) -> usize {
+    node.files.len()
+        + node
+            .children
+            .values()
+            .map(cached_tree_count)
+            .sum::<usize>()
+}
+
+fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
+    let flat_entries = files
+        .iter()
+        .enumerate()
+        .map(|(i, file)| {
+            let path_str = file.path.display().to_string();
+            let file_name: SharedString = file
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&path_str)
+                .to_string()
+                .into();
+            let dir_path: SharedString = file
+                .path
+                .parent()
+                .map(|p| {
+                    let s = p.display().to_string();
+                    if s.is_empty() {
+                        s
+                    } else {
+                        format!("{}/", s)
+                    }
+                })
+                .unwrap_or_default()
+                .into();
+            CachedFlatEntry {
+                file_index: i,
+                file_name,
+                dir_path,
+            }
+        })
+        .collect();
+    let tree = build_cached_tree(files);
+    CachedFileDiffTree {
+        flat_entries,
+        tree,
+    }
+}
+
 /// Displays commit metadata and changed files list.
 pub struct DetailPanel {
     commit: Option<CommitInfo>,
-    commit_diff: Option<CommitDiff>,
+    commit_diff: Option<Arc<CommitDiff>>,
+    cached_file_tree: Option<CachedFileDiffTree>,
     selected_file_index: Option<usize>,
     focus_handle: FocusHandle,
     file_view_mode: FileViewMode,
@@ -154,6 +218,7 @@ impl DetailPanel {
         Self {
             commit: None,
             commit_diff: None,
+            cached_file_tree: None,
             selected_file_index: None,
             focus_handle: cx.focus_handle(),
             file_view_mode: FileViewMode::Flat,
@@ -272,8 +337,9 @@ impl DetailPanel {
     }
 
     pub fn set_commit(&mut self, commit: CommitInfo, diff: CommitDiff, cx: &mut Context<Self>) {
+        self.cached_file_tree = Some(build_cached_file_tree(&diff.files));
         self.commit = Some(commit);
-        self.commit_diff = Some(diff);
+        self.commit_diff = Some(Arc::new(diff));
         self.selected_file_index = None;
         cx.notify();
     }
@@ -281,6 +347,7 @@ impl DetailPanel {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.commit = None;
         self.commit_diff = None;
+        self.cached_file_tree = None;
         self.selected_file_index = None;
         cx.notify();
     }
@@ -404,7 +471,8 @@ impl DetailPanel {
 
     fn render_flat_file_list(
         &self,
-        files: &[FileDiff],
+        diff: &CommitDiff,
+        cached: &CachedFileDiffTree,
         colors: &rgitui_theme::ThemeColors,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -415,8 +483,18 @@ impl DetailPanel {
             .flex_shrink_0()
             .pb_2();
 
-        for (i, file) in files.iter().enumerate() {
-            file_list = self.render_file_row(file_list, i, file, colors, px(12.), cx);
+        for entry in &cached.flat_entries {
+            let file = &diff.files[entry.file_index];
+            file_list = self.render_file_row(
+                file_list,
+                entry.file_index,
+                file,
+                entry.file_name.clone(),
+                entry.dir_path.clone(),
+                colors,
+                px(12.),
+                cx,
+            );
         }
 
         file_list
@@ -427,43 +505,18 @@ impl DetailPanel {
         file_list: gpui::Stateful<gpui::Div>,
         i: usize,
         file: &FileDiff,
+        file_name: SharedString,
+        dir_path: SharedString,
         colors: &rgitui_theme::ThemeColors,
         indent: gpui::Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let row_h = cx.global::<SettingsState>().settings().compactness.spacing(26.0);
-        let path_str = file.path.display().to_string();
-        let file_name: SharedString = file
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&path_str)
-            .to_string()
-            .into();
-
-        let show_dir_path = matches!(self.file_view_mode, FileViewMode::Flat);
-        let dir_path: SharedString = if show_dir_path {
-            file.path
-                .parent()
-                .map(|p| {
-                    let s = p.display().to_string();
-                    if s.is_empty() {
-                        s
-                    } else {
-                        format!("{}/", s)
-                    }
-                })
-                .unwrap_or_default()
-                .into()
-        } else {
-            SharedString::default()
-        };
 
         let additions = file.additions;
         let deletions = file.deletions;
         let selected = self.selected_file_index == Some(i);
-        let file_diff = file.clone();
-        let path_for_event = path_str;
+        let file_idx = i;
 
         let icon_name = file_change_icon(file.kind);
         let icon_color = file_change_color(file.kind);
@@ -495,11 +548,8 @@ impl DetailPanel {
                 .hover(|s| s.bg(colors.ghost_element_hover))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.selected_file_index = Some(i);
-                    cx.emit(DetailPanelEvent::FileSelected(
-                        file_diff.clone(),
-                        path_for_event.clone(),
-                    ));
+                    this.selected_file_index = Some(file_idx);
+                    this.emit_file_selected(cx);
                     cx.notify();
                 }))
                 .child(Icon::new(icon_name).size(IconSize::XSmall).color(icon_color))
@@ -529,11 +579,11 @@ impl DetailPanel {
 
     fn render_tree_file_list(
         &self,
-        files: &[FileDiff],
+        diff: &CommitDiff,
+        cached: &CachedFileDiffTree,
         colors: &rgitui_theme::ThemeColors,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let tree = build_file_diff_tree(files);
         let mut file_list = div()
             .id("detail-files-list")
             .v_flex()
@@ -541,14 +591,15 @@ impl DetailPanel {
             .flex_shrink_0()
             .pb_2();
 
-        file_list = self.render_tree_node(file_list, &tree, "", 0, colors, cx);
+        file_list = self.render_cached_tree_node(file_list, &cached.tree, diff, "", 0, colors, cx);
         file_list
     }
 
-    fn render_tree_node(
+    fn render_cached_tree_node(
         &self,
         mut container: gpui::Stateful<gpui::Div>,
-        node: &FileDiffTreeNode<'_>,
+        node: &CachedTreeNode,
+        diff: &CommitDiff,
         parent_path: &str,
         depth: usize,
         colors: &rgitui_theme::ThemeColors,
@@ -561,8 +612,18 @@ impl DetailPanel {
             16.0 + depth as f32 * 14.0
         });
 
-        for &(i, file) in &node.files {
-            container = self.render_file_row(container, i, file, colors, file_indent, cx);
+        for (i, file_name) in &node.files {
+            let file = &diff.files[*i];
+            container = self.render_file_row(
+                container,
+                *i,
+                file,
+                file_name.clone(),
+                SharedString::default(),
+                colors,
+                file_indent,
+                cx,
+            );
         }
 
         for (dir_name, child) in &node.children {
@@ -589,7 +650,7 @@ impl DetailPanel {
             };
             let dir_clone = full_dir.clone();
             let dir_indent = px(16.0 + depth as f32 * 14.0);
-            let file_count = file_diff_tree_count(display_node);
+            let file_count = cached_tree_count(display_node);
 
             container = container.child(
                 div()
@@ -645,9 +706,10 @@ impl DetailPanel {
             );
 
             if !dir_collapsed {
-                container = self.render_tree_node(
+                container = self.render_cached_tree_node(
                     container,
                     display_node,
+                    diff,
                     &full_dir,
                     depth + 1,
                     colors,
@@ -1101,7 +1163,7 @@ impl Render for DetailPanel {
 
         content = content.child(card);
 
-        if let Some(diff) = &self.commit_diff {
+        if let (Some(diff), Some(cached)) = (&self.commit_diff, &self.cached_file_tree) {
             let file_count = diff.files.len();
             let file_count_text: SharedString = format!(
                 "{} file{} changed",
@@ -1168,10 +1230,9 @@ impl Render for DetailPanel {
                     .child(DiffStat::new(total_additions, total_deletions)),
             );
 
-            let files = diff.files.clone();
             let file_list = match self.file_view_mode {
-                FileViewMode::Flat => self.render_flat_file_list(&files, &colors, cx),
-                FileViewMode::Tree => self.render_tree_file_list(&files, &colors, cx),
+                FileViewMode::Flat => self.render_flat_file_list(diff, cached, &colors, cx),
+                FileViewMode::Tree => self.render_tree_file_list(diff, cached, &colors, cx),
             };
             content = content.child(file_list);
         }

@@ -45,6 +45,7 @@ struct ContextMenuState {
 pub struct GraphView {
     commits: Arc<Vec<CommitInfo>>,
     graph_rows: Arc<Vec<GraphRow>>,
+    global_max_lane: usize,
     selected_index: Option<usize>,
     selected_oid: Option<git2::Oid>,
     row_height: f32,
@@ -53,6 +54,7 @@ pub struct GraphView {
     show_search: bool,
     filter_matches: Vec<usize>,
     filter_match_set: HashSet<usize>,
+    filter_match_set_arc: Arc<HashSet<usize>>,
     current_match: usize,
     search_editor: Entity<rgitui_ui::TextInput>,
     graph_focus: FocusHandle,
@@ -63,6 +65,7 @@ pub struct GraphView {
     unstaged_count: usize,
     staged_breakdown: HashMap<FileChangeKind, usize>,
     unstaged_breakdown: HashMap<FileChangeKind, usize>,
+    cached_merge_breakdown: HashMap<FileChangeKind, usize>,
     show_settings_popover: bool,
     show_full_hash: bool,
     show_author_column: bool,
@@ -94,6 +97,7 @@ impl GraphView {
         Self {
             commits: Arc::new(Vec::new()),
             graph_rows: Arc::new(Vec::new()),
+            global_max_lane: 0,
             selected_index: None,
             selected_oid: None,
             row_height: 32.0,
@@ -102,6 +106,7 @@ impl GraphView {
             show_search: false,
             filter_matches: Vec::new(),
             filter_match_set: HashSet::new(),
+            filter_match_set_arc: Arc::new(HashSet::new()),
             current_match: 0,
             search_editor,
             graph_focus: cx.focus_handle(),
@@ -112,6 +117,7 @@ impl GraphView {
             unstaged_count: 0,
             staged_breakdown: HashMap::new(),
             unstaged_breakdown: HashMap::new(),
+            cached_merge_breakdown: HashMap::new(),
             show_settings_popover: false,
             show_full_hash: false,
             show_author_column: true,
@@ -131,11 +137,10 @@ impl GraphView {
         self.graph_focus.is_focused(window)
     }
 
-    pub fn set_commits(&mut self, commits: Vec<CommitInfo>, cx: &mut Context<Self>) {
+    pub fn set_commits(&mut self, commits: Arc<Vec<CommitInfo>>, cx: &mut Context<Self>) {
         // Compute a simple hash to detect if commits actually changed
         let new_hash = Self::compute_commits_hash(&commits);
         if new_hash == self.cached_graph_hash && !self.commits.is_empty() {
-            // Commits haven't changed — skip recomputation
             return;
         }
         self.cached_graph_hash = new_hash;
@@ -143,8 +148,15 @@ impl GraphView {
         // Preserve selection by OID across refreshes
         let prev_selected_oid = self.selected_oid;
 
-        self.graph_rows = Arc::new(compute_graph(&commits));
-        self.commits = Arc::new(commits);
+        let graph_rows = compute_graph(&commits);
+        self.global_max_lane = graph_rows
+            .iter()
+            .map(|r| r.lane_count)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        self.graph_rows = Arc::new(graph_rows);
+        self.commits = commits;
 
         // Restore selection if the previously selected commit still exists
         let offset = self.working_tree_offset();
@@ -184,6 +196,7 @@ impl GraphView {
     ) {
         self.staged_count = staged;
         self.unstaged_count = unstaged;
+        self.cached_merge_breakdown = merge_breakdowns(&staged_breakdown, &unstaged_breakdown);
         self.staged_breakdown = staged_breakdown;
         self.unstaged_breakdown = unstaged_breakdown;
         cx.notify();
@@ -289,6 +302,7 @@ impl GraphView {
             self.search_editor.update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
             self.filter_matches.clear();
             self.filter_match_set.clear();
+            self.filter_match_set_arc = Arc::new(HashSet::new());
             self.current_match = 0;
         }
         cx.notify();
@@ -303,6 +317,7 @@ impl GraphView {
             self.search_editor.update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
             self.filter_matches.clear();
             self.filter_match_set.clear();
+            self.filter_match_set_arc = Arc::new(HashSet::new());
             self.current_match = 0;
         }
         cx.notify();
@@ -349,6 +364,7 @@ impl GraphView {
         self.current_match = 0;
 
         if self.search_editor.read(cx).is_empty() {
+            self.filter_match_set_arc = Arc::new(HashSet::new());
             return;
         }
 
@@ -364,6 +380,7 @@ impl GraphView {
                 self.filter_match_set.insert(i);
             }
         }
+        self.filter_match_set_arc = Arc::new(self.filter_match_set.clone());
     }
 
     /// Jump to the next search match, selecting and scrolling to it.
@@ -421,6 +438,7 @@ impl GraphView {
                 self.search_editor.update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
                 self.filter_matches.clear();
                 self.filter_match_set.clear();
+                self.filter_match_set_arc = Arc::new(HashSet::new());
                 self.current_match = 0;
                 self.graph_focus.focus(window, cx);
                 cx.notify();
@@ -598,11 +616,11 @@ impl Render for GraphView {
         let wt_offset = self.working_tree_offset();
         let wt_staged_count = self.staged_count;
         let wt_unstaged_count = self.unstaged_count;
-        let wt_combined_breakdown = merge_breakdowns(&self.staged_breakdown, &self.unstaged_breakdown);
+        let wt_combined_breakdown = self.cached_merge_breakdown.clone();
         let total_list_items = self.total_list_items();
 
-        // Search state for the render closure — use HashSet for O(1) lookup
-        let filter_match_set: Arc<HashSet<usize>> = Arc::new(self.filter_match_set.clone());
+        // Search state for the render closure — use pre-computed Arc for O(1) clone
+        let filter_match_set = Arc::clone(&self.filter_match_set_arc);
         let current_match_index = if self.filter_matches.is_empty() {
             None
         } else {
@@ -616,14 +634,7 @@ impl Render for GraphView {
         let compact_mul = compactness.multiplier();
         let row_height = compactness.spacing(self.row_height);
 
-        let global_max_lane = self
-            .graph_rows
-            .iter()
-            .map(|r| r.lane_count)
-            .max()
-            .unwrap_or(1)
-            .max(1);
-        let graph_col_width = ((global_max_lane as f32 + 1.0) * lane_width + graph_padding_left).max(80.0);
+        let graph_col_width = ((self.global_max_lane as f32 + 1.0) * lane_width + graph_padding_left).max(80.0);
 
         // Column visibility settings
         let show_author_column = self.show_author_column;
@@ -792,8 +803,8 @@ impl Render for GraphView {
                         }
 
                         let commit_idx = i - wt_offset;
-                        let commit = commits[commit_idx].clone();
-                        let graph_row = graph_rows[commit_idx].clone();
+                        let commit = &commits[commit_idx];
+                        let graph_row = &graph_rows[commit_idx];
                         let selected = selected_index == Some(i);
                         let is_current_match = current_match_index == Some(commit_idx);
                         let is_any_match = has_search_query && filter_match_set.contains(&commit_idx);
@@ -827,7 +838,7 @@ impl Render for GraphView {
                         let has_incoming = graph_row.has_incoming
                             || (commit_idx == 0 && wt_offset > 0);
 
-                        // Author initials for avatar
+                        // Author initials for avatar (extract small strings, not the whole CommitInfo)
                         let initials: SharedString = commit
                             .author
                             .name
@@ -863,9 +874,10 @@ impl Render for GraphView {
                         };
                         let summary: SharedString = commit.summary.clone().into();
                         let author: SharedString = commit.author.name.clone().into();
+                        let author_email = commit.author.email.clone();
                         let time_str: SharedString = format_relative_time(&commit.time).into();
 
-                        // Clone data for canvas closure
+                        // Clone only the edges vec for canvas closure (not the entire GraphRow)
                         let edges: Vec<GraphEdge> = graph_row.edges.clone();
                         let row_bg_for_canvas = bg;
 
@@ -1158,7 +1170,7 @@ impl Render for GraphView {
                                 .when(show_avatars, |el| el.child({
                                     let avatar_url = cx
                                         .try_global::<AvatarCache>()
-                                        .and_then(|cache| cache.avatar_url(&commit.author.email))
+                                        .and_then(|cache| cache.avatar_url(&author_email))
                                         .map(|s| s.to_string());
                                     let initials_fallback = initials.clone();
                                     let fallback_color = node_color;

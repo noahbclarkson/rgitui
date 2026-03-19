@@ -80,8 +80,15 @@ impl Workspace {
 
         // Initial sync
         {
-            let commits = project.read(cx).recent_commits().to_vec();
-            // Resolve avatars for unique authors
+            let proj = project.read(cx);
+            let commits = proj.recent_commits_arc();
+            let has_more = proj.has_more_commits();
+            let init_status = proj.status_arc();
+            let branches = proj.branches().to_vec();
+            let tags = proj.tags().to_vec();
+            let remotes = proj.remotes().to_vec();
+            let stashes = proj.stashes().to_vec();
+            let staged_count = init_status.staged.len();
             let mut seen = std::collections::HashSet::new();
             let authors: Vec<(String, String)> = commits
                 .iter()
@@ -89,8 +96,6 @@ impl Workspace {
                 .map(|c| (c.author.name.clone(), c.author.email.clone()))
                 .collect();
             crate::avatar_resolver::resolve_avatars(authors, cx);
-            let has_more = project.read(cx).has_more_commits();
-            let init_status = project.read(cx).status().clone();
             let init_staged = init_status.staged.len();
             let init_unstaged = init_status.unstaged.len();
             let init_staged_bd = rgitui_graph::compute_breakdown(&init_status.staged);
@@ -107,21 +112,14 @@ impl Workspace {
                 );
             });
 
-            let branches = project.read(cx).branches().to_vec();
-            let tags = project.read(cx).tags().to_vec();
-            let remotes = project.read(cx).remotes().to_vec();
-            let stashes = project.read(cx).stashes().to_vec();
-            let status = init_status;
-
             sidebar.update(cx, |s, cx| {
                 s.update_branches(branches, cx);
                 s.update_tags(tags, cx);
                 s.update_remotes(remotes, cx);
                 s.update_stashes(stashes, cx);
-                s.update_status(status.staged.clone(), status.unstaged.clone(), cx);
+                s.update_status(init_status.staged.clone(), init_status.unstaged.clone(), cx);
             });
 
-            let staged_count = project.read(cx).status().staged.len();
             commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
         }
 

@@ -53,10 +53,10 @@ enum SidebarSection {
     UnstagedChanges,
 }
 
-#[derive(Default)]
-struct FileTreeNode<'a> {
-    files: Vec<&'a FileStatus>,
-    children: BTreeMap<String, FileTreeNode<'a>>,
+#[derive(Default, Clone)]
+struct FileTreeNode {
+    file_indices: Vec<usize>,
+    children: BTreeMap<String, FileTreeNode>,
 }
 
 /// Represents a navigable item in the sidebar's flat list.
@@ -82,13 +82,12 @@ struct FileRowCtx<'a> {
 /// The left sidebar panel with branches, tags, stashes, and working tree status.
 pub struct Sidebar {
     expanded_sections: Vec<SidebarSection>,
-    branches: Vec<BranchInfo>,
     tags: Vec<TagInfo>,
     remotes: Vec<RemoteInfo>,
     stashes: Vec<StashEntry>,
     staged: Vec<FileStatus>,
     unstaged: Vec<FileStatus>,
-    selected_file: Option<(String, bool)>, // (path, is_staged)
+    selected_file: Option<(String, bool)>,
     /// Tracks which directory groups are collapsed in the file change sections.
     /// Key is "staged:<dir>" or "unstaged:<dir>".
     collapsed_dirs: HashSet<String>,
@@ -98,20 +97,39 @@ pub struct Sidebar {
     focus_handle: FocusHandle,
     /// Index into the flat navigable items list for keyboard nav.
     keyboard_index: Option<usize>,
+    /// Pre-partitioned local branches (rebuilt in update_branches).
+    local_branches: Vec<BranchInfo>,
+    /// Pre-partitioned remote branches (rebuilt in update_branches).
+    remote_branches: Vec<BranchInfo>,
+    /// Cached file tree for staged changes (rebuilt in update_status).
+    cached_staged_tree: FileTreeNode,
+    /// Cached file tree for unstaged changes (rebuilt in update_status).
+    cached_unstaged_tree: FileTreeNode,
+    /// Cached flat list of navigable items for keyboard navigation.
+    cached_nav_items: Vec<SidebarItem>,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
 
 impl Sidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let expanded_sections = vec![
+            SidebarSection::LocalBranches,
+            SidebarSection::Remotes,
+            SidebarSection::StagedChanges,
+            SidebarSection::UnstagedChanges,
+        ];
+        let cached_nav_items = vec![
+            SidebarItem::SectionHeader(SidebarSection::LocalBranches),
+            SidebarItem::SectionHeader(SidebarSection::Remotes),
+            SidebarItem::SectionHeader(SidebarSection::RemoteBranches),
+            SidebarItem::SectionHeader(SidebarSection::Tags),
+            SidebarItem::SectionHeader(SidebarSection::Stashes),
+            SidebarItem::SectionHeader(SidebarSection::StagedChanges),
+            SidebarItem::SectionHeader(SidebarSection::UnstagedChanges),
+        ];
         Self {
-            expanded_sections: vec![
-                SidebarSection::LocalBranches,
-                SidebarSection::Remotes,
-                SidebarSection::StagedChanges,
-                SidebarSection::UnstagedChanges,
-            ],
-            branches: Vec::new(),
+            expanded_sections,
             tags: Vec::new(),
             remotes: Vec::new(),
             stashes: Vec::new(),
@@ -122,118 +140,111 @@ impl Sidebar {
             repo_name: String::new(),
             focus_handle: cx.focus_handle(),
             keyboard_index: None,
+            local_branches: Vec::new(),
+            remote_branches: Vec::new(),
+            cached_staged_tree: FileTreeNode::default(),
+            cached_unstaged_tree: FileTreeNode::default(),
+            cached_nav_items,
         }
     }
 
-    /// Build the flat list of navigable items based on current expansion state.
-    fn navigable_items(&self) -> Vec<SidebarItem> {
+    /// Rebuild the cached navigable items list from current state.
+    fn rebuild_nav_items(&mut self) {
+        let is_expanded =
+            |section: SidebarSection, expanded: &[SidebarSection]| expanded.contains(&section);
+
         let mut items = Vec::new();
 
-        // Local branches section
         items.push(SidebarItem::SectionHeader(SidebarSection::LocalBranches));
-        if self.is_expanded(SidebarSection::LocalBranches) {
-            let local_count = self.branches.iter().filter(|b| !b.is_remote).count();
-            for i in 0..local_count {
+        if is_expanded(SidebarSection::LocalBranches, &self.expanded_sections) {
+            for i in 0..self.local_branches.len() {
                 items.push(SidebarItem::LocalBranch(i));
             }
         }
 
-        // Remotes section
         items.push(SidebarItem::SectionHeader(SidebarSection::Remotes));
-        if self.is_expanded(SidebarSection::Remotes) {
+        if is_expanded(SidebarSection::Remotes, &self.expanded_sections) {
             for i in 0..self.remotes.len() {
                 items.push(SidebarItem::Remote(i));
             }
         }
 
-        // Remote branches section
         items.push(SidebarItem::SectionHeader(SidebarSection::RemoteBranches));
-        if self.is_expanded(SidebarSection::RemoteBranches) {
-            let remote_count = self.branches.iter().filter(|b| b.is_remote).count();
-            for i in 0..remote_count {
+        if is_expanded(SidebarSection::RemoteBranches, &self.expanded_sections) {
+            for i in 0..self.remote_branches.len() {
                 items.push(SidebarItem::RemoteBranch(i));
             }
         }
 
-        // Tags section
         items.push(SidebarItem::SectionHeader(SidebarSection::Tags));
-        if self.is_expanded(SidebarSection::Tags) {
+        if is_expanded(SidebarSection::Tags, &self.expanded_sections) {
             for i in 0..self.tags.len() {
                 items.push(SidebarItem::Tag(i));
             }
         }
 
-        // Stashes section
         items.push(SidebarItem::SectionHeader(SidebarSection::Stashes));
-        if self.is_expanded(SidebarSection::Stashes) {
+        if is_expanded(SidebarSection::Stashes, &self.expanded_sections) {
             for i in 0..self.stashes.len() {
                 items.push(SidebarItem::Stash(i));
             }
         }
 
-        // Staged changes section
         items.push(SidebarItem::SectionHeader(SidebarSection::StagedChanges));
-        if self.is_expanded(SidebarSection::StagedChanges) {
+        if is_expanded(SidebarSection::StagedChanges, &self.expanded_sections) {
             for i in 0..self.staged.len() {
                 items.push(SidebarItem::StagedFile(i));
             }
         }
 
-        // Unstaged changes section
         items.push(SidebarItem::SectionHeader(SidebarSection::UnstagedChanges));
-        if self.is_expanded(SidebarSection::UnstagedChanges) {
+        if is_expanded(SidebarSection::UnstagedChanges, &self.expanded_sections) {
             for i in 0..self.unstaged.len() {
                 items.push(SidebarItem::UnstagedFile(i));
             }
         }
 
-        items
+        self.cached_nav_items = items;
     }
 
     /// Activate the currently selected keyboard item (Enter key).
     fn activate_keyboard_item(&mut self, cx: &mut Context<Self>) {
-        let items = self.navigable_items();
         let Some(idx) = self.keyboard_index else {
             return;
         };
-        let Some(item) = items.get(idx) else {
+        let Some(item) = self.cached_nav_items.get(idx).cloned() else {
             return;
         };
 
         match item {
             SidebarItem::SectionHeader(section) => {
-                self.toggle_section(*section, cx);
+                self.toggle_section(section, cx);
             }
             SidebarItem::LocalBranch(i) => {
-                let local_branches: Vec<_> =
-                    self.branches.iter().filter(|b| !b.is_remote).collect();
-                if let Some(branch) = local_branches.get(*i) {
+                if let Some(branch) = self.local_branches.get(i) {
                     cx.emit(SidebarEvent::BranchCheckout(branch.name.clone()));
                 }
             }
             SidebarItem::Remote(i) => {
-                // Select the remote (could trigger fetch in the future)
-                if let Some(remote) = self.remotes.get(*i) {
+                if let Some(remote) = self.remotes.get(i) {
                     cx.emit(SidebarEvent::RemoteFetch(remote.name.clone()));
                 }
             }
             SidebarItem::RemoteBranch(i) => {
-                let remote_branches: Vec<_> =
-                    self.branches.iter().filter(|b| b.is_remote).collect();
-                if let Some(branch) = remote_branches.get(*i) {
+                if let Some(branch) = self.remote_branches.get(i) {
                     cx.emit(SidebarEvent::BranchSelected(branch.name.clone()));
                 }
             }
             SidebarItem::Tag(i) => {
-                if let Some(tag) = self.tags.get(*i) {
+                if let Some(tag) = self.tags.get(i) {
                     cx.emit(SidebarEvent::TagSelected(tag.name.clone()));
                 }
             }
             SidebarItem::Stash(i) => {
-                cx.emit(SidebarEvent::StashSelected(*i));
+                cx.emit(SidebarEvent::StashSelected(i));
             }
             SidebarItem::StagedFile(i) => {
-                if let Some(file) = self.staged.get(*i) {
+                if let Some(file) = self.staged.get(i) {
                     let path = file.path.display().to_string();
                     self.selected_file = Some((path.clone(), true));
                     cx.emit(SidebarEvent::FileSelected { path, staged: true });
@@ -241,7 +252,7 @@ impl Sidebar {
                 }
             }
             SidebarItem::UnstagedFile(i) => {
-                if let Some(file) = self.unstaged.get(*i) {
+                if let Some(file) = self.unstaged.get(i) {
                     let path = file.path.display().to_string();
                     self.selected_file = Some((path.clone(), false));
                     cx.emit(SidebarEvent::FileSelected {
@@ -265,11 +276,10 @@ impl Sidebar {
         let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
 
         if ctrl {
-            return; // Let workspace handle Ctrl+ shortcuts
+            return;
         }
 
-        let items = self.navigable_items();
-        if items.is_empty() {
+        if self.cached_nav_items.is_empty() {
             return;
         }
 
@@ -284,7 +294,7 @@ impl Sidebar {
                 cx.notify();
             }
             "down" | "j" => {
-                let max = items.len().saturating_sub(1);
+                let max = self.cached_nav_items.len().saturating_sub(1);
                 let new_idx = match self.keyboard_index {
                     Some(i) => (i + 1).min(max),
                     None => 0,
@@ -300,23 +310,22 @@ impl Sidebar {
                 cx.notify();
             }
             "end" => {
-                self.keyboard_index = Some(items.len().saturating_sub(1));
+                self.keyboard_index = Some(self.cached_nav_items.len().saturating_sub(1));
                 cx.notify();
             }
             "s" => {
-                // Stage/unstage the selected file
                 if let Some(idx) = self.keyboard_index {
-                    if let Some(item) = items.get(idx) {
+                    if let Some(item) = self.cached_nav_items.get(idx).cloned() {
                         match item {
                             SidebarItem::StagedFile(i) => {
-                                if let Some(file) = self.staged.get(*i) {
+                                if let Some(file) = self.staged.get(i) {
                                     cx.emit(SidebarEvent::UnstageFile(
                                         file.path.display().to_string(),
                                     ));
                                 }
                             }
                             SidebarItem::UnstagedFile(i) => {
-                                if let Some(file) = self.unstaged.get(*i) {
+                                if let Some(file) = self.unstaged.get(i) {
                                     cx.emit(SidebarEvent::StageFile(
                                         file.path.display().to_string(),
                                     ));
@@ -328,23 +337,19 @@ impl Sidebar {
                 }
             }
             "x" | "delete" => {
-                // Delete the selected item (tag, stash, branch, file)
                 if let Some(idx) = self.keyboard_index {
-                    let items = self.navigable_items();
-                    if let Some(item) = items.get(idx) {
+                    if let Some(item) = self.cached_nav_items.get(idx).cloned() {
                         match item {
                             SidebarItem::Tag(i) => {
-                                if let Some(tag) = self.tags.get(*i) {
+                                if let Some(tag) = self.tags.get(i) {
                                     cx.emit(SidebarEvent::TagDelete(tag.name.clone()));
                                 }
                             }
                             SidebarItem::Stash(i) => {
-                                cx.emit(SidebarEvent::StashDrop(*i));
+                                cx.emit(SidebarEvent::StashDrop(i));
                             }
                             SidebarItem::LocalBranch(i) => {
-                                let local_branches: Vec<_> =
-                                    self.branches.iter().filter(|b| !b.is_remote).collect();
-                                if let Some(branch) = local_branches.get(*i) {
+                                if let Some(branch) = self.local_branches.get(i) {
                                     if !branch.is_head {
                                         cx.emit(SidebarEvent::BranchDelete(
                                             branch.name.clone(),
@@ -353,7 +358,7 @@ impl Sidebar {
                                 }
                             }
                             SidebarItem::UnstagedFile(i) => {
-                                if let Some(file) = self.unstaged.get(*i) {
+                                if let Some(file) = self.unstaged.get(i) {
                                     cx.emit(SidebarEvent::DiscardFile(
                                         file.path.display().to_string(),
                                     ));
@@ -385,34 +390,38 @@ impl Sidebar {
     }
 
     pub fn update_branches(&mut self, mut branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
-        // Sort branches alphabetically, with HEAD branch first among locals
         branches.sort_by(|a, b| {
             if a.is_remote != b.is_remote {
                 return a.is_remote.cmp(&b.is_remote);
             }
-            // HEAD branch sorts first within its group
             if a.is_head != b.is_head {
                 return b.is_head.cmp(&a.is_head);
             }
             a.name.to_lowercase().cmp(&b.name.to_lowercase())
         });
-        self.branches = branches;
+        let (local, remote): (Vec<_>, Vec<_>) = branches.into_iter().partition(|b| !b.is_remote);
+        self.local_branches = local;
+        self.remote_branches = remote;
+        self.rebuild_nav_items();
         cx.notify();
     }
 
     pub fn update_tags(&mut self, mut tags: Vec<TagInfo>, cx: &mut Context<Self>) {
         tags.sort_by_key(|a| a.name.to_lowercase());
         self.tags = tags;
+        self.rebuild_nav_items();
         cx.notify();
     }
 
     pub fn update_remotes(&mut self, remotes: Vec<RemoteInfo>, cx: &mut Context<Self>) {
         self.remotes = remotes;
+        self.rebuild_nav_items();
         cx.notify();
     }
 
     pub fn update_stashes(&mut self, stashes: Vec<StashEntry>, cx: &mut Context<Self>) {
         self.stashes = stashes;
+        self.rebuild_nav_items();
         cx.notify();
     }
 
@@ -422,10 +431,11 @@ impl Sidebar {
         unstaged: Vec<FileStatus>,
         cx: &mut Context<Self>,
     ) {
+        self.cached_staged_tree = Self::build_file_tree(&staged);
+        self.cached_unstaged_tree = Self::build_file_tree(&unstaged);
         self.staged = staged;
         self.unstaged = unstaged;
-        // Note: we intentionally do NOT reset collapsed_dirs here
-        // so that collapsed directory groups persist across refreshes.
+        self.rebuild_nav_items();
         cx.notify();
     }
 
@@ -433,6 +443,7 @@ impl Sidebar {
     pub fn ensure_branches_visible(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.expanded_sections.contains(&SidebarSection::LocalBranches) {
             self.expanded_sections.push(SidebarSection::LocalBranches);
+            self.rebuild_nav_items();
         }
         self.focus_handle.focus(window, cx);
         cx.notify();
@@ -448,6 +459,7 @@ impl Sidebar {
         } else {
             self.expanded_sections.push(section);
         }
+        self.rebuild_nav_items();
         cx.notify();
     }
 
@@ -513,9 +525,9 @@ impl Sidebar {
         }
     }
 
-    fn build_file_tree(files: &[FileStatus]) -> FileTreeNode<'_> {
+    fn build_file_tree(files: &[FileStatus]) -> FileTreeNode {
         let mut root = FileTreeNode::default();
-        for file in files {
+        for (idx, file) in files.iter().enumerate() {
             let mut node = &mut root;
             if let Some(parent) = file.path.parent() {
                 for component in parent.iter().filter_map(|part| part.to_str()) {
@@ -525,25 +537,25 @@ impl Sidebar {
                     node = node.children.entry(component.to_string()).or_default();
                 }
             }
-            node.files.push(file);
+            node.file_indices.push(idx);
         }
-        Self::sort_file_tree(&mut root);
+        Self::sort_file_tree(&mut root, files);
         root
     }
 
-    fn sort_file_tree(node: &mut FileTreeNode<'_>) {
-        node.files.sort_by(|a, b| {
-            let a_name = a.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let b_name = b.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    fn sort_file_tree(node: &mut FileTreeNode, files: &[FileStatus]) {
+        node.file_indices.sort_by(|&a, &b| {
+            let a_name = files[a].path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let b_name = files[b].path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             a_name.to_lowercase().cmp(&b_name.to_lowercase())
         });
         for child in node.children.values_mut() {
-            Self::sort_file_tree(child);
+            Self::sort_file_tree(child, files);
         }
     }
 
-    fn file_tree_file_count(node: &FileTreeNode<'_>) -> usize {
-        node.files.len()
+    fn file_tree_file_count(node: &FileTreeNode) -> usize {
+        node.file_indices.len()
             + node
                 .children
                 .values()
@@ -658,11 +670,10 @@ impl Sidebar {
                 .group_hover("sidebar-file-row", |s| s.visible())
                 .child(
                     div()
-                        .id(SharedString::from(format!(
-                            "{}-{}",
-                            if staged { "unstage" } else { "stage" },
-                            i
-                        )))
+                        .id(ElementId::NamedInteger(
+                            if staged { "unstage-action".into() } else { "stage-action".into() },
+                            i as u64,
+                        ))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -691,7 +702,7 @@ impl Sidebar {
             let ghost_hover2 = colors.ghost_element_hover;
             row = row.child(
                 div()
-                    .id(SharedString::from(format!("discard-{}", i)))
+                    .id(ElementId::NamedInteger("discard-action".into(), i as u64))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -718,7 +729,8 @@ impl Sidebar {
     fn render_file_tree(
         &self,
         mut body: gpui::Stateful<gpui::Div>,
-        node: &FileTreeNode<'_>,
+        node: &FileTreeNode,
+        files: &[FileStatus],
         tree_ctx: (&str, &str, usize),
         ctx: &mut FileRowCtx<'_>,
         cx: &mut Context<Self>,
@@ -731,9 +743,9 @@ impl Sidebar {
             16.0 + depth as f32 * 14.0
         });
 
-        for file in &node.files {
+        for &file_idx in &node.file_indices {
             ctx.indent = file_indent;
-            body = self.render_file_row(body, file, ctx, cx);
+            body = self.render_file_row(body, &files[file_idx], ctx, cx);
         }
         let colors = ctx.colors;
 
@@ -746,7 +758,7 @@ impl Sidebar {
             let mut display_label = format!("{dir_name}/");
             let mut display_node = child;
 
-            while display_node.files.is_empty() && display_node.children.len() == 1 {
+            while display_node.file_indices.is_empty() && display_node.children.len() == 1 {
                 let Some((next_name, next_child)) = display_node.children.iter().next() else { break; };
                 full_dir = format!("{full_dir}/{next_name}");
                 display_label = format!("{}{next_name}/", display_label);
@@ -821,6 +833,7 @@ impl Sidebar {
                 body = self.render_file_tree(
                     body,
                     display_node,
+                    files,
                     (prefix, &full_dir, depth + 1),
                     ctx,
                     cx,
@@ -910,12 +923,7 @@ impl Render for Sidebar {
         let kb_accent = colors.border_focused;
 
         // -- Local Branches --
-        let local_branches: Vec<BranchInfo> = self
-            .branches
-            .iter()
-            .filter(|b| !b.is_remote)
-            .cloned()
-            .collect();
+        let local_branch_count = self.local_branches.len();
 
         let local_expanded = self.is_expanded(SidebarSection::LocalBranches);
         let icon = if local_expanded {
@@ -973,7 +981,7 @@ impl Render for Sidebar {
                         .items_center()
                         .justify_center()
                         .child(
-                            Label::new(SharedString::from(format!("{}", local_branches.len())))
+                            Label::new(SharedString::from(format!("{}", local_branch_count)))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -981,7 +989,7 @@ impl Render for Sidebar {
         );
 
         if local_expanded {
-            if local_branches.is_empty() {
+            if self.local_branches.is_empty() {
                 content = content.child(
                     div()
                         .h_flex()
@@ -996,7 +1004,7 @@ impl Render for Sidebar {
                         ),
                 );
             }
-            for (i, branch) in local_branches.iter().enumerate() {
+            for (i, branch) in self.local_branches.iter().enumerate() {
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
                 let name: SharedString = branch.name.clone().into();
@@ -1361,7 +1369,7 @@ impl Render for Sidebar {
                                 .child(div().flex_1())
                                 .child(
                                     IconButton::new(
-                                        format!("remote-fetch-{}", i),
+                                        ElementId::NamedInteger("remote-fetch".into(), i as u64),
                                         IconName::Refresh,
                                     )
                                     .size(ButtonSize::Compact)
@@ -1377,7 +1385,7 @@ impl Render for Sidebar {
                                 )
                                 .child(
                                     IconButton::new(
-                                        format!("remote-pull-{}", i),
+                                        ElementId::NamedInteger("remote-pull".into(), i as u64),
                                         IconName::ArrowDown,
                                     )
                                     .size(ButtonSize::Compact)
@@ -1391,7 +1399,7 @@ impl Render for Sidebar {
                                 )
                                 .child(
                                     IconButton::new(
-                                        format!("remote-push-{}", i),
+                                        ElementId::NamedInteger("remote-push".into(), i as u64),
                                         IconName::ArrowUp,
                                     )
                                     .size(ButtonSize::Compact)
@@ -1405,7 +1413,7 @@ impl Render for Sidebar {
                                 )
                                 .child(
                                     IconButton::new(
-                                        format!("remote-remove-{}", i),
+                                        ElementId::NamedInteger("remote-remove".into(), i as u64),
                                         IconName::Trash,
                                     )
                                     .size(ButtonSize::Compact)
@@ -1431,12 +1439,7 @@ impl Render for Sidebar {
         }
 
         // -- Remote Branches --
-        let remote_branches: Vec<BranchInfo> = self
-            .branches
-            .iter()
-            .filter(|b| b.is_remote)
-            .cloned()
-            .collect();
+        let remote_branch_count = self.remote_branches.len();
 
         let remote_expanded = self.is_expanded(SidebarSection::RemoteBranches);
         let icon = if remote_expanded {
@@ -1489,7 +1492,7 @@ impl Render for Sidebar {
                         .items_center()
                         .justify_center()
                         .child(
-                            Label::new(SharedString::from(format!("{}", remote_branches.len())))
+                            Label::new(SharedString::from(format!("{}", remote_branch_count)))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -1497,7 +1500,7 @@ impl Render for Sidebar {
         );
 
         if remote_expanded {
-            for (i, branch) in remote_branches.iter().enumerate() {
+            for (i, branch) in self.remote_branches.iter().enumerate() {
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
                 let name: SharedString = branch.name.clone().into();
@@ -1967,14 +1970,14 @@ impl Render for Sidebar {
                         ),
                 );
             } else {
-                nav_idx += self.staged.len(); // Track file items in nav index
-                let staged_files = self.staged.clone();
-                let tree = Self::build_file_tree(&staged_files);
+                nav_idx += self.staged.len();
+                let tree = self.cached_staged_tree.clone();
                 let mut ctx = FileRowCtx { staged: true, indent: px(16.0), file_idx: 0, colors: &colors };
                 let staged_body = div().id("staged-body").v_flex().w_full().flex_shrink_0();
                 content = content.child(self.render_file_tree(
                     staged_body,
                     &tree,
+                    &self.staged,
                     ("staged", "", 0),
                     &mut ctx,
                     cx,
@@ -2106,13 +2109,13 @@ impl Render for Sidebar {
                         ),
                 );
             } else {
-                let unstaged_files = self.unstaged.clone();
-                let tree = Self::build_file_tree(&unstaged_files);
+                let tree = self.cached_unstaged_tree.clone();
                 let mut ctx = FileRowCtx { staged: false, indent: px(16.0), file_idx: 0, colors: &colors };
                 let unstaged_body = div().id("unstaged-body").v_flex().w_full().flex_shrink_0();
                 content = content.child(self.render_file_tree(
                     unstaged_body,
                     &tree,
+                    &self.unstaged,
                     ("unstaged", "", 0),
                     &mut ctx,
                     cx,

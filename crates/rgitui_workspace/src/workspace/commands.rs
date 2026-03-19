@@ -325,24 +325,40 @@ impl Workspace {
         let blame_view = tab.blame_view.clone();
         let path_for_blame = std::path::PathBuf::from(&file_path);
         let display_path = file_path.clone();
+        let active_tab_index = self.active_tab;
 
-        match project.read(cx).blame_file(&path_for_blame, None) {
-            Ok(lines) => {
-                blame_view.update(cx, |bv, cx| {
-                    bv.set_blame(lines, display_path, cx);
-                });
-                if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
-                    active_tab.bottom_panel_mode = BottomPanelMode::Blame;
+        let task = project.update(cx, |proj, cx| {
+            proj.blame_file_async(&path_for_blame, None, cx)
+        });
+
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            match task.await {
+                Ok(lines) => {
+                    let _ = cx.update(|cx| {
+                        blame_view.update(cx, |bv, cx| {
+                            bv.set_blame(lines, display_path, cx);
+                        });
+                        let _ = this.update(cx, |workspace, cx| {
+                            if let Some(active_tab) = workspace.tabs.get_mut(active_tab_index) {
+                                active_tab.bottom_panel_mode = BottomPanelMode::Blame;
+                            }
+                            cx.notify();
+                        });
+                    });
                 }
-                cx.notify();
+                Err(e) => {
+                    cx.update(|cx| {
+                        let _ = this.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                format!("Failed to compute blame: {}", e),
+                                ToastKind::Error,
+                                cx,
+                            );
+                        });
+                    }).ok();
+                }
             }
-            Err(e) => {
-                self.show_toast(
-                    format!("Failed to compute blame: {}", e),
-                    ToastKind::Error,
-                    cx,
-                );
-            }
-        }
+        })
+        .detach();
     }
 }

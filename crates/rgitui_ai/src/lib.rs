@@ -117,15 +117,17 @@ impl AiGenerator {
         let commit_style = settings.ai.commit_style.parse::<CommitStyle>().unwrap_or_default();
         let inject_project_context = settings.ai.inject_project_context;
 
-        let project_context = if inject_project_context {
-            collect_project_context(&repo_path)
-        } else {
-            None
-        };
-
         let client = cx.http_client();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let project_context = if inject_project_context {
+                let repo_path_for_context = repo_path;
+                cx.background_executor()
+                    .spawn(async move { collect_project_context(&repo_path_for_context) })
+                    .await
+            } else {
+                None
+            };
             let ctx_ref = project_context.as_deref();
             let result = match provider.as_str() {
                 "gemini" => {

@@ -429,8 +429,22 @@ pub(super) fn subscribe_project(
                 GitProjectEvent::StatusChanged
                 | GitProjectEvent::HeadChanged
                 | GitProjectEvent::RefsChanged => {
-                    // Update graph
-                    let commits = project.read(cx).recent_commits().to_vec();
+                    let proj = project.read(cx);
+                    let commits = proj.recent_commits_arc();
+                    let has_more = proj.has_more_commits();
+                    let wt_status = proj.status_arc();
+                    let branches = proj.branches().to_vec();
+                    let tags = proj.tags().to_vec();
+                    let remotes = proj.remotes().to_vec();
+                    let stashes = proj.stashes().to_vec();
+                    let has_stashes = !stashes.is_empty();
+                    let has_changes = proj.has_changes();
+                    let staged_count = wt_status.staged.len();
+                    let (ahead, behind) = branches
+                        .iter()
+                        .find(|b| b.is_head)
+                        .map(|b| (b.ahead, b.behind))
+                        .unwrap_or((0, 0));
                     let mut seen = std::collections::HashSet::new();
                     let authors: Vec<(String, String)> = commits
                         .iter()
@@ -438,8 +452,7 @@ pub(super) fn subscribe_project(
                         .map(|c| (c.author.name.clone(), c.author.email.clone()))
                         .collect();
                     crate::avatar_resolver::resolve_avatars(authors, cx);
-                    let has_more = project.read(cx).has_more_commits();
-                    let wt_status = project.read(cx).status().clone();
+
                     let wt_staged = wt_status.staged.len();
                     let wt_unstaged = wt_status.unstaged.len();
                     let wt_staged_bd = rgitui_graph::compute_breakdown(&wt_status.staged);
@@ -456,35 +469,16 @@ pub(super) fn subscribe_project(
                         );
                     });
 
-                    // Update sidebar
-                    let branches = project.read(cx).branches().to_vec();
-                    let tags = project.read(cx).tags().to_vec();
-                    let remotes = project.read(cx).remotes().to_vec();
-                    let stashes = project.read(cx).stashes().to_vec();
-                    let status = wt_status;
-
                     sidebar.update(cx, |s, cx| {
                         s.update_branches(branches, cx);
                         s.update_tags(tags, cx);
                         s.update_remotes(remotes, cx);
                         s.update_stashes(stashes, cx);
-                        s.update_status(status.staged.clone(), status.unstaged.clone(), cx);
+                        s.update_status(wt_status.staged.clone(), wt_status.unstaged.clone(), cx);
                     });
 
-                    // Update commit panel
-                    let staged_count = project.read(cx).status().staged.len();
                     commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
 
-                    // Update toolbar
-                    let has_stashes = !project.read(cx).stashes().is_empty();
-                    let has_changes = project.read(cx).has_changes();
-                    let (ahead, behind) = project
-                        .read(cx)
-                        .branches()
-                        .iter()
-                        .find(|b| b.is_head)
-                        .map(|b| (b.ahead, b.behind))
-                        .unwrap_or((0, 0));
                     toolbar.update(cx, |tb, cx| {
                         tb.set_state(true, true, has_stashes, has_changes, cx);
                         tb.set_ahead_behind(ahead, behind, cx);
