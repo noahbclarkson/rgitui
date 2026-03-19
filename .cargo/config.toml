@@ -1,0 +1,5 @@
+[build]
+rustflags = ["-C", "symbol-mangling-version=v0"]
+
+[alias]
+xt = "run --package rgitui --"

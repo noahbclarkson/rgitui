@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout rgitui
+        uses: actions/checkout@v4
+
+      - name: Checkout zed (GPUI dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: zed-industries/zed
+          path: ../zed
+          fetch-depth: 1
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            lld \
+            gcc \
+            g++ \
+            pkg-config \
+            libasound2-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
+            libgit2-dev \
+            libglib2.0-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libva-dev \
+            libvulkan1 \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxkbcommon-x11-dev \
+            libxkbcommon-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libzstd-dev \
+            vulkan-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Build release binary
+        run: cargo build --release --package rgitui

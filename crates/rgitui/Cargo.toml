@@ -1,7 +1,11 @@
 [package]
 name = "rgitui"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "rgitui"
@@ -28,3 +32,7 @@ rust-embed.workspace = true
 git2.workspace = true
 chrono.workspace = true
 rgitui_git.workspace = true
+tempfile = "3.27.0"
+
+[build-dependencies]
+winresource = "0.1.31"

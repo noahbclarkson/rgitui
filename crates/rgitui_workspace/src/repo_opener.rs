@@ -124,8 +124,8 @@ impl RepoOpener {
         let query = self.editor.read(cx).text().to_string();
         let path = if !query.is_empty() {
             if let Some(stripped) = query.strip_prefix('~') {
-                if let Ok(home) = std::env::var("HOME") {
-                    PathBuf::from(home).join(stripped.trim_start_matches('/'))
+                if let Some(home) = dirs::home_dir() {
+                    home.join(stripped.trim_start_matches('/'))
                 } else {
                     PathBuf::from(&query)
                 }
@@ -179,9 +179,6 @@ impl RepoOpener {
         let key = event.keystroke.key.as_str();
 
         match key {
-            "escape" => {
-                self.dismiss(cx);
-            }
             "up" => {
                 if self.filtered_indices.is_empty() {
                     return;

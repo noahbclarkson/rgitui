@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use gpui::*;
 use rust_embed::RustEmbed;
 use std::path::PathBuf;

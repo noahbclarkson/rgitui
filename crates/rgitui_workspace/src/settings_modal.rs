@@ -217,6 +217,7 @@ pub struct SettingsModal {
     editor_command_editor: Entity<TextInput>,
     detected_terminals: Vec<DetectedApp>,
     detected_editors: Vec<DetectedApp>,
+    detection_complete: bool,
     selected_terminal_index: Option<usize>,
     selected_editor_index: Option<usize>,
     feedback_message: Option<String>,
@@ -244,7 +245,7 @@ impl SettingsModal {
     }
 
     fn detected_default_ssh_key_path() -> Option<String> {
-        let home = std::env::var("HOME").ok()?;
+        let home = dirs::home_dir()?.to_string_lossy().to_string();
         for key_name in ["id_ed25519", "id_rsa", "id_ecdsa"] {
             let candidate = std::path::PathBuf::from(&home).join(".ssh").join(key_name);
             if candidate.exists() {
@@ -398,32 +399,37 @@ impl SettingsModal {
             ti
         });
 
-        let detected_terminals = detect_available_terminals();
-        let detected_editors = detect_available_editors();
+        let detected_terminals = Vec::new();
+        let detected_editors = Vec::new();
+        let selected_terminal_index = None;
+        let selected_editor_index = None;
 
-        let selected_terminal_index = if settings.terminal_command.is_empty() {
-            if detected_terminals.is_empty() {
-                None
-            } else {
-                Some(0)
-            }
-        } else {
-            detected_terminals
-                .iter()
-                .position(|app| app.command == settings.terminal_command)
-        };
-
-        let selected_editor_index = if settings.editor_command.is_empty() {
-            if detected_editors.is_empty() {
-                None
-            } else {
-                Some(0)
-            }
-        } else {
-            detected_editors
-                .iter()
-                .position(|app| app.command == settings.editor_command)
-        };
+        let terminal_cmd_for_detect = settings.terminal_command.clone();
+        let editor_cmd_for_detect = settings.editor_command.clone();
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let terminals = cx
+                .background_executor()
+                .spawn(async { detect_available_terminals() })
+                .await;
+            let editors = cx
+                .background_executor()
+                .spawn(async { detect_available_editors() })
+                .await;
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    this.detected_terminals = terminals;
+                    this.detected_editors = editors;
+                    this.detection_complete = true;
+                    this.recompute_selected_indices(
+                        &terminal_cmd_for_detect,
+                        &editor_cmd_for_detect,
+                    );
+                    cx.notify();
+                })
+                .ok();
+            });
+        })
+        .detach();
 
         cx.subscribe(&ai_api_key_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
             if let TextInputEvent::Changed(_) = event {
@@ -566,6 +572,7 @@ impl SettingsModal {
             editor_command_editor,
             detected_terminals,
             detected_editors,
+            detection_complete: false,
             selected_terminal_index,
             selected_editor_index,
             feedback_message: None,
@@ -663,9 +670,21 @@ impl SettingsModal {
         self.editor_command_editor
             .update(cx, |e, cx| e.set_text(&editor_cmd, cx));
 
-        self.detected_terminals = detect_available_terminals();
-        self.detected_editors = detect_available_editors();
+        self.recompute_selected_indices(&terminal_cmd, &editor_cmd);
 
+        self.ai_api_key_editor
+            .update(cx, |e, cx| e.set_text(ai_api_key_val, cx));
+        self.git_https_token_editor
+            .update(cx, |e, cx| e.set_text(git_https_token_val, cx));
+        self.git_ssh_key_path_editor
+            .update(cx, |e, cx| e.set_text(git_ssh_key_path_val, cx));
+        self.git_gpg_key_id_editor
+            .update(cx, |e, cx| e.set_text(git_gpg_key_id_val, cx));
+
+        self.sync_provider_editors(cx);
+    }
+
+    fn recompute_selected_indices(&mut self, terminal_cmd: &str, editor_cmd: &str) {
         self.selected_terminal_index = if terminal_cmd.is_empty() {
             if self.detected_terminals.is_empty() {
                 None
@@ -689,17 +708,6 @@ impl SettingsModal {
                 .iter()
                 .position(|app| app.command == editor_cmd)
         };
-
-        self.ai_api_key_editor
-            .update(cx, |e, cx| e.set_text(ai_api_key_val, cx));
-        self.git_https_token_editor
-            .update(cx, |e, cx| e.set_text(git_https_token_val, cx));
-        self.git_ssh_key_path_editor
-            .update(cx, |e, cx| e.set_text(git_ssh_key_path_val, cx));
-        self.git_gpg_key_id_editor
-            .update(cx, |e, cx| e.set_text(git_gpg_key_id_val, cx));
-
-        self.sync_provider_editors(cx);
     }
 
     fn apply_theme(&mut self, theme_name: String, cx: &mut Context<Self>) {
@@ -2598,8 +2606,13 @@ impl SettingsModal {
         );
 
         if self.detected_terminals.is_empty() {
+            let msg = if self.detection_complete {
+                "No terminals detected on this system."
+            } else {
+                "Detecting available terminals..."
+            };
             terminal_section = terminal_section.child(
-                Label::new("No terminals detected on this system.")
+                Label::new(msg)
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             );
@@ -2696,8 +2709,13 @@ impl SettingsModal {
         );
 
         if self.detected_editors.is_empty() {
+            let msg = if self.detection_complete {
+                "No editors detected on this system."
+            } else {
+                "Detecting available editors..."
+            };
             editor_section = editor_section.child(
-                Label::new("No editors detected on this system.")
+                Label::new(msg)
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             );

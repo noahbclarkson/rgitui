@@ -1,7 +1,11 @@
 [package]
 name = "rgitui_workspace"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 gpui.workspace = true
@@ -19,6 +23,7 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smallvec.workspace = true
+dirs.workspace = true
 md5.workspace = true
 http_client.workspace = true
 futures.workspace = true

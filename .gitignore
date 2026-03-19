@@ -10,6 +10,7 @@ test_output/
 GITKRAKEN-PRODUCT-SPEC.md
 GPUI_ARCHITECTURE_REPORT.md
 IMPLEMENTATION_PLAN.md
+ROADMAP.md
 
 # Claude Code memory (session-specific)
 memory/
@@ -20,3 +21,20 @@ memory/
 *.swp
 *.swo
 *~
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Build artifacts (outside /target/)
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Debug files
+*.pdb
+
+# Environment files
+.env.local

@@ -23,7 +23,7 @@ use rgitui_ui::{
 };
 
 use crate::{
-    BranchDialog, BranchDialogEvent, CommandPalette, CommandPaletteEvent, CommitPanel,
+    BranchDialog, BranchDialogEvent, CommandId, CommandPalette, CommandPaletteEvent, CommitPanel,
     CommitPanelEvent, ConfirmAction, ConfirmDialog, ConfirmDialogEvent, DetailPanel,
     DetailPanelEvent, InteractiveRebase, InteractiveRebaseEvent, IssuesPanel, RenameDialog,
     RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
@@ -72,6 +72,7 @@ enum RightPanelMode {
 }
 
 /// A single open project tab.
+#[derive(Clone)]
 struct ProjectTab {
     name: String,
     project: Entity<GitProject>,
@@ -148,6 +149,7 @@ pub struct Workspace {
     active_operations: Vec<ActiveOperation>,
     last_focused_panel: Option<FocusedPanel>,
     last_operation_output: Option<OperationOutput>,
+    pending_focus_restore: bool,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -260,7 +262,7 @@ impl Workspace {
             &command_palette,
             |this, _cp, event: &CommandPaletteEvent, cx| match event {
                 CommandPaletteEvent::CommandSelected(cmd_id) => {
-                    this.execute_command(cmd_id, cx);
+                    this.execute_command(*cmd_id, cx);
                 }
                 CommandPaletteEvent::Dismissed => {}
             },
@@ -433,7 +435,10 @@ impl Workspace {
                         this.show_toast(format!("Failed to open: {}", e), ToastKind::Error, cx);
                     }
                 }
-                RepoOpenerEvent::Dismissed => {}
+                RepoOpenerEvent::Dismissed => {
+                    this.pending_focus_restore = true;
+                    cx.notify();
+                }
             },
         )
         .detach();
@@ -448,18 +453,15 @@ impl Workspace {
         .detach();
 
         // Restore layout dimensions from saved settings
-        let (sidebar_width, detail_panel_width, diff_viewer_height, commit_input_height) =
-            if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>() {
-                let layout = &state.settings().layout;
-                (
-                    layout.sidebar_width,
-                    layout.detail_panel_width,
-                    layout.diff_viewer_height,
-                    layout.commit_input_height.max(240.0),
-                )
-            } else {
-                (240.0, 320.0, 300.0, 260.0)
-            };
+        let layout = if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>() {
+            state.settings().layout.clone()
+        } else {
+            LayoutSettings::default()
+        };
+        let sidebar_width = layout.sidebar_width;
+        let detail_panel_width = layout.detail_panel_width;
+        let diff_viewer_height = layout.diff_viewer_height;
+        let commit_input_height = layout.commit_input_height.max(240.0);
 
         Self {
             tabs: Vec::new(),
@@ -490,76 +492,66 @@ impl Workspace {
             active_operations: Vec::new(),
             last_focused_panel: None,
             last_operation_output: None,
+            pending_focus_restore: false,
         }
     }
 
-    /// Execute a command by ID (from command palette or keybindings).
-    fn execute_command(&mut self, cmd_id: &str, cx: &mut Context<Self>) {
-        // Commands that don't require an active tab
-        if cmd_id == "settings" {
-            self.settings_modal.update(cx, |sm, cx| {
-                sm.toggle_visible(cx);
-            });
-            return;
+    fn execute_command(&mut self, cmd: CommandId, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Settings => {
+                self.settings_modal.update(cx, |sm, cx| {
+                    sm.toggle_visible(cx);
+                });
+            }
+            CommandId::CreateBranch => {
+                self.branch_dialog.update(cx, |bd, cx| {
+                    bd.show_visible(None, cx);
+                });
+            }
+            CommandId::OpenRepo => {
+                self.repo_opener.update(cx, |ro, cx| {
+                    ro.toggle_visible(cx);
+                });
+            }
+            CommandId::Shortcuts => {
+                self.shortcuts_help.update(cx, |sh, cx| {
+                    sh.toggle_visible(cx);
+                });
+            }
+            CommandId::WorkspaceHome => {
+                self.go_home(cx);
+            }
+            CommandId::RestoreLastWorkspace => {
+                self.restore_last_workspace(cx);
+            }
+            cmd => {
+                let Some(tab) = self.tabs.get(self.active_tab).cloned() else {
+                    return;
+                };
+                self.execute_tab_command(cmd, &tab, cx);
+            }
         }
+    }
 
-        if cmd_id == "create_branch" {
-            self.branch_dialog.update(cx, |bd, cx| {
-                bd.show_visible(None, cx);
-            });
-            return;
-        }
-
-        if cmd_id == "open_repo" {
-            self.repo_opener.update(cx, |ro, cx| {
-                ro.toggle_visible(cx);
-            });
-            return;
-        }
-
-        if cmd_id == "shortcuts" {
-            self.shortcuts_help.update(cx, |sh, cx| {
-                sh.toggle_visible(cx);
-            });
-            return;
-        }
-
-        if cmd_id == "workspace_home" {
-            self.go_home(cx);
-            return;
-        }
-
-        if cmd_id == "restore_last_workspace" {
-            self.restore_last_workspace(cx);
-            return;
-        }
-
-        let Some(tab) = self.tabs.get(self.active_tab) else {
-            return;
-        };
-
-        match cmd_id {
-            "fetch" => {
-                let project = tab.project.clone();
-                project.update(cx, |proj, cx| {
+    fn execute_tab_command(&mut self, cmd: CommandId, tab: &ProjectTab, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Fetch => {
+                tab.project.update(cx, |proj, cx| {
                     proj.fetch_default(cx).detach();
                 });
             }
-            "pull" => {
-                let project = tab.project.clone();
-                project.update(cx, |proj, cx| {
+            CommandId::Pull => {
+                tab.project.update(cx, |proj, cx| {
                     proj.pull_default(cx).detach();
                 });
             }
-            "push" => {
-                let project = tab.project.clone();
-                project.update(cx, |proj, cx| {
+            CommandId::Push => {
+                tab.project.update(cx, |proj, cx| {
                     proj.push_default(false, cx).detach();
                 });
             }
-            "commit" => {
-                let commit_panel = tab.commit_panel.clone();
-                commit_panel.update(cx, |cp, cx| {
+            CommandId::Commit => {
+                tab.commit_panel.update(cx, |cp, cx| {
                     let msg = cp.message(cx);
                     if !msg.is_empty() {
                         cx.emit(CommitPanelEvent::CommitRequested {
@@ -569,62 +561,52 @@ impl Workspace {
                     }
                 });
             }
-            "stage_all" => {
-                let project = tab.project.clone();
-                project.update(cx, |proj, cx| {
+            CommandId::StageAll => {
+                tab.project.update(cx, |proj, cx| {
                     proj.stage_all(cx).detach();
                 });
             }
-            "unstage_all" => {
-                let project = tab.project.clone();
-                project.update(cx, |proj, cx| {
+            CommandId::UnstageAll => {
+                tab.project.update(cx, |proj, cx| {
                     proj.unstage_all(cx).detach();
                 });
             }
-            "stash_save" => {
-                let project = tab.project.clone();
-                project.update(cx, |proj, cx| {
+            CommandId::StashSave => {
+                tab.project.update(cx, |proj, cx| {
                     proj.stash_save(None, cx).detach();
                 });
             }
-            "stash_pop" => {
-                let project = tab.project.clone();
-                project.update(cx, |proj, cx| {
+            CommandId::StashPop => {
+                tab.project.update(cx, |proj, cx| {
                     proj.stash_pop(0, cx).detach();
                 });
             }
-            "toggle_diff_mode" => {
-                let diff_viewer = tab.diff_viewer.clone();
-                diff_viewer.update(cx, |dv, cx| {
+            CommandId::ToggleDiffMode => {
+                tab.diff_viewer.update(cx, |dv, cx| {
                     dv.toggle_display_mode(cx);
                 });
             }
-            "ai_message" => {
-                let commit_panel = tab.commit_panel.clone();
-                commit_panel.update(cx, |_cp, cx| {
+            CommandId::AiMessage => {
+                tab.commit_panel.update(cx, |_cp, cx| {
                     cx.emit(CommitPanelEvent::GenerateAiMessage);
                 });
             }
-            "merge_branch" => {
-                let project = tab.project.clone();
-                let head = project.read(cx).head_branch().unwrap_or("HEAD").to_string();
+            CommandId::MergeBranch => {
+                let head = tab.project.read(cx).head_branch().unwrap_or("HEAD").to_string();
                 let msg = format!("Use the sidebar to merge a branch into '{}'", head);
                 self.show_toast(msg, ToastKind::Info, cx);
             }
-            "refresh" => {
-                let project = tab.project.clone();
-                project.update(cx, |proj, cx| {
+            CommandId::Refresh => {
+                tab.project.update(cx, |proj, cx| {
                     proj.refresh(cx).detach();
                 });
             }
-            "search" => {
-                if let Some(tab) = self.tabs.get(self.active_tab) {
-                    tab.graph.update(cx, |g, cx| {
-                        g.toggle_search(cx);
-                    });
-                }
+            CommandId::Search => {
+                tab.graph.update(cx, |g, cx| {
+                    g.toggle_search(cx);
+                });
             }
-            "interactive_rebase" => {
+            CommandId::InteractiveRebase => {
                 use crate::interactive_rebase::{RebaseAction, RebaseEntry};
                 let project = tab.project.read(cx);
                 let head_branch = project.head_branch().unwrap_or("HEAD").to_string();
@@ -649,35 +631,32 @@ impl Workspace {
                         cx,
                     );
                 } else {
-                    let target = head_branch;
                     self.interactive_rebase.update(cx, |ir, cx| {
-                        ir.show_visible(entries, target, cx);
+                        ir.show_visible(entries, head_branch, cx);
                     });
                 }
             }
-            "stash_drop" => {
-                let project = tab.project.clone();
-                let has_stashes = !project.read(cx).stashes().is_empty();
+            CommandId::StashDrop => {
+                let has_stashes = !tab.project.read(cx).stashes().is_empty();
                 if has_stashes {
-                    project.update(cx, |proj, cx| {
+                    tab.project.update(cx, |proj, cx| {
                         proj.stash_drop(0, cx).detach();
                     });
                 } else {
                     self.show_toast("No stashes to drop", ToastKind::Warning, cx);
                 }
             }
-            "stash_apply" => {
-                let project = tab.project.clone();
-                let has_stashes = !project.read(cx).stashes().is_empty();
+            CommandId::StashApply => {
+                let has_stashes = !tab.project.read(cx).stashes().is_empty();
                 if has_stashes {
-                    project.update(cx, |proj, cx| {
+                    tab.project.update(cx, |proj, cx| {
                         proj.stash_apply(0, cx).detach();
                     });
                 } else {
                     self.show_toast("No stashes to apply", ToastKind::Warning, cx);
                 }
             }
-            "force_push" => {
+            CommandId::ForcePush => {
                 self.confirm_dialog.update(cx, |cd, cx| {
                     cd.show_visible(
                         "Force Push",
@@ -687,7 +666,7 @@ impl Workspace {
                     );
                 });
             }
-            "discard_all" => {
+            CommandId::DiscardAll => {
                 self.confirm_dialog.update(cx, |cd, cx| {
                     cd.show_visible(
                         "Discard All Changes",
@@ -697,9 +676,8 @@ impl Workspace {
                     );
                 });
             }
-            "abort_operation" => {
-                let project = tab.project.clone();
-                let state = project.read(cx).repo_state();
+            CommandId::AbortOperation => {
+                let state = tab.project.read(cx).repo_state();
                 if state.is_clean() {
                     self.show_toast("No operation in progress to abort", ToastKind::Warning, cx);
                 } else {
@@ -717,37 +695,34 @@ impl Workspace {
                     });
                 }
             }
-            "continue_merge" => {
-                let project = tab.project.clone();
-                let state = project.read(cx).repo_state();
+            CommandId::ContinueMerge => {
+                let state = tab.project.read(cx).repo_state();
                 if state.is_clean() {
                     self.show_toast("No operation in progress", ToastKind::Warning, cx);
-                } else if project.read(cx).has_conflicts() {
+                } else if tab.project.read(cx).has_conflicts() {
                     self.show_toast(
                         "Cannot continue — resolve all conflicts first",
                         ToastKind::Error,
                         cx,
                     );
                 } else {
-                    project.update(cx, |proj, cx| {
+                    tab.project.update(cx, |proj, cx| {
                         proj.continue_merge(cx).detach();
                     });
                 }
             }
-            "create_tag" => {
-                if let Some(tab) = self.tabs.get(self.active_tab) {
-                    let proj = tab.project.read(cx);
-                    if let Some(head) = proj.recent_commits().first() {
-                        let oid = head.oid;
-                        self.tag_dialog.update(cx, |td, cx| {
-                            td.show_visible(oid, cx);
-                        });
-                    } else {
-                        self.show_toast("No HEAD commit to tag".to_string(), ToastKind::Error, cx);
-                    }
+            CommandId::CreateTag => {
+                let proj = tab.project.read(cx);
+                if let Some(head) = proj.recent_commits().first() {
+                    let oid = head.oid;
+                    self.tag_dialog.update(cx, |td, cx| {
+                        td.show_visible(oid, cx);
+                    });
+                } else {
+                    self.show_toast("No HEAD commit to tag", ToastKind::Error, cx);
                 }
             }
-            "reset_hard" => {
+            CommandId::ResetHard => {
                 self.confirm_dialog.update(cx, |cd, cx| {
                     cd.show_visible(
                         "Reset Hard",
@@ -757,31 +732,41 @@ impl Workspace {
                     );
                 });
             }
-            "rename_branch" => {
-                if let Some(tab) = self.tabs.get(self.active_tab) {
-                    let proj = tab.project.read(cx);
-                    if let Some(head) = proj.head_branch() {
-                        let name = head.to_string();
-                        self.rename_dialog.update(cx, |rd, cx| {
-                            rd.show_visible(name, cx);
-                        });
-                    } else {
-                        self.show_toast(
-                            "No branch to rename (detached HEAD)".to_string(),
-                            ToastKind::Error,
-                            cx,
-                        );
-                    }
+            CommandId::RenameBranch => {
+                let proj = tab.project.read(cx);
+                if let Some(head) = proj.head_branch() {
+                    let name = head.to_string();
+                    self.rename_dialog.update(cx, |rd, cx| {
+                        rd.show_visible(name, cx);
+                    });
+                } else {
+                    self.show_toast(
+                        "No branch to rename (detached HEAD)",
+                        ToastKind::Error,
+                        cx,
+                    );
                 }
             }
-            "cherry_pick" | "revert_commit" | "delete_branch" => {
+            CommandId::CherryPick | CommandId::RevertCommit | CommandId::DeleteBranch => {
                 let msg = format!(
                     "Use the sidebar context menu for '{}'",
-                    cmd_id.replace('_', " ")
+                    cmd.display_label()
                 );
                 self.show_toast(msg, ToastKind::Info, cx);
             }
-            _ => {}
+            CommandId::SwitchBranch => {
+                self.show_toast(
+                    "Press Ctrl+Shift+B or use Alt+1 to focus the sidebar for branch switching",
+                    ToastKind::Info,
+                    cx,
+                );
+            }
+            CommandId::Settings
+            | CommandId::CreateBranch
+            | CommandId::OpenRepo
+            | CommandId::Shortcuts
+            | CommandId::WorkspaceHome
+            | CommandId::RestoreLastWorkspace => {}
         }
     }
 
@@ -1263,17 +1248,27 @@ impl Workspace {
             return Ok(());
         }
 
-        // Validate that path is a valid git repository before creating the entity
+        // Validate that path exists and can be opened as a git repository.
+        // Use Repository::open (not discover) to match what GitProject::open calls internally,
+        // preventing false positives when a non-repo path is inside a parent repo.
         if !path.exists() {
             anyhow::bail!("Path does not exist: {}", path.display());
         }
-        if git2::Repository::discover(&path).is_err() {
-            anyhow::bail!("Not a Git repository: {}", path.display());
-        }
+        git2::Repository::open(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to open repository at {}: {}", path.display(), e))?;
 
-        let project = cx.new(|cx| {
-            GitProject::open(path.clone(), cx).expect("Already validated path is a git repo")
+        let mut open_error: Option<String> = None;
+        let project = cx.new(|cx| match GitProject::open(path.clone(), cx) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("Failed to open git project at {}: {}", path.display(), e);
+                open_error = Some(format!("Failed to open repository: {}", e));
+                GitProject::empty_at(path.clone())
+            }
         });
+        if let Some(err) = open_error {
+            anyhow::bail!("{}", err);
+        }
         project.update(cx, |proj, cx| {
             proj.refresh(cx).detach();
         });
@@ -1834,10 +1829,7 @@ impl Workspace {
             let project = project.clone();
             let diff_viewer_ref = diff_viewer.clone();
             move |_this, _dv, event: &DiffViewerEvent, cx| {
-                let dv = diff_viewer_ref.read(cx);
-                let file_path = dv.file_path().map(std::path::PathBuf::from);
-                let _is_staged = dv.is_staged();
-                let _ = dv;
+                let file_path = diff_viewer_ref.read(cx).file_path().map(std::path::PathBuf::from);
 
                 if let Some(path) = file_path {
                     match event {
@@ -2229,6 +2221,16 @@ impl Workspace {
             || self.confirm_dialog.read(cx).is_visible()
             || self.shortcuts_help.read(cx).is_visible();
 
+        // Ctrl+Shift+F to fetch
+        if !any_overlay_active
+            && (modifiers.control || modifiers.platform)
+            && modifiers.shift
+            && key == "f"
+        {
+            self.execute_command(CommandId::Fetch, cx);
+            return;
+        }
+
         // Ctrl+F to toggle graph search
         if !any_overlay_active
             && (modifiers.control || modifiers.platform)
@@ -2241,6 +2243,16 @@ impl Workspace {
                     g.toggle_search_focused(window, cx);
                 });
             }
+            return;
+        }
+
+        // Ctrl+G to generate AI commit message
+        if !any_overlay_active
+            && (modifiers.control || modifiers.platform)
+            && !modifiers.shift
+            && key == "g"
+        {
+            self.execute_command(CommandId::AiMessage, cx);
             return;
         }
 
@@ -2263,7 +2275,7 @@ impl Workspace {
 
         // F5 to refresh
         if !any_overlay_active && key == "f5" {
-            self.execute_command("refresh", cx);
+            self.execute_command(CommandId::Refresh, cx);
         }
 
         // Ctrl+O to open repo opener
@@ -2349,7 +2361,7 @@ impl Workspace {
                 .map(|tab| tab.sidebar.read(cx).is_focused(window))
                 .unwrap_or(false);
             if !sidebar_has_focus {
-                self.execute_command("toggle_diff_mode", cx);
+                self.execute_command(CommandId::ToggleDiffMode, cx);
                 return;
             }
         }
@@ -2384,37 +2396,49 @@ impl Workspace {
 
         // Ctrl+S to stage all
         if !any_overlay_active && modifiers.control && !modifiers.shift && key == "s" {
-            self.execute_command("stage_all", cx);
+            self.execute_command(CommandId::StageAll, cx);
             return;
         }
 
         // Ctrl+Shift+S to unstage all
         if !any_overlay_active && modifiers.control && modifiers.shift && key == "s" {
-            self.execute_command("unstage_all", cx);
+            self.execute_command(CommandId::UnstageAll, cx);
+            return;
+        }
+
+        // Ctrl+U to unstage all (alternative)
+        if !any_overlay_active && (modifiers.control || modifiers.platform) && !modifiers.shift && key == "u" {
+            self.execute_command(CommandId::UnstageAll, cx);
             return;
         }
 
         // Ctrl+B to create branch
         if !any_overlay_active && modifiers.control && !modifiers.shift && key == "b" {
-            self.execute_command("create_branch", cx);
+            self.execute_command(CommandId::CreateBranch, cx);
+            return;
+        }
+
+        // Ctrl+Shift+B to switch branch (focus sidebar for branch navigation)
+        if !any_overlay_active && (modifiers.control || modifiers.platform) && modifiers.shift && key == "b" {
+            self.focus_panel(FocusedPanel::Sidebar, window, cx);
             return;
         }
 
         // Ctrl+Enter to commit
         if !any_overlay_active && modifiers.control && !modifiers.shift && key == "enter" {
-            self.execute_command("commit", cx);
+            self.execute_command(CommandId::Commit, cx);
             return;
         }
 
         // Ctrl+Z to stash save
         if !any_overlay_active && modifiers.control && !modifiers.shift && key == "z" {
-            self.execute_command("stash_save", cx);
+            self.execute_command(CommandId::StashSave, cx);
             return;
         }
 
         // Ctrl+Shift+Z to stash pop
         if !any_overlay_active && modifiers.control && modifiers.shift && key == "z" {
-            self.execute_command("stash_pop", cx);
+            self.execute_command(CommandId::StashPop, cx);
             return;
         }
 
@@ -2448,8 +2472,8 @@ impl Workspace {
             return;
         }
 
-        // Ctrl+Shift+W to return to workspace home
-        if !any_overlay_active && modifiers.control && modifiers.shift && key == "w" {
+        // Ctrl+H to return to workspace home
+        if !any_overlay_active && (modifiers.control || modifiers.platform) && !modifiers.shift && key == "h" {
             self.go_home(cx);
             return;
         }
@@ -2737,7 +2761,7 @@ impl Workspace {
                 .w_full()
                 .items_center()
                 .child(self.shortcut_hint("Open Repository", "Ctrl+O", colors))
-                .child(self.shortcut_hint("Go Home", "Ctrl+Shift+W", colors))
+                .child(self.shortcut_hint("Go Home", "Ctrl+H", colors))
                 .child(self.shortcut_hint("Command Palette", "Ctrl+Shift+P", colors))
                 .child(self.shortcut_hint("Settings", "Ctrl+,", colors)),
         );
@@ -2786,6 +2810,11 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.pending_focus_restore {
+            self.pending_focus_restore = false;
+            self.restore_focus(window, cx);
+        }
+
         let colors = cx.colors().clone();
 
         let ui_font = {
@@ -3073,9 +3102,15 @@ impl Render for Workspace {
             .on_key_down(cx.listener(Self::handle_key_down))
             // Title bar
             .child({
+                let sidebar = active_tab.sidebar.clone();
                 let mut title = TitleBar::new(repo_name.clone(), branch_name.clone())
                     .has_changes(has_changes)
-                    .head_detached(head_detached);
+                    .head_detached(head_detached)
+                    .on_branch_click(move |_, window, cx| {
+                        sidebar.update(cx, |sb, cx| {
+                            sb.ensure_branches_visible(window, cx);
+                        });
+                    });
                 if !repo_state.is_clean() {
                     title = title.repo_state(repo_state.label());
                 }
@@ -3159,7 +3194,7 @@ impl Render for Workspace {
                                 .color(Color::Success)
                                 .disabled(has_conflicts)
                                 .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                                    this.execute_command("continue_merge", cx);
+                                    this.execute_command(CommandId::ContinueMerge, cx);
                                 })),
                         )
                         .child(
@@ -3168,7 +3203,7 @@ impl Render for Workspace {
                                 .style(ButtonStyle::Subtle)
                                 .color(Color::Error)
                                 .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                                    this.execute_command("abort_operation", cx);
+                                    this.execute_command(CommandId::AbortOperation, cx);
                                 })),
                         ),
                 )

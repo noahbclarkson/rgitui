@@ -1,5 +1,3 @@
-use std::collections::{HashMap, HashSet};
-
 use crate::{CommitInfo, RefLabel};
 
 /// The visual representation of a commit's position in the graph.
@@ -51,9 +49,6 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         return Vec::new();
     }
 
-    // Build a set of all commit OIDs for quick lookup
-    let oid_set: HashSet<git2::Oid> = commits.iter().map(|c| c.oid).collect();
-
     // Detect HEAD oid
     let head_oid = commits.first().and_then(|c| {
         if c.refs.iter().any(|r| matches!(r, RefLabel::Head)) {
@@ -62,14 +57,6 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
             None
         }
     });
-
-    // Build a map: parent_oid -> list of child commit indices that have it as first parent.
-    let mut children_of: HashMap<git2::Oid, Vec<usize>> = HashMap::new();
-    for (idx, commit) in commits.iter().enumerate() {
-        if let Some(&parent) = commit.parent_oids.first() {
-            children_of.entry(parent).or_default().push(idx);
-        }
-    }
 
     // Each active lane: (expected OID, color index)
     let mut lanes: Vec<Option<(git2::Oid, usize)>> = Vec::new();
@@ -123,45 +110,17 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         if !parents.is_empty() {
             let primary = parents[0];
 
-            // Check if the primary parent is already expected in another lane
-            let primary_already_expected = lanes
+            let primary_lane = if let Some(target) = lanes
                 .iter()
-                .any(|s| matches!(s, Some((o, _)) if *o == primary));
-
-            let primary_lane = if primary_already_expected {
-                // Already expected in another lane — route edge to that lane
-                let target = lanes
-                    .iter()
-                    .position(|s| matches!(s, Some((o, _)) if *o == primary))
-                    .unwrap();
-                // Don't re-assign the lane — it's already tracking this parent
+                .position(|s| matches!(s, Some((o, _)) if *o == primary))
+            {
+                // Already expected in another lane -- route edge to that lane
                 target
             } else {
-                // Check if primary parent has multiple children (fork point).
-                // If this commit is NOT on lane 0 and the parent is a fork point,
-                // we should route the edge to merge with the main lane rather
-                // than continuing in our own lane, to keep the graph compact.
-                let fork_children = children_of.get(&primary).map(|c| c.len()).unwrap_or(0);
-                let parent_in_view = oid_set.contains(&primary);
-
-                if fork_children > 1 && parent_in_view && node_lane != 0 {
-                    // Check if lane 0 (or another lane) is already expecting
-                    // this parent. If so, route to it.
-                    if let Some(existing) = lanes
-                        .iter()
-                        .position(|s| matches!(s, Some((o, _)) if *o == primary))
-                    {
-                        existing
-                    } else {
-                        // Continue in our own lane
-                        lanes[node_lane] = Some((primary, node_color));
-                        node_lane
-                    }
-                } else {
-                    // Continue in the same lane with the same color
-                    lanes[node_lane] = Some((primary, node_color));
-                    node_lane
-                }
+                // No lane is expecting the primary parent yet.
+                // Continue in the same lane with the same color.
+                lanes[node_lane] = Some((primary, node_color));
+                node_lane
             };
 
             edges.push(GraphEdge {

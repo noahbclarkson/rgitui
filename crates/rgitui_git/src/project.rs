@@ -14,6 +14,9 @@ use std::time::Duration;
 
 use crate::types::*;
 
+const MAX_AUTH_ATTEMPTS: u32 = 6;
+const DEFAULT_COMMIT_LIMIT: usize = 1000;
+
 /// Create RemoteCallbacks with credential support.
 ///
 /// Auth strategy (in order):
@@ -34,7 +37,7 @@ fn make_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
         attempts.set(attempt + 1);
 
         // libgit2 retries credentials on failure — bail after reasonable attempts
-        if attempt > 6 {
+        if attempt > MAX_AUTH_ATTEMPTS {
             return Err(git2::Error::from_str(
                 "authentication failed after multiple attempts",
             ));
@@ -76,7 +79,7 @@ fn make_remote_callbacks<'a>() -> RemoteCallbacks<'a> {
             }
 
             // 3. Fallback: try common SSH key paths
-            let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+            let home = dirs::home_dir().unwrap_or_default();
             for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
                 let key_path = home.join(".ssh").join(key_name);
                 if key_path.exists() {
@@ -412,6 +415,7 @@ fn batch_diff_stats(repo: &Repository, staged: bool) -> std::collections::HashMa
     let mut opts = DiffOptions::new();
     opts.include_untracked(true);
     opts.show_untracked_content(true);
+    opts.recurse_untracked_dirs(true);
     let diff_result = if staged {
         let head_tree = repo.head().ok().and_then(|r| r.peel_to_tree().ok());
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
@@ -441,6 +445,9 @@ fn generate_hunk_patch_for_repo(
 ) -> Result<String> {
     let mut diff_opts = DiffOptions::new();
     diff_opts.pathspec(file_path);
+    diff_opts.include_untracked(true);
+    diff_opts.show_untracked_content(true);
+    diff_opts.recurse_untracked_dirs(true);
 
     let diff = if staged {
         let head_tree = repo.head()?.peel_to_tree().ok();
@@ -454,7 +461,7 @@ fn generate_hunk_patch_for_repo(
     let mut file_header_written = false;
 
     diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-        if hunk.is_none() {
+        let Some(hunk) = hunk else {
             if !file_header_written {
                 let content = String::from_utf8_lossy(line.content());
                 match line.origin() {
@@ -470,9 +477,7 @@ fn generate_hunk_patch_for_repo(
                 }
             }
             return true;
-        }
-
-        let hunk = hunk.unwrap();
+        };
         let header = String::from_utf8_lossy(hunk.header()).to_string();
 
         let is_new_hunk = if current_hunk_idx < 0 {
@@ -536,7 +541,7 @@ fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
     for line in message.lines() {
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
-        if let Some(rest_lower) = lower.strip_prefix(prefix) {
+        if lower.strip_prefix(prefix).is_some() {
             let rest = &trimmed[prefix.len()..];
             let rest = rest.trim();
             if let Some(email_start) = rest.find('<') {
@@ -549,7 +554,6 @@ fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
                     }
                 }
             }
-            let _ = rest_lower;
         }
         cleaned_lines.push(line);
     }
@@ -627,7 +631,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
 
     // Tags
     let mut tags = Vec::new();
-    let _ = repo.tag_foreach(|oid, name_bytes| {
+    if let Err(e) = repo.tag_foreach(|oid, name_bytes| {
         if let Ok(name) = std::str::from_utf8(name_bytes) {
             let name = name.strip_prefix("refs/tags/").unwrap_or(name).to_string();
             tags.push(TagInfo {
@@ -637,7 +641,9 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
             });
         }
         true
-    });
+    }) {
+        log::warn!("Failed to enumerate repository tags: {}", e);
+    }
     tags.sort_by(|a, b| a.name.cmp(&b.name));
 
     // Remotes
@@ -757,7 +763,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
 
     // Recent commits (uses branches and tags for ref labels)
     let (recent_commits, has_more_commits) = {
-        let limit = 1000;
+        let limit = DEFAULT_COMMIT_LIMIT;
         let mut commits = Vec::new();
 
         let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
@@ -898,6 +904,27 @@ pub struct GitProject {
 impl EventEmitter<GitProjectEvent> for GitProject {}
 
 impl GitProject {
+    /// Create a minimal non-functional instance for error recovery paths.
+    /// The resulting entity should be dropped immediately; it exists only
+    /// to satisfy GPUI's `cx.new()` requirement of returning a value.
+    pub fn empty_at(path: PathBuf) -> Self {
+        Self {
+            repo_path: path,
+            head_branch: None,
+            head_detached: false,
+            repo_state: RepoState::Clean,
+            branches: Vec::new(),
+            tags: Vec::new(),
+            remotes: Vec::new(),
+            stashes: Vec::new(),
+            status: WorkingTreeStatus::default(),
+            recent_commits: Vec::new(),
+            has_more_commits: false,
+            next_operation_id: 1,
+            _watcher: None,
+        }
+    }
+
     /// Open a repository at the given path.
     pub fn open(path: PathBuf, cx: &mut Context<Self>) -> Result<Self> {
         let repo = Repository::open(&path)
@@ -956,7 +983,9 @@ impl GitProject {
             });
 
         if let Ok(mut watcher) = watcher {
-            let _ = watcher.watch(&repo_path, RecursiveMode::Recursive);
+            if let Err(e) = watcher.watch(&repo_path, RecursiveMode::Recursive) {
+                log::warn!("Failed to watch repository directory for filesystem changes: {}", e);
+            }
             self._watcher = Some(watcher);
 
             // Poll the dirty flag from async executor — never blocks the UI thread
@@ -1386,7 +1415,9 @@ impl GitProject {
                     } else {
                         let mut index = repo.index()?;
                         for path in &task_paths {
-                            let _ = index.remove_path(path);
+                            if let Err(e) = index.remove_path(path) {
+                                log::warn!("Failed to remove path from index during unstage: {}: {}", path.display(), e);
+                            }
                         }
                         index.write()?;
                     }
@@ -1649,6 +1680,7 @@ impl GitProject {
         diff_opts.pathspec(path);
         diff_opts.include_untracked(true);
         diff_opts.show_untracked_content(true);
+        diff_opts.recurse_untracked_dirs(true);
 
         let diff = if staged {
             let head_tree = repo.head()?.peel_to_tree().ok();
@@ -1673,103 +1705,13 @@ impl GitProject {
         };
 
         let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
-        let stats = diff.stats()?;
-
-        let mut files: Vec<FileDiff> = Vec::new();
-        let mut current_hunks: Vec<DiffHunk> = Vec::new();
-        let mut current_path: Option<PathBuf> = None;
-        let mut current_additions: usize = 0;
-        let mut current_deletions: usize = 0;
-        let mut current_kind = FileChangeKind::Modified;
-
-        diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-            let delta_path = delta
-                .new_file()
-                .path()
-                .unwrap_or(Path::new(""))
-                .to_path_buf();
-
-            if current_path.as_ref() != Some(&delta_path) {
-                if let Some(prev_path) = current_path.take() {
-                    files.push(FileDiff {
-                        path: prev_path,
-                        hunks: std::mem::take(&mut current_hunks),
-                        additions: current_additions,
-                        deletions: current_deletions,
-                        kind: current_kind,
-                    });
-                }
-                current_path = Some(delta_path);
-                current_additions = 0;
-                current_deletions = 0;
-                current_kind = delta_to_file_change_kind(delta.status());
-            }
-
-            if let Some(hunk) = hunk {
-                let header = String::from_utf8_lossy(hunk.header()).to_string();
-                let expected_start = hunk.new_start();
-                let needs_new = current_hunks.last().is_none_or(|h| {
-                    h.new_start != expected_start || h.header != header
-                });
-                if needs_new {
-                    current_hunks.push(DiffHunk {
-                        old_start: hunk.old_start(),
-                        old_lines: hunk.old_lines(),
-                        new_start: hunk.new_start(),
-                        new_lines: hunk.new_lines(),
-                        header,
-                        lines: Vec::new(),
-                    });
-                }
-            }
-
-            let content = String::from_utf8_lossy(line.content()).to_string();
-            match line.origin() {
-                '+' => {
-                    if let Some(h) = current_hunks.last_mut() {
-                        h.lines.push(DiffLine::Addition(content));
-                    }
-                    current_additions += 1;
-                }
-                '-' => {
-                    if let Some(h) = current_hunks.last_mut() {
-                        h.lines.push(DiffLine::Deletion(content));
-                    }
-                    current_deletions += 1;
-                }
-                ' ' => {
-                    if let Some(h) = current_hunks.last_mut() {
-                        h.lines.push(DiffLine::Context(content));
-                    }
-                }
-                _ => {}
-            }
-
-            true
-        })?;
-
-        if let Some(path) = current_path {
-            files.push(FileDiff {
-                path,
-                hunks: current_hunks,
-                additions: current_additions,
-                deletions: current_deletions,
-                kind: current_kind,
-            });
-        }
-
-        Ok(CommitDiff {
-            total_additions: stats.insertions(),
-            total_deletions: stats.deletions(),
-            files,
-        })
+        parse_multi_file_diff(&diff)
     }
 
     /// Get the diff for a stash entry at the given index.
     pub fn diff_stash(&self, index: usize) -> Result<CommitDiff> {
         let mut repo = self.open_repo()?;
 
-        // Collect stash OIDs using stash_foreach
         let mut stash_oids: Vec<git2::Oid> = Vec::new();
         repo.stash_foreach(|_idx, _msg, oid| {
             stash_oids.push(*oid);
@@ -1780,7 +1722,6 @@ impl GitProject {
             .get(index)
             .ok_or_else(|| anyhow::anyhow!("Stash index {} out of range", index))?;
 
-        // A stash commit's first parent is the commit it was created on top of
         let commit = repo.find_commit(oid)?;
         let tree = commit.tree()?;
 
@@ -1791,96 +1732,7 @@ impl GitProject {
         };
 
         let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
-        let stats = diff.stats()?;
-
-        let mut files: Vec<FileDiff> = Vec::new();
-        let mut current_hunks: Vec<DiffHunk> = Vec::new();
-        let mut current_path: Option<PathBuf> = None;
-        let mut current_additions: usize = 0;
-        let mut current_deletions: usize = 0;
-        let mut current_kind = FileChangeKind::Modified;
-
-        diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-            let delta_path = delta
-                .new_file()
-                .path()
-                .unwrap_or(Path::new(""))
-                .to_path_buf();
-
-            if current_path.as_ref() != Some(&delta_path) {
-                if let Some(prev_path) = current_path.take() {
-                    files.push(FileDiff {
-                        path: prev_path,
-                        hunks: std::mem::take(&mut current_hunks),
-                        additions: current_additions,
-                        deletions: current_deletions,
-                        kind: current_kind,
-                    });
-                }
-                current_path = Some(delta_path);
-                current_additions = 0;
-                current_deletions = 0;
-                current_kind = delta_to_file_change_kind(delta.status());
-            }
-
-            if let Some(hunk) = hunk {
-                let header = String::from_utf8_lossy(hunk.header()).to_string();
-                let expected_start = hunk.new_start();
-                let needs_new = current_hunks.last().is_none_or(|h| {
-                    h.new_start != expected_start || h.header != header
-                });
-                if needs_new {
-                    current_hunks.push(DiffHunk {
-                        old_start: hunk.old_start(),
-                        old_lines: hunk.old_lines(),
-                        new_start: hunk.new_start(),
-                        new_lines: hunk.new_lines(),
-                        header,
-                        lines: Vec::new(),
-                    });
-                }
-            }
-
-            let content = String::from_utf8_lossy(line.content()).to_string();
-            match line.origin() {
-                '+' => {
-                    if let Some(h) = current_hunks.last_mut() {
-                        h.lines.push(DiffLine::Addition(content));
-                    }
-                    current_additions += 1;
-                }
-                '-' => {
-                    if let Some(h) = current_hunks.last_mut() {
-                        h.lines.push(DiffLine::Deletion(content));
-                    }
-                    current_deletions += 1;
-                }
-                ' ' => {
-                    if let Some(h) = current_hunks.last_mut() {
-                        h.lines.push(DiffLine::Context(content));
-                    }
-                }
-                _ => {}
-            }
-
-            true
-        })?;
-
-        if let Some(path) = current_path {
-            files.push(FileDiff {
-                path,
-                hunks: current_hunks,
-                additions: current_additions,
-                deletions: current_deletions,
-                kind: current_kind,
-            });
-        }
-
-        Ok(CommitDiff {
-            total_additions: stats.insertions(),
-            total_deletions: stats.deletions(),
-            files,
-        })
+        parse_multi_file_diff(&diff)
     }
 
     /// Checkout a branch by name.
@@ -2924,12 +2776,13 @@ impl GitProject {
                     let base_oid = {
                         let repo = Repository::open(&repo_path)?;
                         ensure_clean_worktree(&repo, "Interactive rebase")?;
-                        let last_oid = &entries.last().unwrap().oid;
+                        let last_entry = entries.last()
+                            .ok_or_else(|| anyhow::anyhow!("No rebase entries"))?;
                         let last_commit =
-                            repo.find_commit(git2::Oid::from_str(last_oid)?)?;
+                            repo.find_commit(git2::Oid::from_str(&last_entry.oid)?)?;
                         let base_commit =
                             last_commit.parent(0).with_context(|| {
-                                format!("Commit {} has no parent", last_oid)
+                                format!("Commit {} has no parent", last_entry.oid)
                             })?;
                         base_commit.id().to_string()
                     };
@@ -3012,7 +2865,9 @@ impl GitProject {
                         .output()
                         .with_context(|| "Failed to execute git rebase -i")?;
 
-                    let _ = std::fs::remove_file(&todo_file);
+                    if let Err(e) = std::fs::remove_file(&todo_file) {
+                        log::warn!("Failed to clean up rebase todo file: {}", e);
+                    }
 
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3592,12 +3447,14 @@ impl GitProject {
                                         "refs/remotes/{}/{}",
                                         task_remote_name, task_remote_branch_name
                                     );
-                                    let _ = repo.reference(
+                                    if let Err(e) = repo.reference(
                                         &remote_ref_name,
                                         tip,
                                         true,
                                         &format!("push: update {} after push", remote_ref_name),
-                                    );
+                                    ) {
+                                        log::warn!("Failed to update remote tracking ref '{}' after push: {}", remote_ref_name, e);
+                                    }
                                 }
                             }
 
@@ -4110,6 +3967,98 @@ impl GitProject {
     }
 }
 
+fn parse_multi_file_diff(diff: &git2::Diff) -> Result<CommitDiff> {
+    let stats = diff.stats()?;
+    let mut files: Vec<FileDiff> = Vec::new();
+    let mut current_hunks: Vec<DiffHunk> = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    let mut current_additions: usize = 0;
+    let mut current_deletions: usize = 0;
+    let mut current_kind = FileChangeKind::Modified;
+
+    diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
+        let delta_path = delta
+            .new_file()
+            .path()
+            .unwrap_or(Path::new(""))
+            .to_path_buf();
+
+        if current_path.as_ref() != Some(&delta_path) {
+            if let Some(prev_path) = current_path.take() {
+                files.push(FileDiff {
+                    path: prev_path,
+                    hunks: std::mem::take(&mut current_hunks),
+                    additions: current_additions,
+                    deletions: current_deletions,
+                    kind: current_kind,
+                });
+            }
+            current_path = Some(delta_path);
+            current_additions = 0;
+            current_deletions = 0;
+            current_kind = delta_to_file_change_kind(delta.status());
+        }
+
+        if let Some(hunk) = hunk {
+            let header = String::from_utf8_lossy(hunk.header()).to_string();
+            let expected_start = hunk.new_start();
+            let needs_new = current_hunks.last().is_none_or(|h| {
+                h.new_start != expected_start || h.header != header
+            });
+            if needs_new {
+                current_hunks.push(DiffHunk {
+                    old_start: hunk.old_start(),
+                    old_lines: hunk.old_lines(),
+                    new_start: hunk.new_start(),
+                    new_lines: hunk.new_lines(),
+                    header,
+                    lines: Vec::new(),
+                });
+            }
+        }
+
+        let content = String::from_utf8_lossy(line.content()).to_string();
+        match line.origin() {
+            '+' => {
+                if let Some(h) = current_hunks.last_mut() {
+                    h.lines.push(DiffLine::Addition(content));
+                }
+                current_additions += 1;
+            }
+            '-' => {
+                if let Some(h) = current_hunks.last_mut() {
+                    h.lines.push(DiffLine::Deletion(content));
+                }
+                current_deletions += 1;
+            }
+            ' ' => {
+                if let Some(h) = current_hunks.last_mut() {
+                    h.lines.push(DiffLine::Context(content));
+                }
+            }
+            _ => {}
+        }
+
+        true
+    })?;
+
+    if let Some(path) = current_path {
+        files.push(FileDiff {
+            path,
+            hunks: current_hunks,
+            additions: current_additions,
+            deletions: current_deletions,
+            kind: current_kind,
+        });
+    }
+
+    Ok(CommitDiff {
+        total_additions: stats.insertions(),
+        total_deletions: stats.deletions(),
+        files,
+    })
+}
+
 fn delta_to_file_change_kind(delta: git2::Delta) -> FileChangeKind {
     match delta {
         git2::Delta::Added | git2::Delta::Untracked => FileChangeKind::Added,
@@ -4185,6 +4134,7 @@ pub fn compute_file_diff(repo_path: &Path, file_path: &Path, staged: bool) -> Re
     diff_opts.pathspec(file_path);
     diff_opts.include_untracked(true);
     diff_opts.show_untracked_content(true);
+    diff_opts.recurse_untracked_dirs(true);
     let diff = if staged {
         let head_tree = repo.head()?.peel_to_tree().ok();
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))?
@@ -4204,45 +4154,7 @@ pub fn compute_commit_diff(repo_path: &Path, oid: git2::Oid) -> Result<CommitDif
         None
     };
     let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
-    let stats = diff.stats()?;
-    let mut files: Vec<FileDiff> = Vec::new();
-    let mut current_hunks: Vec<DiffHunk> = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_additions: usize = 0;
-    let mut current_deletions: usize = 0;
-    let mut current_kind = FileChangeKind::Modified;
-    diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-        let delta_path = delta.new_file().path().unwrap_or(Path::new("")).to_path_buf();
-        if current_path.as_ref() != Some(&delta_path) {
-            if let Some(prev_path) = current_path.take() {
-                files.push(FileDiff { path: prev_path, hunks: std::mem::take(&mut current_hunks), additions: current_additions, deletions: current_deletions, kind: current_kind });
-            }
-            current_path = Some(delta_path);
-            current_additions = 0;
-            current_deletions = 0;
-            current_kind = delta_to_file_change_kind(delta.status());
-        }
-        if let Some(hunk) = hunk {
-            let header = String::from_utf8_lossy(hunk.header()).to_string();
-            let expected_start = hunk.new_start();
-            let needs_new = current_hunks.last().is_none_or(|h| h.new_start != expected_start || h.header != header);
-            if needs_new {
-                current_hunks.push(DiffHunk { old_start: hunk.old_start(), old_lines: hunk.old_lines(), new_start: hunk.new_start(), new_lines: hunk.new_lines(), header, lines: Vec::new() });
-            }
-        }
-        let content = String::from_utf8_lossy(line.content()).to_string();
-        match line.origin() {
-            '+' => { if let Some(h) = current_hunks.last_mut() { h.lines.push(DiffLine::Addition(content)); } current_additions += 1; }
-            '-' => { if let Some(h) = current_hunks.last_mut() { h.lines.push(DiffLine::Deletion(content)); } current_deletions += 1; }
-            ' ' => { if let Some(h) = current_hunks.last_mut() { h.lines.push(DiffLine::Context(content)); } }
-            _ => {}
-        }
-        true
-    })?;
-    if let Some(path) = current_path {
-        files.push(FileDiff { path, hunks: current_hunks, additions: current_additions, deletions: current_deletions, kind: current_kind });
-    }
-    Ok(CommitDiff { total_additions: stats.insertions(), total_deletions: stats.deletions(), files })
+    parse_multi_file_diff(&diff)
 }
 
 pub fn compute_stash_diff(repo_path: &Path, index: usize) -> Result<CommitDiff> {
@@ -4266,4 +4178,302 @@ pub fn compute_staged_diff_text(repo_path: &Path) -> Result<String> {
         true
     })?;
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_ssh_remote_url ──────────────────────────────────────────
+
+    #[test]
+    fn ssh_protocol_prefix() {
+        assert!(is_ssh_remote_url("ssh://git@github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn scp_style_ssh_url() {
+        assert!(is_ssh_remote_url("git@github.com:user/repo.git"));
+    }
+
+    #[test]
+    fn ssh_custom_host() {
+        assert!(is_ssh_remote_url("git@gitlab.example.com:group/repo.git"));
+    }
+
+    #[test]
+    fn https_url_is_not_ssh() {
+        assert!(!is_ssh_remote_url("https://github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn http_url_is_not_ssh() {
+        assert!(!is_ssh_remote_url("http://github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn empty_string_is_not_ssh() {
+        assert!(!is_ssh_remote_url(""));
+    }
+
+    #[test]
+    fn plain_path_is_not_ssh() {
+        assert!(!is_ssh_remote_url("/home/user/repo"));
+    }
+
+    #[test]
+    fn at_sign_only_without_colon_is_not_ssh() {
+        assert!(!is_ssh_remote_url("user@host/path"));
+    }
+
+    #[test]
+    fn colon_only_without_at_is_not_ssh() {
+        assert!(!is_ssh_remote_url("host:path"));
+    }
+
+    // ── remote_host ────────────────────────────────────────────────
+
+    #[test]
+    fn remote_host_https() {
+        assert_eq!(
+            remote_host("https://github.com/user/repo.git"),
+            Some("github.com".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_host_http() {
+        assert_eq!(
+            remote_host("http://gitlab.example.com/group/project.git"),
+            Some("gitlab.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_host_scp_style() {
+        assert_eq!(
+            remote_host("git@github.com:user/repo.git"),
+            Some("github.com".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_host_ssh_protocol() {
+        assert_eq!(
+            remote_host("ssh://git@github.com/user/repo.git"),
+            Some("github.com".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_host_empty_string() {
+        assert_eq!(remote_host(""), None);
+    }
+
+    #[test]
+    fn remote_host_plain_path() {
+        assert_eq!(remote_host("/home/user/repo"), None);
+    }
+
+    #[test]
+    fn remote_host_https_with_port() {
+        assert_eq!(
+            remote_host("https://git.example.com:8443/repo.git"),
+            Some("git.example.com:8443".to_string())
+        );
+    }
+
+    // ── hosts_match ────────────────────────────────────────────────
+
+    #[test]
+    fn hosts_match_exact() {
+        assert!(hosts_match("github.com", "github.com"));
+    }
+
+    #[test]
+    fn hosts_match_case_insensitive() {
+        assert!(hosts_match("GitHub.COM", "github.com"));
+    }
+
+    #[test]
+    fn hosts_match_strips_https_prefix() {
+        assert!(hosts_match("https://github.com", "github.com"));
+    }
+
+    #[test]
+    fn hosts_match_strips_http_prefix() {
+        assert!(hosts_match("http://github.com", "github.com"));
+    }
+
+    #[test]
+    fn hosts_match_strips_trailing_path() {
+        assert!(hosts_match("https://github.com/user", "github.com"));
+    }
+
+    #[test]
+    fn hosts_match_with_whitespace() {
+        assert!(hosts_match("  github.com  ", "github.com"));
+    }
+
+    #[test]
+    fn hosts_do_not_match_different_hosts() {
+        assert!(!hosts_match("github.com", "gitlab.com"));
+    }
+
+    #[test]
+    fn hosts_do_not_match_empty() {
+        assert!(!hosts_match("", "github.com"));
+    }
+
+    // ── parse_co_authors ───────────────────────────────────────────
+
+    #[test]
+    fn parse_single_co_author() {
+        let message = "Fix a bug\n\nCo-Authored-By: Alice Smith <alice@example.com>";
+        let (cleaned, authors) = parse_co_authors(message);
+        assert_eq!(authors.len(), 1);
+        assert_eq!(authors[0].name, "Alice Smith");
+        assert_eq!(authors[0].email, "alice@example.com");
+        assert_eq!(cleaned, "Fix a bug");
+    }
+
+    #[test]
+    fn parse_multiple_co_authors() {
+        let message = "Refactor module\n\n\
+            Co-Authored-By: Alice <alice@example.com>\n\
+            Co-Authored-By: Bob Jones <bob@example.com>";
+        let (cleaned, authors) = parse_co_authors(message);
+        assert_eq!(authors.len(), 2);
+        assert_eq!(authors[0].name, "Alice");
+        assert_eq!(authors[1].name, "Bob Jones");
+        assert_eq!(cleaned, "Refactor module");
+    }
+
+    #[test]
+    fn parse_co_author_case_insensitive() {
+        let message = "Fix\n\nco-authored-by: Alice <alice@example.com>";
+        let (_, authors) = parse_co_authors(message);
+        assert_eq!(authors.len(), 1);
+        assert_eq!(authors[0].name, "Alice");
+    }
+
+    #[test]
+    fn parse_no_co_authors() {
+        let message = "Just a normal commit message\n\nWith a body.";
+        let (cleaned, authors) = parse_co_authors(message);
+        assert!(authors.is_empty());
+        assert_eq!(cleaned, "Just a normal commit message\n\nWith a body.");
+    }
+
+    #[test]
+    fn parse_co_author_missing_email() {
+        let message = "Fix\n\nCo-Authored-By: Alice";
+        let (cleaned, authors) = parse_co_authors(message);
+        assert!(authors.is_empty());
+        assert!(cleaned.contains("Co-Authored-By: Alice"));
+    }
+
+    #[test]
+    fn parse_co_author_empty_name() {
+        let message = "Fix\n\nCo-Authored-By: <alice@example.com>";
+        let (_, authors) = parse_co_authors(message);
+        assert!(authors.is_empty());
+    }
+
+    #[test]
+    fn parse_co_author_empty_email() {
+        let message = "Fix\n\nCo-Authored-By: Alice <>";
+        let (_, authors) = parse_co_authors(message);
+        assert!(authors.is_empty());
+    }
+
+    #[test]
+    fn parse_co_author_empty_message() {
+        let (cleaned, authors) = parse_co_authors("");
+        assert!(authors.is_empty());
+        assert_eq!(cleaned, "");
+    }
+
+    #[test]
+    fn parse_co_author_preserves_body_lines() {
+        let message = "Title\n\nBody line 1\nBody line 2\n\nCo-Authored-By: A <a@b.com>";
+        let (cleaned, authors) = parse_co_authors(message);
+        assert_eq!(authors.len(), 1);
+        assert!(cleaned.contains("Body line 1"));
+        assert!(cleaned.contains("Body line 2"));
+    }
+
+    // ── delta_to_file_change_kind ──────────────────────────────────
+
+    #[test]
+    fn delta_added() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Added),
+            FileChangeKind::Added
+        ));
+    }
+
+    #[test]
+    fn delta_untracked_maps_to_added() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Untracked),
+            FileChangeKind::Added
+        ));
+    }
+
+    #[test]
+    fn delta_deleted() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Deleted),
+            FileChangeKind::Deleted
+        ));
+    }
+
+    #[test]
+    fn delta_modified() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Modified),
+            FileChangeKind::Modified
+        ));
+    }
+
+    #[test]
+    fn delta_typechange_maps_to_modified() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Typechange),
+            FileChangeKind::Modified
+        ));
+    }
+
+    #[test]
+    fn delta_renamed() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Renamed),
+            FileChangeKind::Renamed
+        ));
+    }
+
+    #[test]
+    fn delta_copied_maps_to_modified() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Copied),
+            FileChangeKind::Modified
+        ));
+    }
+
+    #[test]
+    fn delta_conflicted_maps_to_modified() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Conflicted),
+            FileChangeKind::Modified
+        ));
+    }
+
+    #[test]
+    fn delta_ignored_maps_to_modified() {
+        assert!(matches!(
+            delta_to_file_change_kind(git2::Delta::Ignored),
+            FileChangeKind::Modified
+        ));
+    }
 }

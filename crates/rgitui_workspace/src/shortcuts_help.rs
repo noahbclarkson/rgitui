@@ -88,9 +88,10 @@ impl ShortcutsHelp {
                 "Git",
                 vec![
                     ("Ctrl+S", "Stage all"),
-                    ("Ctrl+Shift+S", "Unstage All"),
+                    ("Ctrl+Shift+S / Ctrl+U", "Unstage All"),
                     ("Ctrl+Enter", "Commit"),
                     ("Ctrl+B", "Create Branch"),
+                    ("Ctrl+Shift+B", "Switch Branch"),
                     ("Ctrl+Z", "Stash Changes"),
                     ("Ctrl+Shift+Z", "Pop Stash"),
                 ],
@@ -108,6 +109,7 @@ impl ShortcutsHelp {
                 "Window",
                 vec![
                     ("Ctrl+W", "Close tab"),
+                    ("Ctrl+H", "Workspace Home"),
                     ("F5", "Refresh"),
                     ("?", "This help"),
                 ],

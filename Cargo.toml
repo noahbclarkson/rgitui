@@ -11,6 +11,17 @@ members = [
     "crates/rgitui_ai",
     "crates/rgitui_settings",
 ]
+default-members = ["crates/rgitui"]
+
+[workspace.package]
+edition = "2021"
+publish = false
+license = "MIT"
+repository = "https://github.com/mrnoa/rgitui"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
 
 [workspace.dependencies]
 # GPUI framework (path deps to local Zed checkout)
@@ -47,9 +58,6 @@ futures = "0.3"
 async-channel = "2"
 smol = "2"
 
-# AI / HTTP
-reqwest = { version = "0.13", features = ["json"] }
-
 # FS watching
 notify = "8"
 
@@ -64,7 +72,6 @@ async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd
 calloop = { git = "https://github.com/zed-industries/calloop" }
 
 [profile.dev]
-split-debuginfo = "unpacked"
 incremental = true
 
 [profile.dev.package]
@@ -76,3 +83,4 @@ resvg = { opt-level = 3 }
 [profile.release]
 opt-level = 3
 lto = "thin"
+codegen-units = 1

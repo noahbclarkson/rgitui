@@ -241,9 +241,7 @@ impl InteractiveRebase {
         if let Some((_, ref mut msg, ref mut cursor)) = self.editing_reword {
             match key {
                 "escape" => {
-                    // Cancel reword editing, revert to Pick
-                    let idx = self.editing_reword.as_ref().unwrap().0;
-                    self.editing_reword = None;
+                    let Some((idx, _, _)) = self.editing_reword.take() else { return; };
                     if let Some(entry) = self.entries.get_mut(idx) {
                         entry.action = RebaseAction::Pick;
                     }
@@ -251,8 +249,7 @@ impl InteractiveRebase {
                     return;
                 }
                 "enter" => {
-                    // Confirm reword
-                    let (idx, msg, _) = self.editing_reword.take().unwrap();
+                    let Some((idx, msg, _)) = self.editing_reword.take() else { return; };
                     if let Some(entry) = self.entries.get_mut(idx) {
                         entry.action = RebaseAction::Reword(msg);
                     }
@@ -305,7 +302,7 @@ impl InteractiveRebase {
                         cx.notify();
                         return;
                     } else if key.len() == 1 && !modifiers.control && !modifiers.platform {
-                        let ch = key.chars().next().unwrap();
+                        let Some(ch) = key.chars().next() else { return; };
                         if ch.is_ascii_graphic() || ch == ' ' {
                             msg.insert(*cursor, ch);
                             *cursor += 1;
@@ -400,8 +397,7 @@ impl Render for InteractiveRebase {
                 .as_ref()
                 .is_some_and(|(edit_idx, _, _)| *edit_idx == idx);
 
-            let display_msg: SharedString = if is_editing {
-                let (_, ref msg, _) = self.editing_reword.as_ref().unwrap();
+            let display_msg: SharedString = if let Some((_, ref msg, _)) = self.editing_reword.as_ref().filter(|_| is_editing) {
                 if msg.is_empty() {
                     "Enter new commit message...".into()
                 } else {
@@ -502,7 +498,9 @@ impl Render for InteractiveRebase {
 
             // Message (or reword editor)
             if is_editing {
-                let (_, ref msg, cursor) = self.editing_reword.as_ref().unwrap();
+                let Some((_, ref msg, cursor)) = self.editing_reword.as_ref() else {
+                    continue;
+                };
                 let cursor = *cursor;
                 let text_color = colors.text;
                 let editor_bg = colors.editor_background;

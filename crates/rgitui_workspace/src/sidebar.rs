@@ -429,6 +429,15 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// Expand the Local Branches section and focus the sidebar for branch switching.
+    pub fn ensure_branches_visible(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.expanded_sections.contains(&SidebarSection::LocalBranches) {
+            self.expanded_sections.push(SidebarSection::LocalBranches);
+        }
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
     fn is_expanded(&self, section: SidebarSection) -> bool {
         self.expanded_sections.contains(&section)
     }
@@ -738,7 +747,7 @@ impl Sidebar {
             let mut display_node = child;
 
             while display_node.files.is_empty() && display_node.children.len() == 1 {
-                let (next_name, next_child) = display_node.children.iter().next().unwrap();
+                let Some((next_name, next_child)) = display_node.children.iter().next() else { break; };
                 full_dir = format!("{full_dir}/{next_name}");
                 display_label = format!("{}{next_name}/", display_label);
                 display_node = next_child;
@@ -831,7 +840,6 @@ impl Render for Sidebar {
         let header_h = compactness.spacing(26.0);
 
         // Compute navigable items for keyboard highlight matching
-        let _nav_items = self.navigable_items();
         let keyboard_index = self.keyboard_index;
 
         let panel = div()
@@ -994,6 +1002,7 @@ impl Render for Sidebar {
                 let name: SharedString = branch.name.clone().into();
                 let branch_name = branch.name.clone();
                 let branch_name_select = branch.name.clone();
+                let branch_name_checkout = branch.name.clone();
                 let branch_name_merge = branch.name.clone();
                 let branch_name_rename = branch.name.clone();
                 let is_head = branch.is_head;
@@ -1144,7 +1153,7 @@ impl Render for Sidebar {
                     );
                 }
 
-                // Non-HEAD branches get "Merge" and "Delete" buttons
+                // Non-HEAD branches get action buttons: Checkout, Merge, Rename, Delete
                 if !is_head {
                     let branch_name_delete = branch.name.clone();
                     item = item.child(
@@ -1152,6 +1161,22 @@ impl Render for Sidebar {
                             .ml_auto()
                             .h_flex()
                             .gap(px(2.))
+                            .child(
+                                IconButton::new(
+                                    ElementId::NamedInteger("checkout-branch".into(), i as u64),
+                                    IconName::Check,
+                                )
+                                .size(ButtonSize::Compact)
+                                .color(Color::Success)
+                                .tooltip("Checkout branch")
+                                .on_click(cx.listener(
+                                    move |_this, _: &ClickEvent, _, cx| {
+                                        cx.emit(SidebarEvent::BranchCheckout(
+                                            branch_name_checkout.clone(),
+                                        ));
+                                    },
+                                )),
+                            )
                             .child(
                                 IconButton::new(
                                     ElementId::NamedInteger("merge-branch".into(), i as u64),
@@ -1964,7 +1989,6 @@ impl Render for Sidebar {
         let unstaged_kind_counts = Self::file_kind_counts(&self.unstaged);
 
         let kb_active = keyboard_index == Some(nav_idx);
-        nav_idx += 1;
 
         let mut unstaged_header = div()
                 .id("section-unstaged")
@@ -2082,7 +2106,6 @@ impl Render for Sidebar {
                         ),
                 );
             } else {
-                nav_idx += self.unstaged.len(); // Track file items in nav index
                 let unstaged_files = self.unstaged.clone();
                 let tree = Self::build_file_tree(&unstaged_files);
                 let mut ctx = FileRowCtx { staged: false, indent: px(16.0), file_idx: 0, colors: &colors };
@@ -2097,7 +2120,6 @@ impl Render for Sidebar {
             }
         }
 
-        let _ = nav_idx; // Suppress unused warning
         panel.child(
             div()
                 .id("sidebar-scroll")

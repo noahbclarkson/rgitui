@@ -575,7 +575,7 @@ impl DetailPanel {
             let mut display_node = child;
 
             while display_node.files.is_empty() && display_node.children.len() == 1 {
-                let (next_name, next_child) = display_node.children.iter().next().unwrap();
+                let Some((next_name, next_child)) = display_node.children.iter().next() else { break; };
                 full_dir = format!("{full_dir}/{next_name}");
                 display_label = format!("{display_label}{next_name}/");
                 display_node = next_child;

@@ -1,7 +1,9 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, SharedString, Window};
+use gpui::{div, px, App, ClickEvent, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
+
+type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// The application title bar.
 #[derive(IntoElement)]
@@ -11,6 +13,7 @@ pub struct TitleBar {
     has_changes: bool,
     head_detached: bool,
     repo_state_label: Option<SharedString>,
+    on_branch_click: Option<ClickHandler>,
 }
 
 impl TitleBar {
@@ -21,6 +24,7 @@ impl TitleBar {
             has_changes: false,
             head_detached: false,
             repo_state_label: None,
+            on_branch_click: None,
         }
     }
 
@@ -36,6 +40,14 @@ impl TitleBar {
 
     pub fn repo_state(mut self, label: impl Into<SharedString>) -> Self {
         self.repo_state_label = Some(label.into());
+        self
+    }
+
+    pub fn on_branch_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_branch_click = Some(Box::new(handler));
         self
     }
 }
@@ -54,6 +66,53 @@ impl RenderOnce for TitleBar {
         } else {
             Color::Accent
         };
+
+        let hover_bg = colors.ghost_element_active;
+        let branch_bg = colors.ghost_element_hover;
+
+        let mut branch_pill = div()
+            .id("title-branch-pill")
+            .h_flex()
+            .h(px(20.))
+            .px(px(6.))
+            .gap(px(4.))
+            .items_center()
+            .rounded(px(3.))
+            .bg(branch_bg)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover_bg))
+            .tooltip(Tooltip::text("Switch branch"))
+            .child(
+                Icon::new(IconName::GitBranch)
+                    .size(IconSize::Small)
+                    .color(branch_icon_color),
+            )
+            .child(
+                Label::new(self.branch_name)
+                    .size(LabelSize::Small)
+                    .color(branch_text_color)
+                    .weight(gpui::FontWeight::SEMIBOLD),
+            )
+            .when(self.head_detached, |el| {
+                el.child(
+                    Label::new("(detached)")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Warning),
+                )
+            })
+            .when(self.has_changes && !self.head_detached, |el| {
+                el.child(
+                    div()
+                        .w(px(6.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(colors.vc_modified),
+                )
+            });
+
+        if let Some(handler) = self.on_branch_click {
+            branch_pill = branch_pill.on_click(handler);
+        }
 
         let mut bar = div()
             .h_flex()
@@ -83,7 +142,7 @@ impl RenderOnce for TitleBar {
                             .weight(gpui::FontWeight::BOLD),
                     ),
             )
-            // Separator — slightly taller, more visible
+            // Separator
             .child(
                 div()
                     .w(px(1.))
@@ -116,44 +175,8 @@ impl RenderOnce for TitleBar {
                     .rounded(px(0.5))
                     .bg(colors.border),
             )
-            // Branch indicator - pill style
-            .child(
-                div()
-                    .h_flex()
-                    .h(px(20.))
-                    .px(px(6.))
-                    .gap(px(4.))
-                    .items_center()
-                    .rounded(px(3.))
-                    .bg(colors.ghost_element_hover)
-                    .child(
-                        Icon::new(IconName::GitBranch)
-                            .size(IconSize::Small)
-                            .color(branch_icon_color),
-                    )
-                    .child(
-                        Label::new(self.branch_name)
-                            .size(LabelSize::Small)
-                            .color(branch_text_color)
-                            .weight(gpui::FontWeight::SEMIBOLD),
-                    )
-                    .when(self.head_detached, |el| {
-                        el.child(
-                            Label::new("(detached)")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Warning),
-                        )
-                    })
-                    .when(self.has_changes && !self.head_detached, |el| {
-                        el.child(
-                            div()
-                                .w(px(6.))
-                                .h(px(6.))
-                                .rounded_full()
-                                .bg(colors.vc_modified),
-                        )
-                    }),
-            );
+            // Branch indicator - clickable pill
+            .child(branch_pill);
 
         // Repo state badge (merging, rebasing, etc.)
         if let Some(state_label) = self.repo_state_label {

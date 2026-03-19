@@ -1061,6 +1061,7 @@ impl Render for DiffViewer {
                                                     .h_flex()
                                                     .flex_1()
                                                     .h_full()
+                                                    .overflow_x_hidden()
                                                     .bg(effective_left_bg)
                                                     // Left gutter
                                                     .child(
@@ -1091,6 +1092,7 @@ impl Render for DiffViewer {
                                                             .text_xs()
                                                             .text_color(left_text_col)
                                                             .whitespace_nowrap()
+                                                            .text_ellipsis()
                                                             .child(left_text),
                                                     ),
                                             )
@@ -1108,6 +1110,7 @@ impl Render for DiffViewer {
                                                     .h_flex()
                                                     .flex_1()
                                                     .h_full()
+                                                    .overflow_x_hidden()
                                                     .bg(effective_right_bg)
                                                     // Right gutter
                                                     .child(
@@ -1138,6 +1141,7 @@ impl Render for DiffViewer {
                                                             .text_xs()
                                                             .text_color(right_text_col)
                                                             .whitespace_nowrap()
+                                                            .text_ellipsis()
                                                             .child(right_text),
                                                     ),
                                             )

@@ -594,7 +594,7 @@ pub fn init(cx: &mut App) {
 pub fn current_auth_runtime() -> AuthRuntimeState {
     auth_runtime()
         .read()
-        .expect("auth runtime poisoned")
+        .expect("git auth runtime RwLock poisoned - a previous thread panicked while holding the lock")
         .clone()
 }
 
@@ -709,7 +709,7 @@ fn sync_auth_runtime(settings: &AppSettings) {
         },
     };
 
-    *auth_runtime().write().expect("auth runtime poisoned") = runtime;
+    *auth_runtime().write().expect("git auth runtime RwLock poisoned - a previous thread panicked while holding the lock") = runtime;
 }
 
 fn resolve_ai_api_key(settings: &AiSettings) -> Option<String> {
@@ -802,7 +802,7 @@ mod tests {
                 0,
                 LayoutSettings::default(),
             )
-            .expect("workspace id");
+            .expect("save_workspace_snapshot should return an id for non-empty repo lists");
 
         let second_id = state
             .save_workspace_snapshot(
@@ -811,7 +811,7 @@ mod tests {
                 1,
                 LayoutSettings::default(),
             )
-            .expect("workspace id");
+            .expect("save_workspace_snapshot should return an id for non-empty repo lists");
 
         assert_eq!(first_id, second_id);
         assert_eq!(state.settings.workspaces.len(), 1);

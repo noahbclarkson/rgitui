@@ -140,7 +140,7 @@ pub fn load_json_themes() -> Vec<Theme> {
         match load_theme_from_json(json) {
             Ok(theme) => themes.push(theme),
             Err(e) => {
-                eprintln!("warning: failed to load built-in theme: {}", e);
+                log::warn!("Failed to load built-in theme: {}", e);
             }
         }
     }

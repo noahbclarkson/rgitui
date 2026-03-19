@@ -1,30 +1,12 @@
 use anyhow::{Context as _, Result};
+use futures::AsyncReadExt;
+use gpui::http_client::{AsyncBody, HttpClient, Method, Request, Response};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use rgitui_settings::SettingsState;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-
-fn tokio_handle() -> tokio::runtime::Handle {
-    TOKIO_RUNTIME
-        .get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .build()
-                .expect("Failed to create Tokio runtime for HTTP requests")
-        })
-        .handle()
-        .clone()
-}
-
-fn http_client() -> reqwest::Client {
-    let _guard = tokio_handle().enter();
-    reqwest::Client::new()
-}
 
 /// Commit message style options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -107,7 +89,6 @@ impl AiGenerator {
         repo_path: PathBuf,
         cx: &mut Context<Self>,
     ) -> Task<Result<String>> {
-        // Rate limiting: check if enough time has passed since last request
         if let Some(last_time) = self.last_request_time {
             let elapsed = last_time.elapsed();
             if elapsed < MIN_REQUEST_INTERVAL {
@@ -142,17 +123,22 @@ impl AiGenerator {
             None
         };
 
+        let client = cx.http_client();
+
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let handle = tokio_handle();
-            let result = handle.spawn(async move {
-                let ctx_ref = project_context.as_deref();
-                match provider.as_str() {
-                    "gemini" => generate_gemini(&api_key, &model, &diff, &summary, commit_style, ctx_ref).await,
-                    "openai" => generate_openai(&api_key, &model, &diff, &summary, commit_style, ctx_ref).await,
-                    "anthropic" => generate_anthropic(&api_key, &model, &diff, &summary, commit_style, ctx_ref).await,
-                    other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
+            let ctx_ref = project_context.as_deref();
+            let result = match provider.as_str() {
+                "gemini" => {
+                    generate_gemini(&client, &api_key, &model, &diff, &summary, commit_style, ctx_ref).await
                 }
-            }).await.context("AI task panicked")?;
+                "openai" => {
+                    generate_openai(&client, &api_key, &model, &diff, &summary, commit_style, ctx_ref).await
+                }
+                "anthropic" => {
+                    generate_anthropic(&client, &api_key, &model, &diff, &summary, commit_style, ctx_ref).await
+                }
+                other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
+            };
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
@@ -177,8 +163,19 @@ impl AiGenerator {
     }
 }
 
+async fn read_response_body(response: &mut Response<AsyncBody>) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    response
+        .body_mut()
+        .read_to_end(&mut body)
+        .await
+        .context("Failed to read response body")?;
+    Ok(body)
+}
+
 /// Generate a commit message using the Gemini API.
 async fn generate_gemini(
+    client: &Arc<dyn HttpClient>,
     api_key: &Option<String>,
     model: &str,
     diff: &str,
@@ -197,7 +194,7 @@ async fn generate_gemini(
         model, api_key
     );
 
-    let body = serde_json::json!({
+    let json_body = serde_json::json!({
         "contents": [{
             "parts": [{
                 "text": prompt
@@ -210,24 +207,29 @@ async fn generate_gemini(
         }
     });
 
-    let client = http_client();
-    let response = client
-        .post(&url)
-        .json(&body)
-        .send()
+    let body_bytes = serde_json::to_vec(&json_body)?;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&url)
+        .header("Content-Type", "application/json")
+        .body(AsyncBody::from(body_bytes))
+        .context("Failed to build Gemini request")?;
+
+    let mut response = client
+        .send(request)
         .await
         .context("Failed to send request to Gemini API")?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+    let status = response.status();
+    let body = read_response_body(&mut response).await?;
+
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&body);
         anyhow::bail!("Gemini API error ({}): {}", status, text);
     }
 
-    let json: GeminiResponse = response
-        .json()
-        .await
-        .context("Failed to parse Gemini response")?;
+    let json: GeminiResponse =
+        serde_json::from_slice(&body).context("Failed to parse Gemini response")?;
 
     let text = json
         .candidates
@@ -241,6 +243,7 @@ async fn generate_gemini(
 
 /// Generate a commit message using the OpenAI API.
 async fn generate_openai(
+    client: &Arc<dyn HttpClient>,
     api_key: &Option<String>,
     model: &str,
     diff: &str,
@@ -254,7 +257,7 @@ async fn generate_openai(
 
     let prompt = build_prompt(diff, summary, commit_style, project_context);
 
-    let body = serde_json::json!({
+    let json_body = serde_json::json!({
         "model": model,
         "messages": [{
             "role": "user",
@@ -264,25 +267,30 @@ async fn generate_openai(
         "max_tokens": 2048
     });
 
-    let client = http_client();
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
+    let body_bytes = serde_json::to_vec(&json_body)?;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("https://api.openai.com/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
-        .json(&body)
-        .send()
+        .header("Content-Type", "application/json")
+        .body(AsyncBody::from(body_bytes))
+        .context("Failed to build OpenAI request")?;
+
+    let mut response = client
+        .send(request)
         .await
         .context("Failed to send request to OpenAI API")?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+    let status = response.status();
+    let body = read_response_body(&mut response).await?;
+
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&body);
         anyhow::bail!("OpenAI API error ({}): {}", status, text);
     }
 
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .context("Failed to parse OpenAI response")?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).context("Failed to parse OpenAI response")?;
     let text = json["choices"][0]["message"]["content"]
         .as_str()
         .context("No text in OpenAI response")?
@@ -294,6 +302,7 @@ async fn generate_openai(
 
 /// Generate a commit message using the Anthropic API.
 async fn generate_anthropic(
+    client: &Arc<dyn HttpClient>,
     api_key: &Option<String>,
     model: &str,
     diff: &str,
@@ -307,7 +316,7 @@ async fn generate_anthropic(
 
     let prompt = build_prompt(diff, summary, commit_style, project_context);
 
-    let body = serde_json::json!({
+    let json_body = serde_json::json!({
         "model": model,
         "max_tokens": 2048,
         "messages": [{
@@ -316,27 +325,31 @@ async fn generate_anthropic(
         }]
     });
 
-    let client = http_client();
-    let response = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
+    let body_bytes = serde_json::to_vec(&json_body)?;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key.as_str())
         .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
+        .header("Content-Type", "application/json")
+        .body(AsyncBody::from(body_bytes))
+        .context("Failed to build Anthropic request")?;
+
+    let mut response = client
+        .send(request)
         .await
         .context("Failed to send request to Anthropic API")?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+    let status = response.status();
+    let body = read_response_body(&mut response).await?;
+
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&body);
         anyhow::bail!("Anthropic API error ({}): {}", status, text);
     }
 
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .context("Failed to parse Anthropic response")?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).context("Failed to parse Anthropic response")?;
     let text = json["content"][0]["text"]
         .as_str()
         .context("No text in Anthropic response")?
@@ -426,8 +439,6 @@ fn collect_project_context(repo_path: &Path) -> Option<String> {
 
     Some(combined)
 }
-
-// Gemini API response types
 
 #[derive(Debug, Deserialize)]
 struct GeminiResponse {

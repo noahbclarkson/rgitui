@@ -6,7 +6,7 @@ if [ -f "$(dirname "$0")/../.env" ]; then
     source "$(dirname "$0")/../.env"
 fi
 
-REPO_PATH="${RGITUI_TEST_REPO:-/home/noah/src/krypto}"
+REPO_PATH="${RGITUI_TEST_REPO:-$HOME/repos/test-repo}"
 OUTPUT_DIR="$(dirname "$0")/../test_output"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_FILE="$OUTPUT_DIR/screenshot_$TIMESTAMP.png"

@@ -19,7 +19,7 @@ Then run the screenshot script:
 ```
 
 This will:
-1. Start rgitui with the test repo (default: `~/src/krypto`)
+1. Start rgitui with the test repo (default: `~/repos/test-repo`)
 2. Wait 3 seconds for the window to render
 3. Take a screenshot using `grim` (Wayland) or `scrot` (X11)
 4. Save to `test_output/screenshot_TIMESTAMP.png`
@@ -53,4 +53,4 @@ Tests are in `crates/rgitui/tests/integration_test.rs` and test:
 
 | Variable | Default | Description |
 |---|---|---|
-| `RGITUI_TEST_REPO` | `/home/noah/src/krypto` | Path to git repo used for integration tests |
+| `RGITUI_TEST_REPO` | `$HOME/repos/test-repo` | Path to git repo used for integration tests |

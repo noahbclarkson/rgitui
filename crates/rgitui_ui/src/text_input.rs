@@ -302,7 +302,7 @@ impl TextInput {
                 cx.emit(TextInputEvent::Changed(self.text.clone())); cx.notify();
             }
         } else if key.len() == 1 && !ctrl {
-            let ch = key.chars().next().unwrap();
+            let Some(ch) = key.chars().next() else { return; };
             if ch.is_ascii_graphic() || ch == ' ' {
                 self.delete_selection();
                 self.text.insert(self.cursor, ch);

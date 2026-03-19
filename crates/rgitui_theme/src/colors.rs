@@ -235,7 +235,6 @@ pub fn catppuccin_mocha_colors() -> ThemeColors {
     let blue = hsla(217.0, 92.0, 76.0, 1.0); // #89b4fa
     let peach = hsla(23.0, 92.0, 75.0, 1.0); // #fab387
     let teal = hsla(170.0, 57.0, 73.0, 1.0); // #94e2d5
-    let _sapphire = hsla(189.0, 71.0, 73.0, 1.0); // #74c7ec
 
     ThemeColors {
         background: crust,
@@ -339,7 +338,6 @@ pub fn catppuccin_latte_colors() -> ThemeColors {
     let blue = hsla(220.0, 91.0, 54.0, 1.0); // #1e66f5
     let peach = hsla(22.0, 99.0, 52.0, 1.0); // #fe640b
     let teal = hsla(183.0, 74.0, 35.0, 1.0); // #179299
-    let _sapphire = hsla(189.0, 70.0, 42.0, 1.0); // #209fb5
 
     ThemeColors {
         background: crust,
@@ -439,7 +437,6 @@ pub fn one_dark_colors() -> ThemeColors {
     let red = hsla(355.0, 65.0, 65.0, 1.0); // #e06c75
     let green = hsla(95.0, 38.0, 62.0, 1.0); // #98c379
     let yellow = hsla(39.0, 67.0, 69.0, 1.0); // #e5c07b
-    let _blue = hsla(207.0, 82.0, 66.0, 1.0); // #61afef (same as accent)
     let magenta = hsla(286.0, 60.0, 67.0, 1.0); // #c678dd
     let cyan = hsla(187.0, 47.0, 55.0, 1.0); // #56b6c2
     let orange = hsla(29.0, 54.0, 61.0, 1.0); // #d19a66

@@ -241,24 +241,6 @@ pub struct RebasePlanEntry {
     pub action: RebaseEntryAction,
 }
 
-/// Result from a merge operation.
-#[derive(Debug)]
-pub enum MergeResult {
-    AlreadyUpToDate,
-    FastForward,
-    Merged(git2::Oid),
-    Conflict(Vec<PathBuf>),
-}
-
-/// Result from a pull operation.
-#[derive(Debug)]
-pub enum PullResult {
-    AlreadyUpToDate,
-    FastForward,
-    Merged(git2::Oid),
-    Conflict(Vec<PathBuf>),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitOperationKind {
     Fetch,
