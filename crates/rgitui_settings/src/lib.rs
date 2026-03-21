@@ -198,8 +198,11 @@ pub struct AppSettings {
     pub confirm_destructive_operations: bool,
 }
 
+/// Current settings version. Increment when making breaking changes.
+const CURRENT_SETTINGS_VERSION: u32 = 1;
+
 fn default_settings_version() -> u32 {
-    1
+    CURRENT_SETTINGS_VERSION
 }
 
 fn default_font_size() -> u32 {
@@ -606,6 +609,42 @@ impl SettingsState {
         }
     }
 
+    /// Run version-based migrations. Returns true if any migration was applied.
+    pub fn migrate_settings(&mut self) -> bool {
+        let mut migrated = false;
+        let original_version = self.settings.version;
+
+        // Migration 0 -> 1: Settings without version field (serde default)
+        // No action needed - serde defaults handle this
+        if self.settings.version == 0 {
+            self.settings.version = 1;
+            migrated = true;
+            log::info!("Migrated settings from version 0 to 1");
+        }
+
+        // Future migrations go here:
+        // Migration 1 -> 2: Example
+        // if self.settings.version == 1 {
+        //     // Apply migration
+        //     self.settings.version = 2;
+        //     migrated = true;
+        //     log::info!("Migrated settings from version 1 to 2");
+        // }
+
+        // Ensure version is current
+        if self.settings.version < CURRENT_SETTINGS_VERSION {
+            self.settings.version = CURRENT_SETTINGS_VERSION;
+            migrated = true;
+            log::info!(
+                "Updated settings version from {} to {}",
+                original_version,
+                CURRENT_SETTINGS_VERSION
+            );
+        }
+
+        migrated
+    }
+
     pub fn ai_api_key(&self) -> Option<String> {
         current_auth_runtime().ai_api_key
     }
@@ -745,10 +784,22 @@ pub fn init(cx: &mut App) {
         config_path,
         load_warnings,
     };
+
+    // Run version-based migrations first
+    let version_migrated = state.migrate_settings();
+
+    // Run legacy data migrations
     state.migrate_legacy_workspace_data();
     if let Err(error) = state.migrate_legacy_secrets() {
         log::warn!("Failed to migrate secrets into keychain: {}", error);
         sync_auth_runtime(state.settings());
+    }
+
+    // Save if any migration occurred
+    if version_migrated {
+        if let Err(error) = state.save() {
+            log::warn!("Failed to persist migrated settings: {}", error);
+        }
     } else if let Err(error) = state.save() {
         log::warn!("Failed to persist migrated settings: {}", error);
     }
@@ -1017,5 +1068,28 @@ mod tests {
 
         assert_eq!(recent[0].id, "newer");
         assert_eq!(recent[1].id, "older");
+    }
+
+    #[test]
+    fn migrate_settings_updates_version() {
+        let mut state = test_settings_state();
+        // Simulate old settings without version (defaults to 1 via serde)
+        state.settings.version = 0;
+
+        let migrated = state.migrate_settings();
+
+        assert!(migrated);
+        assert_eq!(state.settings.version, CURRENT_SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn migrate_settings_no_migration_needed_for_current_version() {
+        let mut state = test_settings_state();
+        state.settings.version = CURRENT_SETTINGS_VERSION;
+
+        let migrated = state.migrate_settings();
+
+        assert!(!migrated);
+        assert_eq!(state.settings.version, CURRENT_SETTINGS_VERSION);
     }
 }
