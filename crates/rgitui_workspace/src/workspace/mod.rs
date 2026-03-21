@@ -6,6 +6,7 @@ mod operations;
 mod state;
 mod tabs;
 mod undo;
+mod update_checker;
 
 pub(crate) use state::*;
 pub(crate) use undo::{UndoAction, UndoEntry};
@@ -217,6 +218,12 @@ impl Workspace {
             last_undo: None,
             layout_save_task: None,
         }
+    }
+
+    /// Start background tasks like update checking.
+    pub fn start_background_tasks(&self, cx: &mut Context<Self>) {
+        // Check for app updates in the background
+        update_checker::check_for_updates(cx.entity().downgrade(), cx);
     }
 
     /// Show a temporary toast notification.

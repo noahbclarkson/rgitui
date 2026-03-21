@@ -143,6 +143,11 @@ fn main() {
                 ws
             });
 
+            // Start background tasks like update checking
+            workspace.update(cx, |ws, cx| {
+                ws.start_background_tasks(cx);
+            });
+
             workspace
         })
         .expect("Failed to open window");
