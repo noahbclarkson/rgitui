@@ -62,6 +62,9 @@ impl RenderOnce for Checkbox {
             CheckState::Unchecked => (colors.element_background, colors.border, None),
         };
 
+        let hover_bg = colors.ghost_element_hover;
+        let active_bg = colors.ghost_element_active;
+
         let mut container = div()
             .id(self.id)
             .flex()
@@ -74,11 +77,13 @@ impl RenderOnce for Checkbox {
             .border_1()
             .border_color(border);
 
-        if !self.disabled {
+        if self.disabled {
+            container = container.opacity(0.5);
+        } else {
             container = container
                 .cursor(CursorStyle::PointingHand)
-                .hover(|s| s.opacity(0.8))
-                .active(|s| s.opacity(0.6));
+                .hover(move |s| s.bg(hover_bg))
+                .active(move |s| s.bg(active_bg));
         }
 
         if let Some(on_click) = self.on_click {
@@ -88,18 +93,11 @@ impl RenderOnce for Checkbox {
         }
 
         if let Some(icon_name) = icon {
-            container = container.child(Icon::new(icon_name).size(IconSize::XSmall).color(
-                rgitui_theme::Color::Custom(gpui::Hsla {
-                    h: 0.0,
-                    s: 0.0,
-                    l: if cx.theme().appearance == rgitui_theme::Appearance::Dark {
-                        0.1
-                    } else {
-                        1.0
-                    },
-                    a: 1.0,
-                }),
-            ));
+            container = container.child(
+                Icon::new(icon_name)
+                    .size(IconSize::XSmall)
+                    .color(rgitui_theme::Color::Custom(colors.elevated_surface_background)),
+            );
         }
 
         container

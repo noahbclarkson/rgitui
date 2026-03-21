@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, SharedString, Window};
+use gpui::{div, px, App, Hsla, SharedString, Window};
 use rgitui_theme::{Color, StyledExt};
 
 use crate::{Label, LabelSize};
@@ -49,11 +49,11 @@ impl Badge {
 impl RenderOnce for Badge {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let text_color = self.color.color(cx);
-        let bg = gpui::Hsla {
+        let bg = Hsla {
             a: 0.15,
             ..text_color
         };
-        let border = gpui::Hsla {
+        let border = Hsla {
             a: 0.3,
             ..text_color
         };
@@ -76,11 +76,11 @@ impl RenderOnce for Badge {
         let mut container = div()
             .h_flex()
             .gap(px(2.))
-            .px(px(5.))
-            .py(px(0.))
-            .h(px(18.))
+            .px(px(6.))
+            .py(px(1.))
+            .h(px(20.))
             .items_center()
-            .rounded(px(3.))
+            .rounded(px(10.))
             .bg(bg)
             .border_1()
             .border_color(border);

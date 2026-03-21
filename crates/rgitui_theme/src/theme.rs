@@ -171,55 +171,52 @@ impl ElevationIndex {
         }
     }
 
-    pub fn shadow(&self, cx: &App) -> Vec<BoxShadow> {
-        let is_dark = cx.theme().appearance == Appearance::Dark;
+    pub fn shadow(&self) -> Vec<BoxShadow> {
+        let black = |a: f32| Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a,
+        };
         match self {
-            ElevationIndex::Background | ElevationIndex::Surface => vec![],
+            ElevationIndex::Background => vec![],
+            ElevationIndex::Surface => vec![BoxShadow {
+                color: black(0.05),
+                offset: point(px(0.), px(1.)),
+                blur_radius: px(2.),
+                spread_radius: px(0.),
+            }],
             ElevationIndex::ElevatedSurface => vec![
                 BoxShadow {
-                    color: Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 0.0,
-                        a: 0.12,
-                    },
+                    color: black(0.08),
                     offset: point(px(0.), px(2.)),
-                    blur_radius: px(3.),
+                    blur_radius: px(4.),
                     spread_radius: px(0.),
                 },
                 BoxShadow {
-                    color: Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 0.0,
-                        a: if is_dark { 0.08 } else { 0.04 },
-                    },
+                    color: black(0.04),
                     offset: point(px(0.), px(1.)),
-                    blur_radius: px(0.),
+                    blur_radius: px(2.),
                     spread_radius: px(0.),
                 },
             ],
             ElevationIndex::ModalSurface => vec![
                 BoxShadow {
-                    color: Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 0.0,
-                        a: 0.2,
-                    },
-                    offset: point(px(0.), px(8.)),
-                    blur_radius: px(16.),
+                    color: black(0.12),
+                    offset: point(px(0.), px(4.)),
+                    blur_radius: px(8.),
                     spread_radius: px(0.),
                 },
                 BoxShadow {
-                    color: Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 0.0,
-                        a: 0.12,
-                    },
+                    color: black(0.08),
                     offset: point(px(0.), px(2.)),
                     blur_radius: px(4.),
+                    spread_radius: px(0.),
+                },
+                BoxShadow {
+                    color: black(0.06),
+                    offset: point(px(0.), px(8.)),
+                    blur_radius: px(16.),
                     spread_radius: px(0.),
                 },
             ],
@@ -242,32 +239,58 @@ pub trait StyledExt: Styled + Sized {
     /// Surface elevation — panels, tab bars.
     fn elevation_1(self, cx: &App) -> Self {
         let colors = cx.colors();
+        let shadows = ElevationIndex::Surface.shadow();
         self.bg(colors.surface_background)
             .rounded_lg()
             .border_1()
-            .border_color(colors.border_variant)
+            .border_color(colors.border)
+            .shadow(shadows)
     }
 
     /// Elevated surface — dropdowns, menus, floating panels.
     fn elevation_2(self, cx: &App) -> Self {
         let colors = cx.colors();
-        let shadows = ElevationIndex::ElevatedSurface.shadow(cx);
+        let shadows = ElevationIndex::ElevatedSurface.shadow();
         self.bg(colors.elevated_surface_background)
             .rounded_lg()
             .border_1()
-            .border_color(colors.border_variant)
+            .border_color(colors.border)
             .shadow(shadows)
     }
 
     /// Modal surface — dialogs, modals.
     fn elevation_3(self, cx: &App) -> Self {
         let colors = cx.colors();
-        let shadows = ElevationIndex::ModalSurface.shadow(cx);
+        let shadows = ElevationIndex::ModalSurface.shadow();
         self.bg(colors.elevated_surface_background)
             .rounded_lg()
             .border_1()
-            .border_color(colors.border_variant)
+            .border_color(colors.border)
             .shadow(shadows)
+    }
+
+    /// Apply a primary border using the theme's main border color.
+    fn border_primary(self, cx: &App) -> Self {
+        let colors = cx.colors();
+        self.border_1().border_color(colors.border)
+    }
+
+    /// Apply a muted/subtle border using the theme's variant border color.
+    fn border_muted(self, cx: &App) -> Self {
+        let colors = cx.colors();
+        self.border_1().border_color(colors.border_variant)
+    }
+
+    /// Apply a focused border using the theme's focused border color.
+    fn border_focused_style(self, cx: &App) -> Self {
+        let colors = cx.colors();
+        self.border_1().border_color(colors.border_focused)
+    }
+
+    /// Apply the muted text color from the active theme.
+    fn text_color_muted(self, cx: &App) -> Self {
+        let colors = cx.colors();
+        self.text_color(colors.text_muted)
     }
 }
 

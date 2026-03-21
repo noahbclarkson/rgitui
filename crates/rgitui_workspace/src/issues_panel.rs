@@ -256,9 +256,9 @@ impl IssuesPanel {
             return div()
                 .h_flex()
                 .w_full()
-                .h(px(28.))
-                .px(px(10.))
-                .gap(px(4.))
+                .h(px(32.))
+                .px(px(12.))
+                .gap(px(6.))
                 .items_center()
                 .bg(colors.surface_background)
                 .border_b_1()
@@ -266,16 +266,16 @@ impl IssuesPanel {
                 .child(
                     IconButton::new("issues-back", IconName::ChevronLeft)
                         .size(ButtonSize::Compact)
-                        .style(ButtonStyle::Transparent)
+                        .style(ButtonStyle::Subtle)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.go_back(cx);
                         })),
                 )
                 .child(
                     Label::new("Issue Detail")
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Muted),
+                        .color(Color::Default),
                 )
                 .into_any_element();
         }
@@ -284,68 +284,82 @@ impl IssuesPanel {
         let is_closed = self.filter == IssueFilter::Closed;
         let is_all = self.filter == IssueFilter::All;
 
+        let issue_count: SharedString = format!("{}", self.issues.len()).into();
+
         div()
             .h_flex()
             .w_full()
-            .h(px(28.))
-            .px(px(10.))
-            .gap(px(4.))
+            .h(px(32.))
+            .px(px(12.))
+            .gap(px(6.))
             .items_center()
             .bg(colors.surface_background)
             .border_b_1()
             .border_color(colors.border_variant)
             .child(
-                Icon::new(IconName::DotOutline)
+                Icon::new(IconName::GitPullRequest)
                     .size(IconSize::XSmall)
-                    .color(Color::Muted),
+                    .color(Color::Accent),
             )
             .child(
                 Label::new("Issues")
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .weight(gpui::FontWeight::SEMIBOLD)
-                    .color(Color::Muted),
+                    .color(Color::Default),
             )
+            .when(!self.issues.is_empty(), |el| {
+                el.child(Badge::new(issue_count).color(Color::Muted))
+            })
             .child(div().flex_1())
             .child(
-                Button::new("filter-open", "Open")
-                    .size(ButtonSize::Compact)
-                    .style(if is_open {
-                        ButtonStyle::Filled
-                    } else {
-                        ButtonStyle::Transparent
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.set_filter(IssueFilter::Open, cx);
-                    })),
-            )
-            .child(
-                Button::new("filter-closed", "Closed")
-                    .size(ButtonSize::Compact)
-                    .style(if is_closed {
-                        ButtonStyle::Filled
-                    } else {
-                        ButtonStyle::Transparent
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.set_filter(IssueFilter::Closed, cx);
-                    })),
-            )
-            .child(
-                Button::new("filter-all", "All")
-                    .size(ButtonSize::Compact)
-                    .style(if is_all {
-                        ButtonStyle::Filled
-                    } else {
-                        ButtonStyle::Transparent
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.set_filter(IssueFilter::All, cx);
-                    })),
+                div()
+                    .h_flex()
+                    .h(px(22.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(colors.border_variant)
+                    .overflow_hidden()
+                    .child(
+                        Button::new("filter-open", "Open")
+                            .size(ButtonSize::Compact)
+                            .style(if is_open {
+                                ButtonStyle::Filled
+                            } else {
+                                ButtonStyle::Transparent
+                            })
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.set_filter(IssueFilter::Open, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("filter-closed", "Closed")
+                            .size(ButtonSize::Compact)
+                            .style(if is_closed {
+                                ButtonStyle::Filled
+                            } else {
+                                ButtonStyle::Transparent
+                            })
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.set_filter(IssueFilter::Closed, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("filter-all", "All")
+                            .size(ButtonSize::Compact)
+                            .style(if is_all {
+                                ButtonStyle::Filled
+                            } else {
+                                ButtonStyle::Transparent
+                            })
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.set_filter(IssueFilter::All, cx);
+                            })),
+                    ),
             )
             .child(
                 IconButton::new("issues-refresh", IconName::Refresh)
                     .size(ButtonSize::Compact)
-                    .style(ButtonStyle::Transparent)
+                    .style(ButtonStyle::Subtle)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.fetch_issues(cx);
                     })),
@@ -364,27 +378,27 @@ impl IssuesPanel {
         let author: SharedString = issue.author.clone().into();
         let created: SharedString = issue.created_at.clone().into();
 
-        let (state_label, state_color) = match issue.state {
-            IssueState::Open => ("Open", Color::Success),
-            IssueState::Closed => ("Closed", Color::Accent),
+        let (state_label, state_icon, state_color) = match issue.state {
+            IssueState::Open => ("Open", IconName::DotOutline, Color::Success),
+            IssueState::Closed => ("Closed", IconName::CheckCircle, Color::Accent),
         };
 
         let mut content = div()
             .id("issue-detail-scroll")
             .v_flex()
             .flex_1()
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .p_3()
+            .gap_3();
 
         let mut card = div()
             .v_flex()
             .w_full()
-            .mx_2()
-            .mt_2()
-            .px_3()
-            .py_2()
-            .gap(px(6.))
+            .px(px(16.))
+            .py(px(14.))
+            .gap(px(10.))
             .bg(colors.elevated_surface_background)
-            .rounded(px(6.))
+            .rounded(px(8.))
             .border_1()
             .border_color(colors.border_variant);
 
@@ -396,7 +410,7 @@ impl IssuesPanel {
                 .child(
                     div().flex_1().min_w_0().child(
                         Label::new(title)
-                            .size(LabelSize::Small)
+                            .size(LabelSize::Large)
                             .weight(gpui::FontWeight::BOLD),
                     ),
                 )
@@ -412,21 +426,54 @@ impl IssuesPanel {
                 .h_flex()
                 .gap_2()
                 .items_center()
-                .child(Badge::new(SharedString::from(state_label)).color(state_color))
                 .child(
-                    Label::new(author)
-                        .size(LabelSize::XSmall)
-                        .weight(gpui::FontWeight::SEMIBOLD),
+                    div()
+                        .h_flex()
+                        .gap(px(4.))
+                        .items_center()
+                        .child(
+                            Icon::new(state_icon)
+                                .size(IconSize::XSmall)
+                                .color(state_color),
+                        )
+                        .child(Badge::new(SharedString::from(state_label)).color(state_color)),
                 )
                 .child(
-                    Label::new(created)
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                    div()
+                        .h_flex()
+                        .gap(px(4.))
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::User)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(author)
+                                .size(LabelSize::XSmall)
+                                .weight(gpui::FontWeight::SEMIBOLD),
+                        ),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .gap(px(4.))
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::Clock)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(created)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
                 ),
         );
 
         if !issue.labels.is_empty() {
-            let mut labels_row = div().h_flex().gap_1().flex_wrap();
+            let mut labels_row = div().h_flex().gap(px(4.)).flex_wrap();
             for label in &issue.labels {
                 let label_name: SharedString = label.name.clone().into();
                 labels_row = labels_row.child(Badge::new(label_name).color(Color::Info));
@@ -440,12 +487,13 @@ impl IssuesPanel {
                 card = card.child(
                     div()
                         .w_full()
-                        .pt_1()
+                        .pt_2()
+                        .mt_1()
                         .border_t_1()
                         .border_color(colors.border_variant)
                         .child(
                             Label::new(body_text)
-                                .size(LabelSize::XSmall)
+                                .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
                 );
@@ -459,11 +507,18 @@ impl IssuesPanel {
                 div()
                     .h_flex()
                     .w_full()
-                    .py_3()
+                    .py(px(16.))
+                    .gap(px(8.))
                     .justify_center()
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Refresh)
+                            .size(IconSize::Small)
+                            .color(Color::Muted),
+                    )
                     .child(
                         Label::new("Loading comments...")
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Muted),
                     ),
             );
@@ -479,17 +534,17 @@ impl IssuesPanel {
                 div()
                     .h_flex()
                     .w_full()
-                    .h(px(28.))
-                    .px(px(10.))
-                    .mt_1()
-                    .gap(px(4.))
+                    .py(px(6.))
+                    .gap(px(6.))
                     .items_center()
-                    .bg(colors.surface_background)
-                    .border_b_1()
-                    .border_color(colors.border_variant)
+                    .child(
+                        Icon::new(IconName::GitCommit)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
                     .child(
                         Label::new(comments_header)
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
                     ),
@@ -505,13 +560,11 @@ impl IssuesPanel {
                         .id(ElementId::NamedInteger("issue-comment".into(), i as u64))
                         .v_flex()
                         .w_full()
-                        .mx_2()
-                        .mt_1()
-                        .px_3()
-                        .py_2()
-                        .gap(px(4.))
+                        .px(px(14.))
+                        .py(px(12.))
+                        .gap(px(8.))
                         .bg(colors.elevated_surface_background)
-                        .rounded(px(6.))
+                        .rounded(px(8.))
                         .border_1()
                         .border_color(colors.border_variant)
                         .child(
@@ -519,6 +572,20 @@ impl IssuesPanel {
                                 .h_flex()
                                 .gap_2()
                                 .items_center()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .size(px(20.))
+                                        .rounded_full()
+                                        .bg(colors.ghost_element_selected)
+                                        .child(
+                                            Icon::new(IconName::User)
+                                                .size(IconSize::XSmall)
+                                                .color(Color::Muted),
+                                        ),
+                                )
                                 .child(
                                     Label::new(comment_author)
                                         .size(LabelSize::XSmall)
@@ -532,27 +599,110 @@ impl IssuesPanel {
                         )
                         .child(
                             Label::new(comment_body)
-                                .size(LabelSize::XSmall)
+                                .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
                 );
             }
         }
 
-        content = content.child(div().h(px(8.)));
-
         content.into_any_element()
+    }
+
+    fn render_empty_state(
+        &self,
+        icon: IconName,
+        title: &str,
+        subtitle: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let colors = cx.colors();
+        div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .v_flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(32.))
+                    .py(px(24.))
+                    .rounded(px(12.))
+                    .bg(colors.ghost_element_background)
+                    .child(
+                        Icon::new(icon)
+                            .size(IconSize::Large)
+                            .color(Color::Placeholder),
+                    )
+                    .child(
+                        Label::new(SharedString::from(title.to_string()))
+                            .size(LabelSize::Small)
+                            .weight(gpui::FontWeight::SEMIBOLD)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new(SharedString::from(subtitle.to_string()))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Placeholder),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_loading_skeleton(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let colors = cx.colors();
+        let skeleton_bg = colors.ghost_element_background;
+
+        div()
+            .v_flex()
+            .flex_1()
+            .w_full()
+            .p_2()
+            .gap(px(2.))
+            .children((0..6).map(move |i| {
+                div()
+                    .id(ElementId::NamedInteger("skeleton-row".into(), i))
+                    .h_flex()
+                    .w_full()
+                    .h(px(36.))
+                    .px_3()
+                    .gap(px(8.))
+                    .items_center()
+                    .rounded(px(6.))
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(skeleton_bg),
+                    )
+                    .child(
+                        div()
+                            .w(px(40.))
+                            .h(px(12.))
+                            .rounded(px(4.))
+                            .bg(skeleton_bg),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(12.))
+                            .rounded(px(4.))
+                            .bg(skeleton_bg),
+                    )
+            }))
+            .into_any_element()
     }
 }
 
 impl Render for IssuesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Capture all needed colors upfront to avoid borrow conflicts
         let panel_bg = cx.colors().panel_background;
-        let text_color = cx.colors().text;
         let ghost_selected = cx.colors().ghost_element_selected;
         let text_accent = cx.colors().text_accent;
         let ghost_hover = cx.colors().ghost_element_hover;
+        let border_transparent = cx.colors().border_transparent;
 
         let mut panel = div()
             .id("issues-panel")
@@ -570,60 +720,18 @@ impl Render for IssuesPanel {
 
         if self.github_token.is_none() || self.github_token.as_deref() == Some("") {
             return panel
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .v_flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .px(px(24.))
-                                .py(px(16.))
-                                .rounded(px(8.))
-                                .bg(gpui::Hsla {
-                                    a: 0.03,
-                                    ..text_color
-                                })
-                                .child(
-                                    Icon::new(IconName::Settings)
-                                        .size(IconSize::Large)
-                                        .color(Color::Placeholder),
-                                )
-                                .child(
-                                    Label::new("GitHub token required")
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                )
-                                .child(
-                                    Label::new(
-                                        "Configure a GitHub token in settings to view issues",
-                                    )
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Placeholder),
-                                ),
-                        ),
-                )
+                .child(self.render_empty_state(
+                    IconName::Settings,
+                    "GitHub token required",
+                    "Configure a GitHub token in settings to view issues",
+                    cx,
+                ))
                 .into_any_element();
         }
 
         if self.is_loading {
             return panel
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Label::new("Loading issues...")
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
-                )
+                .child(self.render_loading_skeleton(cx))
                 .into_any_element();
         }
 
@@ -640,7 +748,14 @@ impl Render for IssuesPanel {
                             div()
                                 .v_flex()
                                 .items_center()
-                                .gap(px(8.))
+                                .gap(px(12.))
+                                .px(px(32.))
+                                .py(px(24.))
+                                .child(
+                                    Icon::new(IconName::AlertTriangle)
+                                        .size(IconSize::Large)
+                                        .color(Color::Error),
+                                )
                                 .child(
                                     Label::new(err_text)
                                         .size(LabelSize::Small)
@@ -648,8 +763,10 @@ impl Render for IssuesPanel {
                                 )
                                 .child(
                                     Button::new("retry-issues", "Retry")
-                                        .size(ButtonSize::Compact)
+                                        .icon(IconName::Refresh)
+                                        .size(ButtonSize::Default)
                                         .style(ButtonStyle::Filled)
+                                        .color(Color::Accent)
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                             this.fetch_issues(cx);
                                         })),
@@ -660,21 +777,14 @@ impl Render for IssuesPanel {
         }
 
         if self.issues.is_empty() {
-            let empty_msg: SharedString =
-                format!("No {} issues found", self.filter.label().to_lowercase()).into();
+            let empty_msg = format!("No {} issues found", self.filter.label().to_lowercase());
             return panel
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Label::new(empty_msg)
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
-                )
+                .child(self.render_empty_state(
+                    IconName::CheckCircle,
+                    &empty_msg,
+                    "Try a different filter or check back later",
+                    cx,
+                ))
                 .into_any_element();
         }
 
@@ -685,6 +795,7 @@ impl Render for IssuesPanel {
         let selected_bg = ghost_selected;
         let selected_border = text_accent;
         let hover_bg = ghost_hover;
+        let transparent_border = border_transparent;
 
         panel = panel.child(
             uniform_list(
@@ -699,12 +810,14 @@ impl Render for IssuesPanel {
 
                             let (state_icon, state_color) = match issue.state {
                                 IssueState::Open => (IconName::DotOutline, Color::Success),
-                                IssueState::Closed => (IconName::Check, Color::Accent),
+                                IssueState::Closed => (IconName::CheckCircle, Color::Accent),
                             };
 
                             let number_text: SharedString =
                                 format!("#{}", issue.number).into();
                             let title: SharedString = issue.title.clone().into();
+                            let author: SharedString = issue.author.clone().into();
+                            let timestamp: SharedString = issue.created_at.clone().into();
                             let labels = issue.labels.clone();
                             let comments_count = issue.comments_count;
 
@@ -715,22 +828,19 @@ impl Render for IssuesPanel {
                                 ))
                                 .h_flex()
                                 .w_full()
-                                .h(px(30.))
+                                .h(px(36.))
                                 .px_3()
-                                .gap(px(6.))
+                                .gap(px(8.))
                                 .items_center()
                                 .flex_shrink_0()
+                                .rounded(px(6.))
+                                .mx_1()
                                 .border_l_2()
                                 .when(selected, |el| {
                                     el.bg(selected_bg).border_color(selected_border)
                                 })
                                 .when(!selected, |el| {
-                                    el.border_color(gpui::Hsla {
-                                        h: 0.0,
-                                        s: 0.0,
-                                        l: 0.0,
-                                        a: 0.0,
-                                    })
+                                    el.border_color(transparent_border)
                                 })
                                 .hover(move |s| s.bg(hover_bg))
                                 .cursor_pointer()
@@ -757,7 +867,7 @@ impl Render for IssuesPanel {
                                         .h_flex()
                                         .flex_1()
                                         .min_w_0()
-                                        .gap(px(4.))
+                                        .gap(px(6.))
                                         .overflow_hidden()
                                         .child(
                                             Label::new(title)
@@ -768,15 +878,43 @@ impl Render for IssuesPanel {
 
                             if !labels.is_empty() {
                                 let mut labels_row =
-                                    div().h_flex().gap(px(2.)).flex_shrink_0();
-                                for label in labels.iter().take(3) {
+                                    div().h_flex().gap(px(3.)).flex_shrink_0();
+                                for label in labels.iter().take(2) {
                                     let label_name: SharedString =
                                         label.name.clone().into();
                                     labels_row = labels_row
                                         .child(Badge::new(label_name).color(Color::Info));
                                 }
+                                if labels.len() > 2 {
+                                    let more: SharedString =
+                                        format!("+{}", labels.len() - 2).into();
+                                    labels_row = labels_row.child(
+                                        Label::new(more)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    );
+                                }
                                 row = row.child(labels_row);
                             }
+
+                            row = row.child(
+                                div()
+                                    .h_flex()
+                                    .gap(px(4.))
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .child(
+                                        Label::new(author)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    ),
+                            );
+
+                            row = row.child(
+                                Label::new(timestamp)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Placeholder),
+                            );
 
                             if comments_count > 0 {
                                 let count_text: SharedString =
@@ -786,6 +924,7 @@ impl Render for IssuesPanel {
                                         .h_flex()
                                         .gap(px(2.))
                                         .flex_shrink_0()
+                                        .items_center()
                                         .child(
                                             Icon::new(IconName::GitCommit)
                                                 .size(IconSize::XSmall)

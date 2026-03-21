@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter, FocusHandle,
-    KeyDownEvent, ObjectFit, Render, SharedString, WeakEntity, Window,
+    div, img, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
+    FocusHandle, KeyDownEvent, ListSizingBehavior, ObjectFit, Render, SharedString, WeakEntity,
+    Window,
 };
 use rgitui_git::{CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel, Signature};
 use rgitui_settings::SettingsState;
@@ -17,7 +18,6 @@ use rgitui_ui::{
 
 use crate::markdown_view::render_markdown;
 
-/// Format a unix timestamp as a human-readable relative time.
 fn format_relative_time(timestamp: i64) -> String {
     let now = chrono::Utc::now().timestamp();
     let diff = now - timestamp;
@@ -41,7 +41,11 @@ fn format_relative_time(timestamp: i64) -> String {
         }
         2592000..=31535999 => {
             let months = diff / 2592000;
-            format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
+            format!(
+                "{} month{} ago",
+                months,
+                if months == 1 { "" } else { "s" }
+            )
         }
         _ => {
             let years = diff / 31536000;
@@ -50,7 +54,14 @@ fn format_relative_time(timestamp: i64) -> String {
     }
 }
 
-/// Events from the detail panel.
+fn format_absolute_date(timestamp: i64) -> String {
+    let dt = chrono::DateTime::from_timestamp(timestamp, 0);
+    match dt {
+        Some(dt) => dt.format("%b %d, %Y %H:%M").to_string(),
+        None => "Unknown date".to_string(),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum DetailPanelEvent {
     FileSelected(FileDiff, String),
@@ -63,7 +74,6 @@ enum FileViewMode {
     Flat,
     Tree,
 }
-
 
 fn file_change_icon(kind: FileChangeKind) -> IconName {
     match kind {
@@ -91,12 +101,8 @@ fn file_change_color(kind: FileChangeKind) -> Color {
     }
 }
 
-/// A cached, owned version of the file diff tree that can be stored across frames.
 struct CachedFileDiffTree {
-    /// Flat list of `(global_file_index, file_name, dir_path)` for each file in the tree,
-    /// sorted the same way as `build_file_diff_tree` would produce.
     flat_entries: Vec<CachedFlatEntry>,
-    /// The owned tree structure for tree-mode rendering.
     tree: CachedTreeNode,
 }
 
@@ -108,7 +114,6 @@ struct CachedFlatEntry {
 
 #[derive(Default)]
 struct CachedTreeNode {
-    /// (global file index, file name)
     files: Vec<(usize, SharedString)>,
     children: BTreeMap<String, CachedTreeNode>,
 }
@@ -130,10 +135,7 @@ fn build_cached_tree(files: &[FileDiff]) -> CachedTreeNode {
             if pi == parts.len() - 1 {
                 node.files.push((i, file_name.clone()));
             } else {
-                node = node
-                    .children
-                    .entry(part.to_string())
-                    .or_default();
+                node = node.children.entry(part.to_string()).or_default();
             }
         }
     }
@@ -142,9 +144,8 @@ fn build_cached_tree(files: &[FileDiff]) -> CachedTreeNode {
 }
 
 fn sort_cached_tree(node: &mut CachedTreeNode) {
-    node.files.sort_by(|a, b| {
-        a.1.to_lowercase().cmp(&b.1.to_lowercase())
-    });
+    node.files
+        .sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
     for child in node.children.values_mut() {
         sort_cached_tree(child);
     }
@@ -199,7 +200,6 @@ fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
     }
 }
 
-/// Displays commit metadata and changed files list.
 pub struct DetailPanel {
     commit: Option<CommitInfo>,
     commit_diff: Option<Arc<CommitDiff>>,
@@ -252,13 +252,11 @@ impl DetailPanel {
             .is_some_and(|(f, t)| f == field && t.elapsed() < Duration::from_millis(1500))
     }
 
-    /// Focus the detail panel for keyboard navigation.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
-    /// Check if the detail panel is currently focused.
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window)
     }
@@ -307,12 +305,11 @@ impl DetailPanel {
                     cx.notify();
                 }
             }
-            "home" | "g"
-                if self.selected_file_index != Some(0) => {
-                    self.selected_file_index = Some(0);
-                    self.emit_file_selected(cx);
-                    cx.notify();
-                }
+            "home" | "g" if self.selected_file_index != Some(0) => {
+                self.selected_file_index = Some(0);
+                self.emit_file_selected(cx);
+                cx.notify();
+            }
             "end" => {
                 let last = file_count.saturating_sub(1);
                 if self.selected_file_index != Some(last) {
@@ -366,6 +363,13 @@ impl DetailPanel {
         cx.notify();
     }
 
+    fn render_section_header(&self, label: &str) -> impl IntoElement {
+        Label::new(SharedString::from(label.to_string()))
+            .size(LabelSize::XSmall)
+            .color(Color::Muted)
+            .weight(gpui::FontWeight::SEMIBOLD)
+    }
+
     fn render_co_authors(
         &self,
         co_authors: &[Signature],
@@ -375,15 +379,9 @@ impl DetailPanel {
         let avatar_bg = colors.border_focused;
         let avatar_text_color = colors.background;
 
-        let mut section = div()
-            .v_flex()
-            .gap(px(4.))
-            .child(
-                Label::new("Co-authors")
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted)
-                    .weight(gpui::FontWeight::SEMIBOLD),
-            );
+        let mut section = div().v_flex().gap(px(4.)).child(
+            self.render_section_header("Co-authors"),
+        );
 
         for co_author in co_authors {
             let initials: SharedString = co_author
@@ -403,53 +401,13 @@ impl DetailPanel {
                 .and_then(|cache| cache.avatar_url(&co_author.email))
                 .map(|s| s.to_string());
 
-            let mut avatar_circle = div()
-                .w(px(16.))
-                .h(px(16.))
-                .rounded_full()
-                .bg(avatar_bg)
-                .flex()
-                .items_center()
-                .justify_center();
-
-            if let Some(url) = avatar_url {
-                let fb_initials = initials.clone();
-                let fb_text_color = avatar_text_color;
-                avatar_circle = avatar_circle.child(
-                    img(url)
-                        .rounded_full()
-                        .size_full()
-                        .object_fit(ObjectFit::Cover)
-                        .with_fallback(move || {
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .text_color(fb_text_color)
-                                        .text_xs()
-                                        .font_weight(gpui::FontWeight::BOLD)
-                                        .child(fb_initials.clone()),
-                                )
-                                .into_any_element()
-                        }),
-                );
-            } else {
-                avatar_circle = avatar_circle.child(
-                    div()
-                        .text_color(avatar_text_color)
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .child(initials),
-                );
-            }
+            let avatar_circle =
+                self.render_avatar(avatar_url, initials, avatar_bg, avatar_text_color, px(16.));
 
             section = section.child(
                 div()
                     .h_flex()
-                    .gap(px(4.))
+                    .gap(px(6.))
                     .items_center()
                     .child(avatar_circle)
                     .child(
@@ -469,35 +427,203 @@ impl DetailPanel {
         section.into_any_element()
     }
 
+    fn render_avatar(
+        &self,
+        avatar_url: Option<String>,
+        initials: SharedString,
+        avatar_bg: gpui::Hsla,
+        avatar_text_color: gpui::Hsla,
+        size: gpui::Pixels,
+    ) -> gpui::Div {
+        let mut avatar_circle = div()
+            .w(size)
+            .h(size)
+            .rounded_full()
+            .bg(avatar_bg)
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center();
+
+        if let Some(url) = avatar_url {
+            let fb_initials = initials.clone();
+            avatar_circle = avatar_circle.child(
+                img(url)
+                    .rounded_full()
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .with_fallback(move || {
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_color(avatar_text_color)
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child(fb_initials.clone()),
+                            )
+                            .into_any_element()
+                    }),
+            );
+        } else {
+            avatar_circle = avatar_circle.child(
+                div()
+                    .text_color(avatar_text_color)
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(initials),
+            );
+        }
+
+        avatar_circle
+    }
+
     fn render_flat_file_list(
         &self,
         diff: &CommitDiff,
         cached: &CachedFileDiffTree,
-        colors: &rgitui_theme::ThemeColors,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let mut file_list = div()
-            .id("detail-files-list")
-            .v_flex()
-            .w_full()
-            .flex_shrink_0()
-            .pb_2();
+    ) -> gpui::AnyElement {
+        let colors = cx.colors().clone();
+        let row_h = cx
+            .global::<SettingsState>()
+            .settings()
+            .compactness
+            .spacing(26.0);
+        let selected_file_index = self.selected_file_index;
+        let weak = cx.weak_entity();
 
-        for entry in &cached.flat_entries {
-            let file = &diff.files[entry.file_index];
-            file_list = self.render_file_row(
-                file_list,
-                entry.file_index,
-                file,
-                entry.file_name.clone(),
-                entry.dir_path.clone(),
-                colors,
-                px(12.),
-                cx,
-            );
+        #[derive(Clone)]
+        struct FlatRowData {
+            file_index: usize,
+            file_name: SharedString,
+            dir_path: SharedString,
+            additions: usize,
+            deletions: usize,
+            icon_name: IconName,
+            icon_color: Color,
+            change_code: SharedString,
+            change_color: Color,
         }
 
-        file_list
+        let rows: Vec<FlatRowData> = cached
+            .flat_entries
+            .iter()
+            .map(|entry| {
+                let file = &diff.files[entry.file_index];
+                FlatRowData {
+                    file_index: entry.file_index,
+                    file_name: entry.file_name.clone(),
+                    dir_path: entry.dir_path.clone(),
+                    additions: file.additions,
+                    deletions: file.deletions,
+                    icon_name: file_change_icon(file.kind),
+                    icon_color: file_change_color(file.kind),
+                    change_code: file.kind.short_code().into(),
+                    change_color: file_change_color(file.kind),
+                }
+            })
+            .collect();
+
+        let row_count = rows.len();
+
+        let ghost_element_selected = colors.ghost_element_selected;
+        let text_accent = colors.text_accent;
+        let border_transparent = colors.border_transparent;
+        let ghost_element_hover = colors.ghost_element_hover;
+
+        uniform_list(
+            "detail-files-list",
+            row_count,
+            move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
+                range
+                    .map(|ix| {
+                        let row = &rows[ix];
+                        let selected = selected_file_index == Some(row.file_index);
+                        let file_idx = row.file_index;
+                        let weak = weak.clone();
+                        let dir_path = row.dir_path.clone();
+
+                        div()
+                            .id(ElementId::NamedInteger("detail-file".into(), ix as u64))
+                            .h_flex()
+                            .w_full()
+                            .h(px(row_h))
+                            .pl(px(12.))
+                            .pr(px(12.))
+                            .gap(px(6.))
+                            .items_center()
+                            .flex_shrink_0()
+                            .border_l_2()
+                            .when(selected, |el| {
+                                el.bg(ghost_element_selected)
+                                    .border_color(text_accent)
+                            })
+                            .when(!selected, |el| el.border_color(border_transparent))
+                            .hover(move |s| s.bg(ghost_element_hover))
+                            .cursor_pointer()
+                            .on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    weak.update(cx, |this, cx| {
+                                        this.selected_file_index = Some(file_idx);
+                                        this.emit_file_selected(cx);
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            )
+                            .child(
+                                Icon::new(row.icon_name)
+                                    .size(IconSize::XSmall)
+                                    .color(row.icon_color),
+                            )
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(2.))
+                                    .overflow_hidden()
+                                    .when(!dir_path.is_empty(), |el| {
+                                        el.child(
+                                            Label::new(dir_path)
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Muted),
+                                        )
+                                    })
+                                    .child(
+                                        Label::new(row.file_name.clone())
+                                            .size(LabelSize::XSmall)
+                                            .truncate(),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .w(px(16.))
+                                    .h(px(16.))
+                                    .rounded(px(3.))
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        Label::new(row.change_code.clone())
+                                            .size(LabelSize::XSmall)
+                                            .color(row.change_color)
+                                            .weight(gpui::FontWeight::BOLD),
+                                    ),
+                            )
+                            .child(DiffStat::new(row.additions, row.deletions))
+                            .into_any_element()
+                    })
+                    .collect()
+            },
+        )
+        .flex_1()
+        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .into_any_element()
     }
 
     fn render_file_row(
@@ -507,11 +633,15 @@ impl DetailPanel {
         file: &FileDiff,
         file_name: SharedString,
         dir_path: SharedString,
-        colors: &rgitui_theme::ThemeColors,
         indent: gpui::Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let row_h = cx.global::<SettingsState>().settings().compactness.spacing(26.0);
+        let colors = cx.colors().clone();
+        let row_h = cx
+            .global::<SettingsState>()
+            .settings()
+            .compactness
+            .spacing(26.0);
 
         let additions = file.additions;
         let deletions = file.deletions;
@@ -520,6 +650,8 @@ impl DetailPanel {
 
         let icon_name = file_change_icon(file.kind);
         let icon_color = file_change_color(file.kind);
+        let change_code: SharedString = file.kind.short_code().into();
+        let change_color = file_change_color(file.kind);
 
         file_list.child(
             div()
@@ -537,14 +669,7 @@ impl DetailPanel {
                     el.bg(colors.ghost_element_selected)
                         .border_color(colors.text_accent)
                 })
-                .when(!selected, |el| {
-                    el.border_color(gpui::Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 0.0,
-                        a: 0.0,
-                    })
-                })
+                .when(!selected, |el| el.border_color(colors.border_transparent))
                 .hover(|s| s.bg(colors.ghost_element_hover))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -552,7 +677,11 @@ impl DetailPanel {
                     this.emit_file_selected(cx);
                     cx.notify();
                 }))
-                .child(Icon::new(icon_name).size(IconSize::XSmall).color(icon_color))
+                .child(
+                    Icon::new(icon_name)
+                        .size(IconSize::XSmall)
+                        .color(icon_color),
+                )
                 .child(
                     div()
                         .h_flex()
@@ -567,10 +696,21 @@ impl DetailPanel {
                                     .color(Color::Muted),
                             )
                         })
+                        .child(Label::new(file_name).size(LabelSize::XSmall).truncate()),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .w(px(16.))
+                        .h(px(16.))
+                        .rounded(px(3.))
+                        .items_center()
+                        .justify_center()
                         .child(
-                            Label::new(file_name)
+                            Label::new(change_code)
                                 .size(LabelSize::XSmall)
-                                .truncate(),
+                                .color(change_color)
+                                .weight(gpui::FontWeight::BOLD),
                         ),
                 )
                 .child(DiffStat::new(additions, deletions)),
@@ -605,7 +745,11 @@ impl DetailPanel {
         colors: &rgitui_theme::ThemeColors,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let row_h = cx.global::<SettingsState>().settings().compactness.spacing(26.0);
+        let row_h = cx
+            .global::<SettingsState>()
+            .settings()
+            .compactness
+            .spacing(26.0);
         let file_indent = px(if depth == 0 {
             16.0
         } else {
@@ -620,7 +764,6 @@ impl DetailPanel {
                 file,
                 file_name.clone(),
                 SharedString::default(),
-                colors,
                 file_indent,
                 cx,
             );
@@ -636,7 +779,9 @@ impl DetailPanel {
             let mut display_node = child;
 
             while display_node.files.is_empty() && display_node.children.len() == 1 {
-                let Some((next_name, next_child)) = display_node.children.iter().next() else { break; };
+                let Some((next_name, next_child)) = display_node.children.iter().next() else {
+                    break;
+                };
                 full_dir = format!("{full_dir}/{next_name}");
                 display_label = format!("{display_label}{next_name}/");
                 display_node = next_child;
@@ -723,7 +868,7 @@ impl DetailPanel {
 }
 
 impl Render for DetailPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let compactness = cx.global::<SettingsState>().settings().compactness;
         let row_h = compactness.spacing(26.0);
@@ -767,14 +912,13 @@ impl Render for DetailPanel {
                             div()
                                 .v_flex()
                                 .items_center()
-                                .gap(px(8.))
+                                .gap(px(12.))
                                 .px(px(24.))
-                                .py(px(16.))
+                                .py(px(20.))
                                 .rounded(px(8.))
-                                .bg(gpui::Hsla {
-                                    a: 0.03,
-                                    ..colors.text
-                                })
+                                .bg(colors.surface_background)
+                                .border_1()
+                                .border_color(colors.border_variant)
                                 .child(
                                     Icon::new(IconName::GitCommit)
                                         .size(IconSize::Large)
@@ -783,12 +927,15 @@ impl Render for DetailPanel {
                                 .child(
                                     Label::new("No commit selected")
                                         .size(LabelSize::Small)
-                                        .color(Color::Muted),
+                                        .color(Color::Muted)
+                                        .weight(gpui::FontWeight::SEMIBOLD),
                                 )
                                 .child(
-                                    Label::new("Click a commit in the graph to view details")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Placeholder),
+                                    Label::new(
+                                        "Select a commit from the graph to view details",
+                                    )
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Placeholder),
                                 ),
                         ),
                 )
@@ -800,14 +947,10 @@ impl Render for DetailPanel {
         let sha_for_copy = full_sha.clone();
         let sha_for_cherry = full_sha.clone();
         let author_name: SharedString = commit.author.name.clone().into();
-        let author_email: SharedString = format!("<{}>", commit.author.email).into();
+        let author_email: SharedString = commit.author.email.clone().into();
         let relative_time = format_relative_time(commit.time.timestamp());
-        let date: SharedString = format!(
-            "{} ({})",
-            commit.time.format("%Y-%m-%d %H:%M"),
-            relative_time
-        )
-        .into();
+        let absolute_date = format_absolute_date(commit.time.timestamp());
+        let date: SharedString = format!("{} ({})", absolute_date, relative_time).into();
         let refs = commit.refs.clone();
 
         let (summary, description) = {
@@ -841,6 +984,7 @@ impl Render for DetailPanel {
             .size_full()
             .bg(colors.panel_background);
 
+        // Toolbar
         panel = panel.child(
             div()
                 .h_flex()
@@ -871,199 +1015,80 @@ impl Render for DetailPanel {
             .flex_1()
             .overflow_y_scroll();
 
-        let mut card = div()
+        // -- Header Card: Author + SHA + Refs --
+        let mut header_card = div()
             .v_flex()
             .w_full()
             .mx_2()
             .mt_2()
             .px_3()
-            .py_2()
-            .gap(px(6.))
+            .py_3()
+            .gap(px(10.))
             .bg(colors.elevated_surface_background)
             .rounded(px(6.))
             .border_1()
             .border_color(colors.border_variant);
 
-        let summary_for_copy = summary.clone();
-        let summary_copied = self.is_copied("summary");
-        card = card.child(
-            div()
-                .h_flex()
-                .w_full()
-                .items_start()
-                .gap_2()
-                .child(
-                    div()
-                        .id("summary-copy")
-                        .h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(4.))
-                        .items_center()
-                        .cursor_pointer()
-                        .hover(|s| s.opacity(0.8))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                summary_for_copy.to_string(),
-                            ));
-                            this.mark_copied("summary", cx);
-                        }))
-                        .child(
-                            Label::new(summary.clone())
-                                .size(LabelSize::XSmall)
-                                .weight(gpui::FontWeight::BOLD),
-                        )
-                        .when(summary_copied, |el| {
-                            el.child(
-                                Label::new("Copied!")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Success),
-                            )
-                        }),
-                )
-                .child(
-                    IconButton::new("cherry-pick-btn", IconName::GitCommit)
-                        .size(ButtonSize::Compact)
-                        .style(ButtonStyle::Transparent)
-                        .tooltip("Cherry-pick this commit")
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(DetailPanelEvent::CherryPick(sha_for_cherry.to_string()));
-                        })),
-                ),
-        );
-
-        if !refs.is_empty() {
-            let mut refs_row = div().h_flex().gap_1().flex_wrap();
-            for ref_label in &refs {
-                let badge_color = match ref_label {
-                    RefLabel::Head => Color::Warning,
-                    RefLabel::LocalBranch(_) => Color::Success,
-                    RefLabel::RemoteBranch(_) => Color::Info,
-                    RefLabel::Tag(_) => Color::Accent,
-                };
-                let name: SharedString = ref_label.display_name().to_string().into();
-                let badge = Badge::new(name).color(badge_color).bold();
-                refs_row = refs_row.child(badge);
-            }
-            card = card.child(refs_row);
-        }
-
-        if !description.is_empty() {
-            let desc_for_copy = description.clone();
-            let desc_copied = self.is_copied("description");
-            card = card.child(
-                div()
-                    .id("description-copy")
-                    .v_flex()
-                    .w_full()
-                    .min_w_0()
-                    .pt_1()
-                    .gap(px(2.))
-                    .border_t_1()
-                    .border_color(colors.border_variant)
-                    .text_xs()
-                    .text_color(colors.text_muted)
-                    .cursor_pointer()
-                    .hover(|s| s.opacity(0.8))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(
-                            desc_for_copy.clone(),
-                        ));
-                        this.mark_copied("description", cx);
-                    }))
-                    .child(render_markdown(&description, _window, cx))
-                    .when(desc_copied, |el| {
-                        el.child(
-                            Label::new("Copied!")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Success),
-                        )
-                    }),
-            );
-        }
-
+        // Author row: avatar + name/email + timestamp
         let avatar_url = cx
             .try_global::<AvatarCache>()
             .and_then(|cache| cache.avatar_url(&commit.author.email))
             .map(|s| s.to_string());
         let avatar_bg = colors.border_focused;
         let avatar_text_color = colors.background;
-        let mut avatar_circle = div()
-            .w(px(20.))
-            .h(px(20.))
-            .rounded_full()
-            .bg(avatar_bg)
-            .flex()
-            .items_center()
-            .justify_center();
+        let avatar_circle =
+            self.render_avatar(avatar_url, initials, avatar_bg, avatar_text_color, px(24.));
 
-        if let Some(url) = avatar_url {
-            let fb_initials = initials.clone();
-            avatar_circle = avatar_circle.child(
-                img(url)
-                    .rounded_full()
-                    .size_full()
-                    .object_fit(ObjectFit::Cover)
-                    .with_fallback(move || {
-                        div()
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .text_color(avatar_text_color)
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child(fb_initials.clone()),
-                            )
-                            .into_any_element()
-                    }),
-            );
-        } else {
-            avatar_circle = avatar_circle.child(
-                div()
-                    .text_color(avatar_text_color)
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(initials.clone()),
-            );
-        }
-
-        card = card.child(
+        header_card = header_card.child(
             div()
-                .h_flex()
-                .gap_2()
-                .items_center()
-                .child(avatar_circle)
+                .v_flex()
+                .w_full()
+                .gap(px(4.))
                 .child(
                     div()
-                        .v_flex()
+                        .h_flex()
+                        .gap(px(10.))
+                        .items_center()
+                        .child(avatar_circle)
                         .child(
                             div()
-                                .h_flex()
-                                .gap_1()
+                                .flex_1()
+                                .min_w_0()
                                 .overflow_hidden()
                                 .child(
                                     Label::new(author_name)
-                                        .size(LabelSize::XSmall)
-                                        .weight(gpui::FontWeight::SEMIBOLD),
-                                )
-                                .child(
-                                    Label::new(author_email)
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted)
+                                        .size(LabelSize::Small)
+                                        .weight(gpui::FontWeight::BOLD)
                                         .truncate(),
                                 ),
+                        ),
+                )
+                .child(
+                    Label::new(author_email)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted)
+                        .truncate(),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .gap(px(4.))
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::Clock)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
                         )
-                        .child(Label::new(date).size(LabelSize::XSmall).color(Color::Muted)),
+                        .child(
+                            Label::new(date)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted)
+                                .truncate(),
+                        ),
                 ),
         );
 
-        if !commit.co_authors.is_empty() {
-            card = card.child(self.render_co_authors(&commit.co_authors, &colors, cx));
-        }
-
+        // SHA row
         let sha_copy_clone = sha_for_copy.clone();
         let sha_copied = self.is_copied("sha");
         let sha_icon = if sha_copied {
@@ -1071,10 +1096,11 @@ impl Render for DetailPanel {
         } else {
             IconName::Copy
         };
-        card = card.child(
+
+        header_card = header_card.child(
             div()
                 .h_flex()
-                .gap_2()
+                .gap(px(8.))
                 .items_center()
                 .child(
                     Label::new("SHA")
@@ -1097,7 +1123,7 @@ impl Render for DetailPanel {
                             div()
                                 .font_family("monospace")
                                 .text_xs()
-                                .text_color(Color::Accent.color(cx))
+                                .text_color(colors.text_accent)
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .child(short_sha),
                         )
@@ -1135,34 +1161,190 @@ impl Render for DetailPanel {
                 }),
         );
 
+        // Parent commits as interactive badges
         if !commit.parent_oids.is_empty() {
-            let parents_text: SharedString = commit
-                .parent_oids
-                .iter()
-                .map(|oid| format!("{:.7}", oid))
-                .collect::<Vec<_>>()
-                .join(", ")
-                .into();
-            card = card.child(
+            let mut parents_row = div()
+                .h_flex()
+                .gap(px(8.))
+                .items_center()
+                .flex_wrap()
+                .child(
+                    Label::new("Parents")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted)
+                        .weight(gpui::FontWeight::SEMIBOLD),
+                );
+
+            for parent_oid in &commit.parent_oids {
+                let parent_short: SharedString = format!("{:.7}", parent_oid).into();
+                parents_row = parents_row.child(
+                    div()
+                        .h_flex()
+                        .gap(px(4.))
+                        .items_center()
+                        .px(px(6.))
+                        .py(px(2.))
+                        .bg(colors.surface_background)
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(colors.border_variant)
+                        .child(
+                            div()
+                                .font_family("monospace")
+                                .text_xs()
+                                .text_color(colors.text_accent)
+                                .child(parent_short),
+                        ),
+                );
+            }
+
+            header_card = header_card.child(parents_row);
+        }
+
+        // Ref badges: branches and tags
+        if !refs.is_empty() {
+            let mut refs_row = div().h_flex().gap(px(4.)).flex_wrap();
+            for ref_label in &refs {
+                let badge_color = match ref_label {
+                    RefLabel::Head => Color::Warning,
+                    RefLabel::LocalBranch(_) => Color::Success,
+                    RefLabel::RemoteBranch(_) => Color::Info,
+                    RefLabel::Tag(_) => Color::Accent,
+                };
+                let name: SharedString = ref_label.display_name().to_string().into();
+                let is_tag = matches!(ref_label, RefLabel::Tag(_));
+                let badge = Badge::new(name).color(badge_color).bold();
+                if is_tag {
+                    refs_row = refs_row.child(
+                        div()
+                            .h_flex()
+                            .gap(px(2.))
+                            .items_center()
+                            .child(
+                                Icon::new(IconName::Tag)
+                                    .size(IconSize::XSmall)
+                                    .color(Color::Accent),
+                            )
+                            .child(badge),
+                    );
+                } else {
+                    refs_row = refs_row.child(badge);
+                }
+            }
+            header_card = header_card.child(refs_row);
+        }
+
+        // Co-authors
+        if !commit.co_authors.is_empty() {
+            header_card =
+                header_card.child(self.render_co_authors(&commit.co_authors, &colors, cx));
+        }
+
+        content = content.child(header_card);
+
+        // -- Commit Message Section --
+        let mut message_card = div()
+            .v_flex()
+            .w_full()
+            .mx_2()
+            .mt_2()
+            .px_3()
+            .py_3()
+            .gap(px(8.))
+            .bg(colors.elevated_surface_background)
+            .rounded(px(6.))
+            .border_1()
+            .border_color(colors.border_variant);
+
+        // Subject line with cherry-pick button
+        let summary_for_copy = summary.clone();
+        let summary_copied = self.is_copied("summary");
+        message_card = message_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_start()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id("summary-copy")
+                        .h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(4.))
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.8))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                summary_for_copy.to_string(),
+                            ));
+                            this.mark_copied("summary", cx);
+                        }))
+                        .overflow_hidden()
+                        .child(
+                            Label::new(summary.clone())
+                                .size(LabelSize::Small)
+                                .weight(gpui::FontWeight::BOLD)
+                                .truncate(),
+                        )
+                        .when(summary_copied, |el| {
+                            el.child(
+                                Label::new("Copied!")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Success),
+                            )
+                        }),
+                )
+                .child(
+                    IconButton::new("cherry-pick-btn", IconName::GitCommit)
+                        .size(ButtonSize::Compact)
+                        .style(ButtonStyle::Transparent)
+                        .tooltip("Cherry-pick this commit")
+                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                            cx.emit(DetailPanelEvent::CherryPick(sha_for_cherry.to_string()));
+                        })),
+                ),
+        );
+
+        // Description body
+        if !description.is_empty() {
+            let desc_for_copy = description.clone();
+            let desc_copied = self.is_copied("description");
+            message_card = message_card.child(
                 div()
-                    .h_flex()
-                    .gap_2()
-                    .child(
-                        Label::new("Parents")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted)
-                            .weight(gpui::FontWeight::SEMIBOLD),
-                    )
-                    .child(
-                        Label::new(parents_text)
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    ),
+                    .w_full()
+                    .h(px(1.))
+                    .bg(colors.border_variant),
+            ).child(
+                div()
+                    .id("description-copy")
+                    .v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap(px(4.))
+                    .text_xs()
+                    .text_color(colors.text_muted)
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.8))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(desc_for_copy.clone()));
+                        this.mark_copied("description", cx);
+                    }))
+                    .child(render_markdown(&description, window, cx))
+                    .when(desc_copied, |el| {
+                        el.child(
+                            Label::new("Copied!")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Success),
+                        )
+                    }),
             );
         }
 
-        content = content.child(card);
+        content = content.child(message_card);
 
+        // -- Changed Files Section --
         if let (Some(diff), Some(cached)) = (&self.commit_diff, &self.cached_file_tree) {
             let file_count = diff.files.len();
             let file_count_text: SharedString = format!(
@@ -1182,11 +1364,12 @@ impl Render for DetailPanel {
                     .h_flex()
                     .w_full()
                     .h(px(28.))
+                    .mt_2()
                     .px(px(10.))
                     .gap(px(4.))
                     .items_center()
                     .bg(colors.surface_background)
-                    .border_b_1()
+                    .border_y_1()
                     .border_color(colors.border_variant)
                     .child(
                         Icon::new(IconName::File)
@@ -1230,9 +1413,12 @@ impl Render for DetailPanel {
                     .child(DiffStat::new(total_additions, total_deletions)),
             );
 
-            let file_list = match self.file_view_mode {
-                FileViewMode::Flat => self.render_flat_file_list(diff, cached, &colors, cx),
-                FileViewMode::Tree => self.render_tree_file_list(diff, cached, &colors, cx),
+            let file_list: gpui::AnyElement = match self.file_view_mode {
+                FileViewMode::Flat => self.render_flat_file_list(diff, cached, cx),
+                FileViewMode::Tree => {
+                    self.render_tree_file_list(diff, cached, &colors, cx)
+                        .into_any_element()
+                }
             };
             content = content.child(file_list);
         }

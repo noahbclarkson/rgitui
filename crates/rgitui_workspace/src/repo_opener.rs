@@ -1,18 +1,19 @@
 use std::path::PathBuf;
 
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString, Window};
+use gpui::{
+    div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, FontWeight,
+    KeyDownEvent, Render, SharedString, Window,
+};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonStyle, IconName, Label, LabelSize, TextInput, TextInputEvent};
+use rgitui_ui::{Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent};
 
-/// Events emitted by the repository opener dialog.
 #[derive(Debug, Clone)]
 pub enum RepoOpenerEvent {
     OpenRepo(PathBuf),
     Dismissed,
 }
 
-/// A modal dialog for opening a Git repository by path or from recent repos.
 pub struct RepoOpener {
     editor: Entity<TextInput>,
     recent_repos: Vec<PathBuf>,
@@ -28,7 +29,7 @@ impl RepoOpener {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("/path/to/repository");
+            ti.set_placeholder("Enter repository path...");
             ti
         });
         cx.subscribe(&editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
@@ -74,7 +75,6 @@ impl RepoOpener {
         self.visible
     }
 
-    /// Toggle visibility without focusing (for use from command palette).
     pub fn toggle_visible(&mut self, cx: &mut Context<Self>) {
         self.visible = !self.visible;
         if self.visible {
@@ -156,7 +156,8 @@ impl RepoOpener {
                     .pick_folder()
                     .await
                     .map(|handle| handle.path().to_path_buf())
-            }.await;
+            }
+            .await;
             if let Some(path) = folder {
                 cx.update(|cx| {
                     let _ = this.update(cx, |this, cx| {
@@ -167,7 +168,8 @@ impl RepoOpener {
                     });
                 });
             }
-        }).detach();
+        })
+        .detach();
     }
 
     fn handle_key_down(
@@ -179,6 +181,10 @@ impl RepoOpener {
         let key = event.keystroke.key.as_str();
 
         match key {
+            "escape" => {
+                self.dismiss(cx);
+                cx.stop_propagation();
+            }
             "up" => {
                 if self.filtered_indices.is_empty() {
                     return;
@@ -189,6 +195,7 @@ impl RepoOpener {
                     None => self.filtered_indices.len().saturating_sub(1),
                 });
                 cx.notify();
+                cx.stop_propagation();
             }
             "down" => {
                 if self.filtered_indices.is_empty() {
@@ -200,6 +207,7 @@ impl RepoOpener {
                     None => 0,
                 });
                 cx.notify();
+                cx.stop_propagation();
             }
             _ => {}
         }
@@ -208,60 +216,112 @@ impl RepoOpener {
 
 impl Render for RepoOpener {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
-
         if !self.visible {
             return div().id("repo-opener").into_any_element();
         }
 
-        // Build the modal content
+        let colors = cx.colors();
+
         let mut modal = div()
             .id("repo-opener-modal")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
             .w(px(500.))
-            .max_h(px(450.))
-            .bg(colors.elevated_surface_background)
-            .border_1()
-            .border_color(colors.border)
-            .rounded_lg()
+            .max_h(px(480.))
             .elevation_3(cx)
+            .rounded(px(10.))
             .overflow_hidden()
             .on_click(|_: &ClickEvent, _, cx| {
                 cx.stop_propagation();
+            })
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
             });
 
-        // Title
-        modal = modal.child(
-            div().px_4().pt_4().pb_2().child(
-                Label::new("Open Repository")
-                    .size(LabelSize::Large)
-                    .weight(gpui::FontWeight::BOLD)
-                    .color(Color::Default),
-            ),
-        );
-
-        // Path input with browse button
         modal = modal.child(
             div()
-                .px_4()
-                .pb_2()
+                .h_flex()
+                .w_full()
+                .h(px(48.))
+                .px(px(16.))
+                .items_center()
+                .border_b_1()
+                .border_color(colors.border_variant)
+                .justify_between()
+                .child(
+                    div()
+                        .h_flex()
+                        .gap(px(8.))
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::Folder)
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Open Repository")
+                                .size(LabelSize::Large)
+                                .weight(FontWeight::SEMIBOLD),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("repo-opener-close-btn")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(28.))
+                        .h(px(28.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(colors.ghost_element_hover))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.dismiss(cx);
+                        }))
+                        .child(
+                            Icon::new(IconName::X)
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
+                        ),
+                ),
+        );
+
+        let focused_border = colors.border_focused;
+        modal = modal.child(
+            div()
+                .px(px(16.))
+                .py(px(12.))
                 .v_flex()
-                .gap_1()
+                .gap(px(8.))
                 .child(
                     Label::new("Repository path")
                         .size(LabelSize::Small)
+                        .weight(FontWeight::MEDIUM)
                         .color(Color::Muted),
                 )
                 .child(
                     div()
                         .h_flex()
-                        .gap_2()
+                        .gap(px(8.))
                         .child(
                             div()
                                 .flex_1()
-                                .child(self.editor.clone()),
+                                .h_flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .px(px(8.))
+                                .border_1()
+                                .border_color(focused_border)
+                                .rounded(px(6.))
+                                .child(
+                                    Icon::new(IconName::Folder)
+                                        .size(IconSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    div().flex_1().child(self.editor.clone()),
+                                ),
                         )
                         .child(
                             Button::new("browse-folder", "Browse")
@@ -274,28 +334,21 @@ impl Render for RepoOpener {
                 ),
         );
 
-        // Hint text
-        modal = modal.child(
-            div().px_4().pb_1().child(
-                Label::new("Type a path, browse for a folder, or select from recent repositories")
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted),
-            ),
-        );
-
-        // Recent repos section
         if !self.recent_repos.is_empty() {
             modal = modal.child(
                 div()
-                    .px_4()
-                    .pt_1()
-                    .pb_1()
+                    .h_flex()
+                    .w_full()
+                    .px(px(16.))
+                    .pt(px(4.))
+                    .pb(px(8.))
                     .border_t_1()
                     .border_color(colors.border_variant)
+                    .items_center()
                     .child(
                         Label::new("Recent Repositories")
                             .size(LabelSize::XSmall)
-                            .weight(gpui::FontWeight::SEMIBOLD)
+                            .weight(FontWeight::SEMIBOLD)
                             .color(Color::Muted),
                     ),
             );
@@ -304,6 +357,7 @@ impl Render for RepoOpener {
                 .id("repo-opener-results")
                 .v_flex()
                 .w_full()
+                .px(px(8.))
                 .overflow_y_scroll()
                 .max_h(px(260.));
 
@@ -319,20 +373,23 @@ impl Render for RepoOpener {
                 let is_selected = self.selected_index == Some(display_idx);
                 let path_clone = repo_path.clone();
 
+                let hover_bg = colors.ghost_element_hover;
+                let selected_bg = colors.element_selected;
+
                 let row = div()
                     .id(ElementId::NamedInteger(
                         "repo-opener-item".into(),
                         display_idx as u64,
                     ))
-                    .v_flex()
+                    .h_flex()
                     .w_full()
-                    .px(px(12.))
-                    .py(px(6.))
-                    .mx(px(4.))
+                    .px(px(10.))
+                    .py(px(8.))
+                    .gap(px(10.))
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .when(is_selected, |el| el.bg(colors.ghost_element_selected))
-                    .hover(|s| s.bg(colors.ghost_element_hover))
+                    .when(is_selected, move |el| el.bg(selected_bg))
+                    .hover(move |s| s.bg(hover_bg))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         let path = path_clone.clone();
                         this.visible = false;
@@ -341,14 +398,30 @@ impl Render for RepoOpener {
                         cx.notify();
                     }))
                     .child(
-                        Label::new(repo_name)
-                            .size(LabelSize::Small)
-                            .color(Color::Default),
+                        Icon::new(IconName::Folder)
+                            .size(IconSize::Small)
+                            .color(if is_selected {
+                                Color::Accent
+                            } else {
+                                Color::Muted
+                            }),
                     )
                     .child(
-                        Label::new(repo_path_display)
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                        div()
+                            .v_flex()
+                            .flex_1()
+                            .gap(px(2.))
+                            .child(
+                                Label::new(repo_name)
+                                    .size(LabelSize::Small)
+                                    .weight(FontWeight::MEDIUM)
+                                    .color(Color::Default),
+                            )
+                            .child(
+                                Label::new(repo_path_display)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
                     );
 
                 results = results.child(row);
@@ -356,11 +429,24 @@ impl Render for RepoOpener {
 
             if self.filtered_indices.is_empty() {
                 results = results.child(
-                    div().w_full().py_4().flex().justify_center().child(
-                        Label::new("No matching repositories")
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    ),
+                    div()
+                        .w_full()
+                        .py(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .v_flex()
+                        .gap(px(8.))
+                        .child(
+                            Icon::new(IconName::Search)
+                                .size(IconSize::Large)
+                                .color(Color::Placeholder),
+                        )
+                        .child(
+                            Label::new("No matching repositories")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
                 );
             }
 
@@ -368,12 +454,20 @@ impl Render for RepoOpener {
         } else {
             modal = modal.child(
                 div()
-                    .px_4()
-                    .py_4()
+                    .w_full()
+                    .py(px(32.))
                     .border_t_1()
                     .border_color(colors.border_variant)
                     .flex()
+                    .items_center()
                     .justify_center()
+                    .v_flex()
+                    .gap(px(8.))
+                    .child(
+                        Icon::new(IconName::Folder)
+                            .size(IconSize::Large)
+                            .color(Color::Placeholder),
+                    )
                     .child(
                         Label::new("No recent repositories")
                             .size(LabelSize::Small)
@@ -382,16 +476,16 @@ impl Render for RepoOpener {
             );
         }
 
-        // Buttons
         modal = modal.child(
             div()
                 .h_flex()
                 .justify_end()
-                .gap_2()
-                .px_4()
-                .py_3()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(12.))
                 .border_t_1()
                 .border_color(colors.border_variant)
+                .bg(colors.surface_background)
                 .child(
                     Button::new("cancel-open", "Cancel")
                         .style(ButtonStyle::Subtle)
@@ -406,7 +500,6 @@ impl Render for RepoOpener {
                 ))),
         );
 
-        // Backdrop + modal
         div()
             .id("repo-opener-backdrop")
             .occlude()
@@ -421,7 +514,7 @@ impl Render for RepoOpener {
                 h: 0.0,
                 s: 0.0,
                 l: 0.0,
-                a: 0.5,
+                a: 0.4,
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.dismiss(cx);

@@ -95,30 +95,17 @@ impl StatusBar {
         self.repo_state_label = Some(label.into());
         self
     }
-}
 
-impl RenderOnce for StatusBar {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let colors = cx.colors();
-
-        let mut bar = div()
-            .h_flex()
-            .w_full()
-            .h(px(26.))
-            .bg(colors.status_bar_background)
-            .border_t_1()
-            .border_color(colors.border_variant)
-            .px(px(12.))
-            .gap(px(12.))
-            .items_center();
-
-        // Branch name with icon
+    fn render_left_section(&self, colors: &rgitui_theme::ThemeColors) -> gpui::Div {
         let has_branch = !self.branch_name.is_empty();
         let branch_color = if self.head_detached {
             Color::Warning
         } else {
             Color::Accent
         };
+
+        let mut left = div().h_flex().items_center().gap(px(10.));
+
         if has_branch {
             let mut branch_row = div()
                 .h_flex()
@@ -130,7 +117,7 @@ impl RenderOnce for StatusBar {
                         .color(branch_color),
                 )
                 .child(
-                    Label::new(self.branch_name)
+                    Label::new(self.branch_name.clone())
                         .size(LabelSize::XSmall)
                         .color(branch_color)
                         .weight(gpui::FontWeight::SEMIBOLD),
@@ -142,12 +129,11 @@ impl RenderOnce for StatusBar {
                         .color(Color::Warning),
                 );
             }
-            bar = bar.child(branch_row);
+            left = left.child(branch_row);
         }
 
-        // Repo state indicator (merging, rebasing, etc.)
-        if let Some(state_label) = self.repo_state_label {
-            bar = bar.child(
+        if let Some(ref state_label) = self.repo_state_label {
+            left = left.child(
                 div()
                     .h_flex()
                     .h(px(18.))
@@ -157,7 +143,7 @@ impl RenderOnce for StatusBar {
                     .rounded(px(3.))
                     .bg(colors.ghost_element_selected)
                     .child(
-                        Label::new(state_label)
+                        Label::new(state_label.clone())
                             .size(LabelSize::XSmall)
                             .color(Color::Warning)
                             .weight(gpui::FontWeight::SEMIBOLD),
@@ -165,15 +151,14 @@ impl RenderOnce for StatusBar {
             );
         }
 
-        // Ahead/behind with individual indicators
         if self.ahead > 0 || self.behind > 0 {
-            bar = bar.child(
+            left = left.child(
                 div()
                     .h_flex()
                     .gap(px(6.))
                     .items_center()
                     .when(self.ahead > 0, |el| {
-                        let ahead_text: SharedString = format!("{}", self.ahead).into();
+                        let ahead_text: SharedString = self.ahead.to_string().into();
                         el.child(
                             div()
                                 .h_flex()
@@ -192,7 +177,7 @@ impl RenderOnce for StatusBar {
                         )
                     })
                     .when(self.behind > 0, |el| {
-                        let behind_text: SharedString = format!("{}", self.behind).into();
+                        let behind_text: SharedString = self.behind.to_string().into();
                         el.child(
                             div()
                                 .h_flex()
@@ -213,13 +198,13 @@ impl RenderOnce for StatusBar {
             );
         }
 
-        // Separator
-        if has_branch {
-            bar = bar.child(div().w(px(1.)).h(px(14.)).bg(colors.border_variant));
+        if has_branch
+            && (self.operation_message.is_some() || self.stash_count > 0)
+        {
+            left = left.child(div().w(px(1.)).h(px(14.)).bg(colors.border_variant));
         }
 
-        // Operation message with state indicator
-        if let Some(msg) = self.operation_message {
+        if let Some(ref msg) = self.operation_message {
             let (msg_color, msg_icon) = if self.is_error {
                 (Color::Error, Some(IconName::X))
             } else if self.is_loading {
@@ -237,18 +222,17 @@ impl RenderOnce for StatusBar {
             }
 
             msg_row = msg_row.child(
-                Label::new(SharedString::from(msg))
+                Label::new(SharedString::from(msg.clone()))
                     .size(LabelSize::XSmall)
                     .color(msg_color),
             );
 
-            bar = bar.child(msg_row);
+            left = left.child(msg_row);
         }
 
-        // Stash count indicator
         if self.stash_count > 0 {
-            let stash_text: SharedString = format!("{}", self.stash_count).into();
-            bar = bar.child(
+            let stash_text: SharedString = self.stash_count.to_string().into();
+            left = left.child(
                 div()
                     .h_flex()
                     .gap(px(3.))
@@ -266,13 +250,17 @@ impl RenderOnce for StatusBar {
             );
         }
 
-        // Spacer
-        bar = bar.child(div().flex_1());
+        left
+    }
 
-        // Right-aligned: Changes in pill badges
+    fn render_right_section(&self, colors: &rgitui_theme::ThemeColors) -> gpui::Div {
+        let has_branch = !self.branch_name.is_empty();
+
+        let mut right = div().h_flex().items_center().gap(px(10.));
+
         if self.staged_count > 0 {
             let staged_text: SharedString = format!("{} staged", self.staged_count).into();
-            bar = bar.child(
+            right = right.child(
                 div()
                     .h_flex()
                     .h(px(18.))
@@ -293,9 +281,10 @@ impl RenderOnce for StatusBar {
                     ),
             );
         }
+
         if self.unstaged_count > 0 {
             let unstaged_text: SharedString = format!("{} changed", self.unstaged_count).into();
-            bar = bar.child(
+            right = right.child(
                 div()
                     .h_flex()
                     .h(px(18.))
@@ -317,9 +306,8 @@ impl RenderOnce for StatusBar {
             );
         }
 
-        // Clean indicator when no changes
         if self.staged_count == 0 && self.unstaged_count == 0 && has_branch {
-            bar = bar.child(
+            right = right.child(
                 div()
                     .h_flex()
                     .gap(px(3.))
@@ -337,9 +325,8 @@ impl RenderOnce for StatusBar {
             );
         }
 
-        // Repo path (far right)
-        if let Some(path) = self.repo_path {
-            bar = bar
+        if let Some(ref path) = self.repo_path {
+            right = right
                 .child(div().w(px(1.)).h(px(14.)).bg(colors.border_variant))
                 .child(
                     div()
@@ -353,7 +340,7 @@ impl RenderOnce for StatusBar {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new(path)
+                            Label::new(path.clone())
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted)
                                 .truncate(),
@@ -361,6 +348,28 @@ impl RenderOnce for StatusBar {
                 );
         }
 
-        bar
+        right
+    }
+}
+
+impl RenderOnce for StatusBar {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = cx.colors();
+
+        let left = self.render_left_section(colors);
+        let right = self.render_right_section(colors);
+
+        div()
+            .h_flex()
+            .w_full()
+            .h(px(28.))
+            .bg(colors.status_bar_background)
+            .border_t_1()
+            .border_color(colors.border_variant)
+            .px(px(12.))
+            .items_center()
+            .justify_between()
+            .child(left)
+            .child(right)
     }
 }

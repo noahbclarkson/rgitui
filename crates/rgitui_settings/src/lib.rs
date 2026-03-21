@@ -20,6 +20,105 @@ pub enum Compactness {
     Comfortable,
 }
 
+/// How diffs are displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffViewMode {
+    #[default]
+    Unified,
+    SideBySide,
+}
+
+impl fmt::Display for DiffViewMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DiffViewMode::Unified => write!(f, "Unified"),
+            DiffViewMode::SideBySide => write!(f, "Side-by-Side"),
+        }
+    }
+}
+
+impl FromStr for DiffViewMode {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().replace('-', "_").as_str() {
+            "unified" => Ok(DiffViewMode::Unified),
+            "side_by_side" | "side by side" => Ok(DiffViewMode::SideBySide),
+            _ => Err(format!("Unknown diff view mode: {}", s)),
+        }
+    }
+}
+
+/// The visual style used for the commit graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GraphStyle {
+    Rails,
+    #[default]
+    Curved,
+    Angular,
+}
+
+impl fmt::Display for GraphStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GraphStyle::Rails => write!(f, "Rails"),
+            GraphStyle::Curved => write!(f, "Curved"),
+            GraphStyle::Angular => write!(f, "Angular"),
+        }
+    }
+}
+
+impl FromStr for GraphStyle {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "rails" => Ok(GraphStyle::Rails),
+            "curved" => Ok(GraphStyle::Curved),
+            "angular" => Ok(GraphStyle::Angular),
+            _ => Err(format!("Unknown graph style: {}", s)),
+        }
+    }
+}
+
+/// How often the application should automatically fetch from remotes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoFetchInterval {
+    #[default]
+    Disabled,
+    OneMinute,
+    FiveMinutes,
+    FifteenMinutes,
+    ThirtyMinutes,
+}
+
+impl fmt::Display for AutoFetchInterval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AutoFetchInterval::Disabled => write!(f, "Disabled"),
+            AutoFetchInterval::OneMinute => write!(f, "1 min"),
+            AutoFetchInterval::FiveMinutes => write!(f, "5 min"),
+            AutoFetchInterval::FifteenMinutes => write!(f, "15 min"),
+            AutoFetchInterval::ThirtyMinutes => write!(f, "30 min"),
+        }
+    }
+}
+
+impl FromStr for AutoFetchInterval {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "disabled" => Ok(AutoFetchInterval::Disabled),
+            "1 min" | "one_minute" => Ok(AutoFetchInterval::OneMinute),
+            "5 min" | "five_minutes" => Ok(AutoFetchInterval::FiveMinutes),
+            "15 min" | "fifteen_minutes" => Ok(AutoFetchInterval::FifteenMinutes),
+            "30 min" | "thirty_minutes" => Ok(AutoFetchInterval::ThirtyMinutes),
+            _ => Err(format!("Unknown auto-fetch interval: {}", s)),
+        }
+    }
+}
+
 impl Compactness {
     pub fn multiplier(&self) -> f32 {
         match self {
@@ -85,10 +184,34 @@ pub struct AppSettings {
     pub terminal_command: String,
     #[serde(default)]
     pub editor_command: String,
+    #[serde(default = "default_font_size")]
+    pub font_size: u32,
+    #[serde(default = "default_show_line_numbers_in_diff")]
+    pub show_line_numbers_in_diff: bool,
+    #[serde(default)]
+    pub diff_view_mode: DiffViewMode,
+    #[serde(default)]
+    pub graph_style: GraphStyle,
+    #[serde(default)]
+    pub auto_fetch_interval: AutoFetchInterval,
+    #[serde(default = "default_confirm_destructive")]
+    pub confirm_destructive_operations: bool,
 }
 
 fn default_settings_version() -> u32 {
     1
+}
+
+fn default_font_size() -> u32 {
+    14
+}
+
+fn default_show_line_numbers_in_diff() -> bool {
+    true
+}
+
+fn default_confirm_destructive() -> bool {
+    true
 }
 
 /// A persisted local workspace snapshot.
@@ -292,6 +415,12 @@ impl Default for AppSettings {
             compactness: Compactness::default(),
             terminal_command: String::new(),
             editor_command: String::new(),
+            font_size: default_font_size(),
+            show_line_numbers_in_diff: default_show_line_numbers_in_diff(),
+            diff_view_mode: DiffViewMode::default(),
+            graph_style: GraphStyle::default(),
+            auto_fetch_interval: AutoFetchInterval::default(),
+            confirm_destructive_operations: default_confirm_destructive(),
         }
     }
 }

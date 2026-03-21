@@ -4,8 +4,8 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    KeyDownEvent, Render, ScrollStrategy, SharedString,
-    UniformListScrollHandle, Window,
+    FontWeight, KeyDownEvent, Render, ScrollStrategy, SharedString, UniformListScrollHandle,
+    Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent};
@@ -387,12 +387,11 @@ impl CommandPalette {
 
 impl Render for CommandPalette {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
-
         if !self.visible {
             return div().id("command-palette").into_any_element();
         }
 
+        let colors = cx.colors();
         let query_is_empty = self.query_editor.read(cx).is_empty();
         let filtered_count = self.filtered_indices.len();
 
@@ -402,13 +401,10 @@ impl Render for CommandPalette {
             .key_context("CommandPalette")
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
-            .w(px(560.))
+            .w(px(480.))
             .max_h(px(440.))
-            .bg(colors.elevated_surface_background)
-            .border_1()
-            .border_color(colors.border)
-            .rounded(px(12.))
             .elevation_3(cx)
+            .rounded(px(10.))
             .overflow_hidden()
             .on_click(|_: &ClickEvent, _, cx| {
                 cx.stop_propagation();
@@ -420,7 +416,7 @@ impl Render for CommandPalette {
                 cx.stop_propagation();
             });
 
-        let search_bg = gpui::Hsla { a: 0.5, ..colors.surface_background };
+        let focused_border = colors.border_focused;
         modal = modal.child(
             div()
                 .h_flex()
@@ -429,9 +425,8 @@ impl Render for CommandPalette {
                 .px(px(14.))
                 .gap(px(10.))
                 .items_center()
-                .bg(search_bg)
                 .border_b_1()
-                .border_color(colors.border_variant)
+                .border_color(focused_border)
                 .child(
                     Icon::new(IconName::Search)
                         .size(IconSize::Small)
@@ -442,7 +437,7 @@ impl Render for CommandPalette {
                 )
                 .when(!query_is_empty, |el| {
                     let count_text: SharedString =
-                        format!("{} results", filtered_count).into();
+                        format!("{filtered_count} results").into();
                     el.child(
                         Label::new(count_text)
                             .size(LabelSize::XSmall)
@@ -453,15 +448,16 @@ impl Render for CommandPalette {
 
         if filtered_count > 0 {
             let selected_index = self.selected_index;
-            let selected_bg = colors.ghost_element_selected;
+            let selected_bg = colors.element_selected;
             let hover_bg = colors.ghost_element_hover;
+            let hint_bg = colors.hint_background;
 
             let commands: Arc<Vec<PaletteCommand>> = Arc::new(self.commands.clone());
             let filtered: Arc<Vec<usize>> = Arc::new(self.filtered_indices.clone());
             let view = cx.weak_entity();
 
             let visible_items = filtered_count.min(10);
-            let list_height = visible_items as f32 * 36.0 + 2.0;
+            let list_height = visible_items as f32 * 36.0 + 4.0;
 
             let list = uniform_list(
                 "palette-results",
@@ -477,7 +473,6 @@ impl Render for CommandPalette {
                             let cmd_id = cmd.id;
                             let icon = CommandPalette::category_icon(cmd.category);
                             let shortcut = cmd.shortcut;
-                            let category: SharedString = cmd.category.into();
 
                             let view_click = view.clone();
 
@@ -490,7 +485,7 @@ impl Render for CommandPalette {
                                 .w_full()
                                 .h(px(36.))
                                 .px(px(14.))
-                                .mx_2()
+                                .mx(px(4.))
                                 .gap(px(10.))
                                 .items_center()
                                 .rounded(px(6.))
@@ -520,22 +515,11 @@ impl Render for CommandPalette {
                             );
 
                             row = row.child(
-                                div()
-                                    .h_flex()
-                                    .gap(px(8.))
-                                    .items_center()
-                                    .child(
-                                        Label::new(label)
-                                            .size(LabelSize::Small)
-                                            .when(is_selected, |l| {
-                                                l.weight(gpui::FontWeight::MEDIUM)
-                                            }),
-                                    )
-                                    .child(
-                                        Label::new(category)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
-                                    ),
+                                Label::new(label)
+                                    .size(LabelSize::Small)
+                                    .when(is_selected, |l| {
+                                        l.weight(FontWeight::MEDIUM)
+                                    }),
                             );
 
                             row = row.child(div().flex_1());
@@ -544,14 +528,16 @@ impl Render for CommandPalette {
                                 row = row.child(
                                     div()
                                         .h_flex()
-                                        .gap(px(3.))
-                                        .px(px(6.))
-                                        .py(px(2.))
+                                        .h(px(22.))
+                                        .px(px(8.))
                                         .rounded(px(4.))
+                                        .bg(hint_bg)
+                                        .items_center()
                                         .child(
                                             Label::new(SharedString::from(shortcut_text))
                                                 .size(LabelSize::XSmall)
-                                                .color(Color::Muted),
+                                                .color(Color::Muted)
+                                                .weight(FontWeight::MEDIUM),
                                         ),
                                 );
                             }
@@ -565,13 +551,15 @@ impl Render for CommandPalette {
             .max_h(px(360.))
             .track_scroll(&self.scroll_handle);
 
-            modal = modal.child(list);
+            modal = modal.child(
+                div().py(px(4.)).child(list),
+            );
         } else {
             modal = modal.child(
                 div()
                     .id("palette-empty")
                     .w_full()
-                    .py(px(24.))
+                    .py(px(32.))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -594,13 +582,13 @@ impl Render for CommandPalette {
             div()
                 .h_flex()
                 .w_full()
-                .h(px(30.))
+                .h(px(32.))
                 .px(px(14.))
-                .gap(px(12.))
+                .gap(px(16.))
                 .items_center()
                 .border_t_1()
                 .border_color(colors.border_variant)
-                .bg(search_bg)
+                .bg(colors.surface_background)
                 .child(
                     Label::new("\u{2191}\u{2193} navigate")
                         .size(LabelSize::XSmall)
@@ -628,7 +616,7 @@ impl Render for CommandPalette {
             .flex()
             .items_start()
             .justify_center()
-            .pt(px(60.))
+            .pt(px(80.))
             .bg(gpui::Hsla {
                 h: 0.0,
                 s: 0.0,

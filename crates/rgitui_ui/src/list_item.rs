@@ -116,9 +116,15 @@ impl RenderOnce for ListItem {
         let indent_px = self.indent_level as f32 * self.indent_step;
 
         let bg = if self.selected {
-            colors.ghost_element_selected
+            colors.element_selected
         } else {
             colors.ghost_element_background
+        };
+
+        let border_color = if self.selected {
+            colors.border_focused
+        } else {
+            colors.border_transparent
         };
 
         let mut row = div()
@@ -130,7 +136,9 @@ impl RenderOnce for ListItem {
             .px_2()
             .gap_1()
             .rounded_md()
-            .bg(bg);
+            .bg(bg)
+            .border_1()
+            .border_color(border_color);
 
         if indent_px > 0.0 {
             row = row.pl(px(indent_px + 8.0));

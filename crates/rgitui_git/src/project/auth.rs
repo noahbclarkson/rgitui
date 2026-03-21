@@ -171,10 +171,16 @@ pub(crate) fn remote_uses_ssh(repo: &Repository, remote_name: &str) -> Result<bo
 }
 
 pub(crate) fn run_git_network_command(repo_path: &Path, args: &[&str]) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.args(args)
         .current_dir(repo_path)
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .output()
         .with_context(|| format!("Failed to run system git command: git {}", args.join(" ")))?;
 

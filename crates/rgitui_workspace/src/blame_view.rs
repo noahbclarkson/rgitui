@@ -5,12 +5,12 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render, ScrollStrategy,
-    SharedString, UniformListScrollHandle, WeakEntity, Window,
+    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent, Render,
+    ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::BlameLine;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
 /// Events emitted by the blame view.
 #[derive(Debug, Clone)]
@@ -27,7 +27,7 @@ pub struct BlameView {
     focus_handle: FocusHandle,
     selected_line: Option<usize>,
     highlighted_row: Option<usize>,
-    /// Maps commit OID string to a color index for alternating hunk backgrounds.
+    hovered_oid: Option<String>,
     oid_color_indices: Arc<HashMap<String, usize>>,
 }
 
@@ -42,11 +42,11 @@ impl BlameView {
             focus_handle: cx.focus_handle(),
             selected_line: None,
             highlighted_row: None,
+            hovered_oid: None,
             oid_color_indices: Arc::new(HashMap::new()),
         }
     }
 
-    /// Set blame data for display.
     pub fn set_blame(
         &mut self,
         lines: Vec<BlameLine>,
@@ -58,21 +58,21 @@ impl BlameView {
         self.file_path = Some(file_path);
         self.highlighted_row = None;
         self.selected_line = None;
+        self.hovered_oid = None;
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 
-    /// Clear blame data.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.lines = Arc::new(Vec::new());
         self.file_path = None;
         self.highlighted_row = None;
         self.selected_line = None;
+        self.hovered_oid = None;
         self.oid_color_indices = Arc::new(HashMap::new());
         cx.notify();
     }
 
-    /// Whether the blame view has data to display.
     pub fn has_data(&self) -> bool {
         !self.lines.is_empty()
     }
@@ -90,22 +90,19 @@ impl BlameView {
         self.focus_handle.is_focused(window)
     }
 
-    /// Build a mapping from commit OID to a color index for alternating hunk backgrounds.
-    /// Assigns indices in order of first appearance.
     fn compute_oid_color_map(lines: &[BlameLine]) -> HashMap<String, usize> {
         let mut map = HashMap::new();
         let mut next_idx = 0usize;
         for line in lines {
             let oid_str = line.entry.oid.to_string();
-            if !map.contains_key(&oid_str) {
-                map.insert(oid_str, next_idx);
+            if let std::collections::hash_map::Entry::Vacant(e) = map.entry(oid_str) {
+                e.insert(next_idx);
                 next_idx += 1;
             }
         }
         map
     }
 
-    /// Format a timestamp as a human-readable relative time string.
     fn format_relative_time(timestamp: i64) -> String {
         let now = chrono::Utc::now().timestamp();
         let diff = now - timestamp;
@@ -196,6 +193,72 @@ impl BlameView {
             _ => {}
         }
     }
+
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let colors = cx.colors();
+
+        div()
+            .id("blame-view")
+            .v_flex()
+            .size_full()
+            .bg(colors.editor_background)
+            .child(
+                div()
+                    .h_flex()
+                    .w_full()
+                    .h(px(34.))
+                    .px(px(10.))
+                    .gap(px(8.))
+                    .items_center()
+                    .bg(colors.toolbar_background)
+                    .border_b_1()
+                    .border_color(colors.border_variant)
+                    .child(
+                        Icon::new(IconName::Eye)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new("Blame")
+                            .size(LabelSize::XSmall)
+                            .weight(gpui::FontWeight::SEMIBOLD)
+                            .color(Color::Muted),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap(px(8.))
+                            .items_center()
+                            .px(px(24.))
+                            .py(px(16.))
+                            .rounded(px(8.))
+                            .bg(colors.ghost_element_background)
+                            .child(
+                                Icon::new(IconName::File)
+                                    .size(IconSize::Large)
+                                    .color(Color::Placeholder),
+                            )
+                            .child(
+                                Label::new("Select a file to view blame")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new("Press 'b' on a file to see line-by-line attribution")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Placeholder),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 impl Render for BlameView {
@@ -203,70 +266,7 @@ impl Render for BlameView {
         let colors = cx.colors();
 
         if self.lines.is_empty() {
-            return div()
-                .id("blame-view")
-                .v_flex()
-                .size_full()
-                .bg(colors.editor_background)
-                .child(
-                    div()
-                        .h_flex()
-                        .w_full()
-                        .h(px(26.))
-                        .px(px(10.))
-                        .gap(px(4.))
-                        .items_center()
-                        .bg(colors.toolbar_background)
-                        .border_b_1()
-                        .border_color(colors.border_variant)
-                        .child(
-                            Icon::new(IconName::Eye)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                        .child(
-                            Label::new("Blame")
-                                .size(LabelSize::XSmall)
-                                .weight(gpui::FontWeight::SEMIBOLD)
-                                .color(Color::Muted),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .v_flex()
-                                .gap(px(8.))
-                                .items_center()
-                                .px(px(24.))
-                                .py(px(16.))
-                                .rounded(px(8.))
-                                .bg(gpui::Hsla {
-                                    a: 0.03,
-                                    ..colors.text
-                                })
-                                .child(
-                                    Icon::new(IconName::Eye)
-                                        .size(IconSize::Large)
-                                        .color(Color::Placeholder),
-                                )
-                                .child(
-                                    Label::new("No blame data")
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                )
-                                .child(
-                                    Label::new("Select a file and press 'b' to view blame")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Placeholder),
-                                ),
-                        ),
-                )
-                .into_any_element();
+            return self.render_empty_state(cx);
         }
 
         let lines = self.lines.clone();
@@ -276,40 +276,19 @@ impl Render for BlameView {
 
         let editor_bg = colors.editor_background;
         let text_color = colors.text;
-        let text_placeholder_color = colors.text_placeholder;
+        let text_muted = colors.text_muted;
         let border_variant = colors.border_variant;
         let text_accent = colors.text_accent;
-
-        let gutter_bg = gpui::Hsla {
-            a: 0.06,
-            ..colors.text
-        };
+        let surface_bg = colors.surface_background;
+        let ghost_hover = colors.ghost_element_hover;
 
         let row_height = 20.0_f32;
         let highlighted_row = self.highlighted_row;
         let selected_line = self.selected_line;
-        let highlight_bg = gpui::Hsla {
-            a: 0.10,
-            ..text_accent
-        };
-        let selected_bg = gpui::Hsla {
-            a: 0.15,
-            ..text_accent
-        };
-        let row_hover_bg = gpui::Hsla {
-            a: 0.04,
-            ..colors.text
-        };
+        let hovered_oid = self.hovered_oid.clone();
 
-        // Two alternating subtle hunk backgrounds for visual grouping by commit
-        let hunk_bg_even = gpui::Hsla {
-            a: 0.02,
-            ..text_accent
-        };
-        let hunk_bg_odd = gpui::Hsla {
-            a: 0.05,
-            ..text_accent
-        };
+        let selected_bg = colors.ghost_element_selected;
+        let highlight_bg = colors.ghost_element_active;
 
         let file_path_display: SharedString = self
             .file_path
@@ -328,17 +307,20 @@ impl Render for BlameView {
                         let oid_str = line.entry.oid.to_string();
                         let color_idx = oid_colors.get(&oid_str).copied().unwrap_or(0);
                         let hunk_bg = if color_idx % 2 == 0 {
-                            hunk_bg_even
+                            editor_bg
                         } else {
-                            hunk_bg_odd
+                            surface_bg
                         };
 
                         let is_highlighted = highlighted_row == Some(i);
                         let is_selected = selected_line == Some(i);
+                        let is_oid_hovered = hovered_oid.as_deref() == Some(oid_str.as_str());
                         let effective_bg = if is_selected {
                             selected_bg
                         } else if is_highlighted {
                             highlight_bg
+                        } else if is_oid_hovered {
+                            ghost_hover
                         } else {
                             hunk_bg
                         };
@@ -349,6 +331,9 @@ impl Render for BlameView {
                             lines[i - 1].entry.oid != line.entry.oid
                                 || lines[i - 1].entry.start_line != line.entry.start_line
                         };
+
+                        let has_boundary = i > 0
+                            && lines[i - 1].entry.oid != line.entry.oid;
 
                         let author_display: SharedString = if is_first_in_hunk {
                             let name = &line.entry.author;
@@ -379,9 +364,19 @@ impl Render for BlameView {
                         let content_text: SharedString =
                             line.content.clone().into();
 
+                        let tooltip_text: SharedString = format!(
+                            "{} ({}) - {} <{}>",
+                            line.entry.short_id,
+                            BlameView::format_relative_time(line.entry.time.timestamp()),
+                            line.entry.author,
+                            line.entry.email,
+                        ).into();
+
                         let view_click = view.clone();
                         let view_commit = view.clone();
+                        let view_hover = view.clone();
                         let commit_oid = oid_str.clone();
+                        let hover_oid = oid_str.clone();
 
                         div()
                             .id(ElementId::NamedInteger(
@@ -392,7 +387,24 @@ impl Render for BlameView {
                             .h(px(row_height))
                             .w_full()
                             .bg(effective_bg)
-                            .hover(move |s| s.bg(row_hover_bg))
+                            .when(has_boundary, |el| {
+                                el.border_t_1().border_color(border_variant)
+                            })
+                            .tooltip(Tooltip::text(tooltip_text))
+                            .on_mouse_move({
+                                let hover_oid = hover_oid.clone();
+                                move |_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
+                                    let oid = hover_oid.clone();
+                                    view_hover
+                                        .update(cx, |this, cx| {
+                                            if this.hovered_oid.as_deref() != Some(oid.as_str()) {
+                                                this.hovered_oid = Some(oid);
+                                                cx.notify();
+                                            }
+                                        })
+                                        .ok();
+                                }
+                            })
                             .on_mouse_down(
                                 MouseButton::Left,
                                 move |_: &MouseDownEvent,
@@ -407,7 +419,6 @@ impl Render for BlameView {
                                         .ok();
                                 },
                             )
-                            // Blame gutter: author
                             .child(
                                 div()
                                     .w(px(110.))
@@ -415,14 +426,12 @@ impl Render for BlameView {
                                     .h_full()
                                     .flex()
                                     .items_center()
-                                    .bg(gutter_bg)
                                     .text_xs()
-                                    .text_color(text_placeholder_color)
+                                    .text_color(text_muted)
                                     .pl(px(6.))
                                     .overflow_x_hidden()
                                     .child(author_display),
                             )
-                            // Blame gutter: relative time
                             .child(
                                 div()
                                     .w(px(64.))
@@ -430,12 +439,10 @@ impl Render for BlameView {
                                     .h_full()
                                     .flex()
                                     .items_center()
-                                    .bg(gutter_bg)
                                     .text_xs()
-                                    .text_color(text_placeholder_color)
+                                    .text_color(text_muted)
                                     .child(time_display),
                             )
-                            // Blame gutter: short SHA (clickable)
                             .child(
                                 div()
                                     .id(ElementId::NamedInteger(
@@ -447,7 +454,6 @@ impl Render for BlameView {
                                     .h_full()
                                     .flex()
                                     .items_center()
-                                    .bg(gutter_bg)
                                     .border_r_1()
                                     .border_color(border_variant)
                                     .text_xs()
@@ -470,7 +476,6 @@ impl Render for BlameView {
                                     })
                                     .child(sha_display),
                             )
-                            // Line number
                             .child(
                                 div()
                                     .w(px(44.))
@@ -479,15 +484,13 @@ impl Render for BlameView {
                                     .flex()
                                     .items_center()
                                     .justify_end()
-                                    .bg(gutter_bg)
                                     .border_r_1()
                                     .border_color(border_variant)
                                     .text_xs()
-                                    .text_color(text_placeholder_color)
+                                    .text_color(text_muted)
                                     .px_1()
                                     .child(line_no_str),
                             )
-                            // Content area
                             .child(
                                 div()
                                     .flex_1()
@@ -518,14 +521,13 @@ impl Render for BlameView {
             .v_flex()
             .size_full()
             .bg(editor_bg)
-            // Header bar
             .child(
                 div()
                     .h_flex()
                     .w_full()
-                    .h(px(26.))
+                    .h(px(34.))
                     .px(px(10.))
-                    .gap(px(6.))
+                    .gap(px(8.))
                     .items_center()
                     .bg(colors.toolbar_background)
                     .border_b_1()

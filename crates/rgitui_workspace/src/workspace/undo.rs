@@ -53,48 +53,42 @@ impl Workspace {
         };
         let project = tab.project.clone();
 
+        let undo_label = undo.label;
+
         match undo.action {
             UndoAction::RecreateBranch { name, oid_hex } => {
-                let branch_name = name.clone();
+                let branch_name = name;
                 project.update(cx, |proj, cx| {
                     proj.create_branch_at(&branch_name, Some(&oid_hex), cx)
                         .detach();
                 });
-                self.show_toast(format!("Restored branch '{}'", name), ToastKind::Success, cx);
+                self.show_toast(format!("Undid: {undo_label}"), ToastKind::Success, cx);
             }
             UndoAction::RecreateTag { name, oid_hex } => {
-                let tag_name = name.clone();
+                let tag_name = name;
                 if let Ok(oid) = git2::Oid::from_str(&oid_hex) {
                     project.update(cx, |proj, cx| {
                         proj.create_tag(&tag_name, oid, cx).detach();
                     });
-                    self.show_toast(format!("Restored tag '{}'", name), ToastKind::Success, cx);
+                    self.show_toast(format!("Undid: {undo_label}"), ToastKind::Success, cx);
                 } else {
-                    self.show_toast("Failed to restore tag: invalid OID", ToastKind::Error, cx);
+                    self.show_toast("Failed to undo: invalid OID", ToastKind::Error, cx);
                 }
             }
             UndoAction::PopStash(index) => {
                 project.update(cx, |proj, cx| {
                     proj.stash_pop(index, cx).detach();
                 });
-                self.show_toast("Restored discarded changes", ToastKind::Success, cx);
+                self.show_toast(format!("Undid: {undo_label}"), ToastKind::Success, cx);
             }
             UndoAction::SoftResetHead(oid_hex) => {
                 if let Ok(oid) = git2::Oid::from_str(&oid_hex) {
                     project.update(cx, |proj, cx| {
                         proj.reset_soft(oid, cx).detach();
                     });
-                    self.show_toast(
-                        "Undid last commit (changes preserved in index)",
-                        ToastKind::Success,
-                        cx,
-                    );
+                    self.show_toast(format!("Undid: {undo_label}"), ToastKind::Success, cx);
                 } else {
-                    self.show_toast(
-                        "Failed to undo commit: invalid OID",
-                        ToastKind::Error,
-                        cx,
-                    );
+                    self.show_toast("Failed to undo: invalid OID", ToastKind::Error, cx);
                 }
             }
             UndoAction::ResetTo(oid_hex) => {
@@ -102,9 +96,9 @@ impl Workspace {
                     project.update(cx, |proj, cx| {
                         proj.reset_to_commit(oid, cx).detach();
                     });
-                    self.show_toast("Undid reset", ToastKind::Success, cx);
+                    self.show_toast(format!("Undid: {undo_label}"), ToastKind::Success, cx);
                 } else {
-                    self.show_toast("Failed to undo reset: invalid OID", ToastKind::Error, cx);
+                    self.show_toast("Failed to undo: invalid OID", ToastKind::Error, cx);
                 }
             }
         }

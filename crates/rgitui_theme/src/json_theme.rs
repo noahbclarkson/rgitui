@@ -24,6 +24,11 @@ fn get_color(map: &HashMap<String, String>, key: &str) -> Result<Hsla> {
     Ok(hex_to_hsla(hex))
 }
 
+/// Parse a hex color from the map, falling back to a default if the key is absent.
+fn get_color_or(map: &HashMap<String, String>, key: &str, default: Hsla) -> Hsla {
+    map.get(key).map_or(default, |hex| hex_to_hsla(hex))
+}
+
 /// Load a complete Theme from a JSON string.
 pub fn load_theme_from_json(json: &str) -> Result<Theme> {
     let raw: JsonTheme = serde_json::from_str(json)?;
@@ -80,6 +85,17 @@ pub fn load_theme_from_json(json: &str) -> Result<Theme> {
         panel_background: get_color(c, "panel_background")?,
         scrollbar_thumb_background: get_color(c, "scrollbar_thumb_background")?,
         scrollbar_thumb_hover_background: get_color(c, "scrollbar_thumb_hover_background")?,
+
+        hint_background: get_color_or(
+            c,
+            "hint_background",
+            Hsla {
+                h: 0.0,
+                s: 0.0,
+                l: 0.5,
+                a: 0.1,
+            },
+        ),
 
         vc_added: get_color(c, "vc_added")?,
         vc_modified: get_color(c, "vc_modified")?,

@@ -1165,30 +1165,24 @@ impl Workspace {
     }
 
     /// Schedule a debounced layout save (avoids writing to disk on every resize pixel).
-    pub(super) fn schedule_layout_save(&self, cx: &mut Context<Self>) {
-        let sw = self.layout.sidebar_width;
-        let dpw = self.layout.detail_panel_width;
-        let dvh = self.layout.diff_viewer_height;
-        let cih = self.layout.commit_input_height;
-        cx.spawn(
+    /// Cancels any previously scheduled save task to prevent task queue buildup.
+    pub(super) fn schedule_layout_save(&mut self, cx: &mut Context<Self>) {
+        // Drop the previous task (cancels it) before spawning a new one
+        self.layout_save_task = None;
+
+        let task = cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(500))
                     .await;
                 this.update(cx, |this, cx| {
-                    // Only save if dimensions haven't changed (i.e., drag stopped)
-                    if (this.layout.sidebar_width - sw).abs() < 0.1
-                        && (this.layout.detail_panel_width - dpw).abs() < 0.1
-                        && (this.layout.diff_viewer_height - dvh).abs() < 0.1
-                        && (this.layout.commit_input_height - cih).abs() < 0.1
-                    {
-                        this.save_layout(cx);
-                    }
+                    this.layout_save_task = None;
+                    this.save_layout(cx);
                 })
                 .ok();
             },
-        )
-        .detach();
+        );
+        self.layout_save_task = Some(task);
     }
 
     /// Persist current layout dimensions to settings.
@@ -1211,8 +1205,9 @@ pub(crate) fn open_file_explorer(path: &std::path::Path) {
     std::thread::spawn(move || {
         #[cfg(target_os = "windows")]
         {
+            let canonical = path.canonicalize().unwrap_or(path.to_path_buf());
             let _ = std::process::Command::new("explorer.exe")
-                .arg(&path)
+                .arg(canonical)
                 .spawn();
         }
         #[cfg(target_os = "macos")]

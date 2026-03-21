@@ -1,5 +1,8 @@
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString, Window};
+use gpui::{
+    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render,
+    SharedString, Window,
+};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
@@ -28,7 +31,7 @@ impl BranchDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("feature/my-branch");
+            ti.set_placeholder("Enter branch name...");
             ti
         });
         cx.subscribe(&editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
@@ -58,15 +61,16 @@ impl BranchDialog {
     }
 
     /// Show the dialog, optionally setting the base ref (e.g. current branch name).
-    pub fn show(&mut self, base_ref: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn show(
+        &mut self,
+        base_ref: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.visible = true;
         self.editor.update(cx, |e, cx| e.clear(cx));
         self.error_message = None;
-        if let Some(base) = base_ref {
-            self.base_ref = base;
-        } else {
-            self.base_ref = "HEAD".to_string();
-        }
+        self.base_ref = base_ref.unwrap_or_else(|| "HEAD".to_string());
         self.editor.update(cx, |e, cx| e.focus(window, cx));
         cx.notify();
     }
@@ -76,11 +80,7 @@ impl BranchDialog {
         self.visible = true;
         self.editor.update(cx, |e, cx| e.clear(cx));
         self.error_message = None;
-        if let Some(base) = base_ref {
-            self.base_ref = base;
-        } else {
-            self.base_ref = "HEAD".to_string();
-        }
+        self.base_ref = base_ref.unwrap_or_else(|| "HEAD".to_string());
         cx.notify();
     }
 
@@ -96,7 +96,6 @@ impl BranchDialog {
         self.visible
     }
 
-    /// Validate the branch name and return an error message if invalid.
     fn validate_branch_name(name: &str) -> Option<String> {
         if name.is_empty() {
             return Some("Branch name cannot be empty".to_string());
@@ -113,10 +112,14 @@ impl BranchDialog {
         if name.contains("..") {
             return Some("Branch name cannot contain '..'".to_string());
         }
-        if name.contains("~") || name.contains("^") || name.contains(":") || name.contains("\\") {
+        if name.contains('~')
+            || name.contains('^')
+            || name.contains(':')
+            || name.contains('\\')
+        {
             return Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string());
         }
-        if name.contains("?") || name.contains("*") || name.contains("[") {
+        if name.contains('?') || name.contains('*') || name.contains('[') {
             return Some("Branch name cannot contain glob characters".to_string());
         }
         if name.contains('\x7f') || name.chars().any(|c| c.is_control()) {
@@ -170,70 +173,90 @@ impl BranchDialog {
 
 impl Render for BranchDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
-
         if !self.visible {
             return div().id("branch-dialog").into_any_element();
         }
 
+        let colors = cx.colors();
         let branch_name = self.editor.read(cx).text().to_string();
         let has_error = self.error_message.is_some();
+        let can_create = !branch_name.is_empty() && !has_error;
 
-        // Build the modal content
+        let accent_color = Color::Accent.color(cx);
+        let icon_bg = gpui::Hsla {
+            a: 0.12,
+            ..accent_color
+        };
+
+        let base_ref_str: SharedString = self.base_ref.clone().into();
+
         let mut modal = div()
             .id("branch-dialog-modal")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
-            .w(px(420.))
-            .bg(colors.elevated_surface_background)
-            .border_1()
-            .border_color(colors.border)
-            .rounded_lg()
+            .w(px(440.))
             .elevation_3(cx)
-            .p_4()
-            .gap_3()
+            .p(px(20.))
+            .gap(px(16.))
             .on_click(|_: &ClickEvent, _, cx| {
                 cx.stop_propagation();
             });
 
-        // Title with icon
         modal = modal.child(
             div()
                 .h_flex()
-                .gap_2()
+                .gap_3()
                 .items_center()
                 .child(
-                    Icon::new(IconName::GitBranch)
-                        .size(IconSize::Medium)
-                        .color(Color::Accent),
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(36.))
+                        .rounded(px(10.))
+                        .bg(icon_bg)
+                        .child(
+                            Icon::new(IconName::GitBranch)
+                                .size(IconSize::Medium)
+                                .color(Color::Accent),
+                        ),
                 )
                 .child(
                     Label::new("Create Branch")
                         .size(LabelSize::Large)
-                        .weight(gpui::FontWeight::BOLD)
-                        .color(Color::Default),
+                        .weight(gpui::FontWeight::BOLD),
                 ),
         );
 
         modal = modal.child(
             div()
                 .v_flex()
-                .gap_1()
+                .gap(px(6.))
                 .child(
                     Label::new("Branch name")
                         .size(LabelSize::Small)
+                        .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
                 )
-                .child(self.editor.clone()),
+                .child(
+                    div()
+                        .h_flex()
+                        .gap(px(8.))
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::GitBranch)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(div().flex_1().child(self.editor.clone())),
+                ),
         );
 
-        // Base ref display as badge
-        let base_ref_str: SharedString = self.base_ref.clone().into();
         modal = modal.child(
             div()
                 .h_flex()
-                .gap_2()
+                .gap(px(8.))
                 .items_center()
                 .child(
                     Label::new("Based on")
@@ -243,10 +266,10 @@ impl Render for BranchDialog {
                 .child(
                     div()
                         .h_flex()
-                        .h(px(20.))
+                        .h(px(22.))
                         .px(px(8.))
                         .gap(px(4.))
-                        .rounded(px(4.))
+                        .rounded(px(6.))
                         .bg(colors.ghost_element_selected)
                         .items_center()
                         .child(
@@ -263,26 +286,37 @@ impl Render for BranchDialog {
                 ),
         );
 
-        // Error message
         if let Some(ref err) = self.error_message {
             modal = modal.child(
-                Label::new(SharedString::from(err.clone()))
-                    .size(LabelSize::XSmall)
-                    .color(Color::Deleted),
+                div()
+                    .h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::XCircle)
+                            .size(IconSize::XSmall)
+                            .color(Color::Error),
+                    )
+                    .child(
+                        Label::new(SharedString::from(err.clone()))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Error),
+                    ),
             );
         }
 
-        // Buttons
-        let can_create = !branch_name.is_empty() && !has_error;
         modal = modal.child(
             div()
+                .pt_2()
+                .border_t_1()
+                .border_color(colors.border_variant)
                 .h_flex()
                 .justify_between()
                 .items_center()
                 .child(
                     Label::new("Enter to create · Esc to cancel")
                         .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        .color(Color::Placeholder),
                 )
                 .child(
                     div()
@@ -310,10 +344,10 @@ impl Render for BranchDialog {
                 ),
         );
 
-        // Backdrop + modal
         div()
             .id("branch-dialog-backdrop")
-            .occlude().absolute()
+            .occlude()
+            .absolute()
             .top_0()
             .left_0()
             .size_full()

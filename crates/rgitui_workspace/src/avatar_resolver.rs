@@ -1,9 +1,15 @@
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
+use futures::future::select;
+use futures::future::Either;
 use futures::AsyncReadExt;
 use gpui::{App, AsyncApp};
 use http_client::HttpClient;
 use rgitui_ui::AvatarCache;
+
+const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Resolve avatar URLs for a batch of (name, email) pairs.
 ///
@@ -14,7 +20,6 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
         cx.set_global(AvatarCache::new());
     }
 
-    // Collect entries that need fetching (dedupe by email)
     let to_fetch: Vec<(String, String)> = {
         let cache = cx.global_mut::<AvatarCache>();
         authors
@@ -55,61 +60,162 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
     }
 }
 
+type CheckFuture = Pin<Box<dyn futures::Future<Output = Option<String>> + Send>>;
+
 /// Try to resolve an avatar URL for a single author.
-/// Tries multiple sources in order of reliability.
-/// Returns Some(url) on success, None if no avatar found.
+///
+/// Uses a two-batch concurrent strategy:
+/// - Batch 1 (cheap URL checks): noreply parse, name-as-username, local-part, gravatar
+/// - Batch 2 (API calls): GitHub API search by email, GitHub API search by name
+///
+/// Within each batch, checks run concurrently. The first successful result wins.
+/// Each individual check has a timeout to avoid hanging on slow endpoints.
 async fn resolve_single(name: &str, email: &str, http: &Arc<dyn HttpClient>) -> Option<String> {
-    // 1. Parse GitHub noreply emails: {id}+{username}@users.noreply.github.com
+    // Batch 1: Cheap URL existence checks (run concurrently)
+    let mut batch1: Vec<CheckFuture> = Vec::new();
+
     if let Some(github_url) = parse_github_noreply(email) {
-        if check_url_exists(http, &github_url).await {
-            return Some(github_url);
-        }
+        let http = http.clone();
+        batch1.push(Box::pin(async move {
+            if check_url_with_timeout(&http, &github_url).await {
+                Some(github_url)
+            } else {
+                None
+            }
+        }));
     }
 
-    // 2. Try the git author name as a GitHub username (if single word).
     if !name.is_empty() && !name.contains(' ') {
         let name_url = format!("https://github.com/{}.png?size=48", name);
-        if check_url_exists(http, &name_url).await {
-            return Some(name_url);
-        }
+        let http = http.clone();
+        batch1.push(Box::pin(async move {
+            if check_url_with_timeout(&http, &name_url).await {
+                Some(name_url)
+            } else {
+                None
+            }
+        }));
     }
 
-    // 3. Try the email local part as a GitHub username.
     if let Some(local) = email.split('@').next() {
         if !local.is_empty() && local != name {
             let clean = local.split('+').next_back().unwrap_or(local);
             if !clean.is_empty() {
                 let local_url = format!("https://github.com/{}.png?size=48", clean);
-                if check_url_exists(http, &local_url).await {
-                    return Some(local_url);
-                }
+                let http = http.clone();
+                batch1.push(Box::pin(async move {
+                    if check_url_with_timeout(&http, &local_url).await {
+                        Some(local_url)
+                    } else {
+                        None
+                    }
+                }));
             }
         }
     }
 
-    // 4. Try GitHub API search by email (works for public emails)
-    if let Some(url) = github_api_search(http, email).await {
-        if check_url_exists(http, &url).await {
+    {
+        let gravatar = gravatar_url(email, 48);
+        let http = http.clone();
+        batch1.push(Box::pin(async move {
+            if check_url_with_timeout(&http, &gravatar).await {
+                Some(gravatar)
+            } else {
+                None
+            }
+        }));
+    }
+
+    if let Some(url) = first_successful(batch1).await {
+        return Some(url);
+    }
+
+    // Batch 2: GitHub API searches (heavier, run concurrently)
+    let mut batch2: Vec<CheckFuture> = Vec::new();
+
+    {
+        let http = http.clone();
+        let email_owned = email.to_string();
+        batch2.push(Box::pin(async move {
+            with_timeout(async {
+                if let Some(url) = github_api_search(&http, &email_owned).await {
+                    if check_url_exists(&http, &url).await {
+                        return Some(url);
+                    }
+                }
+                None
+            })
+            .await
+        }));
+    }
+
+    if !name.is_empty() && name.contains(' ') {
+        let http = http.clone();
+        let name_owned = name.to_string();
+        batch2.push(Box::pin(async move {
+            with_timeout(async {
+                if let Some(url) = github_api_search_by_name(&http, &name_owned).await {
+                    if check_url_exists(&http, &url).await {
+                        return Some(url);
+                    }
+                }
+                None
+            })
+            .await
+        }));
+    }
+
+    if !batch2.is_empty() {
+        if let Some(url) = first_successful(batch2).await {
             return Some(url);
         }
     }
 
-    // 5. Try GitHub API search by name
-    if !name.is_empty() && name.contains(' ') {
-        if let Some(url) = github_api_search_by_name(http, name).await {
-            if check_url_exists(http, &url).await {
-                return Some(url);
-            }
-        }
-    }
-
-    // 6. Try Gravatar as last resort
-    let gravatar = gravatar_url(email, 48);
-    if check_url_exists(http, &gravatar).await {
-        return Some(gravatar);
-    }
-
     None
+}
+
+/// Run all futures concurrently and return the first `Some` result.
+/// Returns `None` only if all futures complete with `None`.
+async fn first_successful(futures: Vec<CheckFuture>) -> Option<String> {
+    if futures.is_empty() {
+        return None;
+    }
+
+    let (result, _, remaining) = futures::future::select_all(futures).await;
+    if result.is_some() {
+        return result;
+    }
+
+    if remaining.is_empty() {
+        return None;
+    }
+
+    // Continue checking remaining futures
+    Box::pin(first_successful(remaining)).await
+}
+
+/// Wrap a future with a timeout. Returns `None` if the timeout expires.
+async fn with_timeout<F>(future: F) -> Option<String>
+where
+    F: futures::Future<Output = Option<String>> + Send,
+{
+    let timeout = smol::Timer::after(CHECK_TIMEOUT);
+    match select(Box::pin(future), Box::pin(timeout)).await {
+        Either::Left((result, _)) => result,
+        Either::Right(_) => None,
+    }
+}
+
+/// Check if a URL returns 200 OK, with a per-check timeout.
+async fn check_url_with_timeout(http: &Arc<dyn HttpClient>, url: &str) -> bool {
+    let http = http.clone();
+    let url = url.to_string();
+    let check = async move { check_url_exists(&http, &url).await };
+    let timeout = smol::Timer::after(CHECK_TIMEOUT);
+    match select(Box::pin(check), Box::pin(timeout)).await {
+        Either::Left((result, _)) => result,
+        Either::Right(_) => false,
+    }
 }
 
 /// Parse GitHub noreply email format: {id}+{username}@users.noreply.github.com
@@ -122,7 +228,6 @@ fn parse_github_noreply(email: &str) -> Option<String> {
 
     let local = email_lower.strip_suffix("@users.noreply.github.com")?;
 
-    // Format can be "{id}+{username}" or just "{username}"
     let username = if let Some((_id, username)) = local.split_once('+') {
         username
     } else {
@@ -168,17 +273,14 @@ async fn github_api_search(http: &Arc<dyn HttpClient>, email: &str) -> Option<St
     let mut reader = response.into_body();
     reader.read_to_string(&mut body).await.ok()?;
 
-    // Parse JSON — prefer login (username) to construct github.com/{user}.png URL
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;
     let items = json.get("items")?.as_array()?;
     let first = items.first()?;
 
-    // Use login for the direct .png URL (most reliable, handles redirects)
     if let Some(login) = first.get("login").and_then(|v| v.as_str()) {
         return Some(format!("https://github.com/{}.png?size=48", login));
     }
 
-    // Fallback to avatar_url from API
     let avatar_url = first.get("avatar_url")?.as_str()?;
     Some(format!("{}?s=48", avatar_url))
 }

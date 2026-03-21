@@ -108,16 +108,39 @@ impl CommitPanel {
     pub fn is_focused(&self, window: &Window, cx: &Context<Self>) -> bool {
         self.focus_handle.contains_focused(window, cx)
     }
+
+    fn commit_button_label(&self, summary_empty: bool) -> &'static str {
+        if self.staged_count == 0 {
+            "No Staged Changes"
+        } else if summary_empty {
+            "No Message"
+        } else if self.amend {
+            "Amend Commit"
+        } else {
+            "Commit"
+        }
+    }
 }
 
 impl Render for CommitPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
-        let can_commit = !self.summary_editor.read(cx).is_empty() && self.staged_count > 0;
+        let summary_empty = self.summary_editor.read(cx).is_empty();
+        let can_commit = !summary_empty && self.staged_count > 0;
         let summary_len = self.summary_editor.read(cx).text().chars().count();
+        let description_len = self.description_editor.read(cx).text().chars().count();
+        let description_lines = if description_len == 0 {
+            0
+        } else {
+            self.description_editor.read(cx).text().lines().count()
+        };
 
         let staged_label: SharedString = if self.staged_count > 0 {
-            format!("{} file{} staged", self.staged_count, if self.staged_count == 1 { "" } else { "s" }).into()
+            format!(
+                "{} file{} staged",
+                self.staged_count,
+                if self.staged_count == 1 { "" } else { "s" }
+            ).into()
         } else {
             "No files staged".into()
         };
@@ -125,8 +148,21 @@ impl Render for CommitPanel {
         let char_count_label: SharedString = format!("{}/72", summary_len).into();
         let char_count_color = if summary_len > 72 { Color::Warning } else { Color::Muted };
 
+        let desc_count_label: SharedString = if description_len > 0 {
+            format!(
+                "{} char{}, {} line{}",
+                description_len,
+                if description_len == 1 { "" } else { "s" },
+                description_lines,
+                if description_lines == 1 { "" } else { "s" },
+            ).into()
+        } else {
+            SharedString::default()
+        };
+
         let amend = self.amend;
         let message = self.message(cx);
+        let commit_label = self.commit_button_label(summary_empty);
 
         let ai_settings = cx
             .try_global::<rgitui_settings::SettingsState>()
@@ -147,7 +183,7 @@ impl Render for CommitPanel {
                     .w_full()
                     .h(px(34.))
                     .px(px(10.))
-                    .gap_2()
+                    .gap(px(8.))
                     .items_center()
                     .flex_shrink_0()
                     .bg(colors.toolbar_background)
@@ -170,20 +206,43 @@ impl Render for CommitPanel {
                             .h(px(18.))
                             .px(px(6.))
                             .rounded(px(3.))
-                            .bg(if self.staged_count > 0 { colors.ghost_element_selected } else { colors.element_disabled })
+                            .bg(if self.staged_count > 0 {
+                                colors.ghost_element_selected
+                            } else {
+                                colors.element_disabled
+                            })
                             .items_center()
-                            .child(Label::new(staged_label).size(LabelSize::XSmall).color(
-                                if self.staged_count > 0 { Color::Added } else { Color::Muted },
-                            )),
+                            .child(
+                                Label::new(staged_label)
+                                    .size(LabelSize::XSmall)
+                                    .color(if self.staged_count > 0 {
+                                        Color::Added
+                                    } else {
+                                        Color::Muted
+                                    }),
+                            ),
                     )
                     .child(div().flex_1())
                     .when(self.is_ai_generating, |el| {
                         el.child(
-                            div().h_flex().h(px(20.)).px(px(8.)).rounded(px(3.))
+                            div()
+                                .h_flex()
+                                .h(px(20.))
+                                .px(px(8.))
+                                .rounded(px(3.))
                                 .bg(colors.ghost_element_selected)
-                                .items_center().gap(px(4.))
-                                .child(rgitui_ui::Icon::new(IconName::Sparkle).size(rgitui_ui::IconSize::XSmall).color(Color::Accent))
-                                .child(Label::new("Generating...").size(LabelSize::XSmall).color(Color::Accent)),
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    rgitui_ui::Icon::new(IconName::Sparkle)
+                                        .size(rgitui_ui::IconSize::XSmall)
+                                        .color(Color::Accent),
+                                )
+                                .child(
+                                    Label::new("Generating...")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Accent),
+                                ),
                         )
                     })
                     .when(!self.is_ai_generating && ai_enabled, |el| {
@@ -219,70 +278,163 @@ impl Render for CommitPanel {
                     .gap(px(8.))
                     .min_h(px(150.))
                     .child(
-                        div().v_flex().gap(px(2.)).flex_shrink_0()
+                        div()
+                            .v_flex()
+                            .gap(px(4.))
+                            .flex_shrink_0()
                             .child(
-                                div().h_flex().items_center()
-                                    .child(Label::new("Summary").size(LabelSize::XSmall).color(Color::Muted).weight(gpui::FontWeight::MEDIUM))
+                                div()
+                                    .h_flex()
+                                    .items_center()
+                                    .child(
+                                        Label::new("Summary")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .weight(gpui::FontWeight::MEDIUM),
+                                    )
                                     .child(div().flex_1())
-                                    .when(!self.summary_editor.read(cx).is_empty(), |el| {
-                                        el.child(Label::new(char_count_label).size(LabelSize::XSmall).color(char_count_color))
+                                    .when(!summary_empty, |el| {
+                                        el.child(
+                                            Label::new(char_count_label)
+                                                .size(LabelSize::XSmall)
+                                                .color(char_count_color),
+                                        )
                                     }),
                             )
                             .child(self.summary_editor.clone()),
                     )
                     .child(
-                        div().v_flex().gap(px(2.)).flex_1().min_h(px(50.))
-                            .child(Label::new("Description").size(LabelSize::XSmall).color(Color::Muted).weight(gpui::FontWeight::MEDIUM))
+                        div()
+                            .v_flex()
+                            .gap(px(4.))
+                            .flex_1()
+                            .min_h(px(50.))
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .items_center()
+                                    .child(
+                                        Label::new("Description")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .weight(gpui::FontWeight::MEDIUM),
+                                    )
+                                    .child(div().flex_1())
+                                    .when(description_len > 0, |el| {
+                                        el.child(
+                                            Label::new(desc_count_label)
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Muted),
+                                        )
+                                    }),
+                            )
                             .child(self.description_editor.clone()),
                     )
                     .child(
-                        div().h_flex().w_full().gap_2().items_center().flex_shrink_0()
+                        div()
+                            .h_flex()
+                            .w_full()
+                            .gap(px(8.))
+                            .items_center()
+                            .flex_shrink_0()
+                            .pt(px(4.))
                             .child(
-                                div().id("amend-toggle").h_flex().gap_1().items_center().cursor_pointer()
+                                div()
+                                    .id("amend-toggle")
+                                    .h_flex()
+                                    .gap(px(4.))
+                                    .items_center()
+                                    .cursor_pointer()
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         cx.stop_propagation();
                                         this.amend = !this.amend;
                                         cx.notify();
                                     }))
-                                    .child(Checkbox::new("amend-checkbox", if self.amend { CheckState::Checked } else { CheckState::Unchecked }))
-                                    .child(Label::new("Amend").size(LabelSize::XSmall).color(Color::Muted)),
+                                    .child(Checkbox::new(
+                                        "amend-checkbox",
+                                        if self.amend {
+                                            CheckState::Checked
+                                        } else {
+                                            CheckState::Unchecked
+                                        },
+                                    ))
+                                    .child(
+                                        Label::new("Amend")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    ),
                             )
-                            .when(!self.summary_editor.read(cx).is_empty() || !self.description_editor.read(cx).is_empty(), |el| {
-                                el.child(
-                                    Button::new("clear-btn", "Clear")
-                                        .icon(IconName::X)
-                                        .size(ButtonSize::Compact)
-                                        .style(ButtonStyle::Subtle)
-                                        .color(Color::Muted)
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            cx.stop_propagation();
-                                            this.summary_editor.update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                                            this.description_editor.update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                                            cx.notify();
-                                        })),
-                                )
-                            })
+                            .when(
+                                !summary_empty
+                                    || !self.description_editor.read(cx).is_empty(),
+                                |el| {
+                                    el.child(
+                                        Button::new("clear-btn", "Clear")
+                                            .icon(IconName::X)
+                                            .size(ButtonSize::Compact)
+                                            .style(ButtonStyle::Subtle)
+                                            .color(Color::Muted)
+                                            .on_click(cx.listener(
+                                                |this, _: &ClickEvent, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.summary_editor.update(
+                                                        cx,
+                                                        |e: &mut TextInput, cx| e.clear(cx),
+                                                    );
+                                                    this.description_editor.update(
+                                                        cx,
+                                                        |e: &mut TextInput, cx| e.clear(cx),
+                                                    );
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                },
+                            )
                             .child(div().flex_1())
                             .when(self.staged_count == 0, |el| {
-                                el.child(Label::new("No staged changes").size(LabelSize::XSmall).color(Color::Warning))
+                                el.child(
+                                    Label::new("No staged changes")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Warning),
+                                )
                             })
                             .when(can_commit, |el| {
-                                el.child(Label::new("Ctrl+Enter").size(LabelSize::XSmall).color(Color::Muted))
+                                el.child(
+                                    Label::new("Ctrl+Enter")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
                             })
                             .child(
-                                Button::new("commit-btn", if self.staged_count == 0 { "No Staged Changes" } else if self.summary_editor.read(cx).is_empty() { "No Message" } else if self.amend { "Amend Commit" } else { "Commit" })
+                                Button::new("commit-btn", commit_label)
                                     .icon(IconName::GitCommit)
-                                    .style(ButtonStyle::Filled)
+                                    .style(if can_commit {
+                                        ButtonStyle::Filled
+                                    } else {
+                                        ButtonStyle::Outlined
+                                    })
                                     .size(ButtonSize::Default)
                                     .disabled(!can_commit)
-                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                        cx.stop_propagation();
-                                        cx.emit(CommitPanelEvent::CommitRequested { message: message.clone(), amend });
-                                        this.summary_editor.update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                                        this.description_editor.update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                                        this.amend = false;
-                                        cx.notify();
-                                    })),
+                                    .on_click(cx.listener(
+                                        move |this, _: &ClickEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            cx.emit(CommitPanelEvent::CommitRequested {
+                                                message: message.clone(),
+                                                amend,
+                                            });
+                                            this.summary_editor.update(
+                                                cx,
+                                                |e: &mut TextInput, cx| e.clear(cx),
+                                            );
+                                            this.description_editor.update(
+                                                cx,
+                                                |e: &mut TextInput, cx| e.clear(cx),
+                                            );
+                                            this.amend = false;
+                                            cx.notify();
+                                        },
+                                    )),
                             ),
                     ),
             )

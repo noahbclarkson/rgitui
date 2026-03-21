@@ -9,16 +9,16 @@ use gpui::{
 };
 use rgitui_git::{DiffLine, FileDiff};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{
+    Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
+};
 
-/// Events from the diff viewer.
 #[derive(Debug, Clone)]
 pub enum DiffViewerEvent {
     HunkStageRequested(usize),
     HunkUnstageRequested(usize),
 }
 
-/// Display mode for the diff viewer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DiffDisplayMode {
     #[default]
@@ -26,11 +26,11 @@ pub enum DiffDisplayMode {
     SideBySide,
 }
 
-/// A pre-computed row for virtualized rendering.
 #[derive(Clone)]
 enum DisplayRow {
     HunkHeader {
         header: String,
+        context_name: String,
         hunk_index: usize,
     },
     Line {
@@ -41,11 +41,11 @@ enum DisplayRow {
     },
 }
 
-/// A pre-computed row for side-by-side rendering.
 #[derive(Clone)]
 enum SideBySideRow {
     HunkHeader {
         header: String,
+        context_name: String,
         hunk_index: usize,
     },
     Pair {
@@ -83,11 +83,8 @@ pub struct DiffViewer {
     sbs_rows: Arc<Vec<SideBySideRow>>,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
-    /// Currently highlighted row index for keyboard navigation.
     highlighted_row: Option<usize>,
-    /// Range of selected line indices for copy support.
     selected_lines: Option<Range<usize>>,
-    /// The first clicked line index, used as anchor for shift-click range selection.
     selection_anchor: Option<usize>,
 }
 
@@ -110,18 +107,22 @@ impl DiffViewer {
         }
     }
 
-    /// Focus the diff viewer for keyboard navigation.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
-    /// Check if the diff viewer is currently focused.
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window)
     }
 
-    pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, cx: &mut Context<Self>) {
+    pub fn set_diff(
+        &mut self,
+        diff: FileDiff,
+        path: String,
+        staged: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.display_rows = Arc::new(Self::compute_display_rows(&diff));
         self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff));
         self.diff = Some(diff);
@@ -213,8 +214,6 @@ impl DiffViewer {
                                     && *right_kind != SideBySideLineKind::Context
                                 {
                                     text.push_str(right_content.trim_end());
-                                } else if *left_kind == SideBySideLineKind::Context {
-                                    // Context lines show same content on both sides
                                 }
                                 text.push('\n');
                             }
@@ -293,12 +292,11 @@ impl DiffViewer {
             "c" if ctrl => {
                 self.copy_selected_lines(cx);
             }
-            "a" if ctrl
-                && row_count > 0 => {
-                    self.selection_anchor = Some(0);
-                    self.selected_lines = Some(0..row_count);
-                    cx.notify();
-                }
+            "a" if ctrl && row_count > 0 => {
+                self.selection_anchor = Some(0);
+                self.selected_lines = Some(0..row_count);
+                cx.notify();
+            }
             _ => {}
         }
     }
@@ -327,7 +325,6 @@ impl DiffViewer {
         self.is_staged
     }
 
-    /// Count additions and deletions from display rows.
     fn count_changes(rows: &[DisplayRow]) -> (usize, usize) {
         let mut additions = 0usize;
         let mut deletions = 0usize;
@@ -343,7 +340,6 @@ impl DiffViewer {
         (additions, deletions)
     }
 
-    /// Choose an icon based on file extension.
     fn icon_for_path(path: &str) -> IconName {
         if let Some(ext) = path.rsplit('.').next() {
             match ext {
@@ -363,18 +359,45 @@ impl DiffViewer {
         }
     }
 
-    /// Compute side-by-side rows, pairing deletions with additions.
+    /// Extract the function/context name from a hunk header.
+    /// Hunk headers look like `@@ -10,5 +10,7 @@ fn some_function(...)`
+    /// This returns the part after the closing `@@`.
+    fn extract_context_name(header: &str) -> String {
+        if let Some(pos) = header.find("@@") {
+            let after_first = &header[pos + 2..];
+            if let Some(pos2) = after_first.find("@@") {
+                let context = after_first[pos2 + 2..].trim();
+                if !context.is_empty() {
+                    return context.to_string();
+                }
+            }
+        }
+        String::new()
+    }
+
+    /// Extract the line range portion from a hunk header (the `@@ -x,y +x,y @@` part).
+    fn extract_line_range(header: &str) -> String {
+        if let Some(start) = header.find("@@") {
+            let after_first = &header[start..];
+            if let Some(end) = after_first[2..].find("@@") {
+                return after_first[..end + 4].to_string();
+            }
+        }
+        header.to_string()
+    }
+
     fn compute_sbs_rows(diff: &FileDiff) -> Vec<SideBySideRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
+            let header_str = hunk.header.trim().to_string();
             rows.push(SideBySideRow::HunkHeader {
-                header: hunk.header.trim().to_string(),
+                context_name: Self::extract_context_name(&header_str),
+                header: header_str,
                 hunk_index: i,
             });
             let mut old_line = hunk.old_start as usize;
             let mut new_line = hunk.new_start as usize;
 
-            // Collect lines and pair deletions with additions
             let mut pending_dels: Vec<(usize, String)> = Vec::new();
             let mut pending_adds: Vec<(usize, String)> = Vec::new();
 
@@ -424,7 +447,6 @@ impl DiffViewer {
                         new_line += 1;
                     }
                     DiffLine::Deletion(text) => {
-                        // If we had pending adds without dels, flush first
                         if !pending_adds.is_empty() && pending_dels.is_empty() {
                             flush(&mut rows, &mut pending_dels, &mut pending_adds);
                         }
@@ -442,12 +464,13 @@ impl DiffViewer {
         rows
     }
 
-    /// Flatten a FileDiff into a list of display rows for virtualization.
     fn compute_display_rows(diff: &FileDiff) -> Vec<DisplayRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
+            let header_str = hunk.header.trim().to_string();
             rows.push(DisplayRow::HunkHeader {
-                header: hunk.header.trim().to_string(),
+                context_name: Self::extract_context_name(&header_str),
+                header: header_str,
                 hunk_index: i,
             });
             let mut old_line = hunk.old_start as usize;
@@ -493,14 +516,12 @@ impl Render for DiffViewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
-        // ── Empty state ──────────────────────────────────────────────
         if self.diff.is_none() {
             return div()
                 .id("diff-viewer")
                 .v_flex()
                 .size_full()
                 .bg(colors.editor_background)
-                // Header bar — matches other panels
                 .child(
                     div()
                         .h_flex()
@@ -533,22 +554,19 @@ impl Render for DiffViewer {
                         .child(
                             div()
                                 .v_flex()
-                                .gap(px(8.))
+                                .gap(px(12.))
                                 .items_center()
-                                .px(px(24.))
-                                .py(px(16.))
+                                .px(px(32.))
+                                .py(px(24.))
                                 .rounded(px(8.))
-                                .bg(gpui::Hsla {
-                                    a: 0.03,
-                                    ..colors.text
-                                })
+                                .bg(colors.element_background)
                                 .child(
                                     Icon::new(IconName::File)
                                         .size(IconSize::Large)
                                         .color(Color::Placeholder),
                                 )
                                 .child(
-                                    Label::new("No file selected")
+                                    Label::new("Select a file to view changes")
                                         .size(LabelSize::Small)
                                         .color(Color::Muted),
                                 )
@@ -568,49 +586,46 @@ impl Render for DiffViewer {
         let display_mode = self.display_mode;
         let view: WeakEntity<DiffViewer> = cx.weak_entity();
 
-        // ── Pre-compute colors for the closure ──────────────────────
         let editor_bg = colors.editor_background;
         let text_color = colors.text;
+        let text_muted = colors.text_muted;
         let text_placeholder_color = colors.text_placeholder;
         let border_variant = colors.border_variant;
         let vc_added = colors.vc_added;
         let vc_deleted = colors.vc_deleted;
+        let element_bg = colors.element_background;
 
-        // Line backgrounds: subtle tinted backgrounds for add/delete lines
         let added_line_bg = gpui::Hsla {
-            a: 0.08,
+            a: 0.12,
             ..vc_added
         };
         let deleted_line_bg = gpui::Hsla {
-            a: 0.08,
+            a: 0.12,
             ..vc_deleted
         };
 
-        // Gutter accent: slightly stronger tint for line number columns on changed lines
         let added_gutter_bg = gpui::Hsla {
-            a: 0.18,
+            a: 0.20,
             ..vc_added
         };
         let deleted_gutter_bg = gpui::Hsla {
-            a: 0.18,
+            a: 0.20,
             ..vc_deleted
         };
 
-        // Hunk header: accent-tinted background to distinguish from content
-        let hunk_header_bg = gpui::Hsla {
-            a: 0.06,
-            ..colors.text_accent
+        let empty_fill_bg = gpui::Hsla {
+            a: 0.04,
+            ..text_color
         };
 
-        // Neutral gutter background for context lines
         let gutter_bg = gpui::Hsla {
-            a: 0.06,
-            ..colors.text
+            a: 0.04,
+            ..text_color
         };
 
         let row_height = 20.0_f32;
+        let hunk_header_height = row_height;
 
-        // Highlight row for keyboard navigation
         let highlighted_row = self.highlighted_row;
         let highlight_bg = gpui::Hsla {
             a: 0.10,
@@ -618,7 +633,7 @@ impl Render for DiffViewer {
         };
         let row_hover_bg = gpui::Hsla {
             a: 0.04,
-            ..colors.text
+            ..text_color
         };
         let selection_bg = gpui::Hsla {
             a: 0.15,
@@ -626,7 +641,6 @@ impl Render for DiffViewer {
         };
         let selected_lines = self.selected_lines.clone();
 
-        // ── Build the list based on display mode ─────────────────────
         let list = match display_mode {
             DiffDisplayMode::Unified => {
                 let view = view.clone();
@@ -638,8 +652,15 @@ impl Render for DiffViewer {
                             .map(|i| {
                                 let row = &display_rows[i];
                                 match row {
-                                    DisplayRow::HunkHeader { header, hunk_index } => {
-                                        let header_text: SharedString = header.clone().into();
+                                    DisplayRow::HunkHeader {
+                                        header,
+                                        context_name,
+                                        hunk_index,
+                                    } => {
+                                        let line_range: SharedString =
+                                            Self::extract_line_range(header).into();
+                                        let ctx_name: SharedString = context_name.clone().into();
+                                        let has_context = !context_name.is_empty();
                                         let stage_label = if is_staged {
                                             "Unstage Hunk"
                                         } else {
@@ -654,20 +675,23 @@ impl Render for DiffViewer {
                                         let hunk_bg = if is_hunk_selected {
                                             selection_bg
                                         } else {
-                                            hunk_header_bg
+                                            element_bg
                                         };
 
-                                        div()
+                                        let mut hunk_row = div()
                                             .id(ElementId::NamedInteger(
                                                 "hunk-header".into(),
                                                 i as u64,
                                             ))
                                             .h_flex()
-                                            .h(px(row_height))
+                                            .h(px(hunk_header_height))
                                             .w_full()
-                                            .px_2()
+                                            .px(px(8.))
+                                            .py(px(4.))
                                             .items_center()
+                                            .gap(px(8.))
                                             .bg(hunk_bg)
+                                            .border_t_1()
                                             .border_b_1()
                                             .border_color(border_variant)
                                             .on_mouse_down(
@@ -686,10 +710,22 @@ impl Render for DiffViewer {
                                             .child(
                                                 div()
                                                     .text_xs()
+                                                    .font_family("monospace")
+                                                    .text_color(text_muted)
+                                                    .child(line_range),
+                                            );
+
+                                        if has_context {
+                                            hunk_row = hunk_row.child(
+                                                div()
+                                                    .text_xs()
                                                     .text_color(text_placeholder_color)
                                                     .italic()
-                                                    .child(header_text),
-                                            )
+                                                    .child(ctx_name),
+                                            );
+                                        }
+
+                                        hunk_row
                                             .child(div().flex_1())
                                             .child(
                                                 Button::new(
@@ -793,25 +829,9 @@ impl Render for DiffViewer {
                                                         .ok();
                                                 },
                                             )
-                                            // Old line number gutter
                                             .child(
                                                 div()
-                                                    .w(px(40.))
-                                                    .flex_shrink_0()
-                                                    .h_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_end()
-                                                    .bg(gutter_accent)
-                                                    .text_xs()
-                                                    .text_color(text_placeholder_color)
-                                                    .px_1()
-                                                    .child(old_str),
-                                            )
-                                            // New line number gutter
-                                            .child(
-                                                div()
-                                                    .w(px(40.))
+                                                    .w(px(44.))
                                                     .flex_shrink_0()
                                                     .h_full()
                                                     .flex()
@@ -821,24 +841,42 @@ impl Render for DiffViewer {
                                                     .border_r_1()
                                                     .border_color(border_variant)
                                                     .text_xs()
-                                                    .text_color(text_placeholder_color)
-                                                    .px_1()
-                                                    .child(new_str),
+                                                    .font_family("monospace")
+                                                    .text_color(text_muted)
+                                                    .pr(px(4.))
+                                                    .child(old_str),
                                             )
-                                            // Prefix indicator (+/-/space)
                                             .child(
                                                 div()
-                                                    .w(px(16.))
+                                                    .w(px(44.))
+                                                    .flex_shrink_0()
+                                                    .h_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_end()
+                                                    .bg(gutter_accent)
+                                                    .border_r_1()
+                                                    .border_color(border_variant)
+                                                    .text_xs()
+                                                    .font_family("monospace")
+                                                    .text_color(text_muted)
+                                                    .pr(px(4.))
+                                                    .child(new_str),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(18.))
                                                     .flex_shrink_0()
                                                     .h_full()
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
                                                     .text_xs()
+                                                    .font_family("monospace")
+                                                    .font_weight(FontWeight::BOLD)
                                                     .text_color(text_col)
                                                     .child(prefix_str),
                                             )
-                                            // Content area
                                             .child(
                                                 div()
                                                     .flex_1()
@@ -846,7 +884,9 @@ impl Render for DiffViewer {
                                                     .h_full()
                                                     .flex()
                                                     .items_center()
+                                                    .pl(px(6.))
                                                     .text_xs()
+                                                    .font_family("monospace")
                                                     .text_color(text_col)
                                                     .whitespace_nowrap()
                                                     .child(content_text),
@@ -872,8 +912,15 @@ impl Render for DiffViewer {
                             .map(|i| {
                                 let row = &sbs_rows[i];
                                 match row {
-                                    SideBySideRow::HunkHeader { header, hunk_index } => {
-                                        let header_text: SharedString = header.clone().into();
+                                    SideBySideRow::HunkHeader {
+                                        header,
+                                        context_name,
+                                        hunk_index,
+                                    } => {
+                                        let line_range: SharedString =
+                                            Self::extract_line_range(header).into();
+                                        let ctx_name: SharedString = context_name.clone().into();
+                                        let has_context = !context_name.is_empty();
                                         let stage_label = if is_staged {
                                             "Unstage Hunk"
                                         } else {
@@ -888,20 +935,23 @@ impl Render for DiffViewer {
                                         let sbs_hunk_bg = if is_sbs_hunk_selected {
                                             selection_bg
                                         } else {
-                                            hunk_header_bg
+                                            element_bg
                                         };
 
-                                        div()
+                                        let mut hunk_row = div()
                                             .id(ElementId::NamedInteger(
                                                 "sbs-hunk-header".into(),
                                                 i as u64,
                                             ))
                                             .h_flex()
-                                            .h(px(row_height))
+                                            .h(px(hunk_header_height))
                                             .w_full()
-                                            .px_2()
+                                            .px(px(8.))
+                                            .py(px(4.))
                                             .items_center()
+                                            .gap(px(8.))
                                             .bg(sbs_hunk_bg)
+                                            .border_t_1()
                                             .border_b_1()
                                             .border_color(border_variant)
                                             .on_mouse_down(
@@ -920,10 +970,22 @@ impl Render for DiffViewer {
                                             .child(
                                                 div()
                                                     .text_xs()
+                                                    .font_family("monospace")
+                                                    .text_color(text_muted)
+                                                    .child(line_range),
+                                            );
+
+                                        if has_context {
+                                            hunk_row = hunk_row.child(
+                                                div()
+                                                    .text_xs()
                                                     .text_color(text_placeholder_color)
                                                     .italic()
-                                                    .child(header_text),
-                                            )
+                                                    .child(ctx_name),
+                                            );
+                                        }
+
+                                        hunk_row
                                             .child(div().flex_1())
                                             .child(
                                                 Button::new(
@@ -981,7 +1043,7 @@ impl Render for DiffViewer {
                                                     (added_line_bg, added_gutter_bg, vc_added)
                                                 }
                                                 SideBySideLineKind::Empty => {
-                                                    (editor_bg, gutter_bg, text_placeholder_color)
+                                                    (empty_fill_bg, gutter_bg, text_placeholder_color)
                                                 }
                                             };
                                         let (right_bg, right_gutter_bg, right_text_col) =
@@ -996,7 +1058,7 @@ impl Render for DiffViewer {
                                                     (deleted_line_bg, deleted_gutter_bg, vc_deleted)
                                                 }
                                                 SideBySideLineKind::Empty => {
-                                                    (editor_bg, gutter_bg, text_placeholder_color)
+                                                    (empty_fill_bg, gutter_bg, text_placeholder_color)
                                                 }
                                             };
 
@@ -1055,7 +1117,6 @@ impl Render for DiffViewer {
                                                         .ok();
                                                 },
                                             )
-                                            // ── Left half ──
                                             .child(
                                                 div()
                                                     .h_flex()
@@ -1063,10 +1124,9 @@ impl Render for DiffViewer {
                                                     .h_full()
                                                     .overflow_x_hidden()
                                                     .bg(effective_left_bg)
-                                                    // Left gutter
                                                     .child(
                                                         div()
-                                                            .w(px(40.))
+                                                            .w(px(44.))
                                                             .flex_shrink_0()
                                                             .h_full()
                                                             .flex()
@@ -1076,11 +1136,11 @@ impl Render for DiffViewer {
                                                             .border_r_1()
                                                             .border_color(border_variant)
                                                             .text_xs()
-                                                            .text_color(text_placeholder_color)
-                                                            .px_1()
+                                                            .font_family("monospace")
+                                                            .text_color(text_muted)
+                                                            .pr(px(4.))
                                                             .child(left_num_str),
                                                     )
-                                                    // Left content
                                                     .child(
                                                         div()
                                                             .flex_1()
@@ -1088,15 +1148,15 @@ impl Render for DiffViewer {
                                                             .h_full()
                                                             .flex()
                                                             .items_center()
-                                                            .pl_2()
+                                                            .pl(px(6.))
                                                             .text_xs()
+                                                            .font_family("monospace")
                                                             .text_color(left_text_col)
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
                                                             .child(left_text),
                                                     ),
                                             )
-                                            // ── Center divider ──
                                             .child(
                                                 div()
                                                     .w(px(2.))
@@ -1104,7 +1164,6 @@ impl Render for DiffViewer {
                                                     .h_full()
                                                     .bg(border_variant),
                                             )
-                                            // ── Right half ──
                                             .child(
                                                 div()
                                                     .h_flex()
@@ -1112,10 +1171,9 @@ impl Render for DiffViewer {
                                                     .h_full()
                                                     .overflow_x_hidden()
                                                     .bg(effective_right_bg)
-                                                    // Right gutter
                                                     .child(
                                                         div()
-                                                            .w(px(40.))
+                                                            .w(px(44.))
                                                             .flex_shrink_0()
                                                             .h_full()
                                                             .flex()
@@ -1125,11 +1183,11 @@ impl Render for DiffViewer {
                                                             .border_r_1()
                                                             .border_color(border_variant)
                                                             .text_xs()
-                                                            .text_color(text_placeholder_color)
-                                                            .px_1()
+                                                            .font_family("monospace")
+                                                            .text_color(text_muted)
+                                                            .pr(px(4.))
                                                             .child(right_num_str),
                                                     )
-                                                    // Right content
                                                     .child(
                                                         div()
                                                             .flex_1()
@@ -1137,8 +1195,9 @@ impl Render for DiffViewer {
                                                             .h_full()
                                                             .flex()
                                                             .items_center()
-                                                            .pl_2()
+                                                            .pl(px(6.))
                                                             .text_xs()
+                                                            .font_family("monospace")
                                                             .text_color(right_text_col)
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
@@ -1158,7 +1217,6 @@ impl Render for DiffViewer {
             }
         };
 
-        // ── Build container ─────────────────────────────────────────
         let mut container = div()
             .id("diff-viewer")
             .track_focus(&self.focus_handle)
@@ -1171,7 +1229,6 @@ impl Render for DiffViewer {
             .size_full()
             .bg(editor_bg);
 
-        // ── File header bar ─────────────────────────────────────────
         if let Some(path) = &self.file_path {
             let (additions, deletions) = Self::count_changes(&self.display_rows);
             let file_icon = Self::icon_for_path(path);
@@ -1192,38 +1249,35 @@ impl Render for DiffViewer {
                     .bg(colors.toolbar_background)
                     .border_b_1()
                     .border_color(border_variant)
-                    // File icon (based on extension)
                     .child(
                         Icon::new(file_icon)
                             .size(IconSize::Small)
                             .color(Color::Muted),
                     )
-                    // File path
                     .child(
                         Label::new(path_str)
                             .size(LabelSize::Small)
                             .weight(FontWeight::MEDIUM)
                             .truncate(),
                     )
-                    // Staged/Unstaged indicator
                     .child(
-                        Badge::new(if is_staged { "Staged" } else { "Unstaged" })
-                            .color(if is_staged {
+                        Badge::new(if is_staged { "Staged" } else { "Unstaged" }).color(
+                            if is_staged {
                                 Color::Added
                             } else {
                                 Color::Modified
-                            }),
+                            },
+                        ),
                     )
-                    // Spacer
                     .child(div().flex_1())
-                    // Change stats: +X in green, -Y in red
                     .child(
                         div()
                             .h_flex()
-                            .gap_1()
+                            .gap(px(4.))
                             .child(
                                 div()
                                     .text_xs()
+                                    .font_family("monospace")
                                     .text_color(vc_added)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(format!("+{}", additions))),
@@ -1231,19 +1285,18 @@ impl Render for DiffViewer {
                             .child(
                                 div()
                                     .text_xs()
+                                    .font_family("monospace")
                                     .text_color(vc_deleted)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(format!("-{}", deletions))),
                             ),
                     )
-                    // Separator
                     .child(
                         div()
                             .text_xs()
                             .text_color(text_placeholder_color)
                             .child("\u{00B7}"),
                     )
-                    // Mode toggle button
                     .child(
                         Button::new("toggle-diff-mode", mode_label)
                             .size(ButtonSize::Compact)

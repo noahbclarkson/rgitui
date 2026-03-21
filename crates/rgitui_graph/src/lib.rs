@@ -10,7 +10,7 @@ use gpui::{
     SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel};
-use rgitui_settings::SettingsState;
+use rgitui_settings::{GraphStyle, SettingsState};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     AvatarCache, Badge, CheckState, Checkbox, Icon, IconName, IconSize, Label, LabelSize,
@@ -575,14 +575,15 @@ impl Render for GraphView {
         }
 
         // Extract colors before closure (can't call cx inside uniform_list closure)
-        let selected_bg = colors.ghost_element_selected;
+        let selected_bg = colors.element_selected;
         let hover_bg = colors.ghost_element_hover;
-        let active_bg = colors.ghost_element_selected;
+        let active_bg = colors.ghost_element_active;
         let panel_bg = colors.panel_background;
         let border_color = colors.border_variant;
-        let accent_border = colors.text_accent;
+        let accent_border = colors.border_focused;
+        let selected_border = colors.border_focused;
 
-        // Search highlight colors
+        // Search highlight colors (derived from theme accent with adjusted alpha)
         let search_match_bg = gpui::Hsla {
             a: 0.12,
             ..colors.text_accent
@@ -594,14 +595,18 @@ impl Render for GraphView {
 
         // HEAD emphasis: accent-tinted background for the HEAD row
         let head_row_bg = gpui::Hsla {
-            a: 0.12,
+            a: 0.08,
             ..colors.text_accent
         };
 
         // Working tree row color (warning/yellow tint)
         let status_colors = cx.status();
         let working_tree_bg = gpui::Hsla {
-            a: 0.08,
+            a: 0.06,
+            ..status_colors.warning
+        };
+        let working_tree_border_color = gpui::Hsla {
+            a: 0.6,
             ..status_colors.warning
         };
         let working_tree_node_color = status_colors.warning;
@@ -631,6 +636,7 @@ impl Render for GraphView {
         let lane_width: f32 = 20.0;
         let graph_padding_left: f32 = 10.0;
         let compactness = cx.global::<SettingsState>().settings().compactness;
+        let graph_style = cx.global::<SettingsState>().settings().graph_style;
         let compact_mul = compactness.multiplier();
         let row_height = compactness.spacing(self.row_height);
 
@@ -789,12 +795,13 @@ impl Render for GraphView {
                                 graph_padding_left,
                                 graph_col_width,
                                 working_tree_bg,
+                                working_tree_border_color,
                                 node_color: working_tree_node_color,
                                 selected_bg,
                                 hover_bg,
                                 active_bg,
                                 panel_bg,
-                                accent_border,
+                                selected_border,
                                 view: view.clone(),
                                 show_author_column,
                                 show_date_column,
@@ -811,7 +818,6 @@ impl Render for GraphView {
                         let is_head_row = graph_row.is_head;
                         let is_merge_commit = graph_row.is_merge;
 
-                        // Row background priority: selected > search current > search match > head > default
                         let row_base_bg = if is_head_row {
                             head_row_bg
                         } else {
@@ -826,7 +832,6 @@ impl Render for GraphView {
                         } else {
                             row_base_bg
                         };
-                        // Don't show hover effect on already-selected rows
                         let row_hover_bg = if selected { selected_bg } else { hover_bg };
                         let row_active_bg = if selected { selected_bg } else { active_bg };
 
@@ -884,18 +889,16 @@ impl Render for GraphView {
                         let view_clone = view.clone();
                         let view_ctx_menu = view.clone();
 
-                        // Left edge indicator: accent border when selected, lane color otherwise
                         let left_tab_color = if selected {
-                            accent_border
+                            selected_border
                         } else if is_head_row {
-                            // HEAD row gets a brighter accent tab
                             gpui::Hsla {
                                 a: 0.8,
                                 ..accent_border
                             }
                         } else {
                             gpui::Hsla {
-                                a: 0.5,
+                                a: 0.4,
                                 ..node_color
                             }
                         };
@@ -907,7 +910,7 @@ impl Render for GraphView {
                             .h(px(row_height))
                             .w_full()
                             .bg(bg)
-                            .cursor_pointer()
+                            .cursor(CursorStyle::PointingHand)
                             .hover(move |s| s.bg(row_hover_bg))
                             .active(move |s| s.bg(row_active_bg))
                             .on_click(
@@ -932,7 +935,6 @@ impl Render for GraphView {
                                         .ok();
                                 },
                             )
-                            // Color tab on left edge — accent for selected, lane color otherwise
                             .child(
                                 div()
                                     .w(px(3.))
@@ -940,7 +942,6 @@ impl Render for GraphView {
                                     .flex_shrink_0()
                                     .bg(left_tab_color),
                             )
-                            // Gap between color tab and graph
                             .child(div().w(px(5.)).flex_shrink_0());
 
                         // Graph column with canvas + avatar overlay
@@ -1023,52 +1024,78 @@ impl Render for GraphView {
                                                         end_y,
                                                     ));
                                                 } else if edge.from_lane != node_lane {
-                                                    // INCOMING: vertical down at from_x, curve into node at mid_y
-                                                    let horiz_y = origin.y + mid_y;
-                                                    let ry = (horiz_y - start_y).max(px(1.0));
-                                                    let rx = (from_x - to_x).abs().max(px(1.0));
-                                                    let bend_y = horiz_y - ry;
                                                     let fx = origin.x + from_x;
                                                     let tx = origin.x + to_x;
-                                                    let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
+                                                    let horiz_y = origin.y + mid_y;
 
-                                                    path.move_to(point(fx, start_y));
+                                                    match graph_style {
+                                                        GraphStyle::Curved => {
+                                                            let ry = (horiz_y - start_y).max(px(1.0));
+                                                            let rx = (from_x - to_x).abs().max(px(1.0));
+                                                            let bend_y = horiz_y - ry;
+                                                            let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
 
-                                                    let segments = 12_usize;
-                                                    for s in 1..=segments {
-                                                        let t = s as f32 / segments as f32;
-                                                        let angle = t * std::f32::consts::FRAC_PI_2;
-                                                        let px_x = fx + rx * dir * angle.sin();
-                                                        let px_y = bend_y + ry * (1.0 - angle.cos());
-                                                        path.line_to(point(px_x, px_y));
+                                                            path.move_to(point(fx, start_y));
+
+                                                            let segments = 12_usize;
+                                                            for s in 1..=segments {
+                                                                let t = s as f32 / segments as f32;
+                                                                let angle = t * std::f32::consts::FRAC_PI_2;
+                                                                let px_x = fx + rx * dir * angle.sin();
+                                                                let px_y = bend_y + ry * (1.0 - angle.cos());
+                                                                path.line_to(point(px_x, px_y));
+                                                            }
+                                                        }
+                                                        GraphStyle::Rails => {
+                                                            path.move_to(point(fx, start_y));
+                                                            path.line_to(point(fx, horiz_y));
+                                                            path.line_to(point(tx, horiz_y));
+                                                        }
+                                                        GraphStyle::Angular => {
+                                                            path.move_to(point(fx, start_y));
+                                                            path.line_to(point(fx, horiz_y));
+                                                            path.line_to(point(tx, horiz_y));
+                                                        }
                                                     }
                                                 } else {
-                                                    // OUTGOING: from this node, curve to destination lane.
-                                                    // Horizontal from node center → quarter circle → vertical down
                                                     let fx = origin.x + from_x;
                                                     let tx = origin.x + to_x;
                                                     let horiz_y = origin.y + mid_y;
-                                                    let avail = end_y - horiz_y;
-                                                    let r = avail.min(px(16.0)).max(px(1.0));
-                                                    let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
 
-                                                    // Horizontal from node toward destination
-                                                    path.move_to(point(fx, horiz_y));
-                                                    let horiz_end_x = tx - r * dir;
-                                                    path.line_to(point(horiz_end_x, horiz_y));
+                                                    match graph_style {
+                                                        GraphStyle::Curved => {
+                                                            let avail = end_y - horiz_y;
+                                                            let r = avail.min(px(16.0)).max(px(1.0));
+                                                            let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
 
-                                                    // Quarter circle arc: horizontal → vertical
-                                                    let segments = 12_usize;
-                                                    for s in 1..=segments {
-                                                        let t = s as f32 / segments as f32;
-                                                        let angle = t * std::f32::consts::FRAC_PI_2;
-                                                        let arc_x = horiz_end_x + r * dir * angle.sin();
-                                                        let arc_y = horiz_y + r * (1.0 - angle.cos());
-                                                        path.line_to(point(arc_x, arc_y));
+                                                            path.move_to(point(fx, horiz_y));
+                                                            let horiz_end_x = tx - r * dir;
+                                                            path.line_to(point(horiz_end_x, horiz_y));
+
+                                                            let segments = 12_usize;
+                                                            for s in 1..=segments {
+                                                                let t = s as f32 / segments as f32;
+                                                                let angle = t * std::f32::consts::FRAC_PI_2;
+                                                                let arc_x = horiz_end_x + r * dir * angle.sin();
+                                                                let arc_y = horiz_y + r * (1.0 - angle.cos());
+                                                                path.line_to(point(arc_x, arc_y));
+                                                            }
+
+                                                            path.line_to(point(tx, end_y));
+                                                        }
+                                                        GraphStyle::Rails => {
+                                                            path.move_to(point(fx, horiz_y));
+                                                            let mid_point_y = horiz_y + (end_y - horiz_y) / 2.0;
+                                                            path.line_to(point(fx, mid_point_y));
+                                                            path.line_to(point(tx, mid_point_y));
+                                                            path.line_to(point(tx, end_y));
+                                                        }
+                                                        GraphStyle::Angular => {
+                                                            path.move_to(point(fx, horiz_y));
+                                                            path.line_to(point(tx, horiz_y));
+                                                            path.line_to(point(tx, end_y));
+                                                        }
                                                     }
-
-                                                    // Vertical down at to_x
-                                                    path.line_to(point(tx, end_y));
                                                 }
 
                                                 if let Ok(built_path) = path.build() {
@@ -1076,18 +1103,20 @@ impl Render for GraphView {
                                                 }
                                             }
 
-                                            // 3. Draw commit dot with background ring.
-                                            let dot_radius = if is_merge_commit {
+                                            // Node dot: HEAD=larger filled, merge=filled+ring, normal=filled
+                                            let dot_radius = if is_head_row {
                                                 5.5_f32 * compact_mul
+                                            } else if is_merge_commit {
+                                                5.0_f32 * compact_mul
                                             } else {
-                                                4.5_f32 * compact_mul
+                                                4.0_f32 * compact_mul
                                             };
                                             let cx_x = origin.x + node_x_px;
                                             let cy_y = origin.y + mid_y;
-                                            let steps = 32_usize;
+                                            let steps = 36_usize;
 
                                             // Background ring to occlude lines passing behind the dot
-                                            let ring_r = 13.0_f32 * compact_mul;
+                                            let ring_r = 14.0_f32 * compact_mul;
                                             let mut ring = PathBuilder::fill();
                                             for s in 0..steps {
                                                 let angle = (s as f32)
@@ -1107,10 +1136,10 @@ impl Render for GraphView {
                                                     .paint_path(built_ring, row_bg_for_canvas);
                                             }
 
-                                            // For HEAD commit, draw a subtle glow ring
+                                            // HEAD commit: glow ring + filled circle
                                             if is_head_row {
                                                 let glow_r = dot_radius + 4.0 * compact_mul;
-                                                let mut glow = PathBuilder::stroke(px(2.0));
+                                                let mut glow = PathBuilder::stroke(px(2.5));
                                                 for s in 0..=steps {
                                                     let angle = (s as f32)
                                                         * std::f32::consts::TAU
@@ -1125,16 +1154,51 @@ impl Render for GraphView {
                                                 }
                                                 if let Ok(built_glow) = glow.build() {
                                                     let glow_color = gpui::Hsla {
-                                                        a: 0.3,
+                                                        a: 0.35,
                                                         ..node_color
                                                     };
                                                     window.paint_path(built_glow, glow_color);
                                                 }
-                                            }
 
-                                            // For merge commits, draw a slightly larger outer ring
-                                            if is_merge_commit {
-                                                let merge_r = dot_radius + 1.5;
+                                                // Filled circle for HEAD
+                                                let mut head_fill = PathBuilder::fill();
+                                                for s in 0..steps {
+                                                    let angle = (s as f32)
+                                                        * std::f32::consts::TAU
+                                                        / (steps as f32);
+                                                    let x = cx_x + px(dot_radius * angle.cos());
+                                                    let y = cy_y + px(dot_radius * angle.sin());
+                                                    if s == 0 {
+                                                        head_fill.move_to(point(x, y));
+                                                    } else {
+                                                        head_fill.line_to(point(x, y));
+                                                    }
+                                                }
+                                                head_fill.close();
+                                                if let Ok(built_head) = head_fill.build() {
+                                                    window.paint_path(built_head, node_color);
+                                                }
+                                            } else if is_merge_commit {
+                                                // Merge commit: filled circle with outer ring
+                                                let mut merge_fill = PathBuilder::fill();
+                                                for s in 0..steps {
+                                                    let angle = (s as f32)
+                                                        * std::f32::consts::TAU
+                                                        / (steps as f32);
+                                                    let x = cx_x + px(dot_radius * angle.cos());
+                                                    let y = cy_y + px(dot_radius * angle.sin());
+                                                    if s == 0 {
+                                                        merge_fill.move_to(point(x, y));
+                                                    } else {
+                                                        merge_fill.line_to(point(x, y));
+                                                    }
+                                                }
+                                                merge_fill.close();
+                                                if let Ok(built_merge_fill) = merge_fill.build() {
+                                                    window.paint_path(built_merge_fill, node_color);
+                                                }
+
+                                                let outer_r = dot_radius + 2.5;
                                                 let mut merge_ring =
                                                     PathBuilder::stroke(px(1.5));
                                                 for s in 0..=steps {
@@ -1142,9 +1206,9 @@ impl Render for GraphView {
                                                         * std::f32::consts::TAU
                                                         / (steps as f32);
                                                     let x =
-                                                        cx_x + px(merge_r * angle.cos());
+                                                        cx_x + px(outer_r * angle.cos());
                                                     let y =
-                                                        cy_y + px(merge_r * angle.sin());
+                                                        cy_y + px(outer_r * angle.sin());
                                                     if s == 0 {
                                                         merge_ring.move_to(point(x, y));
                                                     } else {
@@ -1153,13 +1217,32 @@ impl Render for GraphView {
                                                 }
                                                 if let Ok(built_merge) = merge_ring.build() {
                                                     let merge_ring_color = gpui::Hsla {
-                                                        a: 0.5,
+                                                        a: 0.6,
                                                         ..node_color
                                                     };
                                                     window.paint_path(
                                                         built_merge,
                                                         merge_ring_color,
                                                     );
+                                                }
+                                            } else {
+                                                // Normal commit: filled circle
+                                                let mut normal_fill = PathBuilder::fill();
+                                                for s in 0..steps {
+                                                    let angle = (s as f32)
+                                                        * std::f32::consts::TAU
+                                                        / (steps as f32);
+                                                    let x = cx_x + px(dot_radius * angle.cos());
+                                                    let y = cy_y + px(dot_radius * angle.sin());
+                                                    if s == 0 {
+                                                        normal_fill.move_to(point(x, y));
+                                                    } else {
+                                                        normal_fill.line_to(point(x, y));
+                                                    }
+                                                }
+                                                normal_fill.close();
+                                                if let Ok(built_normal) = normal_fill.build() {
+                                                    window.paint_path(built_normal, node_color);
                                                 }
                                             }
                                         },
@@ -1235,37 +1318,31 @@ impl Render for GraphView {
                                 })),
                         );
 
-                        // Hash column
                         row = row.child(
                             div().w(px(80.)).flex_shrink_0().child(
                                 Label::new(hash_display)
                                     .size(LabelSize::XSmall)
-                                    .color(Color::Accent)
+                                    .color(Color::Muted)
                                     .weight(gpui::FontWeight::MEDIUM)
                                     .truncate(),
                             ),
                         );
 
-                        // Message column — contains ref badges (inline) + summary text
                         {
                             let mut message_col = div()
                                 .flex_1()
                                 .min_w_0()
                                 .h_flex()
                                 .items_center()
-                                .gap(px(5.))
+                                .gap(px(4.))
                                 .overflow_x_hidden();
 
-                            // Ref badges inline before the summary — each badge is
-                            // flex_shrink_0 so it either fully renders or is hidden
-                            // by the parent's overflow_x_hidden.
                             for badge in ref_badges {
                                 message_col = message_col.child(
                                     div().flex_shrink_0().child(badge),
                                 );
                             }
 
-                            // Summary text — HEAD commits get slightly bolder text
                             let summary_label = if is_head_row {
                                 Label::new(summary)
                                     .size(LabelSize::Small)
@@ -1396,18 +1473,7 @@ impl Render for GraphView {
                         .cursor_pointer()
                         .rounded_sm()
                         .p(px(2.))
-                        .hover(move |s| {
-                            s.bg(if has_matches {
-                                hover_bg
-                            } else {
-                                gpui::Hsla {
-                                    h: 0.0,
-                                    s: 0.0,
-                                    l: 0.0,
-                                    a: 0.0,
-                                }
-                            })
-                        })
+                        .when(has_matches, |el| el.hover(move |s| s.bg(hover_bg)))
                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                             view_prev
                                 .update(cx, |this: &mut GraphView, cx| {
@@ -1418,7 +1484,7 @@ impl Render for GraphView {
                         .child(
                             Icon::new(IconName::ChevronUp)
                                 .size(IconSize::Small)
-                                .color(Color::Muted),
+                                .color(if has_matches { Color::Default } else { Color::Muted }),
                         ),
                 )
                 .child(
@@ -1427,18 +1493,7 @@ impl Render for GraphView {
                         .cursor_pointer()
                         .rounded_sm()
                         .p(px(2.))
-                        .hover(move |s| {
-                            s.bg(if has_matches {
-                                active_bg
-                            } else {
-                                gpui::Hsla {
-                                    h: 0.0,
-                                    s: 0.0,
-                                    l: 0.0,
-                                    a: 0.0,
-                                }
-                            })
-                        })
+                        .when(has_matches, |el| el.hover(move |s| s.bg(hover_bg)))
                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                             view_next
                                 .update(cx, |this: &mut GraphView, cx| {
@@ -1449,7 +1504,7 @@ impl Render for GraphView {
                         .child(
                             Icon::new(IconName::ChevronDown)
                                 .size(IconSize::Small)
-                                .color(Color::Muted),
+                                .color(if has_matches { Color::Default } else { Color::Muted }),
                         ),
                 );
 
@@ -1458,7 +1513,6 @@ impl Render for GraphView {
 
         container = container.child(list);
 
-        // "Load more" footer when there are more commits available
         if !self.all_commits_loaded && !self.commits.is_empty() {
             let view_load = cx.weak_entity();
             container = container.child(
@@ -1466,14 +1520,15 @@ impl Render for GraphView {
                     .id("load-more-row")
                     .h_flex()
                     .w_full()
-                    .h(px(32.))
+                    .h(px(36.))
+                    .mt(px(4.))
                     .items_center()
                     .justify_center()
                     .gap(px(6.))
                     .bg(colors.surface_background)
                     .border_t_1()
                     .border_color(colors.border_variant)
-                    .cursor_pointer()
+                    .cursor(CursorStyle::PointingHand)
                     .hover(|s| s.bg(colors.ghost_element_hover))
                     .active(|s| s.bg(colors.ghost_element_active))
                     .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -1888,12 +1943,13 @@ struct WorkingTreeRowParams {
     graph_padding_left: f32,
     graph_col_width: f32,
     working_tree_bg: gpui::Hsla,
+    working_tree_border_color: gpui::Hsla,
     node_color: gpui::Hsla,
     selected_bg: gpui::Hsla,
     hover_bg: gpui::Hsla,
     active_bg: gpui::Hsla,
     panel_bg: gpui::Hsla,
-    accent_border: gpui::Hsla,
+    selected_border: gpui::Hsla,
     view: WeakEntity<GraphView>,
     show_author_column: bool,
     show_date_column: bool,
@@ -1913,12 +1969,13 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         graph_padding_left,
         graph_col_width,
         working_tree_bg,
+        working_tree_border_color,
         node_color,
         selected_bg,
         hover_bg,
         active_bg,
         panel_bg,
-        accent_border,
+        selected_border,
         view,
         show_author_column,
         show_date_column,
@@ -1928,12 +1985,9 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
     let row_hover_bg = if selected { selected_bg } else { hover_bg };
     let row_active_bg = if selected { selected_bg } else { active_bg };
     let left_tab_color = if selected {
-        accent_border
+        selected_border
     } else {
-        gpui::Hsla {
-            a: 0.7,
-            ..node_color
-        }
+        working_tree_border_color
     };
 
     let has_changes = staged_count > 0 || unstaged_count > 0;
@@ -1959,7 +2013,12 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         .h(px(row_height))
         .w_full()
         .bg(bg)
-        .cursor_pointer()
+        .border_b_1()
+        .border_color(gpui::Hsla {
+            a: 0.15,
+            ..working_tree_border_color
+        })
+        .cursor(CursorStyle::PointingHand)
         .hover(move |s| s.bg(row_hover_bg))
         .active(move |s| s.bg(row_active_bg))
         .on_click(
@@ -1972,7 +2031,6 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                     .ok();
             },
         )
-        // Color tab on left edge
         .child(
             div()
                 .w(px(3.))
@@ -1980,7 +2038,6 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 .flex_shrink_0()
                 .bg(left_tab_color),
         )
-        // Gap between color tab and graph
         .child(div().w(px(5.)).flex_shrink_0())
         // Graph column with canvas (hollow circle node + connecting line down)
         .child(
@@ -2079,47 +2136,57 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                     .size_full(),
                 ),
         )
-        // Hash column: show a pencil/edit indicator
         .child(
-            div().w(px(80.)).flex_shrink_0().child(
+            div().w(px(80.)).flex_shrink_0().h_flex().items_center().gap(px(4.)).child(
+                Icon::new(IconName::Edit)
+                    .size(IconSize::XSmall)
+                    .color(Color::Warning),
+            ).child(
                 Label::new("working")
                     .size(LabelSize::XSmall)
                     .color(Color::Warning)
                     .weight(gpui::FontWeight::MEDIUM),
             ),
         )
-        // Message column
         .child({
             let mut message_col = div()
                 .flex_1()
                 .min_w_0()
                 .h_flex()
                 .items_center()
-                .gap(px(5.))
+                .gap(px(4.))
                 .overflow_x_hidden();
 
             let badge_color = if has_changes { Color::Warning } else { Color::Muted };
             message_col = message_col.child(
                 div()
-                    .h_flex()
-                    .gap(px(3.))
                     .flex_shrink_0()
                     .child(Badge::new("Working Tree").color(badge_color).bold()),
             );
 
             if has_changes {
-                let label_text: SharedString = "Uncommitted Changes".into();
-                message_col = message_col.child(
-                    Label::new(label_text)
-                        .size(LabelSize::Small)
-                        .color(Color::Warning),
-                );
+                if staged_count > 0 {
+                    message_col = message_col.child(
+                        div().flex_shrink_0().child(
+                            Badge::new(SharedString::from(format!("{} staged", staged_count)))
+                                .color(Color::Success),
+                        ),
+                    );
+                }
+                if unstaged_count > 0 {
+                    message_col = message_col.child(
+                        div().flex_shrink_0().child(
+                            Badge::new(SharedString::from(format!("{} unstaged", unstaged_count)))
+                                .color(Color::Warning),
+                        ),
+                    );
+                }
 
                 let mut indicators = div().h_flex().gap(px(4.)).flex_shrink_0();
 
                 if added_count > 0 {
                     indicators = indicators.child(
-                        Label::new(SharedString::from(format!("+{}", added_count)))
+                        Label::new(SharedString::from(format!("+{added_count}")))
                             .size(LabelSize::XSmall)
                             .color(Color::Success)
                             .weight(gpui::FontWeight::SEMIBOLD),
@@ -2127,7 +2194,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 }
                 if modified_count > 0 {
                     indicators = indicators.child(
-                        Label::new(SharedString::from(format!("~{}", modified_count)))
+                        Label::new(SharedString::from(format!("~{modified_count}")))
                             .size(LabelSize::XSmall)
                             .color(Color::Accent)
                             .weight(gpui::FontWeight::SEMIBOLD),
@@ -2135,7 +2202,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 }
                 if deleted_count > 0 {
                     indicators = indicators.child(
-                        Label::new(SharedString::from(format!("-{}", deleted_count)))
+                        Label::new(SharedString::from(format!("-{deleted_count}")))
                             .size(LabelSize::XSmall)
                             .color(Color::Error)
                             .weight(gpui::FontWeight::SEMIBOLD),
@@ -2143,7 +2210,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 }
                 if conflicted_count > 0 {
                     indicators = indicators.child(
-                        Label::new(SharedString::from(format!("!{}", conflicted_count)))
+                        Label::new(SharedString::from(format!("!{conflicted_count}")))
                             .size(LabelSize::XSmall)
                             .color(Color::Error)
                             .weight(gpui::FontWeight::SEMIBOLD),

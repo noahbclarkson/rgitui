@@ -3,7 +3,10 @@ use gpui::{
     div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, FontWeight,
     KeyDownEvent, Render, SharedString, Window,
 };
-use rgitui_settings::{AiSettings, Compactness, GitProviderSettings, GitSettings, SettingsState};
+use rgitui_settings::{
+    AiSettings, AutoFetchInterval, Compactness, DiffViewMode, GitProviderSettings, GitSettings,
+    GraphStyle, SettingsState,
+};
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, Icon, IconName, IconSize, Label,
@@ -55,11 +58,16 @@ struct DetectedApp {
 
 fn is_command_available(cmd: &str) -> bool {
     #[cfg(target_os = "windows")]
-    let check = std::process::Command::new("where")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let check = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("where")
+            .arg(cmd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+    };
     #[cfg(not(target_os = "windows"))]
     let check = std::process::Command::new("which")
         .arg(cmd)
@@ -213,6 +221,12 @@ pub struct SettingsModal {
     // General state
     max_recent_repos: usize,
     compactness: Compactness,
+    font_size: u32,
+    show_line_numbers_in_diff: bool,
+    diff_view_mode: DiffViewMode,
+    graph_style: GraphStyle,
+    auto_fetch_interval: AutoFetchInterval,
+    confirm_destructive_operations: bool,
     terminal_command_editor: Entity<TextInput>,
     editor_command_editor: Entity<TextInput>,
     detected_terminals: Vec<DetectedApp>,
@@ -568,6 +582,12 @@ impl SettingsModal {
             provider_token_editor,
             max_recent_repos: settings.max_recent_repos,
             compactness: settings.compactness,
+            font_size: settings.font_size,
+            show_line_numbers_in_diff: settings.show_line_numbers_in_diff,
+            diff_view_mode: settings.diff_view_mode,
+            graph_style: settings.graph_style,
+            auto_fetch_interval: settings.auto_fetch_interval,
+            confirm_destructive_operations: settings.confirm_destructive_operations,
             terminal_command_editor,
             editor_command_editor,
             detected_terminals,
@@ -649,6 +669,12 @@ impl SettingsModal {
                 self.show_provider_token = false;
                 self.max_recent_repos = s.max_recent_repos;
                 self.compactness = s.compactness;
+                self.font_size = s.font_size;
+                self.show_line_numbers_in_diff = s.show_line_numbers_in_diff;
+                self.diff_view_mode = s.diff_view_mode;
+                self.graph_style = s.graph_style;
+                self.auto_fetch_interval = s.auto_fetch_interval;
+                self.confirm_destructive_operations = s.confirm_destructive_operations;
                 self.feedback_message = None;
                 self.feedback_is_error = false;
                 (
@@ -781,6 +807,13 @@ impl SettingsModal {
             };
             state.settings_mut().max_recent_repos = self.max_recent_repos;
             state.settings_mut().compactness = self.compactness;
+            state.settings_mut().font_size = self.font_size;
+            state.settings_mut().show_line_numbers_in_diff = self.show_line_numbers_in_diff;
+            state.settings_mut().diff_view_mode = self.diff_view_mode;
+            state.settings_mut().graph_style = self.graph_style;
+            state.settings_mut().auto_fetch_interval = self.auto_fetch_interval;
+            state.settings_mut().confirm_destructive_operations =
+                self.confirm_destructive_operations;
             state.settings_mut().terminal_command = terminal_command.trim().to_string();
             state.settings_mut().editor_command = editor_command.trim().to_string();
 
@@ -1214,12 +1247,20 @@ impl SettingsModal {
         div()
             .v_flex()
             .w_full()
-            .p(px(14.))
-            .gap(px(10.))
+            .p(px(16.))
+            .gap(px(12.))
             .rounded(px(8.))
             .bg(colors.surface_background)
             .border_1()
             .border_color(colors.border_variant)
+    }
+
+    fn section_divider(cx: &Context<Self>) -> gpui::Div {
+        let colors = cx.colors().clone();
+        div()
+            .w_full()
+            .h(px(1.))
+            .bg(colors.border_variant)
     }
 
     // ── Helper: setting row label ───────────────────────────────────────
@@ -1428,13 +1469,17 @@ impl SettingsModal {
                     ))))
                     .h_flex()
                     .w_full()
-                    .h(px(34.))
+                    .h(px(36.))
                     .px(px(10.))
                     .gap(px(8.))
                     .items_center()
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .when(is_active, |el| el.bg(colors.ghost_element_selected))
+                    .when(is_active, |el| {
+                        el.bg(colors.ghost_element_selected)
+                            .border_l_2()
+                            .border_color(colors.border_focused)
+                    })
                     .when(!is_active, |el| {
                         el.hover(|s| s.bg(colors.ghost_element_hover))
                             .active(|s| s.bg(colors.ghost_element_active))
@@ -1552,13 +1597,10 @@ impl SettingsModal {
                         el.child(
                             div()
                                 .h_flex()
-                                .h(px(20.))
+                                .h(px(22.))
                                 .px(px(8.))
-                                .rounded(px(10.))
-                                .bg(gpui::Hsla {
-                                    a: 0.15,
-                                    ..colors.text_accent
-                                })
+                                .rounded(px(4.))
+                                .bg(colors.hint_background)
                                 .items_center()
                                 .child(
                                     Label::new("Active")
@@ -1872,7 +1914,7 @@ impl SettingsModal {
                     .px(px(12.))
                     .py(px(8.))
                     .gap(px(12.))
-                    .bg(colors.surface_background)
+                    .bg(colors.element_background)
                     .border_b_1()
                     .border_color(colors.border_variant)
                     .child(
@@ -1987,13 +2029,34 @@ impl SettingsModal {
                                     }),
                             ),
                         )
-                        .child(Label::new(status_label).size(LabelSize::XSmall).color(
-                            if has_token {
-                                Color::Success
-                            } else {
-                                Color::Warning
-                            },
-                        ))
+                        .child(
+                            div()
+                                .h_flex()
+                                .gap(px(6.))
+                                .items_center()
+                                .child(
+                                    div()
+                                        .w(px(8.))
+                                        .h(px(8.))
+                                        .rounded(px(4.))
+                                        .bg(if has_token {
+                                            cx.status().success
+                                        } else if browser_login_pending {
+                                            cx.status().warning
+                                        } else {
+                                            cx.status().error
+                                        }),
+                                )
+                                .child(
+                                    Label::new(status_label)
+                                        .size(LabelSize::XSmall)
+                                        .color(if has_token {
+                                            Color::Success
+                                        } else {
+                                            Color::Warning
+                                        }),
+                                ),
+                        )
                         .child(
                             div()
                                 .h_flex()
@@ -2433,7 +2496,7 @@ impl SettingsModal {
 
     // ── General section ─────────────────────────────────────────────────
     fn render_general_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let current_max = self.max_recent_repos;
 
         let mut section = div().v_flex().w_full().gap(px(16.));
@@ -2583,6 +2646,255 @@ impl SettingsModal {
                 }),
         );
         section = section.child(density_card);
+
+        // Font size card
+        let current_font_size = self.font_size;
+        let mut font_size_card = Self::setting_card(cx);
+        font_size_card = font_size_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(
+                            Label::new("Font Size")
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            Label::new("Base font size for the user interface (8 - 24).")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .gap(px(4.))
+                        .items_center()
+                        .child(
+                            Button::new("font-size-dec", "-")
+                                .style(ButtonStyle::Outlined)
+                                .size(ButtonSize::Compact)
+                                .disabled(current_font_size <= 8)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    if this.font_size > 8 {
+                                        this.font_size -= 1;
+                                        this.save_settings(cx);
+                                    }
+                                })),
+                        )
+                        .child(
+                            div()
+                                .w(px(40.))
+                                .h(px(28.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(colors.editor_background)
+                                .border_1()
+                                .border_color(colors.border)
+                                .rounded(px(6.))
+                                .child(
+                                    Label::new(SharedString::from(current_font_size.to_string()))
+                                        .size(LabelSize::Small)
+                                        .weight(FontWeight::SEMIBOLD),
+                                ),
+                        )
+                        .child(
+                            Button::new("font-size-inc", "+")
+                                .style(ButtonStyle::Outlined)
+                                .size(ButtonSize::Compact)
+                                .disabled(current_font_size >= 24)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    if this.font_size < 24 {
+                                        this.font_size += 1;
+                                        this.save_settings(cx);
+                                    }
+                                })),
+                        ),
+                ),
+        );
+        section = section.child(font_size_card);
+        section = section.child(Self::section_divider(cx));
+
+        // Diff settings card
+        let mut diff_card = Self::setting_card(cx);
+        let show_line_numbers = self.show_line_numbers_in_diff;
+        diff_card = diff_card
+            .child(
+                div()
+                    .h_flex()
+                    .w_full()
+                    .items_center()
+                    .child(
+                        div()
+                            .v_flex()
+                            .flex_1()
+                            .gap(px(2.))
+                            .child(
+                                Label::new("Show Line Numbers in Diff")
+                                    .size(LabelSize::Small)
+                                    .weight(FontWeight::SEMIBOLD),
+                            )
+                            .child(
+                                Label::new("Display line numbers alongside diff content.")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("show-line-numbers-toggle")
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.show_line_numbers_in_diff = !this.show_line_numbers_in_diff;
+                                this.save_settings(cx);
+                            }))
+                            .child(Checkbox::new(
+                                "show-line-numbers-cb",
+                                if show_line_numbers {
+                                    CheckState::Checked
+                                } else {
+                                    CheckState::Unchecked
+                                },
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .v_flex()
+                    .gap(px(8.))
+                    .child(Self::setting_label(
+                        "Default Diff View Mode",
+                        "Choose how diffs are displayed.",
+                    ))
+                    .child(self.pill_group(
+                        "diff-view-mode",
+                        &["Unified", "Side-by-Side"],
+                        &self.diff_view_mode.to_string(),
+                        |this, value, cx| {
+                            this.diff_view_mode = match value.as_str() {
+                                "Unified" => DiffViewMode::Unified,
+                                "Side-by-Side" => DiffViewMode::SideBySide,
+                                _ => DiffViewMode::Unified,
+                            };
+                            this.save_settings(cx);
+                        },
+                        cx,
+                    )),
+            );
+        section = section.child(diff_card);
+
+        // Graph style card
+        let mut graph_card = Self::setting_card(cx);
+        graph_card = graph_card.child(
+            div()
+                .v_flex()
+                .gap(px(8.))
+                .child(Self::setting_label(
+                    "Graph Style",
+                    "Visual style for the commit graph rendering.",
+                ))
+                .child(self.pill_group(
+                    "graph-style",
+                    &["Rails", "Curved", "Angular"],
+                    &self.graph_style.to_string(),
+                    |this, value, cx| {
+                        this.graph_style = match value.as_str() {
+                            "Rails" => GraphStyle::Rails,
+                            "Curved" => GraphStyle::Curved,
+                            "Angular" => GraphStyle::Angular,
+                            _ => GraphStyle::Rails,
+                        };
+                        this.save_settings(cx);
+                    },
+                    cx,
+                )),
+        );
+        section = section.child(graph_card);
+
+        // Auto-fetch interval card
+        let mut fetch_card = Self::setting_card(cx);
+        fetch_card = fetch_card.child(
+            div()
+                .v_flex()
+                .gap(px(8.))
+                .child(Self::setting_label(
+                    "Auto-Fetch Interval",
+                    "How often to automatically fetch from remotes in the background.",
+                ))
+                .child(self.pill_group(
+                    "auto-fetch",
+                    &["Disabled", "1 min", "5 min", "15 min", "30 min"],
+                    &self.auto_fetch_interval.to_string(),
+                    |this, value, cx| {
+                        this.auto_fetch_interval = match value.as_str() {
+                            "Disabled" => AutoFetchInterval::Disabled,
+                            "1 min" => AutoFetchInterval::OneMinute,
+                            "5 min" => AutoFetchInterval::FiveMinutes,
+                            "15 min" => AutoFetchInterval::FifteenMinutes,
+                            "30 min" => AutoFetchInterval::ThirtyMinutes,
+                            _ => AutoFetchInterval::Disabled,
+                        };
+                        this.save_settings(cx);
+                    },
+                    cx,
+                )),
+        );
+        section = section.child(fetch_card);
+
+        // Confirm destructive operations card
+        let confirm_destructive = self.confirm_destructive_operations;
+        let mut confirm_card = Self::setting_card(cx);
+        confirm_card = confirm_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(
+                            Label::new("Confirm Before Destructive Operations")
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            Label::new(
+                                "Show a confirmation dialog before force push, branch delete, discard changes, and similar actions.",
+                            )
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("confirm-destructive-toggle")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.confirm_destructive_operations =
+                                !this.confirm_destructive_operations;
+                            this.save_settings(cx);
+                        }))
+                        .child(Checkbox::new(
+                            "confirm-destructive-cb",
+                            if confirm_destructive {
+                                CheckState::Checked
+                            } else {
+                                CheckState::Unchecked
+                            },
+                        )),
+                ),
+        );
+        section = section.child(confirm_card);
+        section = section.child(Self::section_divider(cx));
 
         // External tools card
         let mut tools_card = Self::setting_card(cx);
@@ -2817,6 +3129,7 @@ impl SettingsModal {
                 .child(editor_section),
         );
         section = section.child(tools_card);
+        section = section.child(Self::section_divider(cx));
 
         // Keyboard shortcuts info card
         let mut shortcuts_card = Self::setting_card(cx);
@@ -2828,25 +3141,32 @@ impl SettingsModal {
                     "Keyboard Shortcuts",
                     "Quick reference for common actions.",
                 ))
-                .child(self.render_shortcut_row("Command Palette", "Ctrl+Shift+P"))
-                .child(self.render_shortcut_row("Search Commits", "Ctrl+F"))
-                .child(self.render_shortcut_row("Stage All", "Ctrl+S"))
-                .child(self.render_shortcut_row("Unstage All", "Ctrl+Shift+S"))
-                .child(self.render_shortcut_row("Commit", "Ctrl+Enter (in message)"))
-                .child(self.render_shortcut_row("Open Repository", "Ctrl+O"))
-                .child(self.render_shortcut_row("Refresh", "F5"))
-                .child(self.render_shortcut_row("Settings", "Ctrl+,")),
+                .child(self.render_shortcut_row("Command Palette", "Ctrl+Shift+P", cx))
+                .child(self.render_shortcut_row("Search Commits", "Ctrl+F", cx))
+                .child(self.render_shortcut_row("Stage All", "Ctrl+S", cx))
+                .child(self.render_shortcut_row("Unstage All", "Ctrl+Shift+S", cx))
+                .child(self.render_shortcut_row("Commit", "Ctrl+Enter (in message)", cx))
+                .child(self.render_shortcut_row("Open Repository", "Ctrl+O", cx))
+                .child(self.render_shortcut_row("Refresh", "F5", cx))
+                .child(self.render_shortcut_row("Settings", "Ctrl+,", cx)),
         );
         section = section.child(shortcuts_card);
 
         section
     }
 
-    fn render_shortcut_row(&self, action: &str, shortcut: &str) -> impl IntoElement {
+    fn render_shortcut_row(
+        &self,
+        action: &str,
+        shortcut: &str,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let colors = cx.colors();
         div()
             .h_flex()
             .w_full()
             .items_center()
+            .py(px(4.))
             .child(
                 Label::new(SharedString::from(action.to_string()))
                     .size(LabelSize::XSmall)
@@ -2856,15 +3176,10 @@ impl SettingsModal {
             .child(
                 div()
                     .h_flex()
-                    .h(px(20.))
+                    .h(px(22.))
                     .px(px(8.))
                     .rounded(px(4.))
-                    .bg(gpui::Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 0.5,
-                        a: 0.1,
-                    })
+                    .bg(colors.hint_background)
                     .items_center()
                     .child(
                         Label::new(SharedString::from(shortcut.to_string()))

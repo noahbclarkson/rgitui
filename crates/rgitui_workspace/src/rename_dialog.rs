@@ -1,5 +1,8 @@
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString, Window};
+use gpui::{
+    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render,
+    SharedString, Window,
+};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
@@ -9,10 +12,7 @@ use rgitui_ui::{
 /// Events emitted by the rename dialog.
 #[derive(Debug, Clone)]
 pub enum RenameDialogEvent {
-    Rename {
-        old_name: String,
-        new_name: String,
-    },
+    Rename { old_name: String, new_name: String },
     Dismissed,
 }
 
@@ -98,13 +98,13 @@ impl RenameDialog {
         if name.contains("..") || name.contains("//") {
             return Some("Cannot contain '..' or '//'".to_string());
         }
-        if name.contains("~")
-            || name.contains("^")
-            || name.contains(":")
-            || name.contains("\\")
-            || name.contains("?")
-            || name.contains("*")
-            || name.contains("[")
+        if name.contains('~')
+            || name.contains('^')
+            || name.contains(':')
+            || name.contains('\\')
+            || name.contains('?')
+            || name.contains('*')
+            || name.contains('[')
         {
             return Some("Contains invalid characters".to_string());
         }
@@ -158,60 +158,68 @@ impl RenameDialog {
 
 impl Render for RenameDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
-
         if !self.visible {
             return div().id("rename-dialog").into_any_element();
         }
 
+        let colors = cx.colors();
         let new_name = self.editor.read(cx).text().to_string();
         let is_empty = new_name.is_empty();
         let has_error = self.error_message.is_some();
         let is_unchanged = new_name == self.old_name;
+        let can_rename = !is_empty && !has_error && !is_unchanged;
 
         let old_name: SharedString = self.old_name.clone().into();
+
+        let accent_color = Color::Accent.color(cx);
+        let icon_bg = gpui::Hsla {
+            a: 0.12,
+            ..accent_color
+        };
 
         let mut modal = div()
             .id("rename-dialog-modal")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
-            .w(px(420.))
-            .bg(colors.elevated_surface_background)
-            .border_1()
-            .border_color(colors.border)
-            .rounded_lg()
+            .w(px(440.))
             .elevation_3(cx)
-            .p_4()
-            .gap_3()
+            .p(px(20.))
+            .gap(px(16.))
             .on_click(|_: &ClickEvent, _, cx| {
                 cx.stop_propagation();
             });
 
-        // Title
         modal = modal.child(
             div()
                 .h_flex()
-                .gap_2()
+                .gap_3()
                 .items_center()
                 .child(
-                    Icon::new(IconName::Edit)
-                        .size(IconSize::Medium)
-                        .color(Color::Accent),
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(36.))
+                        .rounded(px(10.))
+                        .bg(icon_bg)
+                        .child(
+                            Icon::new(IconName::Edit)
+                                .size(IconSize::Medium)
+                                .color(Color::Accent),
+                        ),
                 )
                 .child(
                     Label::new("Rename Branch")
                         .size(LabelSize::Large)
-                        .weight(gpui::FontWeight::BOLD)
-                        .color(Color::Default),
+                        .weight(gpui::FontWeight::BOLD),
                 ),
         );
 
-        // Current name badge
         modal = modal.child(
             div()
                 .h_flex()
-                .gap_2()
+                .gap(px(8.))
                 .items_center()
                 .child(
                     Label::new("Current name")
@@ -221,10 +229,10 @@ impl Render for RenameDialog {
                 .child(
                     div()
                         .h_flex()
-                        .h(px(20.))
+                        .h(px(22.))
                         .px(px(8.))
                         .gap(px(4.))
-                        .rounded(px(4.))
+                        .rounded(px(6.))
                         .bg(colors.ghost_element_selected)
                         .items_center()
                         .child(
@@ -241,39 +249,61 @@ impl Render for RenameDialog {
                 ),
         );
 
-        // New name input
         modal = modal.child(
             div()
                 .v_flex()
-                .gap_1()
+                .gap(px(6.))
                 .child(
                     Label::new("New name")
                         .size(LabelSize::Small)
+                        .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
                 )
-                .child(self.editor.clone()),
+                .child(
+                    div()
+                        .h_flex()
+                        .gap(px(8.))
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::GitBranch)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(div().flex_1().child(self.editor.clone())),
+                ),
         );
 
-        // Error message
         if let Some(ref err) = self.error_message {
             modal = modal.child(
-                Label::new(SharedString::from(err.clone()))
-                    .size(LabelSize::XSmall)
-                    .color(Color::Deleted),
+                div()
+                    .h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::XCircle)
+                            .size(IconSize::XSmall)
+                            .color(Color::Error),
+                    )
+                    .child(
+                        Label::new(SharedString::from(err.clone()))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Error),
+                    ),
             );
         }
 
-        // Buttons
-        let can_rename = !is_empty && !has_error && !is_unchanged;
         modal = modal.child(
             div()
+                .pt_2()
+                .border_t_1()
+                .border_color(colors.border_variant)
                 .h_flex()
                 .justify_between()
                 .items_center()
                 .child(
                     Label::new("Enter to rename · Esc to cancel")
                         .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        .color(Color::Placeholder),
                 )
                 .child(
                     div()
@@ -303,7 +333,8 @@ impl Render for RenameDialog {
 
         div()
             .id("rename-dialog-backdrop")
-            .occlude().absolute()
+            .occlude()
+            .absolute()
             .top_0()
             .left_0()
             .size_full()

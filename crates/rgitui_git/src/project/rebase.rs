@@ -124,11 +124,17 @@ impl GitProject {
                         )
                     };
 
-                    let output = Command::new("git")
-                        .current_dir(&repo_path)
+                    let mut cmd = Command::new("git");
+                    cmd.current_dir(&repo_path)
                         .env("GIT_SEQUENCE_EDITOR", &sequence_editor)
                         .env("GIT_EDITOR", "true")
-                        .args(["rebase", "-i", &base_oid])
+                        .args(["rebase", "-i", &base_oid]);
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        cmd.creation_flags(0x08000000);
+                    }
+                    let output = cmd
                         .output()
                         .with_context(|| "Failed to execute git rebase -i")?;
 

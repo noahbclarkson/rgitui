@@ -27,7 +27,7 @@ pub enum ConfirmDialogEvent {
     Cancelled,
 }
 
-/// A simple modal confirmation dialog for destructive operations.
+/// A modal confirmation dialog for destructive operations.
 pub struct ConfirmDialog {
     visible: bool,
     title: String,
@@ -113,26 +113,41 @@ impl ConfirmDialog {
         }
     }
 
-    /// Returns the semantic color and icon for the confirm button based on action type.
-    fn action_severity(&self) -> (Color, IconName) {
+    fn is_destructive(&self) -> bool {
+        matches!(
+            &self.action,
+            Some(
+                ConfirmAction::DiscardFile(_)
+                    | ConfirmAction::DiscardAll
+                    | ConfirmAction::BranchDelete(_)
+                    | ConfirmAction::TagDelete(_)
+                    | ConfirmAction::RemoveRemote(_)
+                    | ConfirmAction::StashDrop(_)
+                    | ConfirmAction::ResetHard(_)
+                    | ConfirmAction::AbortMerge
+            )
+        )
+    }
+
+    fn severity_icon(&self) -> IconName {
         match &self.action {
-            Some(ConfirmAction::DiscardFile(_))
-            | Some(ConfirmAction::DiscardAll)
-            | Some(ConfirmAction::BranchDelete(_))
-            | Some(ConfirmAction::TagDelete(_))
-            | Some(ConfirmAction::RemoveRemote(_))
-            | Some(ConfirmAction::StashDrop(_))
-            | Some(ConfirmAction::ResetHard(_))
-            | Some(ConfirmAction::AbortMerge) => (Color::Error, IconName::Trash),
-            Some(ConfirmAction::ForcePush) => (Color::Warning, IconName::ArrowUp),
-            None => (Color::Accent, IconName::Check),
+            Some(ConfirmAction::ForcePush) => IconName::AlertTriangle,
+            Some(_) => IconName::Trash,
+            None => IconName::Check,
         }
     }
 
-    /// Returns the confirm button label based on action type.
+    fn severity_color(&self) -> Color {
+        match &self.action {
+            Some(ConfirmAction::ForcePush) => Color::Warning,
+            Some(_) if self.is_destructive() => Color::Error,
+            _ => Color::Accent,
+        }
+    }
+
     fn confirm_label(&self) -> &'static str {
         match &self.action {
-            Some(ConfirmAction::DiscardFile(_)) | Some(ConfirmAction::DiscardAll) => "Discard",
+            Some(ConfirmAction::DiscardFile(_) | ConfirmAction::DiscardAll) => "Discard",
             Some(ConfirmAction::BranchDelete(_)) => "Delete Branch",
             Some(ConfirmAction::TagDelete(_)) => "Delete Tag",
             Some(ConfirmAction::RemoveRemote(_)) => "Remove",
@@ -147,20 +162,28 @@ impl ConfirmDialog {
 
 impl Render for ConfirmDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
-
         if !self.visible {
             return div().id("confirm-dialog").into_any_element();
         }
 
+        let colors = cx.colors();
         let title: SharedString = self.title.clone().into();
         let message: SharedString = self.message.clone().into();
-        let (severity_color, severity_icon) = self.action_severity();
+        let icon = self.severity_icon();
+        let color = self.severity_color();
         let confirm_label = self.confirm_label();
+        let is_destructive = self.is_destructive();
 
-        let backdrop = div()
+        let icon_bg = color.color(cx);
+        let icon_bg_subtle = gpui::Hsla {
+            a: 0.12,
+            ..icon_bg
+        };
+
+        div()
             .id("confirm-dialog-backdrop")
-            .occlude().absolute()
+            .occlude()
+            .absolute()
             .top_0()
             .left_0()
             .size_full()
@@ -182,27 +205,31 @@ impl Render for ConfirmDialog {
                     .track_focus(&self.focus_handle)
                     .on_key_down(cx.listener(Self::handle_key_down))
                     .v_flex()
-                    .w(px(400.))
-                    .bg(colors.elevated_surface_background)
-                    .border_1()
-                    .border_color(colors.border)
-                    .rounded_lg()
+                    .w(px(420.))
                     .elevation_3(cx)
-                    .p_4()
-                    .gap_3()
+                    .p(px(20.))
+                    .gap(px(16.))
                     .on_click(|_: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                     })
-                    // Title row with severity icon
                     .child(
                         div()
                             .h_flex()
-                            .gap_2()
+                            .gap_3()
                             .items_center()
                             .child(
-                                Icon::new(severity_icon)
-                                    .size(IconSize::Medium)
-                                    .color(severity_color),
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(36.))
+                                    .rounded(px(10.))
+                                    .bg(icon_bg_subtle)
+                                    .child(
+                                        Icon::new(icon)
+                                            .size(IconSize::Medium)
+                                            .color(color),
+                                    ),
                             )
                             .child(
                                 Label::new(title)
@@ -210,15 +237,20 @@ impl Render for ConfirmDialog {
                                     .weight(gpui::FontWeight::BOLD),
                             ),
                     )
-                    // Message
-                    .child(
-                        Label::new(message)
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    )
-                    // Buttons row
                     .child(
                         div()
+                            .pl(px(48.))
+                            .child(
+                                Label::new(message)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .pt_2()
+                            .border_t_1()
+                            .border_color(colors.border_variant)
                             .h_flex()
                             .w_full()
                             .justify_between()
@@ -226,7 +258,7 @@ impl Render for ConfirmDialog {
                             .child(
                                 Label::new("Enter to confirm · Esc to cancel")
                                     .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
+                                    .color(Color::Placeholder),
                             )
                             .child(
                                 div()
@@ -244,10 +276,16 @@ impl Render for ConfirmDialog {
                                     )
                                     .child(
                                         Button::new("confirm-ok", confirm_label)
-                                            .icon(severity_icon)
+                                            .icon(icon)
                                             .size(ButtonSize::Default)
-                                            .style(ButtonStyle::Filled)
-                                            .color(severity_color)
+                                            .style(if is_destructive {
+                                                ButtonStyle::Tinted(
+                                                    rgitui_ui::TintColor::Error,
+                                                )
+                                            } else {
+                                                ButtonStyle::Filled
+                                            })
+                                            .color(color)
                                             .on_click(cx.listener(
                                                 |this, _: &ClickEvent, _, cx| {
                                                     this.confirm(cx);
@@ -256,8 +294,7 @@ impl Render for ConfirmDialog {
                                     ),
                             ),
                     ),
-            );
-
-        backdrop.into_any_element()
+            )
+            .into_any_element()
     }
 }

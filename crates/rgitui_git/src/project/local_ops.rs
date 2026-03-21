@@ -1843,11 +1843,17 @@ fn sign_with_gpg(content: &str, key_id: &str) -> Result<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new("gpg")
-        .args(["--status-fd=2", "-bsau", key_id])
+    let mut cmd = Command::new("gpg");
+    cmd.args(["--status-fd=2", "-bsau", key_id])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd
         .spawn()
         .context("Failed to start gpg. Is GPG installed?")?;
 

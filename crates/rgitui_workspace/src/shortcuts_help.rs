@@ -4,15 +4,13 @@ use gpui::{
     SharedString, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Label, LabelSize};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 
-/// Events emitted by the shortcuts help overlay.
 #[derive(Debug, Clone)]
 pub enum ShortcutsHelpEvent {
     Dismissed,
 }
 
-/// A modal overlay that displays keyboard shortcuts grouped by category.
 pub struct ShortcutsHelp {
     visible: bool,
     focus_handle: FocusHandle,
@@ -59,6 +57,7 @@ impl ShortcutsHelp {
     ) {
         if event.keystroke.key.as_str() == "escape" {
             self.dismiss(cx);
+            cx.stop_propagation();
         }
     }
 
@@ -85,7 +84,7 @@ impl ShortcutsHelp {
                 ],
             ),
             (
-                "Git",
+                "Git Operations",
                 vec![
                     ("Ctrl+S", "Stage all"),
                     ("Ctrl+Shift+S / Ctrl+U", "Unstage All"),
@@ -97,7 +96,7 @@ impl ShortcutsHelp {
                 ],
             ),
             (
-                "View",
+                "Panel Management",
                 vec![
                     ("Ctrl+O", "Open Repository"),
                     ("Ctrl+F", "Search"),
@@ -106,7 +105,7 @@ impl ShortcutsHelp {
                 ],
             ),
             (
-                "Window",
+                "General",
                 vec![
                     ("Ctrl+W", "Close tab"),
                     ("Ctrl+H", "Workspace Home"),
@@ -124,43 +123,59 @@ impl ShortcutsHelp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = cx.colors();
+        let hint_bg = colors.hint_background;
+        let border_variant = colors.border_variant;
 
-        let mut col = div().v_flex().w_full().gap_1().child(
-            Label::new(SharedString::from(title.to_string()))
-                .size(LabelSize::Small)
-                .weight(FontWeight::SEMIBOLD)
-                .color(Color::Accent),
-        );
+        let mut col = div()
+            .v_flex()
+            .w_full()
+            .gap(px(2.))
+            .child(
+                div()
+                    .pb(px(6.))
+                    .mb(px(4.))
+                    .border_b_1()
+                    .border_color(border_variant)
+                    .child(
+                        Label::new(SharedString::from(title.to_string()))
+                            .size(LabelSize::Small)
+                            .weight(FontWeight::SEMIBOLD)
+                            .color(Color::Accent),
+                    ),
+            );
 
         for (key, desc) in shortcuts {
+            let hover_bg = colors.ghost_element_hover;
             col = col.child(
                 div()
                     .h_flex()
                     .w_full()
-                    .gap_3()
-                    .py(px(2.))
+                    .py(px(4.))
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .items_center()
+                    .hover(move |s| s.bg(hover_bg))
                     .child(
-                        div().w(px(140.)).flex_shrink_0().child(
-                            div().h_flex().child(
-                                div()
-                                    .px(px(6.))
-                                    .py(px(2.))
-                                    .bg(colors.element_background)
-                                    .border_1()
-                                    .border_color(colors.border_variant)
-                                    .rounded(px(4.))
-                                    .child(
-                                        Label::new(SharedString::from(key.to_string()))
-                                            .size(LabelSize::XSmall)
-                                            .weight(FontWeight::MEDIUM),
-                                    ),
-                            ),
+                        div().flex_1().child(
+                            Label::new(SharedString::from(desc.to_string()))
+                                .size(LabelSize::Small)
+                                .color(Color::Default),
                         ),
                     )
                     .child(
-                        Label::new(SharedString::from(desc.to_string()))
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
+                        div()
+                            .h_flex()
+                            .h(px(22.))
+                            .px(px(8.))
+                            .rounded(px(4.))
+                            .bg(hint_bg)
+                            .items_center()
+                            .child(
+                                Label::new(SharedString::from(key.to_string()))
+                                    .size(LabelSize::XSmall)
+                                    .weight(FontWeight::MEDIUM)
+                                    .color(Color::Muted),
+                            ),
                     ),
             );
         }
@@ -177,16 +192,15 @@ impl Render for ShortcutsHelp {
 
         let categories = Self::shortcut_categories();
 
-        // Build the two columns before borrowing colors
         let left_categories = &categories[..2];
         let right_categories = &categories[2..];
 
-        let mut left_col = div().v_flex().flex_1().gap_4();
+        let mut left_col = div().v_flex().flex_1().gap(px(16.));
         for (title, shortcuts) in left_categories {
             left_col = left_col.child(self.render_category(title, shortcuts, cx));
         }
 
-        let mut right_col = div().v_flex().flex_1().gap_4();
+        let mut right_col = div().v_flex().flex_1().gap(px(16.));
         for (title, shortcuts) in right_categories {
             right_col = right_col.child(self.render_category(title, shortcuts, cx));
         }
@@ -195,7 +209,8 @@ impl Render for ShortcutsHelp {
 
         let backdrop = div()
             .id("shortcuts-help-backdrop")
-            .occlude().absolute()
+            .occlude()
+            .absolute()
             .top_0()
             .left_0()
             .size_full()
@@ -217,47 +232,90 @@ impl Render for ShortcutsHelp {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
-            .w(px(520.))
-            .bg(colors.elevated_surface_background)
-            .border_1()
-            .border_color(colors.border)
-            .rounded_lg()
+            .w(px(640.))
+            .max_h(px(560.))
             .elevation_3(cx)
+            .rounded(px(10.))
             .overflow_hidden()
-            // Prevent clicks inside the modal from dismissing it
             .on_click(|_: &ClickEvent, _, cx| {
                 cx.stop_propagation();
             })
-            // Header
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
             .child(
                 div()
                     .h_flex()
                     .w_full()
-                    .px_4()
-                    .py_3()
+                    .h(px(48.))
+                    .px(px(16.))
+                    .items_center()
                     .border_b_1()
                     .border_color(colors.border_variant)
                     .justify_between()
                     .child(
-                        Label::new("Keyboard Shortcuts")
-                            .size(LabelSize::Large)
-                            .weight(FontWeight::SEMIBOLD),
+                        div()
+                            .h_flex()
+                            .gap(px(8.))
+                            .items_center()
+                            .child(
+                                Icon::new(IconName::Star)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new("Keyboard Shortcuts")
+                                    .size(LabelSize::Large)
+                                    .weight(FontWeight::SEMIBOLD),
+                            ),
                     )
                     .child(
-                        Label::new("Esc to close")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                        div()
+                            .id("shortcuts-close-btn")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(28.))
+                            .h(px(28.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(colors.ghost_element_hover))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.dismiss(cx);
+                            }))
+                            .child(
+                                Icon::new(IconName::X)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            ),
                     ),
             )
-            // Body — two-column grid
+            .child(
+                div()
+                    .id("shortcuts-body")
+                    .h_flex()
+                    .w_full()
+                    .p(px(16.))
+                    .gap(px(24.))
+                    .overflow_y_scroll()
+                    .child(left_col)
+                    .child(right_col),
+            )
             .child(
                 div()
                     .h_flex()
                     .w_full()
-                    .p_4()
-                    .gap_6()
-                    .child(left_col)
-                    .child(right_col),
+                    .h(px(32.))
+                    .px(px(16.))
+                    .items_center()
+                    .border_t_1()
+                    .border_color(colors.border_variant)
+                    .bg(colors.surface_background)
+                    .child(
+                        Label::new("Press Esc or click outside to close")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Placeholder),
+                    ),
             );
 
         backdrop.child(modal).into_any_element()

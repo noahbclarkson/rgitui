@@ -334,7 +334,7 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             match task.await {
                 Ok(lines) => {
-                    let _ = cx.update(|cx| {
+                    cx.update(|cx| {
                         blame_view.update(cx, |bv, cx| {
                             bv.set_blame(lines, display_path, cx);
                         });
@@ -347,7 +347,7 @@ impl Workspace {
                     });
                 }
                 Err(e) => {
-                    let _ = cx.update(|cx| {
+                    cx.update(|cx| {
                         let _ = this.update(cx, |workspace, cx| {
                             workspace.show_toast(
                                 format!("Failed to compute blame: {}", e),

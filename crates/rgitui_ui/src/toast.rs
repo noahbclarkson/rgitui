@@ -86,7 +86,7 @@ impl RenderOnce for Toast {
             .border_1()
             .border_color(border)
             .rounded(px(8.))
-            .elevation_2(cx)
+            .elevation_3(cx)
             .items_center()
             .child(
                 div()

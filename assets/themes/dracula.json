@@ -39,6 +39,7 @@
     "panel_background": "#282a36",
     "scrollbar_thumb_background": "#44475a",
     "scrollbar_thumb_hover_background": "#565973",
+    "hint_background": "#6272a41f",
     "vc_added": "#50fa7b",
     "vc_modified": "#f1fa8c",
     "vc_deleted": "#ff5555",

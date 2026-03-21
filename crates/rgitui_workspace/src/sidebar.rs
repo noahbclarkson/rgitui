@@ -589,14 +589,11 @@ impl Sidebar {
         let color = Self::file_change_color(file.kind);
         let additions = file.additions;
         let deletions = file.deletions;
-        let file_path = file.path.display().to_string();
-        let file_path_select = file_path.clone();
-        let file_path_primary = file_path.clone();
-        let file_path_secondary = file_path.clone();
+        let file_path: SharedString = file.path.display().to_string().into();
         let is_selected = self
             .selected_file
             .as_ref()
-            .is_some_and(|(p, s)| p == &file_path && *s == staged);
+            .is_some_and(|(p, s)| p.as_str() == file_path.as_ref() && *s == staged);
         let has_stats = additions > 0 || deletions > 0;
 
         let mut row = div()
@@ -621,14 +618,17 @@ impl Sidebar {
             .hover(|s| s.bg(colors.ghost_element_hover))
             .active(|s| s.bg(colors.ghost_element_selected))
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.selected_file = Some((file_path_select.clone(), staged));
-                cx.emit(SidebarEvent::FileSelected {
-                    path: file_path_select.clone(),
-                    staged,
-                });
-                cx.notify();
-            }))
+            .on_click({
+                let file_path = file_path.clone();
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.selected_file = Some((file_path.to_string(), staged));
+                    cx.emit(SidebarEvent::FileSelected {
+                        path: file_path.to_string(),
+                        staged,
+                    });
+                    cx.notify();
+                })
+            })
             .child(
                 rgitui_ui::Icon::new(kind_icon)
                     .size(rgitui_ui::IconSize::XSmall)
@@ -685,15 +685,18 @@ impl Sidebar {
                         .font_weight(gpui::FontWeight::BOLD)
                         .hover(move |s| s.bg(ghost_hover))
                         .cursor_pointer()
-                        .on_click(cx.listener(
-                            move |_this, _: &ClickEvent, _, cx| {
-                                cx.emit(if staged {
-                                    SidebarEvent::UnstageFile(file_path_primary.clone())
-                                } else {
-                                    SidebarEvent::StageFile(file_path_primary.clone())
-                                });
-                            },
-                        ))
+                        .on_click({
+                            let file_path = file_path.clone();
+                            cx.listener(
+                                move |_this, _: &ClickEvent, _, cx| {
+                                    cx.emit(if staged {
+                                        SidebarEvent::UnstageFile(file_path.to_string())
+                                    } else {
+                                        SidebarEvent::StageFile(file_path.to_string())
+                                    });
+                                },
+                            )
+                        })
                         .child(if staged { "\u{2212}" } else { "+" }),
                 ),
         );
@@ -717,7 +720,7 @@ impl Sidebar {
                     .invisible()
                     .group_hover("sidebar-file-row", |s| s.visible())
                     .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SidebarEvent::DiscardFile(file_path_secondary.clone()));
+                        cx.emit(SidebarEvent::DiscardFile(file_path.to_string()));
                     }))
                     .child("\u{00d7}"),
             );
@@ -1008,11 +1011,7 @@ impl Render for Sidebar {
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
                 let name: SharedString = branch.name.clone().into();
-                let branch_name = branch.name.clone();
-                let branch_name_select = branch.name.clone();
-                let branch_name_checkout = branch.name.clone();
-                let branch_name_merge = branch.name.clone();
-                let branch_name_rename = branch.name.clone();
+                let branch_name: SharedString = name.clone();
                 let is_head = branch.is_head;
 
                 let mut item = div()
@@ -1028,15 +1027,16 @@ impl Render for Sidebar {
                     .hover(|s| s.bg(colors.ghost_element_hover))
                     .active(|s| s.bg(colors.ghost_element_active))
                     .cursor_pointer()
-                    .on_click(cx.listener(move |_this, event: &ClickEvent, _, cx| {
-                        if event.click_count() >= 2 {
-                            // Double-click: checkout this branch
-                            cx.emit(SidebarEvent::BranchCheckout(branch_name.clone()));
-                        } else {
-                            // Single-click: select
-                            cx.emit(SidebarEvent::BranchSelected(branch_name_select.clone()));
-                        }
-                    }));
+                    .on_click({
+                        let branch_name = branch_name.clone();
+                        cx.listener(move |_this, event: &ClickEvent, _, cx| {
+                            if event.click_count() >= 2 {
+                                cx.emit(SidebarEvent::BranchCheckout(branch_name.to_string()));
+                            } else {
+                                cx.emit(SidebarEvent::BranchSelected(branch_name.to_string()));
+                            }
+                        })
+                    });
 
                 if is_head {
                     item = item
@@ -1163,7 +1163,10 @@ impl Render for Sidebar {
 
                 // Non-HEAD branches get action buttons: Checkout, Merge, Rename, Delete
                 if !is_head {
-                    let branch_name_delete = branch.name.clone();
+                    let bn_checkout = branch_name.clone();
+                    let bn_merge = branch_name.clone();
+                    let bn_rename = branch_name.clone();
+                    let bn_delete = branch_name.clone();
                     item = item.child(
                         div()
                             .ml_auto()
@@ -1180,7 +1183,7 @@ impl Render for Sidebar {
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
                                         cx.emit(SidebarEvent::BranchCheckout(
-                                            branch_name_checkout.clone(),
+                                            bn_checkout.to_string(),
                                         ));
                                     },
                                 )),
@@ -1196,7 +1199,7 @@ impl Render for Sidebar {
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
                                         cx.emit(SidebarEvent::MergeBranch(
-                                            branch_name_merge.clone(),
+                                            bn_merge.to_string(),
                                         ));
                                     },
                                 )),
@@ -1212,7 +1215,7 @@ impl Render for Sidebar {
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
                                         cx.emit(SidebarEvent::BranchRename(
-                                            branch_name_rename.clone(),
+                                            bn_rename.to_string(),
                                         ));
                                     },
                                 )),
@@ -1228,7 +1231,7 @@ impl Render for Sidebar {
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
                                         cx.emit(SidebarEvent::BranchDelete(
-                                            branch_name_delete.clone(),
+                                            bn_delete.to_string(),
                                         ));
                                     },
                                 )),
@@ -1323,18 +1326,18 @@ impl Render for Sidebar {
             for (i, remote) in self.remotes.iter().enumerate() {
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
-                let name = remote.name.clone();
-                let display_name: SharedString = remote.name.clone().into();
+                let remote_name: SharedString = remote.name.clone().into();
+                let display_name: SharedString = remote_name.clone();
                 let url_text = remote
                     .url
                     .as_deref()
                     .or(remote.push_url.as_deref())
                     .unwrap_or("No URL configured")
                     .to_string();
-                let fetch_remote = name.clone();
-                let pull_remote = name.clone();
-                let push_remote = name.clone();
-                let remove_remote = name.clone();
+                let fetch_remote = remote_name.clone();
+                let pull_remote = remote_name.clone();
+                let push_remote = remote_name.clone();
+                let remove_remote = remote_name;
 
                 content = content.child(
                     div()
@@ -1378,7 +1381,7 @@ impl Render for Sidebar {
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::RemoteFetch(
-                                                fetch_remote.clone(),
+                                                fetch_remote.to_string(),
                                             ));
                                         },
                                     )),
@@ -1393,7 +1396,7 @@ impl Render for Sidebar {
                                     .tooltip("Pull from remote")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::RemotePull(pull_remote.clone()));
+                                            cx.emit(SidebarEvent::RemotePull(pull_remote.to_string()));
                                         },
                                     )),
                                 )
@@ -1407,7 +1410,7 @@ impl Render for Sidebar {
                                     .tooltip("Push to remote")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::RemotePush(push_remote.clone()));
+                                            cx.emit(SidebarEvent::RemotePush(push_remote.to_string()));
                                         },
                                     )),
                                 )
@@ -1422,7 +1425,7 @@ impl Render for Sidebar {
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::RemoteRemove(
-                                                remove_remote.clone(),
+                                                remove_remote.to_string(),
                                             ));
                                         },
                                     )),
@@ -1504,7 +1507,7 @@ impl Render for Sidebar {
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
                 let name: SharedString = branch.name.clone().into();
-                let remote_branch_name = branch.name.clone();
+                let remote_branch_name = name.clone();
                 content = content.child(
                     div()
                         .id(ElementId::NamedInteger("remote-branch".into(), i as u64))
@@ -1519,7 +1522,7 @@ impl Render for Sidebar {
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(SidebarEvent::BranchSelected(remote_branch_name.clone()));
+                            cx.emit(SidebarEvent::BranchSelected(remote_branch_name.to_string()));
                         }))
                         .child(
                             div()
@@ -1628,8 +1631,8 @@ impl Render for Sidebar {
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
                 let name: SharedString = tag.name.clone().into();
-                let tag_name = tag.name.clone();
-                let tag_name_delete = tag.name.clone();
+                let tag_select = name.clone();
+                let tag_delete = name.clone();
                 content = content.child(
                     div()
                         .id(ElementId::NamedInteger("tag-item".into(), i as u64))
@@ -1645,7 +1648,7 @@ impl Render for Sidebar {
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(SidebarEvent::TagSelected(tag_name.clone()));
+                            cx.emit(SidebarEvent::TagSelected(tag_select.to_string()));
                         }))
                         .child(
                             rgitui_ui::Icon::new(IconName::Tag)
@@ -1669,7 +1672,7 @@ impl Render for Sidebar {
                             .on_click(cx.listener(
                                 move |_this, _: &ClickEvent, _, cx| {
                                     cx.emit(SidebarEvent::TagDelete(
-                                        tag_name_delete.clone(),
+                                        tag_delete.to_string(),
                                     ));
                                 },
                             )),
@@ -1763,8 +1766,6 @@ impl Render for Sidebar {
                 nav_idx += 1;
                 let msg: SharedString = stash.message.clone().into();
                 let stash_index = stash.index;
-                let stash_index_apply = stash.index;
-                let stash_index_drop = stash.index;
                 content = content.child(
                     div()
                         .id(ElementId::NamedInteger("stash-item".into(), i as u64))
@@ -1807,7 +1808,7 @@ impl Render for Sidebar {
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::StashApply(
-                                                stash_index_apply,
+                                                stash_index,
                                             ));
                                         },
                                     )),
@@ -1826,7 +1827,7 @@ impl Render for Sidebar {
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::StashDrop(
-                                                stash_index_drop,
+                                                stash_index,
                                             ));
                                         },
                                     )),

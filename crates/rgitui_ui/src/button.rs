@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, App, ClickEvent, CursorStyle, ElementId, Hsla, SharedString, Window};
+use gpui::{div, px, App, ClickEvent, CursorStyle, ElementId, Hsla, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 
 use crate::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
@@ -177,35 +177,47 @@ impl RenderOnce for Button {
             ),
             ButtonStyle::Tinted(tint) => {
                 let status = cx.status();
-                let (_fg_color, bg_color) = match tint {
-                    TintColor::Accent => (status.info, status.info_background),
-                    TintColor::Error => (status.error, status.error_background),
-                    TintColor::Warning => (status.warning, status.warning_background),
-                    TintColor::Success => (status.success, status.success_background),
+                let bg_color = match tint {
+                    TintColor::Accent => status.info_background,
+                    TintColor::Error => status.error_background,
+                    TintColor::Warning => status.warning_background,
+                    TintColor::Success => status.success_background,
                 };
                 (
                     Some(bg_color),
                     Some(Hsla {
-                        a: bg_color.a + 0.1,
+                        a: (bg_color.a + 0.1).min(1.0),
                         ..bg_color
                     }),
                     Some(Hsla {
-                        a: bg_color.a + 0.2,
+                        a: (bg_color.a + 0.2).min(1.0),
                         ..bg_color
                     }),
                     None,
                 )
             }
-            ButtonStyle::Transparent => (None, None, None, None),
+            ButtonStyle::Transparent => (
+                None,
+                Some(colors.ghost_element_hover),
+                Some(colors.ghost_element_active),
+                None,
+            ),
         };
 
         let height = self.size.height();
+
+        let padding = match self.size {
+            ButtonSize::Large => px(12.),
+            ButtonSize::Default => px(8.),
+            ButtonSize::Compact => px(6.),
+            ButtonSize::None => px(4.),
+        };
 
         let mut container = div()
             .id(self.id)
             .h_flex()
             .h(height)
-            .px_2()
+            .px(padding)
             .gap_1()
             .rounded_md()
             .cursor(if self.disabled {
@@ -227,18 +239,18 @@ impl RenderOnce for Button {
         }
 
         if self.disabled {
-            container = container.opacity(0.5);
+            container = container
+                .text_color(colors.text_disabled)
+                .cursor(CursorStyle::default());
         } else {
-            if let Some(hover_bg) = hover_bg {
-                container = container.hover(|s| s.bg(hover_bg));
-            }
-            if let Some(active_bg) = active_bg {
-                container = container.active(|s| s.bg(active_bg));
-            }
-        }
+            container = match (hover_bg, active_bg) {
+                (Some(hb), Some(ab)) => container.hover(|s| s.bg(hb)).active(|s| s.bg(ab)),
+                (Some(hb), None) => container.hover(|s| s.bg(hb)),
+                (None, Some(ab)) => container.active(|s| s.bg(ab)),
+                (None, None) => container,
+            };
 
-        if let Some(on_click) = self.on_click {
-            if !self.disabled {
+            if let Some(on_click) = self.on_click {
                 container = container.on_click(on_click);
             }
         }
@@ -389,15 +401,15 @@ impl RenderOnce for IconButton {
         }
 
         if self.disabled {
-            container = container.opacity(0.5);
+            container = container
+                .text_color(colors.text_disabled)
+                .cursor(CursorStyle::default());
         } else {
             container = container
                 .hover(|s| s.bg(colors.ghost_element_hover))
                 .active(|s| s.bg(colors.ghost_element_active));
-        }
 
-        if let Some(on_click) = self.on_click {
-            if !self.disabled {
+            if let Some(on_click) = self.on_click {
                 container = container.on_click(on_click);
             }
         }

@@ -54,6 +54,9 @@ pub struct ThemeColors {
     pub scrollbar_thumb_background: Hsla,
     pub scrollbar_thumb_hover_background: Hsla,
 
+    // -- Hint / badge backgrounds --
+    pub hint_background: Hsla,
+
     // -- Version control (our specialty!) --
     pub vc_added: Hsla,
     pub vc_modified: Hsla,
@@ -290,6 +293,8 @@ pub fn catppuccin_mocha_colors() -> ThemeColors {
         scrollbar_thumb_background: surface1,
         scrollbar_thumb_hover_background: surface2,
 
+        hint_background: hsla(170.0, 57.0, 73.0, 0.12),
+
         vc_added: green,
         vc_modified: yellow,
         vc_deleted: red,
@@ -393,6 +398,8 @@ pub fn catppuccin_latte_colors() -> ThemeColors {
         scrollbar_thumb_background: surface1,
         scrollbar_thumb_hover_background: surface2,
 
+        hint_background: hsla(183.0, 74.0, 35.0, 0.10),
+
         vc_added: green,
         vc_modified: yellow,
         vc_deleted: red,
@@ -494,6 +501,8 @@ pub fn one_dark_colors() -> ThemeColors {
         panel_background: bg,
         scrollbar_thumb_background: guide,
         scrollbar_thumb_hover_background: hsla(220.0, 10.0, 35.0, 1.0),
+
+        hint_background: hsla(187.0, 47.0, 55.0, 0.12),
 
         vc_added: green,
         vc_modified: yellow,
@@ -597,6 +606,8 @@ pub fn github_dark_colors() -> ThemeColors {
         scrollbar_thumb_background: border_main,
         scrollbar_thumb_hover_background: text_dimmer,
 
+        hint_background: hsla(212.0, 9.0, 57.0, 0.12),
+
         vc_added: green,
         vc_modified: yellow,
         vc_deleted: red,
@@ -698,6 +709,8 @@ pub fn dracula_colors() -> ThemeColors {
         panel_background: bg,
         scrollbar_thumb_background: border_main,
         scrollbar_thumb_hover_background: hsla(232.0, 14.0, 37.0, 1.0),
+
+        hint_background: hsla(225.0, 27.0, 51.0, 0.12),
 
         vc_added: green,
         vc_modified: yellow,

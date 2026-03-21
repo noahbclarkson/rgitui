@@ -1,6 +1,6 @@
 use gpui::prelude::*;
-use gpui::{div, px, Animation, AnimationExt, AnyElement, App, Window};
-use rgitui_theme::StyledExt;
+use gpui::{div, px, Animation, AnimationExt, AnyElement, App, Hsla, Window};
+use rgitui_theme::{ActiveTheme, StyledExt};
 use smallvec::SmallVec;
 use std::time::Duration;
 
@@ -57,11 +57,19 @@ fn ease_out_quint(t: f32) -> f32 {
 
 impl RenderOnce for Modal {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = cx.colors();
+
+        let backdrop_color = Hsla {
+            a: 0.5,
+            ..colors.background
+        };
+
         let mut container = div()
             .v_flex()
             .w(px(self.width))
             .max_h(px(600.))
             .elevation_3(cx)
+            .rounded_lg()
             .overflow_hidden();
 
         if let Some(title) = self.title {
@@ -105,12 +113,7 @@ impl RenderOnce for Modal {
             .flex()
             .items_center()
             .justify_center()
-            .bg(gpui::Hsla {
-                h: 0.0,
-                s: 0.0,
-                l: 0.0,
-                a: 0.5,
-            })
+            .bg(backdrop_color)
             .child(container)
             .with_animation(
                 "modal-entrance",

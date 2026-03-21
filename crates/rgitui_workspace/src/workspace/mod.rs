@@ -132,6 +132,7 @@ pub struct Workspace {
     pub(super) active_workspace_id: Option<String>,
     pub(super) status_message: Option<String>,
     pub(super) last_undo: Option<UndoEntry>,
+    pub(super) layout_save_task: Option<gpui::Task<()>>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -216,6 +217,7 @@ impl Workspace {
             active_workspace_id: None,
             status_message: None,
             last_undo: None,
+            layout_save_task: None,
         }
     }
 

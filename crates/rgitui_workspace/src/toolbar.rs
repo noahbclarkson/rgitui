@@ -113,7 +113,6 @@ impl Toolbar {
         }
     }
 
-    /// Build a styled toolbar button with icon and label.
     fn icon_button(
         &self,
         id: &'static str,
@@ -171,7 +170,6 @@ impl Toolbar {
             )
     }
 
-    /// Small icon-only button for the right side.
     fn icon_only_button(
         &self,
         id: &'static str,
@@ -191,7 +189,7 @@ impl Toolbar {
             .flex()
             .items_center()
             .justify_center()
-            .w(px(26.))
+            .w(px(28.))
             .h(px(26.))
             .rounded(px(4.))
             .hover(move |s| s.bg(hover_bg))
@@ -200,25 +198,19 @@ impl Toolbar {
             .tooltip(move |window, cx| tooltip_fn(window, cx))
             .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
     }
-}
 
-impl Render for Toolbar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
-        let compactness = cx.global::<SettingsState>().settings().compactness;
-        let toolbar_h = compactness.spacing(36.0);
-
+    fn render_left_group(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let fetch_label = if self.is_fetching {
             "Fetching..."
         } else {
             "Fetch"
         };
-        let pull_label: &str = if self.is_pulling {
+        let pull_label = if self.is_pulling {
             "Pulling..."
         } else {
             "Pull"
         };
-        let push_label: &str = if self.is_pushing {
+        let push_label = if self.is_pushing {
             "Pushing..."
         } else {
             "Push"
@@ -226,143 +218,274 @@ impl Render for Toolbar {
 
         div()
             .h_flex()
-            .w_full()
-            .h(px(toolbar_h))
-            .px(px(8.))
-            .gap(px(2.))
             .items_center()
-            .bg(colors.toolbar_background)
-            .border_b_1()
-            .border_color(colors.border_variant)
+            .gap(px(2.))
             // Network operations group
             .child(
-                self.icon_button(
-                    "tb-fetch",
-                    IconName::Refresh,
-                    fetch_label,
-                    ToolbarButtonState { disabled: self.is_fetching, loading: self.is_fetching, tooltip_text: "Fetch from remote", shortcut: None },
-                    cx,
-                )
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Fetch))),
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(
+                        self.icon_button(
+                            "tb-fetch",
+                            IconName::Refresh,
+                            fetch_label,
+                            ToolbarButtonState {
+                                disabled: self.is_fetching,
+                                loading: self.is_fetching,
+                                tooltip_text: "Fetch from remote",
+                                shortcut: None,
+                            },
+                            cx,
+                        )
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Fetch)),
+                        ),
+                    )
+                    .child({
+                        let mut btn = self
+                            .icon_button(
+                                "tb-pull",
+                                IconName::ArrowDown,
+                                pull_label,
+                                ToolbarButtonState {
+                                    disabled: !self.can_pull,
+                                    loading: self.is_pulling,
+                                    tooltip_text: "Pull from remote",
+                                    shortcut: None,
+                                },
+                                cx,
+                            )
+                            .on_click(
+                                cx.listener(|_, _: &ClickEvent, _, cx| {
+                                    cx.emit(ToolbarEvent::Pull)
+                                }),
+                            );
+                        if self.behind > 0 && !self.is_pulling {
+                            btn = btn.child(
+                                Badge::new(SharedString::from(self.behind.to_string()))
+                                    .color(Color::Info),
+                            );
+                        }
+                        btn
+                    })
+                    .child({
+                        let mut btn = self
+                            .icon_button(
+                                "tb-push",
+                                IconName::ArrowUp,
+                                push_label,
+                                ToolbarButtonState {
+                                    disabled: !self.can_push,
+                                    loading: self.is_pushing,
+                                    tooltip_text: "Push to remote",
+                                    shortcut: None,
+                                },
+                                cx,
+                            )
+                            .on_click(
+                                cx.listener(|_, _: &ClickEvent, _, cx| {
+                                    cx.emit(ToolbarEvent::Push)
+                                }),
+                            );
+                        if self.ahead > 0 && !self.is_pushing {
+                            btn = btn.child(
+                                Badge::new(SharedString::from(self.ahead.to_string()))
+                                    .color(Color::Success),
+                            );
+                        }
+                        btn
+                    })
+                    .when(self.ahead > 0 && self.behind == 0, |el| {
+                        el.child(Indicator::dot(Color::Success))
+                    })
+                    .when(self.behind > 0 && self.ahead == 0, |el| {
+                        el.child(Indicator::dot(Color::Warning))
+                    })
+                    .when(self.ahead > 0 && self.behind > 0, |el| {
+                        el.child(Indicator::dot(Color::Info))
+                    }),
             )
-            .child({
-                let mut btn = self
-                    .icon_button(
-                        "tb-pull",
-                        IconName::ArrowDown,
-                        pull_label,
-                        ToolbarButtonState { disabled: !self.can_pull, loading: self.is_pulling, tooltip_text: "Pull from remote", shortcut: None },
-                        cx,
-                    )
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Pull)));
-                if self.behind > 0 && !self.is_pulling {
-                    btn = btn.child(
-                        Badge::new(SharedString::from(self.behind.to_string())).color(Color::Info),
-                    );
-                }
-                btn
-            })
-            .child({
-                let mut btn = self
-                    .icon_button(
-                        "tb-push",
-                        IconName::ArrowUp,
-                        push_label,
-                        ToolbarButtonState { disabled: !self.can_push, loading: self.is_pushing, tooltip_text: "Push to remote", shortcut: None },
-                        cx,
-                    )
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Push)));
-                if self.ahead > 0 && !self.is_pushing {
-                    btn = btn.child(
-                        Badge::new(SharedString::from(self.ahead.to_string()))
-                            .color(Color::Success),
-                    );
-                }
-                btn
-            })
-            .when(self.ahead > 0 && self.behind == 0, |el| {
-                el.child(Indicator::dot(Color::Success))
-            })
-            .when(self.behind > 0 && self.ahead == 0, |el| {
-                el.child(Indicator::dot(Color::Warning))
-            })
-            .when(self.ahead > 0 && self.behind > 0, |el| {
-                el.child(Indicator::dot(Color::Info))
-            })
             .child(VerticalDivider::new())
-            // Branch operations
+            // Branch operations group
             .child(
                 self.icon_button(
                     "tb-branch",
                     IconName::GitBranch,
                     "Branch",
-                    ToolbarButtonState { disabled: false, loading: false, tooltip_text: "Create new branch", shortcut: Some("Ctrl+B") },
+                    ToolbarButtonState {
+                        disabled: false,
+                        loading: false,
+                        tooltip_text: "Create new branch",
+                        shortcut: Some("Ctrl+B"),
+                    },
                     cx,
                 )
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch))),
+                .on_click(
+                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch)),
+                ),
             )
             .child(VerticalDivider::new())
-            // Stash operations
+            // Stash operations group
             .child(
-                self.icon_button(
-                    "tb-stash",
-                    IconName::Stash,
-                    "Stash",
-                    ToolbarButtonState { disabled: !self.has_changes, loading: false, tooltip_text: "Stash working changes", shortcut: Some("Ctrl+Z") },
-                    cx,
-                )
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashSave))),
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(
+                        self.icon_button(
+                            "tb-stash",
+                            IconName::Stash,
+                            "Stash",
+                            ToolbarButtonState {
+                                disabled: !self.has_changes,
+                                loading: false,
+                                tooltip_text: "Stash working changes",
+                                shortcut: Some("Ctrl+Z"),
+                            },
+                            cx,
+                        )
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::StashSave)
+                        })),
+                    )
+                    .child(
+                        self.icon_button(
+                            "tb-pop",
+                            IconName::Undo,
+                            "Pop",
+                            ToolbarButtonState {
+                                disabled: !self.has_stashes,
+                                loading: false,
+                                tooltip_text: "Pop top stash entry",
+                                shortcut: Some("Ctrl+Shift+Z"),
+                            },
+                            cx,
+                        )
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::StashPop)
+                        })),
+                    ),
             )
+    }
+
+    fn render_right_group(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .h_flex()
+            .items_center()
+            .gap(px(2.))
+            // External tools group
             .child(
-                self.icon_button(
-                    "tb-pop",
-                    IconName::Undo,
-                    "Pop",
-                    ToolbarButtonState { disabled: !self.has_stashes, loading: false, tooltip_text: "Pop top stash entry", shortcut: Some("Ctrl+Shift+Z") },
-                    cx,
-                )
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashPop))),
-            )
-            // Spacer
-            .child(div().flex_1())
-            // External tools
-            .child(
-                self.icon_only_button("tb-explorer", IconName::Folder, "Open in file explorer", None, cx)
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                        cx.emit(ToolbarEvent::OpenFileExplorer)
-                    })),
-            )
-            .child(
-                self.icon_only_button("tb-terminal", IconName::Terminal, "Open terminal", None, cx)
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                        cx.emit(ToolbarEvent::OpenTerminal)
-                    })),
-            )
-            .child(
-                self.icon_only_button("tb-editor", IconName::ExternalLink, "Open in editor", None, cx)
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                        cx.emit(ToolbarEvent::OpenEditor)
-                    })),
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(
+                        self.icon_only_button(
+                            "tb-explorer",
+                            IconName::Folder,
+                            "Open in file explorer",
+                            None,
+                            cx,
+                        )
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::OpenFileExplorer)
+                        })),
+                    )
+                    .child(
+                        self.icon_only_button(
+                            "tb-terminal",
+                            IconName::Terminal,
+                            "Open terminal",
+                            None,
+                            cx,
+                        )
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::OpenTerminal)
+                        })),
+                    )
+                    .child(
+                        self.icon_only_button(
+                            "tb-editor",
+                            IconName::ExternalLink,
+                            "Open in editor",
+                            None,
+                            cx,
+                        )
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::OpenEditor)
+                        })),
+                    ),
             )
             .child(VerticalDivider::new())
-            // Right-aligned icon buttons
+            // Utility actions group
             .child(
-                self.icon_only_button("tb-search", IconName::Search, "Search commits", Some("Ctrl+F"), cx)
-                    .on_click(
-                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Search)),
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(
+                        self.icon_only_button(
+                            "tb-search",
+                            IconName::Search,
+                            "Search commits",
+                            Some("Ctrl+F"),
+                            cx,
+                        )
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Search)),
+                        ),
+                    )
+                    .child(
+                        self.icon_only_button(
+                            "tb-refresh",
+                            IconName::Refresh,
+                            "Refresh",
+                            Some("F5"),
+                            cx,
+                        )
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::Refresh)
+                        })),
+                    )
+                    .child(
+                        self.icon_only_button(
+                            "tb-settings",
+                            IconName::Settings,
+                            "Settings",
+                            Some("Ctrl+,"),
+                            cx,
+                        )
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(ToolbarEvent::Settings)
+                        })),
                     ),
             )
-            .child(
-                self.icon_only_button("tb-refresh", IconName::Refresh, "Refresh", Some("F5"), cx)
-                    .on_click(
-                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Refresh)),
-                    ),
-            )
-            .child(
-                self.icon_only_button("tb-settings", IconName::Settings, "Settings", Some("Ctrl+,"), cx)
-                    .on_click(
-                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Settings)),
-                    ),
-            )
+    }
+}
+
+impl Render for Toolbar {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compactness = cx.global::<SettingsState>().settings().compactness;
+        let toolbar_h = compactness.spacing(36.0);
+        let toolbar_bg = cx.colors().toolbar_background;
+        let border_color = cx.colors().border_variant;
+
+        let left = self.render_left_group(cx);
+        let right = self.render_right_group(cx);
+
+        div()
+            .h_flex()
+            .w_full()
+            .h(px(toolbar_h))
+            .px(px(8.))
+            .items_center()
+            .justify_between()
+            .bg(toolbar_bg)
+            .border_b_1()
+            .border_color(border_color)
+            .child(left)
+            .child(right)
     }
 }

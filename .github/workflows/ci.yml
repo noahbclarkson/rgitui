@@ -23,13 +23,6 @@ jobs:
       - name: Checkout rgitui
         uses: actions/checkout@v4
 
-      - name: Checkout zed (GPUI dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: zed-industries/zed
-          path: ../zed
-          fetch-depth: 1
-
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |

@@ -24,11 +24,11 @@ dbg_macro = "deny"
 todo = "deny"
 
 [workspace.dependencies]
-# GPUI framework (path deps to local Zed checkout)
-gpui = { path = "../zed/crates/gpui" }
-gpui_platform = { path = "../zed/crates/gpui_platform", features = ["wayland"] }
-http_client = { path = "../zed/crates/http_client" }
-reqwest_client = { path = "../zed/crates/reqwest_client" }
+# GPUI framework (from Zed repository)
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f", features = ["wayland"] }
+http_client = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
+reqwest_client = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
 
 # Internal crates
 rgitui_theme = { path = "crates/rgitui_theme" }
