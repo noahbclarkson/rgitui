@@ -34,8 +34,9 @@ impl RenameDialog {
             ti.set_placeholder("new-branch-name");
             ti
         });
-        cx.subscribe(&editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            match event {
+        cx.subscribe(
+            &editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
                 TextInputEvent::Submit => {
                     this.try_rename(cx);
                 }
@@ -47,8 +48,8 @@ impl RenameDialog {
                     };
                     cx.notify();
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         Self {

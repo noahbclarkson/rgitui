@@ -116,13 +116,7 @@ impl DiffViewer {
         self.focus_handle.is_focused(window)
     }
 
-    pub fn set_diff(
-        &mut self,
-        diff: FileDiff,
-        path: String,
-        staged: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, cx: &mut Context<Self>) {
         self.display_rows = Arc::new(Self::compute_display_rows(&diff));
         self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff));
         self.diff = Some(diff);
@@ -257,8 +251,7 @@ impl DiffViewer {
                     Some(i) => i,
                 };
                 self.highlighted_row = Some(next);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Top);
+                self.scroll_handle.scroll_to_item(next, ScrollStrategy::Top);
                 cx.notify();
             }
             "k" | "up" if !ctrl => {
@@ -269,21 +262,18 @@ impl DiffViewer {
                     None => 0,
                 };
                 self.highlighted_row = Some(next);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Top);
+                self.scroll_handle.scroll_to_item(next, ScrollStrategy::Top);
                 cx.notify();
             }
             "g" if !ctrl && !event.keystroke.modifiers.shift => {
                 self.highlighted_row = Some(0);
-                self.scroll_handle
-                    .scroll_to_item(0, ScrollStrategy::Top);
+                self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
             }
             "g" if event.keystroke.modifiers.shift => {
                 let last = row_count.saturating_sub(1);
                 self.highlighted_row = Some(last);
-                self.scroll_handle
-                    .scroll_to_item(last, ScrollStrategy::Top);
+                self.scroll_handle.scroll_to_item(last, ScrollStrategy::Top);
                 cx.notify();
             }
             "d" if !ctrl => {
@@ -546,36 +536,31 @@ impl Render for DiffViewer {
                         ),
                 )
                 .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .v_flex()
-                                .gap(px(12.))
-                                .items_center()
-                                .px(px(32.))
-                                .py(px(24.))
-                                .rounded(px(8.))
-                                .bg(colors.element_background)
-                                .child(
-                                    Icon::new(IconName::File)
-                                        .size(IconSize::Large)
-                                        .color(Color::Placeholder),
-                                )
-                                .child(
-                                    Label::new("Select a file to view changes")
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                )
-                                .child(
-                                    Label::new("Click a file in the sidebar or detail panel")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Placeholder),
-                                ),
-                        ),
+                    div().flex_1().flex().items_center().justify_center().child(
+                        div()
+                            .v_flex()
+                            .gap(px(12.))
+                            .items_center()
+                            .px(px(32.))
+                            .py(px(24.))
+                            .rounded(px(8.))
+                            .bg(colors.element_background)
+                            .child(
+                                Icon::new(IconName::File)
+                                    .size(IconSize::Large)
+                                    .color(Color::Placeholder),
+                            )
+                            .child(
+                                Label::new("Select a file to view changes")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new("Click a file in the sidebar or detail panel")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Placeholder),
+                            ),
+                    ),
                 )
                 .into_any_element();
         }

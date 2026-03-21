@@ -6,7 +6,9 @@ use gpui::{
     KeyDownEvent, Render, SharedString, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent};
+use rgitui_ui::{
+    Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent,
+};
 
 #[derive(Debug, Clone)]
 pub enum RepoOpenerEvent {
@@ -32,8 +34,9 @@ impl RepoOpener {
             ti.set_placeholder("Enter repository path...");
             ti
         });
-        cx.subscribe(&editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            match event {
+        cx.subscribe(
+            &editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
                 TextInputEvent::Submit => {
                     this.try_open(cx);
                 }
@@ -41,8 +44,8 @@ impl RepoOpener {
                     this.update_filter(cx);
                     cx.notify();
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         Self {
@@ -319,9 +322,7 @@ impl Render for RepoOpener {
                                         .size(IconSize::Small)
                                         .color(Color::Muted),
                                 )
-                                .child(
-                                    div().flex_1().child(self.editor.clone()),
-                                ),
+                                .child(div().flex_1().child(self.editor.clone())),
                         )
                         .child(
                             Button::new("browse-folder", "Browse")
@@ -397,15 +398,13 @@ impl Render for RepoOpener {
                         cx.emit(RepoOpenerEvent::OpenRepo(path));
                         cx.notify();
                     }))
-                    .child(
-                        Icon::new(IconName::Folder)
-                            .size(IconSize::Small)
-                            .color(if is_selected {
-                                Color::Accent
-                            } else {
-                                Color::Muted
-                            }),
-                    )
+                    .child(Icon::new(IconName::Folder).size(IconSize::Small).color(
+                        if is_selected {
+                            Color::Accent
+                        } else {
+                            Color::Muted
+                        },
+                    ))
                     .child(
                         div()
                             .v_flex()

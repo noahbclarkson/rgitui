@@ -8,9 +8,7 @@ use rgitui_settings::current_git_auth_runtime;
 use crate::types::*;
 
 use super::refresh::gather_refresh_data;
-use super::{
-    ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent, RefreshData,
-};
+use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent, RefreshData};
 
 impl GitProject {
     /// Stage specific files.
@@ -112,7 +110,11 @@ impl GitProject {
                         let mut index = repo.index()?;
                         for path in &task_paths {
                             if let Err(e) = index.remove_path(path) {
-                                log::warn!("Failed to remove path from index during unstage: {}: {}", path.display(), e);
+                                log::warn!(
+                                    "Failed to remove path from index during unstage: {}: {}",
+                                    path.display(),
+                                    e
+                                );
                             }
                         }
                         index.write()?;
@@ -307,22 +309,35 @@ impl GitProject {
                     let auth = current_git_auth_runtime();
                     let oid = if amend {
                         if auth.sign_commits {
-                            let gpg_key = auth.gpg_key_id.as_deref()
-                                .ok_or_else(|| anyhow::anyhow!("GPG signing enabled but no key ID configured in settings"))?;
+                            let gpg_key = auth.gpg_key_id.as_deref().ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "GPG signing enabled but no key ID configured in settings"
+                                )
+                            })?;
                             let head = repo.head()?.peel_to_commit()?;
                             let parents: Vec<git2::Commit> = head.parents().collect();
                             let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
                             let buf = repo.commit_create_buffer(
-                                &sig, &sig, &task_message, &tree, &parent_refs,
+                                &sig,
+                                &sig,
+                                &task_message,
+                                &tree,
+                                &parent_refs,
                             )?;
                             let buf_str = std::str::from_utf8(&buf)
                                 .context("commit buffer contains invalid UTF-8")?;
                             let signature = sign_with_gpg(buf_str, gpg_key)?;
-                            let commit_oid = repo.commit_signed(buf_str, &signature, Some("gpgsig"))?;
+                            let commit_oid =
+                                repo.commit_signed(buf_str, &signature, Some("gpgsig"))?;
                             if let Ok(mut head_ref) = repo.head() {
                                 head_ref.set_target(commit_oid, "commit (gpg signed amend)")?;
                             } else {
-                                repo.reference("HEAD", commit_oid, true, "commit (gpg signed amend)")?;
+                                repo.reference(
+                                    "HEAD",
+                                    commit_oid,
+                                    true,
+                                    "commit (gpg signed amend)",
+                                )?;
                             }
                             commit_oid
                         } else {
@@ -344,15 +359,23 @@ impl GitProject {
                         };
                         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
                         if auth.sign_commits {
-                            let gpg_key = auth.gpg_key_id.as_deref()
-                                .ok_or_else(|| anyhow::anyhow!("GPG signing enabled but no key ID configured in settings"))?;
+                            let gpg_key = auth.gpg_key_id.as_deref().ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "GPG signing enabled but no key ID configured in settings"
+                                )
+                            })?;
                             let buf = repo.commit_create_buffer(
-                                &sig, &sig, &task_message, &tree, &parent_refs,
+                                &sig,
+                                &sig,
+                                &task_message,
+                                &tree,
+                                &parent_refs,
                             )?;
                             let buf_str = std::str::from_utf8(&buf)
                                 .context("commit buffer contains invalid UTF-8")?;
                             let signature = sign_with_gpg(buf_str, gpg_key)?;
-                            let commit_oid = repo.commit_signed(buf_str, &signature, Some("gpgsig"))?;
+                            let commit_oid =
+                                repo.commit_signed(buf_str, &signature, Some("gpgsig"))?;
                             if let Ok(mut head_ref) = repo.head() {
                                 head_ref.set_target(commit_oid, "commit (gpg signed)")?;
                             } else {
@@ -360,7 +383,14 @@ impl GitProject {
                             }
                             commit_oid
                         } else {
-                            repo.commit(Some("HEAD"), &sig, &sig, &task_message, &tree, &parent_refs)?
+                            repo.commit(
+                                Some("HEAD"),
+                                &sig,
+                                &sig,
+                                &task_message,
+                                &tree,
+                                &parent_refs,
+                            )?
                         }
                     };
 
@@ -450,7 +480,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Checkout,
                                 msg,
-                                (Some("Working tree updated for the selected branch.".into()), None, Some(name.clone())),
+                                (
+                                    Some("Working tree updated for the selected branch.".into()),
+                                    None,
+                                    Some(name.clone()),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::HeadChanged);
@@ -511,7 +545,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Checkout,
                                 format!("Checked out {}", short_id),
-                                (Some("HEAD is now detached at the selected commit.".into()), None, Some(short_id.clone())),
+                                (
+                                    Some("HEAD is now detached at the selected commit.".into()),
+                                    None,
+                                    Some(short_id.clone()),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::HeadChanged);
@@ -592,7 +630,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Branch,
                                 format!("Created branch '{}'", name),
-                                (base_ref.as_ref().map(|value| format!("Base: {}", value)), None, Some(name.clone())),
+                                (
+                                    base_ref.as_ref().map(|value| format!("Base: {}", value)),
+                                    None,
+                                    Some(name.clone()),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
@@ -989,7 +1031,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Stash,
                                 format!("Applied stash #{}", index),
-                                (Some("The stash entry was kept.".into()), None, branch_name.clone()),
+                                (
+                                    Some("The stash entry was kept.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
@@ -1085,38 +1131,45 @@ impl GitProject {
         );
         let repo_path = self.repo_path.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result = cx.background_executor().spawn(async move {
-                let repo = Repository::open(&repo_path)?;
-                let workdir = repo
-                    .workdir()
-                    .ok_or_else(|| anyhow::anyhow!("Bare repository has no working directory"))?
-                    .to_path_buf();
-                let mut checkout_opts = git2::build::CheckoutBuilder::new();
-                checkout_opts.force();
-                let mut has_tracked = false;
-                for path in &paths {
-                    let is_untracked = repo
-                        .status_file(path)
-                        .map(|s| s.contains(git2::Status::WT_NEW))
-                        .unwrap_or(false);
-                    if is_untracked {
-                        let full = workdir.join(path);
-                        if full.is_file() {
-                            std::fs::remove_file(&full).with_context(|| format!("Failed to delete {}", full.display()))?;
-                        } else if full.is_dir() {
-                            std::fs::remove_dir_all(&full).with_context(|| format!("Failed to delete directory {}", full.display()))?;
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let workdir = repo
+                        .workdir()
+                        .ok_or_else(|| anyhow::anyhow!("Bare repository has no working directory"))?
+                        .to_path_buf();
+                    let mut checkout_opts = git2::build::CheckoutBuilder::new();
+                    checkout_opts.force();
+                    let mut has_tracked = false;
+                    for path in &paths {
+                        let is_untracked = repo
+                            .status_file(path)
+                            .map(|s| s.contains(git2::Status::WT_NEW))
+                            .unwrap_or(false);
+                        if is_untracked {
+                            let full = workdir.join(path);
+                            if full.is_file() {
+                                std::fs::remove_file(&full).with_context(|| {
+                                    format!("Failed to delete {}", full.display())
+                                })?;
+                            } else if full.is_dir() {
+                                std::fs::remove_dir_all(&full).with_context(|| {
+                                    format!("Failed to delete directory {}", full.display())
+                                })?;
+                            }
+                        } else {
+                            checkout_opts.path(path);
+                            has_tracked = true;
                         }
-                    } else {
-                        checkout_opts.path(path);
-                        has_tracked = true;
                     }
-                }
-                if has_tracked {
-                    repo.checkout_head(Some(&mut checkout_opts))?;
-                }
-                let data = gather_refresh_data(&repo_path)?;
-                Ok::<_, anyhow::Error>(data)
-            }).await;
+                    if has_tracked {
+                        repo.checkout_head(Some(&mut checkout_opts))?;
+                    }
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok::<_, anyhow::Error>(data)
+                })
+                .await;
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
@@ -1180,7 +1233,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Reset,
                                 "Reset working tree to HEAD",
-                                (Some("All staged and unstaged changes were discarded.".into()), None, branch_name.clone()),
+                                (
+                                    Some("All staged and unstaged changes were discarded.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
@@ -1205,11 +1262,7 @@ impl GitProject {
     }
 
     /// Hard-reset the current branch to a specific commit.
-    pub fn reset_to_commit(
-        &mut self,
-        oid: git2::Oid,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn reset_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
@@ -1240,7 +1293,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Reset,
                                 format!("Reset to {}", short_id),
-                                (Some("Working tree reset to the selected commit.".into()), None, branch_name.clone()),
+                                (
+                                    Some("Working tree reset to the selected commit.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
@@ -1266,11 +1323,7 @@ impl GitProject {
     }
 
     /// Soft-reset the current branch to a specific commit, preserving changes in the index.
-    pub fn reset_soft(
-        &mut self,
-        oid: git2::Oid,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
+    pub fn reset_soft(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
@@ -1301,7 +1354,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Reset,
                                 format!("Soft reset to {}", short_id),
-                                (Some("Changes preserved in index.".into()), None, branch_name.clone()),
+                                (
+                                    Some("Changes preserved in index.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
@@ -1518,7 +1575,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Merge,
                                 format!("{} aborted", state_label),
-                                (Some("Working tree has been reset to HEAD.".into()), None, branch_name.clone()),
+                                (
+                                    Some("Working tree has been reset to HEAD.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
@@ -1800,12 +1861,15 @@ impl GitProject {
         );
         let repo_path = self.repo_path.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result = cx.background_executor().spawn(async move {
-                let repo = Repository::open(&repo_path)?;
-                repo.remote_delete(&name)?;
-                let data = gather_refresh_data(&repo_path)?;
-                Ok::<_, anyhow::Error>((data, name))
-            }).await;
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    repo.remote_delete(&name)?;
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok::<_, anyhow::Error>((data, name))
+                })
+                .await;
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
@@ -1815,7 +1879,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::RemoveRemote,
                                 format!("Removed remote '{}'", name),
-                                (Some("Remote list refreshed.".into()), Some(name.clone()), branch_name.clone()),
+                                (
+                                    Some("Remote list refreshed.".into()),
+                                    Some(name.clone()),
+                                    branch_name.clone(),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);

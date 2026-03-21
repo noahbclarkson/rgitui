@@ -41,11 +41,7 @@ fn format_relative_time(timestamp: i64) -> String {
         }
         2592000..=31535999 => {
             let months = diff / 2592000;
-            format!(
-                "{} month{} ago",
-                months,
-                if months == 1 { "" } else { "s" }
-            )
+            format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
         }
         _ => {
             let years = diff / 31536000;
@@ -152,12 +148,7 @@ fn sort_cached_tree(node: &mut CachedTreeNode) {
 }
 
 fn cached_tree_count(node: &CachedTreeNode) -> usize {
-    node.files.len()
-        + node
-            .children
-            .values()
-            .map(cached_tree_count)
-            .sum::<usize>()
+    node.files.len() + node.children.values().map(cached_tree_count).sum::<usize>()
 }
 
 fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
@@ -194,10 +185,7 @@ fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
         })
         .collect();
     let tree = build_cached_tree(files);
-    CachedFileDiffTree {
-        flat_entries,
-        tree,
-    }
+    CachedFileDiffTree { flat_entries, tree }
 }
 
 pub struct DetailPanel {
@@ -230,20 +218,22 @@ impl DetailPanel {
     fn mark_copied(&mut self, field: &'static str, cx: &mut Context<Self>) {
         self.copied_field = Some((field, Instant::now()));
         cx.notify();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            cx.background_executor()
-                .timer(Duration::from_millis(1500))
-                .await;
-            this.update(cx, |this, cx| {
-                if let Some((f, t)) = this.copied_field {
-                    if f == field && t.elapsed() >= Duration::from_millis(1400) {
-                        this.copied_field = None;
-                        cx.notify();
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(1500))
+                    .await;
+                this.update(cx, |this, cx| {
+                    if let Some((f, t)) = this.copied_field {
+                        if f == field && t.elapsed() >= Duration::from_millis(1400) {
+                            this.copied_field = None;
+                            cx.notify();
+                        }
                     }
-                }
-            })
-            .ok();
-        })
+                })
+                .ok();
+            },
+        )
         .detach();
     }
 
@@ -379,9 +369,10 @@ impl DetailPanel {
         let avatar_bg = colors.border_focused;
         let avatar_text_color = colors.background;
 
-        let mut section = div().v_flex().gap(px(4.)).child(
-            self.render_section_header("Co-authors"),
-        );
+        let mut section = div()
+            .v_flex()
+            .gap(px(4.))
+            .child(self.render_section_header("Co-authors"));
 
         for co_author in co_authors {
             let initials: SharedString = co_author
@@ -559,22 +550,19 @@ impl DetailPanel {
                             .flex_shrink_0()
                             .border_l_2()
                             .when(selected, |el| {
-                                el.bg(ghost_element_selected)
-                                    .border_color(text_accent)
+                                el.bg(ghost_element_selected).border_color(text_accent)
                             })
                             .when(!selected, |el| el.border_color(border_transparent))
                             .hover(move |s| s.bg(ghost_element_hover))
                             .cursor_pointer()
-                            .on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    weak.update(cx, |this, cx| {
-                                        this.selected_file_index = Some(file_idx);
-                                        this.emit_file_selected(cx);
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            )
+                            .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                weak.update(cx, |this, cx| {
+                                    this.selected_file_index = Some(file_idx);
+                                    this.emit_file_selected(cx);
+                                    cx.notify();
+                                })
+                                .ok();
+                            })
                             .child(
                                 Icon::new(row.icon_name)
                                     .size(IconSize::XSmall)
@@ -903,41 +891,34 @@ impl Render for DetailPanel {
                         ),
                 )
                 .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .v_flex()
-                                .items_center()
-                                .gap(px(12.))
-                                .px(px(24.))
-                                .py(px(20.))
-                                .rounded(px(8.))
-                                .bg(colors.surface_background)
-                                .border_1()
-                                .border_color(colors.border_variant)
-                                .child(
-                                    Icon::new(IconName::GitCommit)
-                                        .size(IconSize::Large)
-                                        .color(Color::Placeholder),
-                                )
-                                .child(
-                                    Label::new("No commit selected")
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted)
-                                        .weight(gpui::FontWeight::SEMIBOLD),
-                                )
-                                .child(
-                                    Label::new(
-                                        "Select a commit from the graph to view details",
-                                    )
+                    div().flex_1().flex().items_center().justify_center().child(
+                        div()
+                            .v_flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .px(px(24.))
+                            .py(px(20.))
+                            .rounded(px(8.))
+                            .bg(colors.surface_background)
+                            .border_1()
+                            .border_color(colors.border_variant)
+                            .child(
+                                Icon::new(IconName::GitCommit)
+                                    .size(IconSize::Large)
+                                    .color(Color::Placeholder),
+                            )
+                            .child(
+                                Label::new("No commit selected")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted)
+                                    .weight(gpui::FontWeight::SEMIBOLD),
+                            )
+                            .child(
+                                Label::new("Select a commit from the graph to view details")
                                     .size(LabelSize::XSmall)
                                     .color(Color::Placeholder),
-                                ),
-                        ),
+                            ),
+                    ),
                 )
                 .into_any_element();
         };
@@ -1051,16 +1032,12 @@ impl Render for DetailPanel {
                         .items_center()
                         .child(avatar_circle)
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .child(
-                                    Label::new(author_name)
-                                        .size(LabelSize::Small)
-                                        .weight(gpui::FontWeight::BOLD)
-                                        .truncate(),
-                                ),
+                            div().flex_1().min_w_0().overflow_hidden().child(
+                                Label::new(author_name)
+                                    .size(LabelSize::Small)
+                                    .weight(gpui::FontWeight::BOLD)
+                                    .truncate(),
+                            ),
                         ),
                 )
                 .child(
@@ -1132,17 +1109,13 @@ impl Render for DetailPanel {
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Transparent)
                                 .tooltip("Copy commit SHA")
-                                .on_click(cx.listener(
-                                    move |this, _: &ClickEvent, _window, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            sha_copy_clone.to_string(),
-                                        ));
-                                        cx.emit(DetailPanelEvent::CopySha(
-                                            sha_copy_clone.to_string(),
-                                        ));
-                                        this.mark_copied("sha", cx);
-                                    },
-                                )),
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        sha_copy_clone.to_string(),
+                                    ));
+                                    cx.emit(DetailPanelEvent::CopySha(sha_copy_clone.to_string()));
+                                    this.mark_copied("sha", cx);
+                                })),
                         )
                         .when(sha_copied, |el| {
                             el.child(
@@ -1163,17 +1136,12 @@ impl Render for DetailPanel {
 
         // Parent commits as interactive badges
         if !commit.parent_oids.is_empty() {
-            let mut parents_row = div()
-                .h_flex()
-                .gap(px(8.))
-                .items_center()
-                .flex_wrap()
-                .child(
-                    Label::new("Parents")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted)
-                        .weight(gpui::FontWeight::SEMIBOLD),
-                );
+            let mut parents_row = div().h_flex().gap(px(8.)).items_center().flex_wrap().child(
+                Label::new("Parents")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted)
+                    .weight(gpui::FontWeight::SEMIBOLD),
+            );
 
             for parent_oid in &commit.parent_oids {
                 let parent_short: SharedString = format!("{:.7}", parent_oid).into();
@@ -1311,35 +1279,32 @@ impl Render for DetailPanel {
         if !description.is_empty() {
             let desc_for_copy = description.clone();
             let desc_copied = self.is_copied("description");
-            message_card = message_card.child(
-                div()
-                    .w_full()
-                    .h(px(1.))
-                    .bg(colors.border_variant),
-            ).child(
-                div()
-                    .id("description-copy")
-                    .v_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap(px(4.))
-                    .text_xs()
-                    .text_color(colors.text_muted)
-                    .cursor_pointer()
-                    .hover(|s| s.opacity(0.8))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(desc_for_copy.clone()));
-                        this.mark_copied("description", cx);
-                    }))
-                    .child(render_markdown(&description, window, cx))
-                    .when(desc_copied, |el| {
-                        el.child(
-                            Label::new("Copied!")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Success),
-                        )
-                    }),
-            );
+            message_card = message_card
+                .child(div().w_full().h(px(1.)).bg(colors.border_variant))
+                .child(
+                    div()
+                        .id("description-copy")
+                        .v_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap(px(4.))
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.8))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(desc_for_copy.clone()));
+                            this.mark_copied("description", cx);
+                        }))
+                        .child(render_markdown(&description, window, cx))
+                        .when(desc_copied, |el| {
+                            el.child(
+                                Label::new("Copied!")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Success),
+                            )
+                        }),
+                );
         }
 
         content = content.child(message_card);
@@ -1415,10 +1380,9 @@ impl Render for DetailPanel {
 
             let file_list: gpui::AnyElement = match self.file_view_mode {
                 FileViewMode::Flat => self.render_flat_file_list(diff, cached, cx),
-                FileViewMode::Tree => {
-                    self.render_tree_file_list(diff, cached, &colors, cx)
-                        .into_any_element()
-                }
+                FileViewMode::Tree => self
+                    .render_tree_file_list(diff, cached, &colors, cx)
+                    .into_any_element(),
             };
             content = content.child(file_list);
         }

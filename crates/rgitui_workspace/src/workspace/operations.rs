@@ -4,9 +4,7 @@ use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, SharedString};
 use rgitui_git::{GitOperationKind, GitOperationUpdate};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{
-    ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
-};
+use rgitui_ui::{ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize};
 
 use crate::ToastKind;
 
@@ -20,7 +18,9 @@ impl Workspace {
     ) {
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             cx.background_executor()
-                .timer(std::time::Duration::from_secs(OPERATION_OUTPUT_AUTO_HIDE_SECS))
+                .timer(std::time::Duration::from_secs(
+                    OPERATION_OUTPUT_AUTO_HIDE_SECS,
+                ))
                 .await;
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
@@ -100,16 +100,12 @@ impl Workspace {
                     .weight(gpui::FontWeight::SEMIBOLD),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .child(
-                        Label::new(first_line)
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted)
-                            .truncate(),
-                    ),
+                div().flex_1().min_w_0().overflow_hidden().child(
+                    Label::new(first_line)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted)
+                        .truncate(),
+                ),
             );
 
         if has_multiple_lines {

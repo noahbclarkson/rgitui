@@ -448,10 +448,9 @@ impl Render for Workspace {
                     // Global resize drag listeners
                     .on_drag_move::<SidebarResize>(cx.listener(
                         |this, e: &DragMoveEvent<SidebarResize>, _, cx| {
-                            let new_w = f32::from(
-                                e.event.position.x - this.layout.content_bounds.left(),
-                            )
-                            .clamp(120., 600.);
+                            let new_w =
+                                f32::from(e.event.position.x - this.layout.content_bounds.left())
+                                    .clamp(120., 600.);
                             this.layout.sidebar_width = new_w;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -459,10 +458,9 @@ impl Render for Workspace {
                     ))
                     .on_drag_move::<DetailPanelResize>(cx.listener(
                         |this, e: &DragMoveEvent<DetailPanelResize>, _, cx| {
-                            let new_w = f32::from(
-                                this.layout.content_bounds.right() - e.event.position.x,
-                            )
-                            .clamp(180., 600.);
+                            let new_w =
+                                f32::from(this.layout.content_bounds.right() - e.event.position.x)
+                                    .clamp(180., 600.);
                             this.layout.detail_panel_width = new_w;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -470,10 +468,9 @@ impl Render for Workspace {
                     ))
                     .on_drag_move::<DiffViewerResize>(cx.listener(
                         |this, e: &DragMoveEvent<DiffViewerResize>, _, cx| {
-                            let new_h = f32::from(
-                                this.layout.content_bounds.bottom() - e.event.position.y,
-                            )
-                            .clamp(60., 500.);
+                            let new_h =
+                                f32::from(this.layout.content_bounds.bottom() - e.event.position.y)
+                                    .clamp(60., 500.);
                             this.layout.diff_viewer_height = new_h;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -569,9 +566,7 @@ impl Render for Workspace {
                                         .border_b_1()
                                         .border_color(colors.border_variant)
                                         .child(
-                                            Spinner::new()
-                                                .size(SpinnerSize::Small)
-                                                .label(label),
+                                            Spinner::new().size(SpinnerSize::Small).label(label),
                                         ),
                                 )
                             })
@@ -681,8 +676,7 @@ impl Render for Workspace {
                                             .items_center()
                                             .cursor_pointer()
                                             .when(is_details, |el| {
-                                                el.border_b_2()
-                                                    .border_color(colors.text_accent)
+                                                el.border_b_2().border_color(colors.text_accent)
                                             })
                                             .hover(|s| s.bg(colors.ghost_element_hover))
                                             .on_click(move |_: &ClickEvent, _, cx| {
@@ -718,8 +712,7 @@ impl Render for Workspace {
                                             .items_center()
                                             .cursor_pointer()
                                             .when(is_issues, |el| {
-                                                el.border_b_2()
-                                                    .border_color(colors.text_accent)
+                                                el.border_b_2().border_color(colors.text_accent)
                                             })
                                             .hover(|s| s.bg(colors.ghost_element_hover))
                                             .on_click(move |_: &ClickEvent, _, cx| {
@@ -987,10 +980,7 @@ impl Workspace {
 
                 workspaces_list = workspaces_list.child(
                     div()
-                        .id(ElementId::NamedInteger(
-                            "recent-workspace".into(),
-                            i as u64,
-                        ))
+                        .id(ElementId::NamedInteger("recent-workspace".into(), i as u64))
                         .h_flex()
                         .w_full()
                         .min_h(px(48.))
@@ -1307,11 +1297,7 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                 let _ = std::process::Command::new("code")
                     .arg(&path)
                     .spawn()
-                    .or_else(|_| {
-                        std::process::Command::new("xdg-open")
-                            .arg(&path)
-                            .spawn()
-                    });
+                    .or_else(|_| std::process::Command::new("xdg-open").arg(&path).spawn());
             }
         }
     });

@@ -23,8 +23,8 @@ fn setup_test_repo() -> (tempfile::TempDir, PathBuf) {
         .set_str("user.email", "test@example.com")
         .expect("failed to set user.email");
 
-    let sig = git2::Signature::now("Test User", "test@example.com")
-        .expect("failed to create signature");
+    let sig =
+        git2::Signature::now("Test User", "test@example.com").expect("failed to create signature");
 
     // Initial commit
     let file_path = repo_path.join("README.md");

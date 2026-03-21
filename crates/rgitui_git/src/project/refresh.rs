@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use crate::types::*;
 
 use super::diff::batch_diff_stats;
-use super::RefreshData;
-use super::DEFAULT_COMMIT_LIMIT;
 use super::GitProject;
 use super::GitProjectEvent;
+use super::RefreshData;
+use super::DEFAULT_COMMIT_LIMIT;
 
 fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
     let mut co_authors = Vec::new();

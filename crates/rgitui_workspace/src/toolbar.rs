@@ -163,11 +163,7 @@ impl Toolbar {
             })
             .tooltip(move |window, cx| tooltip_fn(window, cx))
             .child(Icon::new(icon).size(IconSize::Small).color(icon_color))
-            .child(
-                Label::new(label)
-                    .size(LabelSize::XSmall)
-                    .color(text_color),
-            )
+            .child(Label::new(label).size(LabelSize::XSmall).color(text_color))
     }
 
     fn icon_only_button(
@@ -258,9 +254,7 @@ impl Toolbar {
                                 cx,
                             )
                             .on_click(
-                                cx.listener(|_, _: &ClickEvent, _, cx| {
-                                    cx.emit(ToolbarEvent::Pull)
-                                }),
+                                cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Pull)),
                             );
                         if self.behind > 0 && !self.is_pulling {
                             btn = btn.child(
@@ -285,9 +279,7 @@ impl Toolbar {
                                 cx,
                             )
                             .on_click(
-                                cx.listener(|_, _: &ClickEvent, _, cx| {
-                                    cx.emit(ToolbarEvent::Push)
-                                }),
+                                cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Push)),
                             );
                         if self.ahead > 0 && !self.is_pushing {
                             btn = btn.child(
@@ -322,9 +314,7 @@ impl Toolbar {
                     },
                     cx,
                 )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch)),
-                ),
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch))),
             )
             .child(VerticalDivider::new())
             // Stash operations group
@@ -346,9 +336,11 @@ impl Toolbar {
                             },
                             cx,
                         )
-                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                            cx.emit(ToolbarEvent::StashSave)
-                        })),
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ToolbarEvent::StashSave)
+                            }),
+                        ),
                     )
                     .child(
                         self.icon_button(
@@ -363,9 +355,9 @@ impl Toolbar {
                             },
                             cx,
                         )
-                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                            cx.emit(ToolbarEvent::StashPop)
-                        })),
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashPop)),
+                        ),
                     ),
             )
     }
@@ -389,9 +381,9 @@ impl Toolbar {
                             None,
                             cx,
                         )
-                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                            cx.emit(ToolbarEvent::OpenFileExplorer)
-                        })),
+                        .on_click(cx.listener(
+                            |_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::OpenFileExplorer),
+                        )),
                     )
                     .child(
                         self.icon_only_button(
@@ -401,9 +393,9 @@ impl Toolbar {
                             None,
                             cx,
                         )
-                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                            cx.emit(ToolbarEvent::OpenTerminal)
-                        })),
+                        .on_click(cx.listener(
+                            |_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::OpenTerminal),
+                        )),
                     )
                     .child(
                         self.icon_only_button(
@@ -413,9 +405,11 @@ impl Toolbar {
                             None,
                             cx,
                         )
-                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                            cx.emit(ToolbarEvent::OpenEditor)
-                        })),
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ToolbarEvent::OpenEditor)
+                            }),
+                        ),
                     ),
             )
             .child(VerticalDivider::new())
@@ -445,9 +439,9 @@ impl Toolbar {
                             Some("F5"),
                             cx,
                         )
-                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                            cx.emit(ToolbarEvent::Refresh)
-                        })),
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Refresh)),
+                        ),
                     )
                     .child(
                         self.icon_only_button(
@@ -457,9 +451,9 @@ impl Toolbar {
                             Some("Ctrl+,"),
                             cx,
                         )
-                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                            cx.emit(ToolbarEvent::Settings)
-                        })),
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Settings)),
+                        ),
                     ),
             )
     }

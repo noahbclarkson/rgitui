@@ -54,13 +54,7 @@ impl RenderOnce for DiffStat {
             } else {
                 neutral_color
             };
-            bar = bar.child(
-                div()
-                    .w(px(4.))
-                    .h(px(10.))
-                    .rounded(px(1.))
-                    .bg(color),
-            );
+            bar = bar.child(div().w(px(4.)).h(px(10.)).rounded(px(1.)).bg(color));
         }
 
         div()

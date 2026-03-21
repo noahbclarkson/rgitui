@@ -45,7 +45,11 @@ pub struct Toast {
 }
 
 impl Toast {
-    pub fn new(id: impl Into<ElementId>, message: impl Into<SharedString>, level: ToastLevel) -> Self {
+    pub fn new(
+        id: impl Into<ElementId>,
+        message: impl Into<SharedString>,
+        level: ToastLevel,
+    ) -> Self {
         Self {
             id: id.into(),
             message: message.into(),
@@ -94,13 +98,18 @@ impl RenderOnce for Toast {
                     .p(px(3.))
                     .rounded_md()
                     .bg(icon_bg)
-                    .child(Icon::new(icon_name).size(IconSize::Small).color(level_color)),
+                    .child(
+                        Icon::new(icon_name)
+                            .size(IconSize::Small)
+                            .color(level_color),
+                    ),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Label::new(self.message).size(LabelSize::Small).color(Color::Default)),
+                div().flex_1().min_w_0().child(
+                    Label::new(self.message)
+                        .size(LabelSize::Small)
+                        .color(Color::Default),
+                ),
             )
     }
 }

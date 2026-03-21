@@ -758,7 +758,9 @@ pub fn init(cx: &mut App) {
 pub fn current_auth_runtime() -> AuthRuntimeState {
     auth_runtime()
         .read()
-        .expect("git auth runtime RwLock poisoned - a previous thread panicked while holding the lock")
+        .expect(
+            "git auth runtime RwLock poisoned - a previous thread panicked while holding the lock",
+        )
         .clone()
 }
 
@@ -873,7 +875,9 @@ fn sync_auth_runtime(settings: &AppSettings) {
         },
     };
 
-    *auth_runtime().write().expect("git auth runtime RwLock poisoned - a previous thread panicked while holding the lock") = runtime;
+    *auth_runtime().write().expect(
+        "git auth runtime RwLock poisoned - a previous thread panicked while holding the lock",
+    ) = runtime;
 }
 
 fn resolve_ai_api_key(settings: &AiSettings) -> Option<String> {

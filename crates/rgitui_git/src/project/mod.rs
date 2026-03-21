@@ -17,7 +17,9 @@ use std::sync::Arc;
 use crate::types::*;
 
 pub use blame::{compute_blame, BlameEntry, BlameLine};
-pub use diff::{compute_commit_diff, compute_file_diff, compute_staged_diff_text, compute_stash_diff};
+pub use diff::{
+    compute_commit_diff, compute_file_diff, compute_staged_diff_text, compute_stash_diff,
+};
 pub use refresh::gather_refresh_data;
 
 const DEFAULT_COMMIT_LIMIT: usize = 1000;

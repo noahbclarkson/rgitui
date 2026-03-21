@@ -226,7 +226,11 @@ impl RenderOnce for TitleBar {
                 .h_flex()
                 .gap(px(12.))
                 .items_center()
-                .child(Self::render_keyboard_hint(colors, "Ctrl+Shift+P", "Commands"))
+                .child(Self::render_keyboard_hint(
+                    colors,
+                    "Ctrl+Shift+P",
+                    "Commands",
+                ))
                 .child(Self::render_keyboard_hint(colors, "?", "Help")),
         )
     }

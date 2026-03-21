@@ -126,23 +126,19 @@ impl ShortcutsHelp {
         let hint_bg = colors.hint_background;
         let border_variant = colors.border_variant;
 
-        let mut col = div()
-            .v_flex()
-            .w_full()
-            .gap(px(2.))
-            .child(
-                div()
-                    .pb(px(6.))
-                    .mb(px(4.))
-                    .border_b_1()
-                    .border_color(border_variant)
-                    .child(
-                        Label::new(SharedString::from(title.to_string()))
-                            .size(LabelSize::Small)
-                            .weight(FontWeight::SEMIBOLD)
-                            .color(Color::Accent),
-                    ),
-            );
+        let mut col = div().v_flex().w_full().gap(px(2.)).child(
+            div()
+                .pb(px(6.))
+                .mb(px(4.))
+                .border_b_1()
+                .border_color(border_variant)
+                .child(
+                    Label::new(SharedString::from(title.to_string()))
+                        .size(LabelSize::Small)
+                        .weight(FontWeight::SEMIBOLD)
+                        .color(Color::Accent),
+                ),
+        );
 
         for (key, desc) in shortcuts {
             let hover_bg = colors.ghost_element_hover;

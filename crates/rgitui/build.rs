@@ -3,7 +3,11 @@ fn main() {
     {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let icon_path = std::path::PathBuf::from(&manifest_dir)
-            .join("..").join("..").join("assets").join("icons").join("app-icon.ico");
+            .join("..")
+            .join("..")
+            .join("assets")
+            .join("icons")
+            .join("app-icon.ico");
         let icon_str = icon_path.to_string_lossy().to_string();
         if icon_path.exists() {
             let mut res = winresource::WindowsResource::new();

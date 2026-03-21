@@ -1,8 +1,6 @@
 use gpui::Context;
 
-use crate::{
-    CommandId, CommitPanelEvent, ConfirmAction, ToastKind,
-};
+use crate::{CommandId, CommitPanelEvent, ConfirmAction, ToastKind};
 
 use super::{BottomPanelMode, ProjectTab, Workspace};
 
@@ -264,18 +262,11 @@ impl Workspace {
                         rd.show_visible(name, cx);
                     });
                 } else {
-                    self.show_toast(
-                        "No branch to rename (detached HEAD)",
-                        ToastKind::Error,
-                        cx,
-                    );
+                    self.show_toast("No branch to rename (detached HEAD)", ToastKind::Error, cx);
                 }
             }
             CommandId::CherryPick | CommandId::RevertCommit | CommandId::DeleteBranch => {
-                let msg = format!(
-                    "Use the sidebar context menu for '{}'",
-                    cmd.display_label()
-                );
+                let msg = format!("Use the sidebar context menu for '{}'", cmd.display_label());
                 self.show_toast(msg, ToastKind::Info, cx);
             }
             CommandId::SwitchBranch => {
@@ -298,11 +289,7 @@ impl Workspace {
         }
     }
 
-    fn toggle_blame_view(
-        &mut self,
-        tab: &ProjectTab,
-        cx: &mut Context<Self>,
-    ) {
+    fn toggle_blame_view(&mut self, tab: &ProjectTab, cx: &mut Context<Self>) {
         if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
             if active_tab.bottom_panel_mode == BottomPanelMode::Blame {
                 active_tab.bottom_panel_mode = BottomPanelMode::Diff;
@@ -331,8 +318,8 @@ impl Workspace {
             proj.blame_file_async(&path_for_blame, None, cx)
         });
 
-        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            match task.await {
+        cx.spawn(
+            async move |this, cx: &mut gpui::AsyncApp| match task.await {
                 Ok(lines) => {
                     cx.update(|cx| {
                         blame_view.update(cx, |bv, cx| {
@@ -357,8 +344,8 @@ impl Workspace {
                         });
                     });
                 }
-            }
-        })
+            },
+        )
         .detach();
     }
 }

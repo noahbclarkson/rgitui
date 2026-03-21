@@ -63,13 +63,13 @@ struct FileTreeNode {
 #[derive(Debug, Clone)]
 enum SidebarItem {
     SectionHeader(SidebarSection),
-    LocalBranch(usize),   // index into local branches
-    Remote(usize),        // index into remotes
-    RemoteBranch(usize),  // index into remote branches
-    Tag(usize),           // index into tags
-    Stash(usize),         // index into stashes
-    StagedFile(usize),    // index into staged files
-    UnstagedFile(usize),  // index into unstaged files
+    LocalBranch(usize),  // index into local branches
+    Remote(usize),       // index into remotes
+    RemoteBranch(usize), // index into remote branches
+    Tag(usize),          // index into tags
+    Stash(usize),        // index into stashes
+    StagedFile(usize),   // index into staged files
+    UnstagedFile(usize), // index into unstaged files
 }
 
 struct FileRowCtx<'a> {
@@ -351,9 +351,7 @@ impl Sidebar {
                             SidebarItem::LocalBranch(i) => {
                                 if let Some(branch) = self.local_branches.get(i) {
                                     if !branch.is_head {
-                                        cx.emit(SidebarEvent::BranchDelete(
-                                            branch.name.clone(),
-                                        ));
+                                        cx.emit(SidebarEvent::BranchDelete(branch.name.clone()));
                                     }
                                 }
                             }
@@ -441,7 +439,10 @@ impl Sidebar {
 
     /// Expand the Local Branches section and focus the sidebar for branch switching.
     pub fn ensure_branches_visible(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.expanded_sections.contains(&SidebarSection::LocalBranches) {
+        if !self
+            .expanded_sections
+            .contains(&SidebarSection::LocalBranches)
+        {
             self.expanded_sections.push(SidebarSection::LocalBranches);
             self.rebuild_nav_items();
         }
@@ -545,8 +546,16 @@ impl Sidebar {
 
     fn sort_file_tree(node: &mut FileTreeNode, files: &[FileStatus]) {
         node.file_indices.sort_by(|&a, &b| {
-            let a_name = files[a].path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let b_name = files[b].path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let a_name = files[a]
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let b_name = files[b]
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
             a_name.to_lowercase().cmp(&b_name.to_lowercase())
         });
         for child in node.children.values_mut() {
@@ -570,7 +579,11 @@ impl Sidebar {
         ctx: &mut FileRowCtx<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let item_h = cx.global::<SettingsState>().settings().compactness.spacing(24.0);
+        let item_h = cx
+            .global::<SettingsState>()
+            .settings()
+            .compactness
+            .spacing(24.0);
         let staged = ctx.staged;
         let indent = ctx.indent;
         let colors = ctx.colors;
@@ -671,7 +684,11 @@ impl Sidebar {
                 .child(
                     div()
                         .id(ElementId::NamedInteger(
-                            if staged { "unstage-action".into() } else { "stage-action".into() },
+                            if staged {
+                                "unstage-action".into()
+                            } else {
+                                "stage-action".into()
+                            },
                             i as u64,
                         ))
                         .flex()
@@ -687,15 +704,13 @@ impl Sidebar {
                         .cursor_pointer()
                         .on_click({
                             let file_path = file_path.clone();
-                            cx.listener(
-                                move |_this, _: &ClickEvent, _, cx| {
-                                    cx.emit(if staged {
-                                        SidebarEvent::UnstageFile(file_path.to_string())
-                                    } else {
-                                        SidebarEvent::StageFile(file_path.to_string())
-                                    });
-                                },
-                            )
+                            cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                                cx.emit(if staged {
+                                    SidebarEvent::UnstageFile(file_path.to_string())
+                                } else {
+                                    SidebarEvent::StageFile(file_path.to_string())
+                                });
+                            })
                         })
                         .child(if staged { "\u{2212}" } else { "+" }),
                 ),
@@ -738,7 +753,11 @@ impl Sidebar {
         ctx: &mut FileRowCtx<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let item_h = cx.global::<SettingsState>().settings().compactness.spacing(24.0);
+        let item_h = cx
+            .global::<SettingsState>()
+            .settings()
+            .compactness
+            .spacing(24.0);
         let (prefix, parent_path, depth) = tree_ctx;
         let file_indent = px(if depth == 0 {
             16.0
@@ -762,7 +781,9 @@ impl Sidebar {
             let mut display_node = child;
 
             while display_node.file_indices.is_empty() && display_node.children.len() == 1 {
-                let Some((next_name, next_child)) = display_node.children.iter().next() else { break; };
+                let Some((next_name, next_child)) = display_node.children.iter().next() else {
+                    break;
+                };
                 full_dir = format!("{full_dir}/{next_name}");
                 display_label = format!("{}{next_name}/", display_label);
                 display_node = next_child;
@@ -1023,7 +1044,11 @@ impl Render for Sidebar {
                     .pl(px(16.))
                     .gap(px(4.))
                     .items_center()
-                    .when(kb_active, |el| el.bg(colors.ghost_element_hover).border_l_2().border_color(kb_accent))
+                    .when(kb_active, |el| {
+                        el.bg(colors.ghost_element_hover)
+                            .border_l_2()
+                            .border_color(kb_accent)
+                    })
                     .hover(|s| s.bg(colors.ghost_element_hover))
                     .active(|s| s.bg(colors.ghost_element_active))
                     .cursor_pointer()
@@ -1198,9 +1223,7 @@ impl Render for Sidebar {
                                 .tooltip("Merge into current branch")
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::MergeBranch(
-                                            bn_merge.to_string(),
-                                        ));
+                                        cx.emit(SidebarEvent::MergeBranch(bn_merge.to_string()));
                                     },
                                 )),
                             )
@@ -1214,9 +1237,7 @@ impl Render for Sidebar {
                                 .tooltip("Rename branch")
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::BranchRename(
-                                            bn_rename.to_string(),
-                                        ));
+                                        cx.emit(SidebarEvent::BranchRename(bn_rename.to_string()));
                                     },
                                 )),
                             )
@@ -1230,9 +1251,7 @@ impl Render for Sidebar {
                                 .tooltip("Delete branch")
                                 .on_click(cx.listener(
                                     move |_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::BranchDelete(
-                                            bn_delete.to_string(),
-                                        ));
+                                        cx.emit(SidebarEvent::BranchDelete(bn_delete.to_string()));
                                     },
                                 )),
                             ),
@@ -1348,7 +1367,11 @@ impl Render for Sidebar {
                         .py_1()
                         .pl(px(16.))
                         .gap_1()
-                        .when(kb_active, |el| el.bg(colors.ghost_element_hover).border_l_2().border_color(kb_accent))
+                        .when(kb_active, |el| {
+                            el.bg(colors.ghost_element_hover)
+                                .border_l_2()
+                                .border_color(kb_accent)
+                        })
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
                         .child(
@@ -1396,7 +1419,9 @@ impl Render for Sidebar {
                                     .tooltip("Pull from remote")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::RemotePull(pull_remote.to_string()));
+                                            cx.emit(SidebarEvent::RemotePull(
+                                                pull_remote.to_string(),
+                                            ));
                                         },
                                     )),
                                 )
@@ -1410,7 +1435,9 @@ impl Render for Sidebar {
                                     .tooltip("Push to remote")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::RemotePush(push_remote.to_string()));
+                                            cx.emit(SidebarEvent::RemotePush(
+                                                push_remote.to_string(),
+                                            ));
                                         },
                                     )),
                                 )
@@ -1518,7 +1545,11 @@ impl Render for Sidebar {
                         .pl(px(16.))
                         .gap(px(4.))
                         .items_center()
-                        .when(kb_active, |el| el.bg(colors.ghost_element_hover).border_l_2().border_color(kb_accent))
+                        .when(kb_active, |el| {
+                            el.bg(colors.ghost_element_hover)
+                                .border_l_2()
+                                .border_color(kb_accent)
+                        })
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
@@ -1644,7 +1675,11 @@ impl Render for Sidebar {
                         .gap_1()
                         .items_center()
                         .overflow_hidden()
-                        .when(kb_active, |el| el.bg(colors.ghost_element_hover).border_l_2().border_color(kb_accent))
+                        .when(kb_active, |el| {
+                            el.bg(colors.ghost_element_hover)
+                                .border_l_2()
+                                .border_color(kb_accent)
+                        })
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
@@ -1671,9 +1706,7 @@ impl Render for Sidebar {
                             .tooltip("Delete tag")
                             .on_click(cx.listener(
                                 move |_this, _: &ClickEvent, _, cx| {
-                                    cx.emit(SidebarEvent::TagDelete(
-                                        tag_delete.to_string(),
-                                    ));
+                                    cx.emit(SidebarEvent::TagDelete(tag_delete.to_string()));
                                 },
                             )),
                         ),
@@ -1777,7 +1810,11 @@ impl Render for Sidebar {
                         .gap_1()
                         .items_center()
                         .overflow_hidden()
-                        .when(kb_active, |el| el.bg(colors.ghost_element_hover).border_l_2().border_color(kb_accent))
+                        .when(kb_active, |el| {
+                            el.bg(colors.ghost_element_hover)
+                                .border_l_2()
+                                .border_color(kb_accent)
+                        })
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
@@ -1796,10 +1833,7 @@ impl Render for Sidebar {
                                 .gap(px(2.))
                                 .child(
                                     IconButton::new(
-                                        ElementId::NamedInteger(
-                                            "apply-stash".into(),
-                                            i as u64,
-                                        ),
+                                        ElementId::NamedInteger("apply-stash".into(), i as u64),
                                         IconName::Check,
                                     )
                                     .size(ButtonSize::Compact)
@@ -1807,18 +1841,13 @@ impl Render for Sidebar {
                                     .tooltip("Apply stash")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::StashApply(
-                                                stash_index,
-                                            ));
+                                            cx.emit(SidebarEvent::StashApply(stash_index));
                                         },
                                     )),
                                 )
                                 .child(
                                     IconButton::new(
-                                        ElementId::NamedInteger(
-                                            "drop-stash".into(),
-                                            i as u64,
-                                        ),
+                                        ElementId::NamedInteger("drop-stash".into(), i as u64),
                                         IconName::Trash,
                                     )
                                     .size(ButtonSize::Compact)
@@ -1826,9 +1855,7 @@ impl Render for Sidebar {
                                     .tooltip("Drop stash")
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::StashDrop(
-                                                stash_index,
-                                            ));
+                                            cx.emit(SidebarEvent::StashDrop(stash_index));
                                         },
                                     )),
                                 ),
@@ -1838,13 +1865,7 @@ impl Render for Sidebar {
         }
 
         // Separator between refs and file changes
-        content = content.child(
-            div()
-                .w_full()
-                .h(px(1.))
-                .my(px(4.))
-                .bg(colors.border),
-        );
+        content = content.child(div().w_full().h(px(1.)).my(px(4.)).bg(colors.border));
 
         // -- Staged Changes --
         let staged_expanded = self.is_expanded(SidebarSection::StagedChanges);
@@ -1856,33 +1877,35 @@ impl Render for Sidebar {
         nav_idx += 1;
 
         let mut staged_header = div()
-                .id("section-staged")
-                .h_flex()
-                .w_full()
-                .h(px(item_h))
-                .px(px(8.))
-                .gap(px(4.))
-                .items_center()
-                .bg(colors.toolbar_background)
-                .border_b_1()
-                .border_color(colors.border_variant)
-                .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.toggle_section(SidebarSection::StagedChanges, cx);
-                }))
-                .child(
-                    Disclosure::new("staged-disclosure", "Staged", staged_expanded),
-                )
-                .child(
-                    rgitui_ui::Icon::new(IconName::Check)
-                        .size(rgitui_ui::IconSize::XSmall)
-                        .color(if has_staged {
-                            Color::Added
-                        } else {
-                            Color::Muted
-                        }),
-                );
+            .id("section-staged")
+            .h_flex()
+            .w_full()
+            .h(px(item_h))
+            .px(px(8.))
+            .gap(px(4.))
+            .items_center()
+            .bg(colors.toolbar_background)
+            .border_b_1()
+            .border_color(colors.border_variant)
+            .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.toggle_section(SidebarSection::StagedChanges, cx);
+            }))
+            .child(Disclosure::new(
+                "staged-disclosure",
+                "Staged",
+                staged_expanded,
+            ))
+            .child(
+                rgitui_ui::Icon::new(IconName::Check)
+                    .size(rgitui_ui::IconSize::XSmall)
+                    .color(if has_staged {
+                        Color::Added
+                    } else {
+                        Color::Muted
+                    }),
+            );
 
         if has_staged {
             let kind_order = [
@@ -1902,11 +1925,8 @@ impl Render for Sidebar {
                         let symbol = Self::file_change_symbol(*kind);
                         let color = Self::file_change_color(*kind);
                         let text: SharedString = format!("{}{}", symbol, count).into();
-                        breakdown = breakdown.child(
-                            Label::new(text)
-                                .size(LabelSize::XSmall)
-                                .color(color),
-                        );
+                        breakdown =
+                            breakdown.child(Label::new(text).size(LabelSize::XSmall).color(color));
                     }
                 }
             }
@@ -1914,45 +1934,45 @@ impl Render for Sidebar {
         }
 
         staged_header = staged_header
-                .child(div().flex_1())
-                .when(has_staged, |el| {
-                    el.child(
-                        div().id("unstage-all-btn").child(
-                            Button::new("unstage-all", "Unstage All")
-                                .icon(IconName::Minus)
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Subtle)
-                                .color(Color::Muted)
-                                .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                                    cx.emit(SidebarEvent::UnstageAll);
-                                })),
-                        ),
-                    )
-                })
-                .child(
-                    div()
-                        .h_flex()
-                        .h(px(16.))
-                        .min_w(px(20.))
-                        .px(px(6.))
-                        .rounded(px(8.))
-                        .bg(if staged_count > 0 {
-                            colors.ghost_element_selected
-                        } else {
-                            colors.ghost_element_hover
-                        })
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Label::new(SharedString::from(format!("{}", staged_count)))
-                                .size(LabelSize::XSmall)
-                                .color(if staged_count > 0 {
-                                    Color::Added
-                                } else {
-                                    Color::Muted
-                                }),
-                        ),
-                );
+            .child(div().flex_1())
+            .when(has_staged, |el| {
+                el.child(
+                    div().id("unstage-all-btn").child(
+                        Button::new("unstage-all", "Unstage All")
+                            .icon(IconName::Minus)
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Subtle)
+                            .color(Color::Muted)
+                            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                cx.emit(SidebarEvent::UnstageAll);
+                            })),
+                    ),
+                )
+            })
+            .child(
+                div()
+                    .h_flex()
+                    .h(px(16.))
+                    .min_w(px(20.))
+                    .px(px(6.))
+                    .rounded(px(8.))
+                    .bg(if staged_count > 0 {
+                        colors.ghost_element_selected
+                    } else {
+                        colors.ghost_element_hover
+                    })
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Label::new(SharedString::from(format!("{}", staged_count)))
+                            .size(LabelSize::XSmall)
+                            .color(if staged_count > 0 {
+                                Color::Added
+                            } else {
+                                Color::Muted
+                            }),
+                    ),
+            );
         content = content.child(staged_header);
 
         if staged_expanded {
@@ -1973,7 +1993,12 @@ impl Render for Sidebar {
             } else {
                 nav_idx += self.staged.len();
                 let tree = self.cached_staged_tree.clone();
-                let mut ctx = FileRowCtx { staged: true, indent: px(16.0), file_idx: 0, colors: &colors };
+                let mut ctx = FileRowCtx {
+                    staged: true,
+                    indent: px(16.0),
+                    file_idx: 0,
+                    colors: &colors,
+                };
                 let staged_body = div().id("staged-body").v_flex().w_full().flex_shrink_0();
                 content = content.child(self.render_file_tree(
                     staged_body,
@@ -1995,33 +2020,35 @@ impl Render for Sidebar {
         let kb_active = keyboard_index == Some(nav_idx);
 
         let mut unstaged_header = div()
-                .id("section-unstaged")
-                .h_flex()
-                .w_full()
-                .h(px(item_h))
-                .px(px(8.))
-                .gap(px(4.))
-                .items_center()
-                .bg(colors.toolbar_background)
-                .border_b_1()
-                .border_color(colors.border_variant)
-                .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.toggle_section(SidebarSection::UnstagedChanges, cx);
-                }))
-                .child(
-                    Disclosure::new("unstaged-disclosure", "Unstaged", unstaged_expanded),
-                )
-                .child(
-                    rgitui_ui::Icon::new(IconName::Edit)
-                        .size(rgitui_ui::IconSize::XSmall)
-                        .color(if has_unstaged {
-                            Color::Modified
-                        } else {
-                            Color::Muted
-                        }),
-                );
+            .id("section-unstaged")
+            .h_flex()
+            .w_full()
+            .h(px(item_h))
+            .px(px(8.))
+            .gap(px(4.))
+            .items_center()
+            .bg(colors.toolbar_background)
+            .border_b_1()
+            .border_color(colors.border_variant)
+            .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.toggle_section(SidebarSection::UnstagedChanges, cx);
+            }))
+            .child(Disclosure::new(
+                "unstaged-disclosure",
+                "Unstaged",
+                unstaged_expanded,
+            ))
+            .child(
+                rgitui_ui::Icon::new(IconName::Edit)
+                    .size(rgitui_ui::IconSize::XSmall)
+                    .color(if has_unstaged {
+                        Color::Modified
+                    } else {
+                        Color::Muted
+                    }),
+            );
 
         if has_unstaged {
             let kind_order = [
@@ -2041,11 +2068,8 @@ impl Render for Sidebar {
                         let symbol = Self::file_change_symbol(*kind);
                         let color = Self::file_change_color(*kind);
                         let text: SharedString = format!("{}{}", symbol, count).into();
-                        breakdown = breakdown.child(
-                            Label::new(text)
-                                .size(LabelSize::XSmall)
-                                .color(color),
-                        );
+                        breakdown =
+                            breakdown.child(Label::new(text).size(LabelSize::XSmall).color(color));
                     }
                 }
             }
@@ -2053,45 +2077,45 @@ impl Render for Sidebar {
         }
 
         unstaged_header = unstaged_header
-                .child(div().flex_1())
-                .when(has_unstaged, |el| {
-                    el.child(
-                        div().id("stage-all-btn").child(
-                            Button::new("stage-all", "Stage All")
-                                .icon(IconName::Plus)
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Subtle)
-                                .color(Color::Muted)
-                                .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                                    cx.emit(SidebarEvent::StageAll);
-                                })),
-                        ),
-                    )
-                })
-                .child(
-                    div()
-                        .h_flex()
-                        .h(px(16.))
-                        .min_w(px(20.))
-                        .px(px(6.))
-                        .rounded(px(8.))
-                        .bg(if unstaged_count > 0 {
-                            colors.ghost_element_selected
-                        } else {
-                            colors.ghost_element_hover
-                        })
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Label::new(SharedString::from(format!("{}", unstaged_count)))
-                                .size(LabelSize::XSmall)
-                                .color(if unstaged_count > 0 {
-                                    Color::Modified
-                                } else {
-                                    Color::Muted
-                                }),
-                        ),
-                );
+            .child(div().flex_1())
+            .when(has_unstaged, |el| {
+                el.child(
+                    div().id("stage-all-btn").child(
+                        Button::new("stage-all", "Stage All")
+                            .icon(IconName::Plus)
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Subtle)
+                            .color(Color::Muted)
+                            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                cx.emit(SidebarEvent::StageAll);
+                            })),
+                    ),
+                )
+            })
+            .child(
+                div()
+                    .h_flex()
+                    .h(px(16.))
+                    .min_w(px(20.))
+                    .px(px(6.))
+                    .rounded(px(8.))
+                    .bg(if unstaged_count > 0 {
+                        colors.ghost_element_selected
+                    } else {
+                        colors.ghost_element_hover
+                    })
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Label::new(SharedString::from(format!("{}", unstaged_count)))
+                            .size(LabelSize::XSmall)
+                            .color(if unstaged_count > 0 {
+                                Color::Modified
+                            } else {
+                                Color::Muted
+                            }),
+                    ),
+            );
         content = content.child(unstaged_header);
 
         if unstaged_expanded {
@@ -2111,7 +2135,12 @@ impl Render for Sidebar {
                 );
             } else {
                 let tree = self.cached_unstaged_tree.clone();
-                let mut ctx = FileRowCtx { staged: false, indent: px(16.0), file_idx: 0, colors: &colors };
+                let mut ctx = FileRowCtx {
+                    staged: false,
+                    indent: px(16.0),
+                    file_idx: 0,
+                    colors: &colors,
+                };
                 let unstaged_body = div().id("unstaged-body").v_flex().w_full().flex_shrink_0();
                 content = content.child(self.render_file_tree(
                     unstaged_body,

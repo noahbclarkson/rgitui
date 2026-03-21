@@ -210,18 +210,14 @@ impl IssuesPanel {
         let issue_for_event = issue;
 
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            let result =
-                fetch_github_comments(&http, &token, &owner, &repo, issue_number).await;
+            let result = fetch_github_comments(&http, &token, &owner, &repo, issue_number).await;
             cx.update(|cx| {
                 this.update(cx, |panel, cx| {
                     panel.comments_loading = false;
                     match result {
                         Ok(comments) => {
                             panel.selected_comments = comments.clone();
-                            cx.emit(IssuesPanelEvent::IssueSelected(
-                                issue_for_event,
-                                comments,
-                            ));
+                            cx.emit(IssuesPanelEvent::IssueSelected(issue_for_event, comments));
                         }
                         Err(e) => {
                             panel.error_message = Some(e);
@@ -671,26 +667,9 @@ impl IssuesPanel {
                     .gap(px(8.))
                     .items_center()
                     .rounded(px(6.))
-                    .child(
-                        div()
-                            .size(px(8.))
-                            .rounded_full()
-                            .bg(skeleton_bg),
-                    )
-                    .child(
-                        div()
-                            .w(px(40.))
-                            .h(px(12.))
-                            .rounded(px(4.))
-                            .bg(skeleton_bg),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .h(px(12.))
-                            .rounded(px(4.))
-                            .bg(skeleton_bg),
-                    )
+                    .child(div().size(px(8.)).rounded_full().bg(skeleton_bg))
+                    .child(div().w(px(40.)).h(px(12.)).rounded(px(4.)).bg(skeleton_bg))
+                    .child(div().flex_1().h(px(12.)).rounded(px(4.)).bg(skeleton_bg))
             }))
             .into_any_element()
     }
@@ -739,39 +718,34 @@ impl Render for IssuesPanel {
             let err_text: SharedString = err.clone().into();
             return panel
                 .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .v_flex()
-                                .items_center()
-                                .gap(px(12.))
-                                .px(px(32.))
-                                .py(px(24.))
-                                .child(
-                                    Icon::new(IconName::AlertTriangle)
-                                        .size(IconSize::Large)
-                                        .color(Color::Error),
-                                )
-                                .child(
-                                    Label::new(err_text)
-                                        .size(LabelSize::Small)
-                                        .color(Color::Error),
-                                )
-                                .child(
-                                    Button::new("retry-issues", "Retry")
-                                        .icon(IconName::Refresh)
-                                        .size(ButtonSize::Default)
-                                        .style(ButtonStyle::Filled)
-                                        .color(Color::Accent)
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            this.fetch_issues(cx);
-                                        })),
-                                ),
-                        ),
+                    div().flex_1().flex().items_center().justify_center().child(
+                        div()
+                            .v_flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .px(px(32.))
+                            .py(px(24.))
+                            .child(
+                                Icon::new(IconName::AlertTriangle)
+                                    .size(IconSize::Large)
+                                    .color(Color::Error),
+                            )
+                            .child(
+                                Label::new(err_text)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Error),
+                            )
+                            .child(
+                                Button::new("retry-issues", "Retry")
+                                    .icon(IconName::Refresh)
+                                    .size(ButtonSize::Default)
+                                    .style(ButtonStyle::Filled)
+                                    .color(Color::Accent)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.fetch_issues(cx);
+                                    })),
+                            ),
+                    ),
                 )
                 .into_any_element();
         }
@@ -813,8 +787,7 @@ impl Render for IssuesPanel {
                                 IssueState::Closed => (IconName::CheckCircle, Color::Accent),
                             };
 
-                            let number_text: SharedString =
-                                format!("#{}", issue.number).into();
+                            let number_text: SharedString = format!("#{}", issue.number).into();
                             let title: SharedString = issue.title.clone().into();
                             let author: SharedString = issue.author.clone().into();
                             let timestamp: SharedString = issue.created_at.clone().into();
@@ -822,10 +795,7 @@ impl Render for IssuesPanel {
                             let comments_count = issue.comments_count;
 
                             let mut row = div()
-                                .id(ElementId::NamedInteger(
-                                    "issue-row".into(),
-                                    ix as u64,
-                                ))
+                                .id(ElementId::NamedInteger("issue-row".into(), ix as u64))
                                 .h_flex()
                                 .w_full()
                                 .h(px(36.))
@@ -839,19 +809,15 @@ impl Render for IssuesPanel {
                                 .when(selected, |el| {
                                     el.bg(selected_bg).border_color(selected_border)
                                 })
-                                .when(!selected, |el| {
-                                    el.border_color(transparent_border)
-                                })
+                                .when(!selected, |el| el.border_color(transparent_border))
                                 .hover(move |s| s.bg(hover_bg))
                                 .cursor_pointer()
-                                .on_click(
-                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                        weak.update(cx, |this, cx| {
-                                            this.select_issue(ix, cx);
-                                        })
-                                        .ok();
-                                    },
-                                )
+                                .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    weak.update(cx, |this, cx| {
+                                        this.select_issue(ix, cx);
+                                    })
+                                    .ok();
+                                })
                                 .child(
                                     Icon::new(state_icon)
                                         .size(IconSize::XSmall)
@@ -870,20 +836,16 @@ impl Render for IssuesPanel {
                                         .gap(px(6.))
                                         .overflow_hidden()
                                         .child(
-                                            Label::new(title)
-                                                .size(LabelSize::XSmall)
-                                                .truncate(),
+                                            Label::new(title).size(LabelSize::XSmall).truncate(),
                                         ),
                                 );
 
                             if !labels.is_empty() {
-                                let mut labels_row =
-                                    div().h_flex().gap(px(3.)).flex_shrink_0();
+                                let mut labels_row = div().h_flex().gap(px(3.)).flex_shrink_0();
                                 for label in labels.iter().take(2) {
-                                    let label_name: SharedString =
-                                        label.name.clone().into();
-                                    labels_row = labels_row
-                                        .child(Badge::new(label_name).color(Color::Info));
+                                    let label_name: SharedString = label.name.clone().into();
+                                    labels_row =
+                                        labels_row.child(Badge::new(label_name).color(Color::Info));
                                 }
                                 if labels.len() > 2 {
                                     let more: SharedString =
@@ -917,8 +879,7 @@ impl Render for IssuesPanel {
                             );
 
                             if comments_count > 0 {
-                                let count_text: SharedString =
-                                    format!("{}", comments_count).into();
+                                let count_text: SharedString = format!("{}", comments_count).into();
                                 row = row.child(
                                     div()
                                         .h_flex()
@@ -995,10 +956,7 @@ async fn fetch_github_issues(
             continue;
         }
 
-        let number = item
-            .get("number")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
         let title = item
             .get("title")
             .and_then(|v| v.as_str())
@@ -1008,10 +966,7 @@ async fn fetch_github_issues(
             .get("body")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let state_str = item
-            .get("state")
-            .and_then(|v| v.as_str())
-            .unwrap_or("open");
+        let state_str = item.get("state").and_then(|v| v.as_str()).unwrap_or("open");
         let state = if state_str == "closed" {
             IssueState::Closed
         } else {
@@ -1028,10 +983,7 @@ async fn fetch_github_issues(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let comments_count = item
-            .get("comments")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let comments_count = item.get("comments").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
         let mut labels = Vec::new();
         if let Some(label_array) = item.get("labels").and_then(|v| v.as_array()) {

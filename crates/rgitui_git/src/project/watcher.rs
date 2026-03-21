@@ -37,41 +37,42 @@ impl GitProject {
 
         if let Ok(mut watcher) = watcher {
             if let Err(e) = watcher.watch(&repo_path, RecursiveMode::Recursive) {
-                log::warn!("Failed to watch repository directory for filesystem changes: {}", e);
+                log::warn!(
+                    "Failed to watch repository directory for filesystem changes: {}",
+                    e
+                );
             }
             self._watcher = Some(watcher);
 
             let watcher_repo_path = repo_path.clone();
-            cx.spawn(async move |weak, cx: &mut AsyncApp| {
-                loop {
-                    smol::Timer::after(Duration::from_millis(300)).await;
+            cx.spawn(async move |weak, cx: &mut AsyncApp| loop {
+                smol::Timer::after(Duration::from_millis(300)).await;
 
-                    if dirty.swap(false, Ordering::Relaxed) {
-                        smol::Timer::after(Duration::from_millis(200)).await;
-                        dirty.store(false, Ordering::Relaxed);
+                if dirty.swap(false, Ordering::Relaxed) {
+                    smol::Timer::after(Duration::from_millis(200)).await;
+                    dirty.store(false, Ordering::Relaxed);
 
-                        let path = watcher_repo_path.clone();
-                        let data = cx
-                            .background_executor()
-                            .spawn(async move { gather_refresh_data(&path) })
-                            .await;
+                    let path = watcher_repo_path.clone();
+                    let data = cx
+                        .background_executor()
+                        .spawn(async move { gather_refresh_data(&path) })
+                        .await;
 
-                        let data = match data {
-                            Ok(d) => d,
-                            Err(_) => continue,
-                        };
+                    let data = match data {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
 
-                        let result = cx.update(|cx| {
-                            weak.update(cx, |this, cx| {
-                                this.apply_refresh_data(data);
-                                cx.emit(GitProjectEvent::StatusChanged);
-                                cx.notify();
-                            })
-                        });
+                    let result = cx.update(|cx| {
+                        weak.update(cx, |this, cx| {
+                            this.apply_refresh_data(data);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.notify();
+                        })
+                    });
 
-                        if result.is_err() {
-                            break;
-                        }
+                    if result.is_err() {
+                        break;
                     }
                 }
             })

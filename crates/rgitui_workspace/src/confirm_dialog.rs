@@ -175,10 +175,7 @@ impl Render for ConfirmDialog {
         let is_destructive = self.is_destructive();
 
         let icon_bg = color.color(cx);
-        let icon_bg_subtle = gpui::Hsla {
-            a: 0.12,
-            ..icon_bg
-        };
+        let icon_bg_subtle = gpui::Hsla { a: 0.12, ..icon_bg };
 
         div()
             .id("confirm-dialog-backdrop")
@@ -225,11 +222,7 @@ impl Render for ConfirmDialog {
                                     .size(px(36.))
                                     .rounded(px(10.))
                                     .bg(icon_bg_subtle)
-                                    .child(
-                                        Icon::new(icon)
-                                            .size(IconSize::Medium)
-                                            .color(color),
-                                    ),
+                                    .child(Icon::new(icon).size(IconSize::Medium).color(color)),
                             )
                             .child(
                                 Label::new(title)
@@ -238,13 +231,11 @@ impl Render for ConfirmDialog {
                             ),
                     )
                     .child(
-                        div()
-                            .pl(px(48.))
-                            .child(
-                                Label::new(message)
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted),
-                            ),
+                        div().pl(px(48.)).child(
+                            Label::new(message)
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
                     )
                     .child(
                         div()
@@ -279,9 +270,7 @@ impl Render for ConfirmDialog {
                                             .icon(icon)
                                             .size(ButtonSize::Default)
                                             .style(if is_destructive {
-                                                ButtonStyle::Tinted(
-                                                    rgitui_ui::TintColor::Error,
-                                                )
+                                                ButtonStyle::Tinted(rgitui_ui::TintColor::Error)
                                             } else {
                                                 ButtonStyle::Filled
                                             })

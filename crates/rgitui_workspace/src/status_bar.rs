@@ -198,9 +198,7 @@ impl StatusBar {
             );
         }
 
-        if has_branch
-            && (self.operation_message.is_some() || self.stash_count > 0)
-        {
+        if has_branch && (self.operation_message.is_some() || self.stash_count > 0) {
             left = left.child(div().w(px(1.)).h(px(14.)).bg(colors.border_variant));
         }
 
@@ -216,9 +214,7 @@ impl StatusBar {
             let mut msg_row = div().h_flex().gap(px(4.)).items_center();
 
             if let Some(icon) = msg_icon {
-                msg_row = msg_row.child(
-                    Icon::new(icon).size(IconSize::XSmall).color(msg_color),
-                );
+                msg_row = msg_row.child(Icon::new(icon).size(IconSize::XSmall).color(msg_color));
             }
 
             msg_row = msg_row.child(

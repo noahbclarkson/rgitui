@@ -64,13 +64,7 @@ impl Workspace {
 
         // Set up subscriptions for child component events
         super::events::subscribe_project(cx, &project, &graph, &sidebar, &commit_panel, &toolbar);
-        super::events::subscribe_sidebar(
-            cx,
-            &project,
-            &sidebar,
-            &diff_viewer,
-            &detail_panel,
-        );
+        super::events::subscribe_sidebar(cx, &project, &sidebar, &diff_viewer, &detail_panel);
         super::events::subscribe_graph(cx, &project, &graph, &diff_viewer, &detail_panel);
         super::events::subscribe_detail_panel(cx, &diff_viewer, &detail_panel);
         super::events::subscribe_diff_viewer(cx, &project, &diff_viewer);
@@ -135,8 +129,7 @@ impl Workspace {
                 .and_then(|r| r.url.clone());
 
             if let Some(url) = remote_url {
-                if let Some((owner, repo_name)) =
-                    crate::issues_panel::parse_github_owner_repo(&url)
+                if let Some((owner, repo_name)) = crate::issues_panel::parse_github_owner_repo(&url)
                 {
                     let token = rgitui_settings::current_auth_runtime()
                         .git

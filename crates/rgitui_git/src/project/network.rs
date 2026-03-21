@@ -4,11 +4,13 @@ use gpui::{AsyncApp, Context, Task, WeakEntity};
 
 use crate::types::*;
 
-use super::auth::{make_fetch_options, make_push_options, remote_uses_ssh, run_git_network_command};
+use super::auth::{
+    make_fetch_options, make_push_options, remote_uses_ssh, run_git_network_command,
+};
 use super::refresh::gather_refresh_data;
 use super::{
-    ensure_clean_worktree, head_branch_name, pull_target, push_target,
-    GitProject, GitProjectEvent, RefreshData,
+    ensure_clean_worktree, head_branch_name, pull_target, push_target, GitProject, GitProjectEvent,
+    RefreshData,
 };
 
 impl GitProject {
@@ -107,7 +109,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Fetch,
                                 format!("Fetched from '{}'", remote_name),
-                                (details.or(Some("Remote refs refreshed.".into())), Some(remote_name.clone()), this.head_branch.clone()),
+                                (
+                                    details.or(Some("Remote refs refreshed.".into())),
+                                    Some(remote_name.clone()),
+                                    this.head_branch.clone(),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);

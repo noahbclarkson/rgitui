@@ -9,7 +9,10 @@ use super::RefreshData;
 
 /// Compute line-level diff stats (additions/deletions) for a single file.
 /// For staged files, diffs HEAD vs index. For unstaged files, diffs index vs workdir.
-pub(crate) fn batch_diff_stats(repo: &Repository, staged: bool) -> std::collections::HashMap<PathBuf, (usize, usize)> {
+pub(crate) fn batch_diff_stats(
+    repo: &Repository,
+    staged: bool,
+) -> std::collections::HashMap<PathBuf, (usize, usize)> {
     let mut opts = DiffOptions::new();
     opts.include_untracked(true);
     opts.show_untracked_content(true);
@@ -166,9 +169,9 @@ pub(crate) fn parse_multi_file_diff(diff: &git2::Diff) -> Result<CommitDiff> {
         if let Some(hunk) = hunk {
             let header = String::from_utf8_lossy(hunk.header()).to_string();
             let expected_start = hunk.new_start();
-            let needs_new = current_hunks.last().is_none_or(|h| {
-                h.new_start != expected_start || h.header != header
-            });
+            let needs_new = current_hunks
+                .last()
+                .is_none_or(|h| h.new_start != expected_start || h.header != header);
             if needs_new {
                 current_hunks.push(DiffHunk {
                     old_start: hunk.old_start(),
@@ -249,9 +252,10 @@ pub(crate) fn parse_file_diff(path: &Path, diff: &git2::Diff) -> Result<FileDiff
         if let Some(hunk) = hunk {
             let header = String::from_utf8_lossy(hunk.header()).to_string();
             let expected_start = hunk.new_start();
-            let needs_new = file_diff.hunks.last().is_none_or(|h| {
-                h.new_start != expected_start || h.header != header
-            });
+            let needs_new = file_diff
+                .hunks
+                .last()
+                .is_none_or(|h| h.new_start != expected_start || h.header != header);
             if needs_new {
                 file_diff.hunks.push(DiffHunk {
                     old_start: hunk.old_start(),
@@ -324,8 +328,14 @@ pub fn compute_commit_diff(repo_path: &Path, oid: git2::Oid) -> Result<CommitDif
 pub fn compute_stash_diff(repo_path: &Path, index: usize) -> Result<CommitDiff> {
     let mut repo = Repository::open(repo_path)?;
     let mut stash_oids: Vec<git2::Oid> = Vec::new();
-    repo.stash_foreach(|_idx, _msg, oid| { stash_oids.push(*oid); true })?;
-    let stash_oid = stash_oids.get(index).copied().ok_or_else(|| anyhow::anyhow!("Stash index {} out of range", index))?;
+    repo.stash_foreach(|_idx, _msg, oid| {
+        stash_oids.push(*oid);
+        true
+    })?;
+    let stash_oid = stash_oids
+        .get(index)
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("Stash index {} out of range", index))?;
     compute_commit_diff(repo_path, stash_oid)
 }
 

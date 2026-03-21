@@ -64,18 +64,10 @@ impl RenderOnce for Spinner {
                 },
             );
 
-        let mut el = div()
-            .h_flex()
-            .gap(gap)
-            .items_center()
-            .child(spinner_icon);
+        let mut el = div().h_flex().gap(gap).items_center().child(spinner_icon);
 
         if let Some(label_text) = self.label {
-            el = el.child(
-                Label::new(label_text)
-                    .size(label_size)
-                    .color(Color::Muted),
-            );
+            el = el.child(Label::new(label_text).size(label_size).color(Color::Muted));
         }
 
         el

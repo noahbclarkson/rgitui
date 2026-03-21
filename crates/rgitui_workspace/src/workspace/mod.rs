@@ -13,9 +13,7 @@ pub(crate) use undo::{UndoAction, UndoEntry};
 use std::time::Instant;
 
 use gpui::prelude::*;
-use gpui::{
-    div, Bounds, Context, Entity, EventEmitter, Render, SharedString, Window,
-};
+use gpui::{div, Bounds, Context, Entity, EventEmitter, Render, SharedString, Window};
 use rgitui_ai::AiGenerator;
 use rgitui_git::GitProject;
 
@@ -165,12 +163,12 @@ impl Workspace {
         events::subscribe_shortcuts_help(cx, &shortcuts_help);
 
         // Restore layout dimensions from saved settings
-        let layout_settings =
-            if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>() {
-                state.settings().layout.clone()
-            } else {
-                rgitui_settings::LayoutSettings::default()
-            };
+        let layout_settings = if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>()
+        {
+            state.settings().layout.clone()
+        } else {
+            rgitui_settings::LayoutSettings::default()
+        };
         let sidebar_width = layout_settings.sidebar_width;
         let detail_panel_width = layout_settings.detail_panel_width;
         let diff_viewer_height = layout_settings.diff_viewer_height;

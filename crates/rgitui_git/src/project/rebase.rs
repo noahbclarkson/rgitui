@@ -43,14 +43,14 @@ impl GitProject {
                     let base_oid = {
                         let repo = Repository::open(&repo_path)?;
                         ensure_clean_worktree(&repo, "Interactive rebase")?;
-                        let last_entry = entries.last()
+                        let last_entry = entries
+                            .last()
                             .ok_or_else(|| anyhow::anyhow!("No rebase entries"))?;
                         let last_commit =
                             repo.find_commit(git2::Oid::from_str(&last_entry.oid)?)?;
-                        let base_commit =
-                            last_commit.parent(0).with_context(|| {
-                                format!("Commit {} has no parent", last_entry.oid)
-                            })?;
+                        let base_commit = last_commit
+                            .parent(0)
+                            .with_context(|| format!("Commit {} has no parent", last_entry.oid))?;
                         base_commit.id().to_string()
                     };
 
@@ -64,41 +64,22 @@ impl GitProject {
 
                         match &entry.action {
                             RebaseEntryAction::Pick => {
-                                todo_lines.push(format!(
-                                    "pick {} {}",
-                                    short_oid, entry.message
-                                ));
+                                todo_lines.push(format!("pick {} {}", short_oid, entry.message));
                             }
                             RebaseEntryAction::Reword(new_msg) => {
-                                todo_lines.push(format!(
-                                    "pick {} {}",
-                                    short_oid, entry.message
-                                ));
-                                let escaped = new_msg
-                                    .replace('\\', "\\\\")
-                                    .replace('"', "\\\"");
-                                todo_lines.push(format!(
-                                    "exec git commit --amend -m \"{}\"",
-                                    escaped
-                                ));
+                                todo_lines.push(format!("pick {} {}", short_oid, entry.message));
+                                let escaped = new_msg.replace('\\', "\\\\").replace('"', "\\\"");
+                                todo_lines
+                                    .push(format!("exec git commit --amend -m \"{}\"", escaped));
                             }
                             RebaseEntryAction::Squash => {
-                                todo_lines.push(format!(
-                                    "squash {} {}",
-                                    short_oid, entry.message
-                                ));
+                                todo_lines.push(format!("squash {} {}", short_oid, entry.message));
                             }
                             RebaseEntryAction::Fixup => {
-                                todo_lines.push(format!(
-                                    "fixup {} {}",
-                                    short_oid, entry.message
-                                ));
+                                todo_lines.push(format!("fixup {} {}", short_oid, entry.message));
                             }
                             RebaseEntryAction::Drop => {
-                                todo_lines.push(format!(
-                                    "drop {} {}",
-                                    short_oid, entry.message
-                                ));
+                                todo_lines.push(format!("drop {} {}", short_oid, entry.message));
                             }
                         }
                     }
@@ -106,10 +87,8 @@ impl GitProject {
                     let todo_content = todo_lines.join("\n") + "\n";
 
                     let temp_dir = std::env::temp_dir();
-                    let todo_file = temp_dir.join(format!(
-                        "rgitui_rebase_todo_{}",
-                        std::process::id()
-                    ));
+                    let todo_file =
+                        temp_dir.join(format!("rgitui_rebase_todo_{}", std::process::id()));
                     std::fs::write(&todo_file, &todo_content)?;
 
                     let sequence_editor = if cfg!(windows) {
@@ -118,10 +97,7 @@ impl GitProject {
                             todo_file.to_string_lossy().replace('/', "\\")
                         )
                     } else {
-                        format!(
-                            "cp \"{}\" ",
-                            todo_file.to_string_lossy()
-                        )
+                        format!("cp \"{}\" ", todo_file.to_string_lossy())
                     };
 
                     let mut cmd = Command::new("git");
@@ -148,21 +124,12 @@ impl GitProject {
                     if output.status.success() {
                         let data = gather_refresh_data(&repo_path)?;
                         Ok((
-                            format!(
-                                "Rebased {} commits successfully",
-                                entry_count
-                            ),
+                            format!("Rebased {} commits successfully", entry_count),
                             data,
                         ))
-                    } else if stderr.contains("CONFLICT")
-                        || stderr.contains("could not apply")
-                    {
+                    } else if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
                         let data = gather_refresh_data(&repo_path)?;
-                        let detail: String = stderr
-                            .lines()
-                            .take(3)
-                            .collect::<Vec<_>>()
-                            .join(" ");
+                        let detail: String = stderr.lines().take(3).collect::<Vec<_>>().join(" ");
                         Ok((
                             format!(
                                 "CONFLICT:Rebase paused due to conflicts. \
@@ -188,9 +155,7 @@ impl GitProject {
                             let is_conflict = msg.starts_with("CONFLICT:");
                             this.apply_refresh_data(data);
                             if is_conflict {
-                                let user_msg = msg
-                                    .trim_start_matches("CONFLICT:")
-                                    .to_string();
+                                let user_msg = msg.trim_start_matches("CONFLICT:").to_string();
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Rebase,
@@ -204,10 +169,11 @@ impl GitProject {
                                     operation_id,
                                     GitOperationKind::Rebase,
                                     msg,
-                                    (Some(
-                                        "Repository state refreshed after rebase."
-                                            .into(),
-                                    ), None, branch_name.clone()),
+                                    (
+                                        Some("Repository state refreshed after rebase.".into()),
+                                        None,
+                                        branch_name.clone(),
+                                    ),
                                     cx,
                                 );
                             }

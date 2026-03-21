@@ -1,7 +1,9 @@
 use std::ops::Range;
 
 use gpui::prelude::*;
-use gpui::{div, px, rems, FontStyle, FontWeight, HighlightStyle, SharedString, StyledText, Window};
+use gpui::{
+    div, px, rems, FontStyle, FontWeight, HighlightStyle, SharedString, StyledText, Window,
+};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use rgitui_theme::{ActiveTheme, StyledExt};
 use rgitui_ui::{Label, LabelSize};
@@ -255,11 +257,7 @@ fn push_block(state: &mut ParseState, block: MarkdownBlock) {
     state.blocks.push(block);
 }
 
-fn render_inline_spans(
-    spans: &[InlineSpan],
-    window: &Window,
-    cx: &gpui::App,
-) -> impl IntoElement {
+fn render_inline_spans(spans: &[InlineSpan], window: &Window, cx: &gpui::App) -> impl IntoElement {
     let colors = cx.colors();
     let mut full_text = String::new();
     let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
@@ -367,12 +365,10 @@ fn render_block(block: &MarkdownBlock, window: &Window, cx: &gpui::App) -> gpui:
             };
             div().pb(px(1.)).child(label).into_any_element()
         }
-        MarkdownBlock::Paragraph { spans } => {
-            div()
-                .text_xs()
-                .child(render_inline_spans(spans, window, cx))
-                .into_any_element()
-        }
+        MarkdownBlock::Paragraph { spans } => div()
+            .text_xs()
+            .child(render_inline_spans(spans, window, cx))
+            .into_any_element(),
         MarkdownBlock::CodeBlock { code } => {
             let code_text: SharedString = code.clone().into();
             div()
@@ -457,11 +453,7 @@ fn spans_to_plain_text(spans: &[InlineSpan]) -> SharedString {
     text.into()
 }
 
-pub fn render_markdown(
-    text: &str,
-    window: &Window,
-    cx: &gpui::App,
-) -> gpui::AnyElement {
+pub fn render_markdown(text: &str, window: &Window, cx: &gpui::App) -> gpui::AnyElement {
     if text.is_empty() {
         return div().into_any_element();
     }

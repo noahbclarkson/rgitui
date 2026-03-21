@@ -55,7 +55,11 @@ impl RenderOnce for Disclosure {
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
             .active(move |s| s.bg(active_bg))
-            .child(Icon::new(chevron).size(IconSize::XSmall).color(Color::Muted))
+            .child(
+                Icon::new(chevron)
+                    .size(IconSize::XSmall)
+                    .color(Color::Muted),
+            )
             .child(
                 Label::new(self.label)
                     .size(LabelSize::XSmall)

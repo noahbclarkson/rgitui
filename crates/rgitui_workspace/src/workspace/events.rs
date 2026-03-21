@@ -4,18 +4,18 @@ use gpui::{Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator};
 use rgitui_diff::{DiffViewer, DiffViewerEvent};
 use rgitui_git::{
-    GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
-    RebaseEntryAction, RebasePlanEntry,
+    GitOperationKind, GitOperationState, GitProject, GitProjectEvent, RebaseEntryAction,
+    RebasePlanEntry,
 };
 use rgitui_graph::{GraphView, GraphViewEvent};
 
 use crate::{
     BlameView, BlameViewEvent, BranchDialog, BranchDialogEvent, CommandPalette,
     CommandPaletteEvent, CommitPanel, CommitPanelEvent, ConfirmAction, ConfirmDialog,
-    ConfirmDialogEvent, DetailPanel, DetailPanelEvent, InteractiveRebase,
-    InteractiveRebaseEvent, RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent,
-    SettingsModal, SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent,
-    TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
+    ConfirmDialogEvent, DetailPanel, DetailPanelEvent, InteractiveRebase, InteractiveRebaseEvent,
+    RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal,
+    SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, TagDialog,
+    TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -167,10 +167,7 @@ pub(super) fn subscribe_branch_dialog(
     .detach();
 }
 
-pub(super) fn subscribe_tag_dialog(
-    cx: &mut Context<Workspace>,
-    tag_dialog: &Entity<TagDialog>,
-) {
+pub(super) fn subscribe_tag_dialog(cx: &mut Context<Workspace>, tag_dialog: &Entity<TagDialog>) {
     cx.subscribe(
         tag_dialog,
         |this, _td, event: &TagDialogEvent, cx| match event {
@@ -224,162 +221,147 @@ pub(super) fn subscribe_confirm_dialog(
 ) {
     cx.subscribe(
         confirm_dialog,
-        |this, _cd, event: &ConfirmDialogEvent, cx| {
-            match event {
-                ConfirmDialogEvent::Confirmed(action) => {
-                    if let Some(tab) = this.tabs.get(this.active_tab) {
-                        let project = tab.project.clone();
-                        match action {
-                            ConfirmAction::DiscardFile(path) => {
-                                let path_buf = std::path::PathBuf::from(path);
-                                project.update(cx, |proj, cx| {
-                                    proj.discard_changes(&[path_buf], cx).detach();
+        |this, _cd, event: &ConfirmDialogEvent, cx| match event {
+            ConfirmDialogEvent::Confirmed(action) => {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    let project = tab.project.clone();
+                    match action {
+                        ConfirmAction::DiscardFile(path) => {
+                            let path_buf = std::path::PathBuf::from(path);
+                            project.update(cx, |proj, cx| {
+                                proj.discard_changes(&[path_buf], cx).detach();
+                            });
+                        }
+                        ConfirmAction::ForcePush => {
+                            project.update(cx, |proj, cx| {
+                                proj.push_default(true, cx).detach();
+                            });
+                        }
+                        ConfirmAction::BranchDelete(name) => {
+                            let tip_oid = project
+                                .read(cx)
+                                .branches()
+                                .iter()
+                                .find(|b| b.name == *name)
+                                .and_then(|b| b.tip_oid)
+                                .map(|oid| oid.to_string());
+                            let name = name.clone();
+                            project.update(cx, |proj, cx| {
+                                proj.delete_branch(&name, cx).detach();
+                            });
+                            if let Some(oid_hex) = tip_oid {
+                                this.last_undo = Some(UndoEntry {
+                                    label: format!("Deleted branch '{}'", name),
+                                    action: UndoAction::RecreateBranch { name, oid_hex },
+                                    created_at: Instant::now(),
                                 });
+                                this.schedule_undo_expiry(cx);
+                                this.show_toast(
+                                    "Branch deleted. Use command palette 'Undo' to restore.",
+                                    ToastKind::Info,
+                                    cx,
+                                );
                             }
-                            ConfirmAction::ForcePush => {
+                        }
+                        ConfirmAction::StashDrop(index) => {
+                            let index = *index;
+                            project.update(cx, |proj, cx| {
+                                proj.stash_drop(index, cx).detach();
+                            });
+                        }
+                        ConfirmAction::DiscardAll => {
+                            let has_changes = project.read(cx).has_changes();
+                            if has_changes {
                                 project.update(cx, |proj, cx| {
-                                    proj.push_default(true, cx).detach();
+                                    proj.stash_save(Some("rgitui-undo-discard"), cx).detach();
                                 });
+                                this.last_undo = Some(UndoEntry {
+                                    label: "Discarded all changes".into(),
+                                    action: UndoAction::PopStash(0),
+                                    created_at: Instant::now(),
+                                });
+                                this.schedule_undo_expiry(cx);
+                                this.show_toast(
+                                    "Changes discarded. Use command palette 'Undo' to restore.",
+                                    ToastKind::Info,
+                                    cx,
+                                );
                             }
-                            ConfirmAction::BranchDelete(name) => {
-                                let tip_oid = project
-                                    .read(cx)
-                                    .branches()
-                                    .iter()
-                                    .find(|b| b.name == *name)
-                                    .and_then(|b| b.tip_oid)
-                                    .map(|oid| oid.to_string());
-                                let name = name.clone();
-                                project.update(cx, |proj, cx| {
-                                    proj.delete_branch(&name, cx).detach();
+                        }
+                        ConfirmAction::TagDelete(name) => {
+                            let tag_oid = project
+                                .read(cx)
+                                .tags()
+                                .iter()
+                                .find(|t| t.name == *name)
+                                .map(|t| t.oid.to_string());
+                            let name = name.clone();
+                            project.update(cx, |proj, cx| {
+                                proj.delete_tag(&name, cx).detach();
+                            });
+                            if let Some(oid_hex) = tag_oid {
+                                this.last_undo = Some(UndoEntry {
+                                    label: format!("Deleted tag '{}'", name),
+                                    action: UndoAction::RecreateTag { name, oid_hex },
+                                    created_at: Instant::now(),
                                 });
-                                if let Some(oid_hex) = tip_oid {
-                                    this.last_undo = Some(UndoEntry {
-                                        label: format!("Deleted branch '{}'", name),
-                                        action: UndoAction::RecreateBranch {
-                                            name,
-                                            oid_hex,
-                                        },
-                                        created_at: Instant::now(),
-                                    });
-                                    this.schedule_undo_expiry(cx);
-                                    this.show_toast(
-                                        "Branch deleted. Use command palette 'Undo' to restore.",
-                                        ToastKind::Info,
-                                        cx,
-                                    );
+                                this.schedule_undo_expiry(cx);
+                                this.show_toast(
+                                    "Tag deleted. Use command palette 'Undo' to restore.",
+                                    ToastKind::Info,
+                                    cx,
+                                );
+                            }
+                        }
+                        ConfirmAction::ResetHard(target) => {
+                            let previous_head_oid = project
+                                .read(cx)
+                                .recent_commits()
+                                .first()
+                                .map(|c| c.oid.to_string());
+                            let target = target.clone();
+                            project.update(cx, |proj, cx| {
+                                if let Ok(oid) = git2::Oid::from_str(&target) {
+                                    proj.reset_to_commit(oid, cx).detach();
+                                } else {
+                                    proj.reset_hard(cx).detach();
                                 }
-                            }
-                            ConfirmAction::StashDrop(index) => {
-                                let index = *index;
-                                project.update(cx, |proj, cx| {
-                                    proj.stash_drop(index, cx).detach();
+                            });
+                            if let Some(oid_hex) = previous_head_oid {
+                                this.last_undo = Some(UndoEntry {
+                                    label: format!("Reset to {}", &target[..7.min(target.len())]),
+                                    action: UndoAction::ResetTo(oid_hex),
+                                    created_at: Instant::now(),
                                 });
+                                this.schedule_undo_expiry(cx);
+                                this.show_toast(
+                                    "Reset complete. Use command palette 'Undo' to revert.",
+                                    ToastKind::Info,
+                                    cx,
+                                );
                             }
-                            ConfirmAction::DiscardAll => {
-                                let has_changes = project.read(cx).has_changes();
-                                if has_changes {
-                                    project.update(cx, |proj, cx| {
-                                        proj.stash_save(
-                                            Some("rgitui-undo-discard"),
-                                            cx,
-                                        )
-                                        .detach();
-                                    });
-                                    this.last_undo = Some(UndoEntry {
-                                        label: "Discarded all changes".into(),
-                                        action: UndoAction::PopStash(0),
-                                        created_at: Instant::now(),
-                                    });
-                                    this.schedule_undo_expiry(cx);
-                                    this.show_toast(
-                                        "Changes discarded. Use command palette 'Undo' to restore.",
-                                        ToastKind::Info,
-                                        cx,
-                                    );
-                                }
-                            }
-                            ConfirmAction::TagDelete(name) => {
-                                let tag_oid = project
-                                    .read(cx)
-                                    .tags()
-                                    .iter()
-                                    .find(|t| t.name == *name)
-                                    .map(|t| t.oid.to_string());
-                                let name = name.clone();
-                                project.update(cx, |proj, cx| {
-                                    proj.delete_tag(&name, cx).detach();
-                                });
-                                if let Some(oid_hex) = tag_oid {
-                                    this.last_undo = Some(UndoEntry {
-                                        label: format!("Deleted tag '{}'", name),
-                                        action: UndoAction::RecreateTag {
-                                            name,
-                                            oid_hex,
-                                        },
-                                        created_at: Instant::now(),
-                                    });
-                                    this.schedule_undo_expiry(cx);
-                                    this.show_toast(
-                                        "Tag deleted. Use command palette 'Undo' to restore.",
-                                        ToastKind::Info,
-                                        cx,
-                                    );
-                                }
-                            }
-                            ConfirmAction::ResetHard(target) => {
-                                let previous_head_oid = project
-                                    .read(cx)
-                                    .recent_commits()
-                                    .first()
-                                    .map(|c| c.oid.to_string());
-                                let target = target.clone();
-                                project.update(cx, |proj, cx| {
-                                    if let Ok(oid) = git2::Oid::from_str(&target) {
-                                        proj.reset_to_commit(oid, cx).detach();
-                                    } else {
-                                        proj.reset_hard(cx).detach();
-                                    }
-                                });
-                                if let Some(oid_hex) = previous_head_oid {
-                                    this.last_undo = Some(UndoEntry {
-                                        label: format!("Reset to {}", &target[..7.min(target.len())]),
-                                        action: UndoAction::ResetTo(oid_hex),
-                                        created_at: Instant::now(),
-                                    });
-                                    this.schedule_undo_expiry(cx);
-                                    this.show_toast(
-                                        "Reset complete. Use command palette 'Undo' to revert.",
-                                        ToastKind::Info,
-                                        cx,
-                                    );
-                                }
-                            }
-                            ConfirmAction::RemoveRemote(name) => {
-                                let name = name.clone();
-                                project.update(cx, |proj, cx| {
-                                    proj.remove_remote(&name, cx).detach();
-                                });
-                            }
-                            ConfirmAction::AbortMerge => {
-                                project.update(cx, |proj, cx| {
-                                    proj.abort_operation(cx).detach();
-                                });
-                            }
+                        }
+                        ConfirmAction::RemoveRemote(name) => {
+                            let name = name.clone();
+                            project.update(cx, |proj, cx| {
+                                proj.remove_remote(&name, cx).detach();
+                            });
+                        }
+                        ConfirmAction::AbortMerge => {
+                            project.update(cx, |proj, cx| {
+                                proj.abort_operation(cx).detach();
+                            });
                         }
                     }
                 }
-                ConfirmDialogEvent::Cancelled => {}
             }
+            ConfirmDialogEvent::Cancelled => {}
         },
     )
     .detach();
 }
 
-pub(super) fn subscribe_repo_opener(
-    cx: &mut Context<Workspace>,
-    repo_opener: &Entity<RepoOpener>,
-) {
+pub(super) fn subscribe_repo_opener(cx: &mut Context<Workspace>, repo_opener: &Entity<RepoOpener>) {
     cx.subscribe(
         repo_opener,
         |this, _ro, event: &RepoOpenerEvent, cx| match event {
@@ -424,187 +406,170 @@ pub(super) fn subscribe_project(
     let toolbar = toolbar.clone();
 
     cx.subscribe(project, {
-        move |this, project, event: &GitProjectEvent, cx| {
-            match event {
-                GitProjectEvent::StatusChanged
-                | GitProjectEvent::HeadChanged
-                | GitProjectEvent::RefsChanged => {
-                    let proj = project.read(cx);
-                    let commits = proj.recent_commits_arc();
-                    let has_more = proj.has_more_commits();
-                    let wt_status = proj.status_arc();
-                    let branches = proj.branches().to_vec();
-                    let tags = proj.tags().to_vec();
-                    let remotes = proj.remotes().to_vec();
-                    let stashes = proj.stashes().to_vec();
-                    let has_stashes = !stashes.is_empty();
-                    let has_changes = proj.has_changes();
-                    let staged_count = wt_status.staged.len();
-                    let (ahead, behind) = branches
-                        .iter()
-                        .find(|b| b.is_head)
-                        .map(|b| (b.ahead, b.behind))
-                        .unwrap_or((0, 0));
-                    let mut seen = std::collections::HashSet::new();
-                    let authors: Vec<(String, String)> = commits
-                        .iter()
-                        .filter(|c| seen.insert(c.author.email.clone()))
-                        .map(|c| (c.author.name.clone(), c.author.email.clone()))
-                        .collect();
-                    crate::avatar_resolver::resolve_avatars(authors, cx);
+        move |this, project, event: &GitProjectEvent, cx| match event {
+            GitProjectEvent::StatusChanged
+            | GitProjectEvent::HeadChanged
+            | GitProjectEvent::RefsChanged => {
+                let proj = project.read(cx);
+                let commits = proj.recent_commits_arc();
+                let has_more = proj.has_more_commits();
+                let wt_status = proj.status_arc();
+                let branches = proj.branches().to_vec();
+                let tags = proj.tags().to_vec();
+                let remotes = proj.remotes().to_vec();
+                let stashes = proj.stashes().to_vec();
+                let has_stashes = !stashes.is_empty();
+                let has_changes = proj.has_changes();
+                let staged_count = wt_status.staged.len();
+                let (ahead, behind) = branches
+                    .iter()
+                    .find(|b| b.is_head)
+                    .map(|b| (b.ahead, b.behind))
+                    .unwrap_or((0, 0));
+                let mut seen = std::collections::HashSet::new();
+                let authors: Vec<(String, String)> = commits
+                    .iter()
+                    .filter(|c| seen.insert(c.author.email.clone()))
+                    .map(|c| (c.author.name.clone(), c.author.email.clone()))
+                    .collect();
+                crate::avatar_resolver::resolve_avatars(authors, cx);
 
-                    let wt_staged = wt_status.staged.len();
-                    let wt_unstaged = wt_status.unstaged.len();
-                    let wt_staged_bd = rgitui_graph::compute_breakdown(&wt_status.staged);
-                    let wt_unstaged_bd = rgitui_graph::compute_breakdown(&wt_status.unstaged);
-                    graph.update(cx, |g, cx| {
-                        g.set_commits(commits, cx);
-                        g.set_all_loaded(!has_more);
-                        g.set_working_tree_status(
-                            wt_staged,
-                            wt_unstaged,
-                            wt_staged_bd,
-                            wt_unstaged_bd,
-                            cx,
-                        );
-                    });
+                let wt_staged = wt_status.staged.len();
+                let wt_unstaged = wt_status.unstaged.len();
+                let wt_staged_bd = rgitui_graph::compute_breakdown(&wt_status.staged);
+                let wt_unstaged_bd = rgitui_graph::compute_breakdown(&wt_status.unstaged);
+                graph.update(cx, |g, cx| {
+                    g.set_commits(commits, cx);
+                    g.set_all_loaded(!has_more);
+                    g.set_working_tree_status(
+                        wt_staged,
+                        wt_unstaged,
+                        wt_staged_bd,
+                        wt_unstaged_bd,
+                        cx,
+                    );
+                });
 
-                    sidebar.update(cx, |s, cx| {
-                        s.update_branches(branches, cx);
-                        s.update_tags(tags, cx);
-                        s.update_remotes(remotes, cx);
-                        s.update_stashes(stashes, cx);
-                        s.update_status(wt_status.staged.clone(), wt_status.unstaged.clone(), cx);
-                    });
+                sidebar.update(cx, |s, cx| {
+                    s.update_branches(branches, cx);
+                    s.update_tags(tags, cx);
+                    s.update_remotes(remotes, cx);
+                    s.update_stashes(stashes, cx);
+                    s.update_status(wt_status.staged.clone(), wt_status.unstaged.clone(), cx);
+                });
 
-                    commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
+                commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
 
-                    toolbar.update(cx, |tb, cx| {
-                        tb.set_state(true, true, has_stashes, has_changes, cx);
-                        tb.set_ahead_behind(ahead, behind, cx);
-                    });
-                }
-                GitProjectEvent::OperationUpdated(update) => {
-                    let is_running = update.state == GitOperationState::Running;
-                    let operation_id = update.id;
-                    let failure_message = if let Some(details) = &update.details {
-                        format!("{}: {}", update.summary, details)
-                    } else {
-                        update.summary.clone()
-                    };
+                toolbar.update(cx, |tb, cx| {
+                    tb.set_state(true, true, has_stashes, has_changes, cx);
+                    tb.set_ahead_behind(ahead, behind, cx);
+                });
+            }
+            GitProjectEvent::OperationUpdated(update) => {
+                let is_running = update.state == GitOperationState::Running;
+                let operation_id = update.id;
+                let failure_message = if let Some(details) = &update.details {
+                    format!("{}: {}", update.summary, details)
+                } else {
+                    update.summary.clone()
+                };
 
-                    match update.state {
-                        GitOperationState::Running => {
-                            this.operations.is_loading = true;
-                            this.operations.loading_message = Some(update.summary.clone());
-                            this.status_message = Some(update.summary.clone());
-                            this.operations.active_git_operation = Some(update.clone());
-                            this.operations.active_operations.push(ActiveOperation {
-                                id: operation_id,
-                                label: update.summary.clone().into(),
-                                started_at: Instant::now(),
-                            });
-                            this.show_toast(update.summary.clone(), ToastKind::Info, cx);
-                        }
-                        GitOperationState::Succeeded => {
-                            this.operations
-                                .active_operations
-                                .retain(|op| op.id != operation_id);
-                            this.operations.is_loading =
-                                !this.operations.active_operations.is_empty();
-                            this.operations.loading_message = this
-                                .operations
-                                .active_operations
-                                .last()
-                                .map(|op| op.label.to_string());
-                            this.status_message = Some(update.summary.clone());
-                            if this
-                                .operations
-                                .active_git_operation
-                                .as_ref()
-                                .is_some_and(|op| op.id == operation_id)
-                            {
-                                this.operations.active_git_operation = None;
-                            }
-                            if this
-                                .operations
-                                .last_failed_git_operation
-                                .as_ref()
-                                .is_some_and(|op| op.kind == update.kind)
-                            {
-                                this.operations.last_failed_git_operation = None;
-                            }
-                            let output_text = update.details.clone().unwrap_or_default();
-                            if !output_text.is_empty() {
-                                let now = Instant::now();
-                                this.operations.last_operation_output =
-                                    Some(OperationOutput {
-                                        operation: SharedString::from(
-                                            update.kind.display_name().to_string(),
-                                        ),
-                                        output: output_text,
-                                        is_error: false,
-                                        timestamp: now,
-                                        expanded: false,
-                                    });
-                                this.schedule_operation_output_auto_hide(now, cx);
-                            }
-                            this.show_toast(update.summary.clone(), ToastKind::Success, cx);
-                        }
-                        GitOperationState::Failed => {
-                            this.operations
-                                .active_operations
-                                .retain(|op| op.id != operation_id);
-                            this.operations.is_loading =
-                                !this.operations.active_operations.is_empty();
-                            this.operations.loading_message = this
-                                .operations
-                                .active_operations
-                                .last()
-                                .map(|op| op.label.to_string());
-                            if this
-                                .operations
-                                .active_git_operation
-                                .as_ref()
-                                .is_some_and(|op| op.id == operation_id)
-                            {
-                                this.operations.active_git_operation = None;
-                            }
-                            this.operations.last_failed_git_operation = Some(update.clone());
-                            this.status_message = Some(failure_message.clone());
-                            let error_output = update
-                                .details
-                                .clone()
-                                .unwrap_or_else(|| failure_message.clone());
-                            this.operations.last_operation_output =
-                                Some(OperationOutput {
-                                    operation: SharedString::from(
-                                        update.kind.display_name().to_string(),
-                                    ),
-                                    output: error_output,
-                                    is_error: true,
-                                    timestamp: Instant::now(),
-                                    expanded: true,
-                                });
-                            this.show_toast(failure_message, ToastKind::Error, cx);
-                        }
+                match update.state {
+                    GitOperationState::Running => {
+                        this.operations.is_loading = true;
+                        this.operations.loading_message = Some(update.summary.clone());
+                        this.status_message = Some(update.summary.clone());
+                        this.operations.active_git_operation = Some(update.clone());
+                        this.operations.active_operations.push(ActiveOperation {
+                            id: operation_id,
+                            label: update.summary.clone().into(),
+                            started_at: Instant::now(),
+                        });
+                        this.show_toast(update.summary.clone(), ToastKind::Info, cx);
                     }
-
-                    toolbar.update(cx, |tb, cx| {
-                        tb.set_fetching(
-                            is_running && update.kind == GitOperationKind::Fetch,
-                            cx,
-                        );
-                        tb.set_pulling(
-                            is_running && update.kind == GitOperationKind::Pull,
-                            cx,
-                        );
-                        tb.set_pushing(
-                            is_running && update.kind == GitOperationKind::Push,
-                            cx,
-                        );
-                    });
+                    GitOperationState::Succeeded => {
+                        this.operations
+                            .active_operations
+                            .retain(|op| op.id != operation_id);
+                        this.operations.is_loading = !this.operations.active_operations.is_empty();
+                        this.operations.loading_message = this
+                            .operations
+                            .active_operations
+                            .last()
+                            .map(|op| op.label.to_string());
+                        this.status_message = Some(update.summary.clone());
+                        if this
+                            .operations
+                            .active_git_operation
+                            .as_ref()
+                            .is_some_and(|op| op.id == operation_id)
+                        {
+                            this.operations.active_git_operation = None;
+                        }
+                        if this
+                            .operations
+                            .last_failed_git_operation
+                            .as_ref()
+                            .is_some_and(|op| op.kind == update.kind)
+                        {
+                            this.operations.last_failed_git_operation = None;
+                        }
+                        let output_text = update.details.clone().unwrap_or_default();
+                        if !output_text.is_empty() {
+                            let now = Instant::now();
+                            this.operations.last_operation_output = Some(OperationOutput {
+                                operation: SharedString::from(
+                                    update.kind.display_name().to_string(),
+                                ),
+                                output: output_text,
+                                is_error: false,
+                                timestamp: now,
+                                expanded: false,
+                            });
+                            this.schedule_operation_output_auto_hide(now, cx);
+                        }
+                        this.show_toast(update.summary.clone(), ToastKind::Success, cx);
+                    }
+                    GitOperationState::Failed => {
+                        this.operations
+                            .active_operations
+                            .retain(|op| op.id != operation_id);
+                        this.operations.is_loading = !this.operations.active_operations.is_empty();
+                        this.operations.loading_message = this
+                            .operations
+                            .active_operations
+                            .last()
+                            .map(|op| op.label.to_string());
+                        if this
+                            .operations
+                            .active_git_operation
+                            .as_ref()
+                            .is_some_and(|op| op.id == operation_id)
+                        {
+                            this.operations.active_git_operation = None;
+                        }
+                        this.operations.last_failed_git_operation = Some(update.clone());
+                        this.status_message = Some(failure_message.clone());
+                        let error_output = update
+                            .details
+                            .clone()
+                            .unwrap_or_else(|| failure_message.clone());
+                        this.operations.last_operation_output = Some(OperationOutput {
+                            operation: SharedString::from(update.kind.display_name().to_string()),
+                            output: error_output,
+                            is_error: true,
+                            timestamp: Instant::now(),
+                            expanded: true,
+                        });
+                        this.show_toast(failure_message, ToastKind::Error, cx);
+                    }
                 }
+
+                toolbar.update(cx, |tb, cx| {
+                    tb.set_fetching(is_running && update.kind == GitOperationKind::Fetch, cx);
+                    tb.set_pulling(is_running && update.kind == GitOperationKind::Pull, cx);
+                    tb.set_pushing(is_running && update.kind == GitOperationKind::Push, cx);
+                });
             }
         }
     })
@@ -623,221 +588,217 @@ pub(super) fn subscribe_sidebar(
     let detail_panel_ref = detail_panel.clone();
 
     cx.subscribe(sidebar, {
-        move |this, _sidebar, event: &SidebarEvent, cx| {
-            match event {
-                SidebarEvent::FileSelected { path, staged } => {
-                    let path_buf = std::path::PathBuf::from(path);
-                    let p = path.clone();
-                    let is_staged = *staged;
-                    let repo_path = project.read(cx).repo_path().to_path_buf();
-                    let dv = diff_viewer.clone();
-                    let dp = detail_panel_ref.clone();
-                    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                        let result = cx
-                            .background_executor()
-                            .spawn(async move {
-                                rgitui_git::compute_file_diff(&repo_path, &path_buf, is_staged)
-                            })
-                            .await;
-                        cx.update(|cx| match result {
-                            Ok(diff) => {
-                                dv.update(cx, |dv, cx| dv.set_diff(diff, p, is_staged, cx));
-                                dp.update(cx, |dp, cx| dp.clear(cx));
-                            }
-                            Err(e) => log::error!("Failed to get diff: {}", e),
-                        });
-                    })
-                    .detach();
-                }
-                SidebarEvent::StageFile(path) => {
-                    let path_buf = std::path::PathBuf::from(path);
-                    project.update(cx, |proj, cx| {
-                        proj.stage_files(&[path_buf], cx).detach();
-                    });
-                }
-                SidebarEvent::UnstageFile(path) => {
-                    let path_buf = std::path::PathBuf::from(path);
-                    project.update(cx, |proj, cx| {
-                        proj.unstage_files(&[path_buf], cx).detach();
-                    });
-                }
-                SidebarEvent::StageAll => {
-                    project.update(cx, |proj, cx| {
-                        proj.stage_all(cx).detach();
-                    });
-                }
-                SidebarEvent::UnstageAll => {
-                    project.update(cx, |proj, cx| {
-                        proj.unstage_all(cx).detach();
-                    });
-                }
-                SidebarEvent::BranchCheckout(name) => {
-                    let name = name.clone();
-                    project.update(cx, |proj, cx| {
-                        proj.checkout_branch(&name, cx).detach();
-                    });
-                }
-                SidebarEvent::RemoteFetch(name) => {
-                    let name = name.clone();
-                    project.update(cx, |proj, cx| {
-                        proj.fetch(&name, cx).detach();
-                    });
-                }
-                SidebarEvent::RemotePull(name) => {
-                    let name = name.clone();
-                    project.update(cx, |proj, cx| {
-                        proj.pull(&name, cx).detach();
-                    });
-                }
-                SidebarEvent::RemotePush(name) => {
-                    let name = name.clone();
-                    project.update(cx, |proj, cx| {
-                        proj.push(&name, false, cx).detach();
-                    });
-                }
-                SidebarEvent::RemoteRemove(name) => {
-                    let name = name.clone();
-                    this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                        cd.show_visible(
-                            "Remove Remote",
-                            format!(
-                                "Remove remote '{}' and its configured URLs from this repository?",
-                                name
-                            ),
-                            ConfirmAction::RemoveRemote(name),
-                            cx,
-                        );
-                    });
-                }
-                SidebarEvent::DiscardFile(path) => {
-                    let path = path.clone();
-                    this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                        cd.show_visible(
-                            "Discard Changes",
-                            format!("Are you sure you want to discard changes to {}?", path),
-                            ConfirmAction::DiscardFile(path),
-                            cx,
-                        );
-                    });
-                }
-                SidebarEvent::StashSelected(index) => {
-                    let idx = *index;
-                    let repo_path = project.read(cx).repo_path().to_path_buf();
-                    let dv = diff_viewer.clone();
-                    let dp = detail_panel_ref.clone();
-                    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                        let result = cx
-                            .background_executor()
-                            .spawn(async move {
-                                rgitui_git::compute_stash_diff(&repo_path, idx)
-                            })
-                            .await;
-                        cx.update(|cx| match result {
-                            Ok(commit_diff) => {
-                                if let Some(first_file) = commit_diff.files.first() {
-                                    let path = first_file.path.display().to_string();
-                                    dv.update(cx, |dv, cx| {
-                                        dv.set_diff(first_file.clone(), path, false, cx)
-                                    });
-                                }
-                                dp.update(cx, |dp, cx| dp.clear(cx));
-                            }
-                            Err(e) => log::error!("Failed to get stash diff: {}", e),
-                        });
-                    })
-                    .detach();
-                }
-                SidebarEvent::TagSelected(name) => {
-                    let proj = project.read(cx);
-                    if let Ok(oid) = proj.resolve_tag_to_oid(name) {
-                        if let Some(tab) = this.tabs.get(this.active_tab) {
-                            tab.graph.update(cx, |g, cx| {
-                                g.scroll_to_commit(oid, cx);
-                            });
+        move |this, _sidebar, event: &SidebarEvent, cx| match event {
+            SidebarEvent::FileSelected { path, staged } => {
+                let path_buf = std::path::PathBuf::from(path);
+                let p = path.clone();
+                let is_staged = *staged;
+                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let dv = diff_viewer.clone();
+                let dp = detail_panel_ref.clone();
+                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            rgitui_git::compute_file_diff(&repo_path, &path_buf, is_staged)
+                        })
+                        .await;
+                    cx.update(|cx| match result {
+                        Ok(diff) => {
+                            dv.update(cx, |dv, cx| dv.set_diff(diff, p, is_staged, cx));
+                            dp.update(cx, |dp, cx| dp.clear(cx));
                         }
-                    } else {
-                        log::warn!("Could not resolve tag '{}' to a commit", name);
-                    }
-                }
-                SidebarEvent::BranchSelected(name) => {
-                    let proj = project.read(cx);
-                    if let Ok(oid) = proj.resolve_branch_to_oid(name) {
-                        if let Some(tab) = this.tabs.get(this.active_tab) {
-                            tab.graph.update(cx, |g, cx| {
-                                g.scroll_to_commit(oid, cx);
-                            });
+                        Err(e) => log::error!("Failed to get diff: {}", e),
+                    });
+                })
+                .detach();
+            }
+            SidebarEvent::StageFile(path) => {
+                let path_buf = std::path::PathBuf::from(path);
+                project.update(cx, |proj, cx| {
+                    proj.stage_files(&[path_buf], cx).detach();
+                });
+            }
+            SidebarEvent::UnstageFile(path) => {
+                let path_buf = std::path::PathBuf::from(path);
+                project.update(cx, |proj, cx| {
+                    proj.unstage_files(&[path_buf], cx).detach();
+                });
+            }
+            SidebarEvent::StageAll => {
+                project.update(cx, |proj, cx| {
+                    proj.stage_all(cx).detach();
+                });
+            }
+            SidebarEvent::UnstageAll => {
+                project.update(cx, |proj, cx| {
+                    proj.unstage_all(cx).detach();
+                });
+            }
+            SidebarEvent::BranchCheckout(name) => {
+                let name = name.clone();
+                project.update(cx, |proj, cx| {
+                    proj.checkout_branch(&name, cx).detach();
+                });
+            }
+            SidebarEvent::RemoteFetch(name) => {
+                let name = name.clone();
+                project.update(cx, |proj, cx| {
+                    proj.fetch(&name, cx).detach();
+                });
+            }
+            SidebarEvent::RemotePull(name) => {
+                let name = name.clone();
+                project.update(cx, |proj, cx| {
+                    proj.pull(&name, cx).detach();
+                });
+            }
+            SidebarEvent::RemotePush(name) => {
+                let name = name.clone();
+                project.update(cx, |proj, cx| {
+                    proj.push(&name, false, cx).detach();
+                });
+            }
+            SidebarEvent::RemoteRemove(name) => {
+                let name = name.clone();
+                this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Remove Remote",
+                        format!(
+                            "Remove remote '{}' and its configured URLs from this repository?",
+                            name
+                        ),
+                        ConfirmAction::RemoveRemote(name),
+                        cx,
+                    );
+                });
+            }
+            SidebarEvent::DiscardFile(path) => {
+                let path = path.clone();
+                this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Discard Changes",
+                        format!("Are you sure you want to discard changes to {}?", path),
+                        ConfirmAction::DiscardFile(path),
+                        cx,
+                    );
+                });
+            }
+            SidebarEvent::StashSelected(index) => {
+                let idx = *index;
+                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let dv = diff_viewer.clone();
+                let dp = detail_panel_ref.clone();
+                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { rgitui_git::compute_stash_diff(&repo_path, idx) })
+                        .await;
+                    cx.update(|cx| match result {
+                        Ok(commit_diff) => {
+                            if let Some(first_file) = commit_diff.files.first() {
+                                let path = first_file.path.display().to_string();
+                                dv.update(cx, |dv, cx| {
+                                    dv.set_diff(first_file.clone(), path, false, cx)
+                                });
+                            }
+                            dp.update(cx, |dp, cx| dp.clear(cx));
                         }
-                    } else {
-                        log::warn!("Could not resolve branch '{}' to a commit", name);
+                        Err(e) => log::error!("Failed to get stash diff: {}", e),
+                    });
+                })
+                .detach();
+            }
+            SidebarEvent::TagSelected(name) => {
+                let proj = project.read(cx);
+                if let Ok(oid) = proj.resolve_tag_to_oid(name) {
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        tab.graph.update(cx, |g, cx| {
+                            g.scroll_to_commit(oid, cx);
+                        });
                     }
+                } else {
+                    log::warn!("Could not resolve tag '{}' to a commit", name);
                 }
-                SidebarEvent::MergeBranch(name) => {
-                    let name = name.clone();
-                    project.update(cx, |proj, cx| {
-                        proj.merge_branch(&name, cx).detach();
-                    });
+            }
+            SidebarEvent::BranchSelected(name) => {
+                let proj = project.read(cx);
+                if let Ok(oid) = proj.resolve_branch_to_oid(name) {
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        tab.graph.update(cx, |g, cx| {
+                            g.scroll_to_commit(oid, cx);
+                        });
+                    }
+                } else {
+                    log::warn!("Could not resolve branch '{}' to a commit", name);
                 }
-                SidebarEvent::BranchCreate => {
-                    this.dialogs.branch_dialog.update(cx, |bd, cx| {
-                        bd.show_visible(None, cx);
-                    });
-                }
-                SidebarEvent::BranchDelete(name) => {
-                    let name = name.clone();
-                    this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                        cd.show_visible(
-                            "Delete Branch",
-                            format!("Are you sure you want to delete branch '{}'?", name),
-                            ConfirmAction::BranchDelete(name),
-                            cx,
-                        );
-                    });
-                }
-                SidebarEvent::OpenRepo => {
-                    this.overlays.repo_opener.update(cx, |ro, cx| {
-                        ro.toggle_visible(cx);
-                    });
-                }
-                SidebarEvent::TagDelete(name) => {
-                    let name = name.clone();
-                    this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                        cd.show_visible(
-                            "Delete Tag",
-                            format!(
-                                "Are you sure you want to delete tag '{}'? This cannot be undone.",
-                                name
-                            ),
-                            ConfirmAction::TagDelete(name),
-                            cx,
-                        );
-                    });
-                }
-                SidebarEvent::StashApply(index) => {
-                    let index = *index;
-                    project.update(cx, |proj, cx| {
-                        proj.stash_apply(index, cx).detach();
-                    });
-                }
-                SidebarEvent::BranchRename(name) => {
-                    let name = name.clone();
-                    this.dialogs.rename_dialog.update(cx, |rd, cx| {
-                        rd.show_visible(name, cx);
-                    });
-                }
-                SidebarEvent::StashDrop(index) => {
-                    let index = *index;
-                    this.dialogs.confirm_dialog.update(cx, |cd, cx| {
-                        cd.show_visible(
-                            "Drop Stash",
-                            format!(
-                                "Are you sure you want to drop stash@{{{}}}? This cannot be undone.",
-                                index
-                            ),
-                            ConfirmAction::StashDrop(index),
-                            cx,
-                        );
-                    });
-                }
+            }
+            SidebarEvent::MergeBranch(name) => {
+                let name = name.clone();
+                project.update(cx, |proj, cx| {
+                    proj.merge_branch(&name, cx).detach();
+                });
+            }
+            SidebarEvent::BranchCreate => {
+                this.dialogs.branch_dialog.update(cx, |bd, cx| {
+                    bd.show_visible(None, cx);
+                });
+            }
+            SidebarEvent::BranchDelete(name) => {
+                let name = name.clone();
+                this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Delete Branch",
+                        format!("Are you sure you want to delete branch '{}'?", name),
+                        ConfirmAction::BranchDelete(name),
+                        cx,
+                    );
+                });
+            }
+            SidebarEvent::OpenRepo => {
+                this.overlays.repo_opener.update(cx, |ro, cx| {
+                    ro.toggle_visible(cx);
+                });
+            }
+            SidebarEvent::TagDelete(name) => {
+                let name = name.clone();
+                this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Delete Tag",
+                        format!(
+                            "Are you sure you want to delete tag '{}'? This cannot be undone.",
+                            name
+                        ),
+                        ConfirmAction::TagDelete(name),
+                        cx,
+                    );
+                });
+            }
+            SidebarEvent::StashApply(index) => {
+                let index = *index;
+                project.update(cx, |proj, cx| {
+                    proj.stash_apply(index, cx).detach();
+                });
+            }
+            SidebarEvent::BranchRename(name) => {
+                let name = name.clone();
+                this.dialogs.rename_dialog.update(cx, |rd, cx| {
+                    rd.show_visible(name, cx);
+                });
+            }
+            SidebarEvent::StashDrop(index) => {
+                let index = *index;
+                this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Drop Stash",
+                        format!(
+                            "Are you sure you want to drop stash@{{{}}}? This cannot be undone.",
+                            index
+                        ),
+                        ConfirmAction::StashDrop(index),
+                        cx,
+                    );
+                });
             }
         }
     })
@@ -1118,77 +1079,75 @@ pub(super) fn subscribe_toolbar(
     let project = project.clone();
 
     cx.subscribe(toolbar, {
-        move |this, _toolbar, event: &ToolbarEvent, cx| {
-            match event {
-                ToolbarEvent::Fetch => {
-                    project.update(cx, |proj, cx| {
-                        proj.fetch_default(cx).detach();
+        move |this, _toolbar, event: &ToolbarEvent, cx| match event {
+            ToolbarEvent::Fetch => {
+                project.update(cx, |proj, cx| {
+                    proj.fetch_default(cx).detach();
+                });
+            }
+            ToolbarEvent::Pull => {
+                project.update(cx, |proj, cx| {
+                    proj.pull_default(cx).detach();
+                });
+            }
+            ToolbarEvent::Push => {
+                project.update(cx, |proj, cx| {
+                    proj.push_default(false, cx).detach();
+                });
+            }
+            ToolbarEvent::StashSave => {
+                project.update(cx, |proj, cx| {
+                    proj.stash_save(None, cx).detach();
+                });
+            }
+            ToolbarEvent::StashPop => {
+                project.update(cx, |proj, cx| {
+                    proj.stash_pop(0, cx).detach();
+                });
+            }
+            ToolbarEvent::Branch => {
+                this.dialogs.branch_dialog.update(cx, |bd, cx| {
+                    bd.show_visible(None, cx);
+                });
+            }
+            ToolbarEvent::Refresh => {
+                project.update(cx, |proj, cx| {
+                    proj.refresh(cx).detach();
+                });
+            }
+            ToolbarEvent::Settings => {
+                this.overlays.settings_modal.update(cx, |sm, cx| {
+                    sm.toggle_visible(cx);
+                });
+            }
+            ToolbarEvent::Search => {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    tab.graph.update(cx, |g, cx| {
+                        g.toggle_search(cx);
                     });
                 }
-                ToolbarEvent::Pull => {
-                    project.update(cx, |proj, cx| {
-                        proj.pull_default(cx).detach();
-                    });
-                }
-                ToolbarEvent::Push => {
-                    project.update(cx, |proj, cx| {
-                        proj.push_default(false, cx).detach();
-                    });
-                }
-                ToolbarEvent::StashSave => {
-                    project.update(cx, |proj, cx| {
-                        proj.stash_save(None, cx).detach();
-                    });
-                }
-                ToolbarEvent::StashPop => {
-                    project.update(cx, |proj, cx| {
-                        proj.stash_pop(0, cx).detach();
-                    });
-                }
-                ToolbarEvent::Branch => {
-                    this.dialogs.branch_dialog.update(cx, |bd, cx| {
-                        bd.show_visible(None, cx);
-                    });
-                }
-                ToolbarEvent::Refresh => {
-                    project.update(cx, |proj, cx| {
-                        proj.refresh(cx).detach();
-                    });
-                }
-                ToolbarEvent::Settings => {
-                    this.overlays.settings_modal.update(cx, |sm, cx| {
-                        sm.toggle_visible(cx);
-                    });
-                }
-                ToolbarEvent::Search => {
-                    if let Some(tab) = this.tabs.get(this.active_tab) {
-                        tab.graph.update(cx, |g, cx| {
-                            g.toggle_search(cx);
-                        });
-                    }
-                }
-                ToolbarEvent::OpenFileExplorer => {
-                    let repo_path = project.read(cx).repo_path().to_path_buf();
-                    super::layout::open_file_explorer(&repo_path);
-                }
-                ToolbarEvent::OpenTerminal => {
-                    let repo_path = project.read(cx).repo_path().to_path_buf();
-                    let terminal_cmd = cx
-                        .global::<rgitui_settings::SettingsState>()
-                        .settings()
-                        .terminal_command
-                        .clone();
-                    super::layout::open_terminal(&repo_path, &terminal_cmd);
-                }
-                ToolbarEvent::OpenEditor => {
-                    let repo_path = project.read(cx).repo_path().to_path_buf();
-                    let editor_cmd = cx
-                        .global::<rgitui_settings::SettingsState>()
-                        .settings()
-                        .editor_command
-                        .clone();
-                    super::layout::open_editor(&repo_path, &editor_cmd);
-                }
+            }
+            ToolbarEvent::OpenFileExplorer => {
+                let repo_path = project.read(cx).repo_path().to_path_buf();
+                super::layout::open_file_explorer(&repo_path);
+            }
+            ToolbarEvent::OpenTerminal => {
+                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let terminal_cmd = cx
+                    .global::<rgitui_settings::SettingsState>()
+                    .settings()
+                    .terminal_command
+                    .clone();
+                super::layout::open_terminal(&repo_path, &terminal_cmd);
+            }
+            ToolbarEvent::OpenEditor => {
+                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let editor_cmd = cx
+                    .global::<rgitui_settings::SettingsState>()
+                    .settings()
+                    .editor_command
+                    .clone();
+                super::layout::open_editor(&repo_path, &editor_cmd);
             }
         }
     })

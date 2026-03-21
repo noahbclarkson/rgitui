@@ -47,12 +47,7 @@ impl BlameView {
         }
     }
 
-    pub fn set_blame(
-        &mut self,
-        lines: Vec<BlameLine>,
-        file_path: String,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_blame(&mut self, lines: Vec<BlameLine>, file_path: String, cx: &mut Context<Self>) {
         self.oid_color_indices = Arc::new(Self::compute_oid_color_map(&lines));
         self.lines = Arc::new(lines);
         self.file_path = Some(file_path);
@@ -185,8 +180,7 @@ impl BlameView {
             }
             "g" => {
                 self.highlighted_row = Some(0);
-                self.scroll_handle
-                    .scroll_to_item(0, ScrollStrategy::Top);
+                self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
                 cx.stop_propagation();
             }
@@ -226,36 +220,31 @@ impl BlameView {
                     ),
             )
             .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .v_flex()
-                            .gap(px(8.))
-                            .items_center()
-                            .px(px(24.))
-                            .py(px(16.))
-                            .rounded(px(8.))
-                            .bg(colors.ghost_element_background)
-                            .child(
-                                Icon::new(IconName::File)
-                                    .size(IconSize::Large)
-                                    .color(Color::Placeholder),
-                            )
-                            .child(
-                                Label::new("Select a file to view blame")
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                Label::new("Press 'b' on a file to see line-by-line attribution")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Placeholder),
-                            ),
-                    ),
+                div().flex_1().flex().items_center().justify_center().child(
+                    div()
+                        .v_flex()
+                        .gap(px(8.))
+                        .items_center()
+                        .px(px(24.))
+                        .py(px(16.))
+                        .rounded(px(8.))
+                        .bg(colors.ghost_element_background)
+                        .child(
+                            Icon::new(IconName::File)
+                                .size(IconSize::Large)
+                                .color(Color::Placeholder),
+                        )
+                        .child(
+                            Label::new("Select a file to view blame")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Press 'b' on a file to see line-by-line attribution")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Placeholder),
+                        ),
+                ),
             )
             .into_any_element()
     }
@@ -332,8 +321,7 @@ impl Render for BlameView {
                                 || lines[i - 1].entry.start_line != line.entry.start_line
                         };
 
-                        let has_boundary = i > 0
-                            && lines[i - 1].entry.oid != line.entry.oid;
+                        let has_boundary = i > 0 && lines[i - 1].entry.oid != line.entry.oid;
 
                         let author_display: SharedString = if is_first_in_hunk {
                             let name = &line.entry.author;
@@ -359,10 +347,8 @@ impl Render for BlameView {
                             SharedString::default()
                         };
 
-                        let line_no_str: SharedString =
-                            format!("{:>5}", line.line_no).into();
-                        let content_text: SharedString =
-                            line.content.clone().into();
+                        let line_no_str: SharedString = format!("{:>5}", line.line_no).into();
+                        let content_text: SharedString = line.content.clone().into();
 
                         let tooltip_text: SharedString = format!(
                             "{} ({}) - {} <{}>",
@@ -370,7 +356,8 @@ impl Render for BlameView {
                             BlameView::format_relative_time(line.entry.time.timestamp()),
                             line.entry.author,
                             line.entry.email,
-                        ).into();
+                        )
+                        .into();
 
                         let view_click = view.clone();
                         let view_commit = view.clone();
@@ -379,10 +366,7 @@ impl Render for BlameView {
                         let hover_oid = oid_str.clone();
 
                         div()
-                            .id(ElementId::NamedInteger(
-                                "blame-line".into(),
-                                i as u64,
-                            ))
+                            .id(ElementId::NamedInteger("blame-line".into(), i as u64))
                             .h_flex()
                             .h(px(row_height))
                             .w_full()
@@ -407,9 +391,7 @@ impl Render for BlameView {
                             })
                             .on_mouse_down(
                                 MouseButton::Left,
-                                move |_: &MouseDownEvent,
-                                      _window: &mut Window,
-                                      cx: &mut App| {
+                                move |_: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
                                     view_click
                                         .update(cx, |this, cx| {
                                             this.highlighted_row = Some(i);
@@ -445,10 +427,7 @@ impl Render for BlameView {
                             )
                             .child(
                                 div()
-                                    .id(ElementId::NamedInteger(
-                                        "blame-sha".into(),
-                                        i as u64,
-                                    ))
+                                    .id(ElementId::NamedInteger("blame-sha".into(), i as u64))
                                     .w(px(60.))
                                     .flex_shrink_0()
                                     .h_full()
@@ -461,15 +440,11 @@ impl Render for BlameView {
                                     .cursor_pointer()
                                     .on_click({
                                         let commit_oid = commit_oid.clone();
-                                        move |_: &ClickEvent,
-                                              _: &mut Window,
-                                              cx: &mut App| {
+                                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                             let oid = commit_oid.clone();
                                             view_commit
                                                 .update(cx, |_this, cx| {
-                                                    cx.emit(
-                                                        BlameViewEvent::CommitSelected(oid),
-                                                    );
+                                                    cx.emit(BlameViewEvent::CommitSelected(oid));
                                                 })
                                                 .ok();
                                         }

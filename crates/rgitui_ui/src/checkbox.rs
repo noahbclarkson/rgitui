@@ -93,11 +93,9 @@ impl RenderOnce for Checkbox {
         }
 
         if let Some(icon_name) = icon {
-            container = container.child(
-                Icon::new(icon_name)
-                    .size(IconSize::XSmall)
-                    .color(rgitui_theme::Color::Custom(colors.elevated_surface_background)),
-            );
+            container = container.child(Icon::new(icon_name).size(IconSize::XSmall).color(
+                rgitui_theme::Color::Custom(colors.elevated_surface_background),
+            ));
         }
 
         container

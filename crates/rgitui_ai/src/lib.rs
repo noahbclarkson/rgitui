@@ -114,7 +114,11 @@ impl AiGenerator {
         let api_key = settings_state.ai_api_key();
         let model = settings.ai.model.clone();
         let provider = settings.ai.provider.clone();
-        let commit_style = settings.ai.commit_style.parse::<CommitStyle>().unwrap_or_default();
+        let commit_style = settings
+            .ai
+            .commit_style
+            .parse::<CommitStyle>()
+            .unwrap_or_default();
         let inject_project_context = settings.ai.inject_project_context;
 
         let client = cx.http_client();
@@ -131,13 +135,40 @@ impl AiGenerator {
             let ctx_ref = project_context.as_deref();
             let result = match provider.as_str() {
                 "gemini" => {
-                    generate_gemini(&client, &api_key, &model, &diff, &summary, commit_style, ctx_ref).await
+                    generate_gemini(
+                        &client,
+                        &api_key,
+                        &model,
+                        &diff,
+                        &summary,
+                        commit_style,
+                        ctx_ref,
+                    )
+                    .await
                 }
                 "openai" => {
-                    generate_openai(&client, &api_key, &model, &diff, &summary, commit_style, ctx_ref).await
+                    generate_openai(
+                        &client,
+                        &api_key,
+                        &model,
+                        &diff,
+                        &summary,
+                        commit_style,
+                        ctx_ref,
+                    )
+                    .await
                 }
                 "anthropic" => {
-                    generate_anthropic(&client, &api_key, &model, &diff, &summary, commit_style, ctx_ref).await
+                    generate_anthropic(
+                        &client,
+                        &api_key,
+                        &model,
+                        &diff,
+                        &summary,
+                        commit_style,
+                        ctx_ref,
+                    )
+                    .await
                 }
                 other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
             };
@@ -361,7 +392,12 @@ async fn generate_anthropic(
     Ok(text)
 }
 
-fn build_prompt(diff: &str, summary: &str, commit_style: CommitStyle, project_context: Option<&str>) -> String {
+fn build_prompt(
+    diff: &str,
+    summary: &str,
+    commit_style: CommitStyle,
+    project_context: Option<&str>,
+) -> String {
     let style_instruction = match commit_style {
         CommitStyle::Conventional => {
             "Use the Conventional Commits format: <type>(<scope>): <description>\n\
@@ -384,9 +420,7 @@ fn build_prompt(diff: &str, summary: &str, commit_style: CommitStyle, project_co
 
     let max_diff_len = 200_000;
     let diff_text = if diff.len() > max_diff_len {
-        let truncation_point = diff[..max_diff_len]
-            .rfind('\n')
-            .unwrap_or(max_diff_len);
+        let truncation_point = diff[..max_diff_len].rfind('\n').unwrap_or(max_diff_len);
         format!(
             "{}\n\n[diff truncated — showing {}/{} bytes]",
             &diff[..truncation_point],

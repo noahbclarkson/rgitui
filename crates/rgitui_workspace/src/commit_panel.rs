@@ -39,24 +39,34 @@ impl CommitPanel {
             ti
         });
 
-        cx.subscribe(&summary_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Submit = event {
-                let can_commit = !this.summary_editor.read(cx).is_empty() && this.staged_count > 0;
-                if can_commit {
-                    cx.emit(CommitPanelEvent::CommitRequested {
-                        message: this.message(cx),
-                        amend: this.amend,
-                    });
-                    this.summary_editor.update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                    this.description_editor.update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                    this.amend = false;
-                    cx.notify();
+        cx.subscribe(
+            &summary_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Submit = event {
+                    let can_commit =
+                        !this.summary_editor.read(cx).is_empty() && this.staged_count > 0;
+                    if can_commit {
+                        cx.emit(CommitPanelEvent::CommitRequested {
+                            message: this.message(cx),
+                            amend: this.amend,
+                        });
+                        this.summary_editor
+                            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
+                        this.description_editor
+                            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
+                        this.amend = false;
+                        cx.notify();
+                    }
                 }
-            }
-        }).detach();
+            },
+        )
+        .detach();
 
-        cx.subscribe(&description_editor, |_this: &mut Self, _, _event: &TextInputEvent, _cx| {
-        }).detach();
+        cx.subscribe(
+            &description_editor,
+            |_this: &mut Self, _, _event: &TextInputEvent, _cx| {},
+        )
+        .detach();
 
         Self {
             summary_editor,
@@ -76,8 +86,10 @@ impl CommitPanel {
             ),
             None => (message, String::new()),
         };
-        self.summary_editor.update(cx, |e: &mut TextInput, cx| e.set_text(summary, cx));
-        self.description_editor.update(cx, |e: &mut TextInput, cx| e.set_text(description, cx));
+        self.summary_editor
+            .update(cx, |e: &mut TextInput, cx| e.set_text(summary, cx));
+        self.description_editor
+            .update(cx, |e: &mut TextInput, cx| e.set_text(description, cx));
         cx.notify();
     }
 
@@ -102,7 +114,8 @@ impl CommitPanel {
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.summary_editor.update(cx, |e: &mut TextInput, cx| e.focus(window, cx));
+        self.summary_editor
+            .update(cx, |e: &mut TextInput, cx| e.focus(window, cx));
     }
 
     pub fn is_focused(&self, window: &Window, cx: &Context<Self>) -> bool {
@@ -140,13 +153,18 @@ impl Render for CommitPanel {
                 "{} file{} staged",
                 self.staged_count,
                 if self.staged_count == 1 { "" } else { "s" }
-            ).into()
+            )
+            .into()
         } else {
             "No files staged".into()
         };
 
         let char_count_label: SharedString = format!("{}/72", summary_len).into();
-        let char_count_color = if summary_len > 72 { Color::Warning } else { Color::Muted };
+        let char_count_color = if summary_len > 72 {
+            Color::Warning
+        } else {
+            Color::Muted
+        };
 
         let desc_count_label: SharedString = if description_len > 0 {
             format!(
@@ -155,7 +173,8 @@ impl Render for CommitPanel {
                 if description_len == 1 { "" } else { "s" },
                 description_lines,
                 if description_lines == 1 { "" } else { "s" },
-            ).into()
+            )
+            .into()
         } else {
             SharedString::default()
         };
@@ -212,15 +231,13 @@ impl Render for CommitPanel {
                                 colors.element_disabled
                             })
                             .items_center()
-                            .child(
-                                Label::new(staged_label)
-                                    .size(LabelSize::XSmall)
-                                    .color(if self.staged_count > 0 {
-                                        Color::Added
-                                    } else {
-                                        Color::Muted
-                                    }),
-                            ),
+                            .child(Label::new(staged_label).size(LabelSize::XSmall).color(
+                                if self.staged_count > 0 {
+                                    Color::Added
+                                } else {
+                                    Color::Muted
+                                },
+                            )),
                     )
                     .child(div().flex_1())
                     .when(self.is_ai_generating, |el| {
@@ -259,11 +276,9 @@ impl Render for CommitPanel {
                         } else if no_staged {
                             btn = btn.tooltip("Stage changes first to generate an AI message");
                         }
-                        el.child(
-                            btn.on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                                cx.emit(CommitPanelEvent::GenerateAiMessage);
-                            })),
-                        )
+                        el.child(btn.on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                            cx.emit(CommitPanelEvent::GenerateAiMessage);
+                        })))
                     }),
             )
             .child(
@@ -365,8 +380,7 @@ impl Render for CommitPanel {
                                     ),
                             )
                             .when(
-                                !summary_empty
-                                    || !self.description_editor.read(cx).is_empty(),
+                                !summary_empty || !self.description_editor.read(cx).is_empty(),
                                 |el| {
                                     el.child(
                                         Button::new("clear-btn", "Clear")
@@ -377,14 +391,14 @@ impl Render for CommitPanel {
                                             .on_click(cx.listener(
                                                 |this, _: &ClickEvent, _, cx| {
                                                     cx.stop_propagation();
-                                                    this.summary_editor.update(
-                                                        cx,
-                                                        |e: &mut TextInput, cx| e.clear(cx),
-                                                    );
-                                                    this.description_editor.update(
-                                                        cx,
-                                                        |e: &mut TextInput, cx| e.clear(cx),
-                                                    );
+                                                    this.summary_editor
+                                                        .update(cx, |e: &mut TextInput, cx| {
+                                                            e.clear(cx)
+                                                        });
+                                                    this.description_editor
+                                                        .update(cx, |e: &mut TextInput, cx| {
+                                                            e.clear(cx)
+                                                        });
                                                     cx.notify();
                                                 },
                                             )),
@@ -416,25 +430,19 @@ impl Render for CommitPanel {
                                     })
                                     .size(ButtonSize::Default)
                                     .disabled(!can_commit)
-                                    .on_click(cx.listener(
-                                        move |this, _: &ClickEvent, _, cx| {
-                                            cx.stop_propagation();
-                                            cx.emit(CommitPanelEvent::CommitRequested {
-                                                message: message.clone(),
-                                                amend,
-                                            });
-                                            this.summary_editor.update(
-                                                cx,
-                                                |e: &mut TextInput, cx| e.clear(cx),
-                                            );
-                                            this.description_editor.update(
-                                                cx,
-                                                |e: &mut TextInput, cx| e.clear(cx),
-                                            );
-                                            this.amend = false;
-                                            cx.notify();
-                                        },
-                                    )),
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(CommitPanelEvent::CommitRequested {
+                                            message: message.clone(),
+                                            amend,
+                                        });
+                                        this.summary_editor
+                                            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
+                                        this.description_editor
+                                            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
+                                        this.amend = false;
+                                        cx.notify();
+                                    })),
                             ),
                     ),
             )

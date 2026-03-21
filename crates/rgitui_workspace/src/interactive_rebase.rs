@@ -241,7 +241,9 @@ impl InteractiveRebase {
         if let Some((_, ref mut msg, ref mut cursor)) = self.editing_reword {
             match key {
                 "escape" => {
-                    let Some((idx, _, _)) = self.editing_reword.take() else { return; };
+                    let Some((idx, _, _)) = self.editing_reword.take() else {
+                        return;
+                    };
                     if let Some(entry) = self.entries.get_mut(idx) {
                         entry.action = RebaseAction::Pick;
                     }
@@ -249,7 +251,9 @@ impl InteractiveRebase {
                     return;
                 }
                 "enter" => {
-                    let Some((idx, msg, _)) = self.editing_reword.take() else { return; };
+                    let Some((idx, msg, _)) = self.editing_reword.take() else {
+                        return;
+                    };
                     if let Some(entry) = self.entries.get_mut(idx) {
                         entry.action = RebaseAction::Reword(msg);
                     }
@@ -302,7 +306,9 @@ impl InteractiveRebase {
                         cx.notify();
                         return;
                     } else if key.len() == 1 && !modifiers.control && !modifiers.platform {
-                        let Some(ch) = key.chars().next() else { return; };
+                        let Some(ch) = key.chars().next() else {
+                            return;
+                        };
                         if ch.is_ascii_graphic() || ch == ' ' {
                             msg.insert(*cursor, ch);
                             *cursor += 1;
@@ -397,7 +403,9 @@ impl Render for InteractiveRebase {
                 .as_ref()
                 .is_some_and(|(edit_idx, _, _)| *edit_idx == idx);
 
-            let display_msg: SharedString = if let Some((_, ref msg, _)) = self.editing_reword.as_ref().filter(|_| is_editing) {
+            let display_msg: SharedString = if let Some((_, ref msg, _)) =
+                self.editing_reword.as_ref().filter(|_| is_editing)
+            {
                 if msg.is_empty() {
                     "Enter new commit message...".into()
                 } else {
@@ -688,7 +696,8 @@ impl Render for InteractiveRebase {
         // Backdrop
         div()
             .id("interactive-rebase-backdrop")
-            .occlude().absolute()
+            .occlude()
+            .absolute()
             .top_0()
             .left_0()
             .size_full()

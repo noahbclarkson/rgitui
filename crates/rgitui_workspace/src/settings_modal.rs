@@ -138,6 +138,7 @@ fn detect_available_terminals() -> Vec<DetectedApp> {
     results
 }
 
+#[allow(unused_mut)]
 fn detect_available_editors() -> Vec<DetectedApp> {
     let mut candidates: Vec<(&str, &str)> = vec![
         ("VS Code", "code"),
@@ -285,7 +286,10 @@ impl SettingsModal {
             (settings, themes)
         });
 
-        let ai_api_key_val = cx.global::<SettingsState>().ai_api_key().unwrap_or_default();
+        let ai_api_key_val = cx
+            .global::<SettingsState>()
+            .ai_api_key()
+            .unwrap_or_default();
         let git_https_token_val = cx
             .global::<SettingsState>()
             .git_https_token()
@@ -302,9 +306,7 @@ impl SettingsModal {
                 kind: provider.kind.clone(),
                 display_name: provider.display_name.clone(),
                 host: provider.host.clone(),
-                username: if provider.username
-                    == Self::default_provider_username(&provider.kind)
-                {
+                username: if provider.username == Self::default_provider_username(&provider.kind) {
                     String::new()
                 } else {
                     provider.username.clone()
@@ -445,112 +447,146 @@ impl SettingsModal {
         })
         .detach();
 
-        cx.subscribe(&ai_api_key_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(_) = event {
-                this.save_settings(cx);
-            }
-        })
-        .detach();
-
-        cx.subscribe(&git_https_token_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(_) = event {
-                this.save_settings(cx);
-            }
-        })
-        .detach();
-
-        cx.subscribe(&git_ssh_key_path_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(_) = event {
-                this.save_settings(cx);
-            }
-        })
-        .detach();
-
-        cx.subscribe(&git_gpg_key_id_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(_) = event {
-                this.save_settings(cx);
-            }
-        })
-        .detach();
-
-        cx.subscribe(&provider_display_name_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(text) = event {
-                if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index) {
-                    provider.display_name = text.clone();
+        cx.subscribe(
+            &ai_api_key_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(_) = event {
+                    this.save_settings(cx);
                 }
-                this.save_settings(cx);
-            }
-        })
+            },
+        )
         .detach();
 
-        cx.subscribe(&provider_host_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(text) = event {
-                if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index) {
-                    provider.host = text.clone();
+        cx.subscribe(
+            &git_https_token_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(_) = event {
+                    this.save_settings(cx);
                 }
-                this.save_settings(cx);
-            }
-        })
+            },
+        )
         .detach();
 
-        cx.subscribe(&provider_username_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(text) = event {
-                if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index) {
-                    provider.username = text.clone();
+        cx.subscribe(
+            &git_ssh_key_path_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(_) = event {
+                    this.save_settings(cx);
                 }
-                this.save_settings(cx);
-            }
-        })
+            },
+        )
         .detach();
 
-        cx.subscribe(&provider_token_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(text) = event {
-                if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index) {
-                    provider.token = text.clone();
-                    provider.has_token = !provider.token.is_empty();
+        cx.subscribe(
+            &git_gpg_key_id_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(_) = event {
+                    this.save_settings(cx);
                 }
-                this.complete_browser_onboarding_for_current_provider();
-                this.save_settings(cx);
-            }
-        })
+            },
+        )
         .detach();
 
-        cx.subscribe(&terminal_command_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(text) = event {
-                if text.is_empty() {
-                    this.selected_terminal_index = if this.detected_terminals.is_empty() {
-                        None
+        cx.subscribe(
+            &provider_display_name_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index)
+                    {
+                        provider.display_name = text.clone();
+                    }
+                    this.save_settings(cx);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &provider_host_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index)
+                    {
+                        provider.host = text.clone();
+                    }
+                    this.save_settings(cx);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &provider_username_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index)
+                    {
+                        provider.username = text.clone();
+                    }
+                    this.save_settings(cx);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &provider_token_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index)
+                    {
+                        provider.token = text.clone();
+                        provider.has_token = !provider.token.is_empty();
+                    }
+                    this.complete_browser_onboarding_for_current_provider();
+                    this.save_settings(cx);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &terminal_command_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    if text.is_empty() {
+                        this.selected_terminal_index = if this.detected_terminals.is_empty() {
+                            None
+                        } else {
+                            Some(0)
+                        };
                     } else {
-                        Some(0)
-                    };
-                } else {
-                    this.selected_terminal_index = this
-                        .detected_terminals
-                        .iter()
-                        .position(|app| app.command == *text);
+                        this.selected_terminal_index = this
+                            .detected_terminals
+                            .iter()
+                            .position(|app| app.command == *text);
+                    }
+                    this.save_settings(cx);
                 }
-                this.save_settings(cx);
-            }
-        })
+            },
+        )
         .detach();
 
-        cx.subscribe(&editor_command_editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            if let TextInputEvent::Changed(text) = event {
-                if text.is_empty() {
-                    this.selected_editor_index = if this.detected_editors.is_empty() {
-                        None
+        cx.subscribe(
+            &editor_command_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    if text.is_empty() {
+                        this.selected_editor_index = if this.detected_editors.is_empty() {
+                            None
+                        } else {
+                            Some(0)
+                        };
                     } else {
-                        Some(0)
-                    };
-                } else {
-                    this.selected_editor_index = this
-                        .detected_editors
-                        .iter()
-                        .position(|app| app.command == *text);
+                        this.selected_editor_index = this
+                            .detected_editors
+                            .iter()
+                            .position(|app| app.command == *text);
+                    }
+                    this.save_settings(cx);
                 }
-                this.save_settings(cx);
-            }
-        })
+            },
+        )
         .detach();
 
         Self {
@@ -688,9 +724,8 @@ impl SettingsModal {
         let terminal_cmd = cx.read_global::<SettingsState, _>(|state, _cx| {
             state.settings().terminal_command.clone()
         });
-        let editor_cmd = cx.read_global::<SettingsState, _>(|state, _cx| {
-            state.settings().editor_command.clone()
-        });
+        let editor_cmd = cx
+            .read_global::<SettingsState, _>(|state, _cx| state.settings().editor_command.clone());
         self.terminal_command_editor
             .update(cx, |e, cx| e.set_text(&terminal_cmd, cx));
         self.editor_command_editor
@@ -818,9 +853,7 @@ impl SettingsModal {
             state.settings_mut().editor_command = editor_command.trim().to_string();
 
             state.set_ai_api_key(Some(ai_api_key.trim()).filter(|v| !v.is_empty()))?;
-            state.set_git_https_token(
-                Some(git_https_token.trim()).filter(|v| !v.is_empty()),
-            )?;
+            state.set_git_https_token(Some(git_https_token.trim()).filter(|v| !v.is_empty()))?;
             state.replace_git_providers(
                 self.git_providers
                     .iter()
@@ -883,12 +916,10 @@ impl SettingsModal {
         } else {
             self.provider_display_name_editor
                 .update(cx, |e, cx| e.clear(cx));
-            self.provider_host_editor
-                .update(cx, |e, cx| e.clear(cx));
+            self.provider_host_editor.update(cx, |e, cx| e.clear(cx));
             self.provider_username_editor
                 .update(cx, |e, cx| e.clear(cx));
-            self.provider_token_editor
-                .update(cx, |e, cx| e.clear(cx));
+            self.provider_token_editor.update(cx, |e, cx| e.clear(cx));
         }
     }
 
@@ -1089,17 +1120,20 @@ impl SettingsModal {
             MaskedField::AiApiKey => {
                 self.show_ai_api_key = !self.show_ai_api_key;
                 let masked = !self.show_ai_api_key;
-                self.ai_api_key_editor.update(cx, |e, _cx| e.set_masked(masked));
+                self.ai_api_key_editor
+                    .update(cx, |e, _cx| e.set_masked(masked));
             }
             MaskedField::GitHttpsToken => {
                 self.show_git_https_token = !self.show_git_https_token;
                 let masked = !self.show_git_https_token;
-                self.git_https_token_editor.update(cx, |e, _cx| e.set_masked(masked));
+                self.git_https_token_editor
+                    .update(cx, |e, _cx| e.set_masked(masked));
             }
             MaskedField::ProviderToken => {
                 self.show_provider_token = !self.show_provider_token;
                 let masked = !self.show_provider_token;
-                self.provider_token_editor.update(cx, |e, _cx| e.set_masked(masked));
+                self.provider_token_editor
+                    .update(cx, |e, _cx| e.set_masked(masked));
             }
         }
         cx.notify();
@@ -1257,10 +1291,7 @@ impl SettingsModal {
 
     fn section_divider(cx: &Context<Self>) -> gpui::Div {
         let colors = cx.colors().clone();
-        div()
-            .w_full()
-            .h(px(1.))
-            .bg(colors.border_variant)
+        div().w_full().h(px(1.)).bg(colors.border_variant)
     }
 
     // ── Helper: setting row label ───────────────────────────────────────
@@ -1398,11 +1429,7 @@ impl SettingsModal {
             )
     }
 
-    fn icon_editor_row(
-        &self,
-        editor: &Entity<TextInput>,
-        icon: IconName,
-    ) -> gpui::Div {
+    fn icon_editor_row(&self, editor: &Entity<TextInput>, icon: IconName) -> gpui::Div {
         div()
             .h_flex()
             .w_full()
@@ -2034,28 +2061,20 @@ impl SettingsModal {
                                 .h_flex()
                                 .gap(px(6.))
                                 .items_center()
-                                .child(
-                                    div()
-                                        .w(px(8.))
-                                        .h(px(8.))
-                                        .rounded(px(4.))
-                                        .bg(if has_token {
-                                            cx.status().success
-                                        } else if browser_login_pending {
-                                            cx.status().warning
-                                        } else {
-                                            cx.status().error
-                                        }),
-                                )
-                                .child(
-                                    Label::new(status_label)
-                                        .size(LabelSize::XSmall)
-                                        .color(if has_token {
-                                            Color::Success
-                                        } else {
-                                            Color::Warning
-                                        }),
-                                ),
+                                .child(div().w(px(8.)).h(px(8.)).rounded(px(4.)).bg(if has_token {
+                                    cx.status().success
+                                } else if browser_login_pending {
+                                    cx.status().warning
+                                } else {
+                                    cx.status().error
+                                }))
+                                .child(Label::new(status_label).size(LabelSize::XSmall).color(
+                                    if has_token {
+                                        Color::Success
+                                    } else {
+                                        Color::Warning
+                                    },
+                                )),
                         )
                         .child(
                             div()
@@ -2466,10 +2485,7 @@ impl SettingsModal {
                 "GPG Key ID",
                 "Leave empty to use your existing git config default signing key.",
             ))
-            .child(self.icon_editor_row(
-                &self.git_gpg_key_id_editor,
-                IconName::Eye,
-            ));
+            .child(self.icon_editor_row(&self.git_gpg_key_id_editor, IconName::Eye));
         section = section.child(gpg_card);
 
         section = section.child(
@@ -2626,20 +2642,16 @@ impl SettingsModal {
                                         .weight(FontWeight::SEMIBOLD),
                                 );
                         } else {
-                            btn = btn
-                                .hover(move |s| s.bg(hover_bg))
-                                .child(
-                                    Label::new(label)
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                );
+                            btn = btn.hover(move |s| s.bg(hover_bg)).child(
+                                Label::new(label)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            );
                         }
-                        btn = btn.on_click(
-                            cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.compactness = variant;
-                                this.save_settings(cx);
-                            }),
-                        );
+                        btn = btn.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.compactness = variant;
+                            this.save_settings(cx);
+                        }));
                         row = row.child(btn);
                     }
                     row
@@ -2923,11 +2935,8 @@ impl SettingsModal {
             } else {
                 "Detecting available terminals..."
             };
-            terminal_section = terminal_section.child(
-                Label::new(msg)
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted),
-            );
+            terminal_section =
+                terminal_section.child(Label::new(msg).size(LabelSize::XSmall).color(Color::Muted));
         } else {
             let mut list = div()
                 .v_flex()
@@ -2937,12 +2946,8 @@ impl SettingsModal {
                 .bg(colors.element_background);
 
             for (i, app) in self.detected_terminals.iter().enumerate() {
-                let is_selected =
-                    self.selected_terminal_index == Some(i) && !terminal_has_custom;
-                let display = SharedString::from(format!(
-                    "{} ({})",
-                    app.display_name, app.command
-                ));
+                let is_selected = self.selected_terminal_index == Some(i) && !terminal_has_custom;
+                let display = SharedString::from(format!("{} ({})", app.display_name, app.command));
                 let hover_bg = colors.ghost_element_hover;
                 let selected_bg = colors.elevated_surface_background;
                 let border_color = colors.border;
@@ -2967,11 +2972,7 @@ impl SettingsModal {
                     row = row.hover(move |s| s.bg(hover_bg));
                 }
 
-                let dot = div()
-                    .w(px(8.))
-                    .h(px(8.))
-                    .rounded(px(4.))
-                    .flex_shrink_0();
+                let dot = div().w(px(8.)).h(px(8.)).rounded(px(4.)).flex_shrink_0();
                 let dot = if is_selected {
                     dot.bg(accent)
                 } else {
@@ -2984,9 +2985,11 @@ impl SettingsModal {
                     Color::Muted
                 };
 
-                row = row
-                    .child(dot)
-                    .child(Label::new(display).size(LabelSize::XSmall).color(label_color));
+                row = row.child(dot).child(
+                    Label::new(display)
+                        .size(LabelSize::XSmall)
+                        .color(label_color),
+                );
 
                 row = row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.selected_terminal_index = Some(i);
@@ -3026,11 +3029,8 @@ impl SettingsModal {
             } else {
                 "Detecting available editors..."
             };
-            editor_section = editor_section.child(
-                Label::new(msg)
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted),
-            );
+            editor_section =
+                editor_section.child(Label::new(msg).size(LabelSize::XSmall).color(Color::Muted));
         } else {
             let mut list = div()
                 .v_flex()
@@ -3040,22 +3040,15 @@ impl SettingsModal {
                 .bg(colors.element_background);
 
             for (i, app) in self.detected_editors.iter().enumerate() {
-                let is_selected =
-                    self.selected_editor_index == Some(i) && !editor_has_custom;
-                let display = SharedString::from(format!(
-                    "{} ({})",
-                    app.display_name, app.command
-                ));
+                let is_selected = self.selected_editor_index == Some(i) && !editor_has_custom;
+                let display = SharedString::from(format!("{} ({})", app.display_name, app.command));
                 let hover_bg = colors.ghost_element_hover;
                 let selected_bg = colors.elevated_surface_background;
                 let border_color = colors.border;
                 let accent = colors.text_accent;
 
                 let mut row = div()
-                    .id(ElementId::Name(SharedString::from(format!(
-                        "editor-{}",
-                        i
-                    ))))
+                    .id(ElementId::Name(SharedString::from(format!("editor-{}", i))))
                     .h_flex()
                     .gap(px(8.))
                     .px(px(8.))
@@ -3070,11 +3063,7 @@ impl SettingsModal {
                     row = row.hover(move |s| s.bg(hover_bg));
                 }
 
-                let dot = div()
-                    .w(px(8.))
-                    .h(px(8.))
-                    .rounded(px(4.))
-                    .flex_shrink_0();
+                let dot = div().w(px(8.)).h(px(8.)).rounded(px(4.)).flex_shrink_0();
                 let dot = if is_selected {
                     dot.bg(accent)
                 } else {
@@ -3087,9 +3076,11 @@ impl SettingsModal {
                     Color::Muted
                 };
 
-                row = row
-                    .child(dot)
-                    .child(Label::new(display).size(LabelSize::XSmall).color(label_color));
+                row = row.child(dot).child(
+                    Label::new(display)
+                        .size(LabelSize::XSmall)
+                        .color(label_color),
+                );
 
                 row = row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.selected_editor_index = Some(i);
@@ -3380,4 +3371,3 @@ impl Render for SettingsModal {
         backdrop.child(modal).into_any_element()
     }
 }
-

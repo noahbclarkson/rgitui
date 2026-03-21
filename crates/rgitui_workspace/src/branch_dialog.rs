@@ -34,8 +34,9 @@ impl BranchDialog {
             ti.set_placeholder("Enter branch name...");
             ti
         });
-        cx.subscribe(&editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            match event {
+        cx.subscribe(
+            &editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
                 TextInputEvent::Submit => {
                     this.try_create(cx);
                 }
@@ -47,8 +48,8 @@ impl BranchDialog {
                     };
                     cx.notify();
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         Self {
@@ -61,12 +62,7 @@ impl BranchDialog {
     }
 
     /// Show the dialog, optionally setting the base ref (e.g. current branch name).
-    pub fn show(
-        &mut self,
-        base_ref: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn show(&mut self, base_ref: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.visible = true;
         self.editor.update(cx, |e, cx| e.clear(cx));
         self.error_message = None;
@@ -112,11 +108,7 @@ impl BranchDialog {
         if name.contains("..") {
             return Some("Branch name cannot contain '..'".to_string());
         }
-        if name.contains('~')
-            || name.contains('^')
-            || name.contains(':')
-            || name.contains('\\')
-        {
+        if name.contains('~') || name.contains('^') || name.contains(':') || name.contains('\\') {
             return Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string());
         }
         if name.contains('?') || name.contains('*') || name.contains('[') {

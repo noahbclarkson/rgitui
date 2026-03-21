@@ -50,9 +50,7 @@ impl ToastLayer {
 
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                cx.background_executor()
-                    .timer(Duration::from_secs(3))
-                    .await;
+                cx.background_executor().timer(Duration::from_secs(3)).await;
                 this.update(cx, |this, cx| {
                     this.dismiss_toast(id, cx);
                 })
@@ -96,15 +94,11 @@ impl Render for ToastLayer {
                     .h_flex()
                     .items_center()
                     .gap(px(0.))
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Toast::new(
-                                ElementId::NamedInteger("toast".into(), toast_id as u64),
-                                entry.message.clone(),
-                                entry.kind,
-                            ),
-                        ),
-                    )
+                    .child(div().flex_1().min_w_0().child(Toast::new(
+                        ElementId::NamedInteger("toast".into(), toast_id as u64),
+                        entry.message.clone(),
+                        entry.kind,
+                    )))
                     .child(
                         div()
                             .id(ElementId::NamedInteger(

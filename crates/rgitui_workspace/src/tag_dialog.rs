@@ -12,10 +12,7 @@ use rgitui_ui::{
 /// Events emitted by the tag creation dialog.
 #[derive(Debug, Clone)]
 pub enum TagDialogEvent {
-    CreateTag {
-        name: String,
-        target_oid: git2::Oid,
-    },
+    CreateTag { name: String, target_oid: git2::Oid },
     Dismissed,
 }
 
@@ -38,8 +35,9 @@ impl TagDialog {
             ti.set_placeholder("v1.0.0");
             ti
         });
-        cx.subscribe(&editor, |this: &mut Self, _, event: &TextInputEvent, cx| {
-            match event {
+        cx.subscribe(
+            &editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
                 TextInputEvent::Submit => {
                     this.try_create(cx);
                 }
@@ -51,8 +49,8 @@ impl TagDialog {
                     };
                     cx.notify();
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         Self {
@@ -104,11 +102,7 @@ impl TagDialog {
         if name.contains("..") {
             return Some("Tag name cannot contain '..'".to_string());
         }
-        if name.contains('~')
-            || name.contains('^')
-            || name.contains(':')
-            || name.contains('\\')
-        {
+        if name.contains('~') || name.contains('^') || name.contains(':') || name.contains('\\') {
             return Some("Tag name cannot contain '~', '^', ':', or '\\'".to_string());
         }
         if name.contains('?') || name.contains('*') || name.contains('[') {
