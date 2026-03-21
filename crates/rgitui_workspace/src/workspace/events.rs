@@ -250,12 +250,14 @@ pub(super) fn subscribe_confirm_dialog(
                                 proj.delete_branch(&name, cx).detach();
                             });
                             if let Some(oid_hex) = tip_oid {
-                                this.last_undo = Some(UndoEntry {
-                                    label: format!("Deleted branch '{}'", name),
-                                    action: UndoAction::RecreateBranch { name, oid_hex },
-                                    created_at: Instant::now(),
-                                });
-                                this.schedule_undo_expiry(cx);
+                                this.push_undo(
+                                    UndoEntry {
+                                        label: format!("Deleted branch '{}'", name),
+                                        action: UndoAction::RecreateBranch { name, oid_hex },
+                                        created_at: Instant::now(),
+                                    },
+                                    cx,
+                                );
                                 this.show_toast(
                                     "Branch deleted. Use command palette 'Undo' to restore.",
                                     ToastKind::Info,
@@ -275,12 +277,14 @@ pub(super) fn subscribe_confirm_dialog(
                                 project.update(cx, |proj, cx| {
                                     proj.stash_save(Some("rgitui-undo-discard"), cx).detach();
                                 });
-                                this.last_undo = Some(UndoEntry {
-                                    label: "Discarded all changes".into(),
-                                    action: UndoAction::PopStash(0),
-                                    created_at: Instant::now(),
-                                });
-                                this.schedule_undo_expiry(cx);
+                                this.push_undo(
+                                    UndoEntry {
+                                        label: "Discarded all changes".into(),
+                                        action: UndoAction::PopStash(0),
+                                        created_at: Instant::now(),
+                                    },
+                                    cx,
+                                );
                                 this.show_toast(
                                     "Changes discarded. Use command palette 'Undo' to restore.",
                                     ToastKind::Info,
@@ -300,12 +304,14 @@ pub(super) fn subscribe_confirm_dialog(
                                 proj.delete_tag(&name, cx).detach();
                             });
                             if let Some(oid_hex) = tag_oid {
-                                this.last_undo = Some(UndoEntry {
-                                    label: format!("Deleted tag '{}'", name),
-                                    action: UndoAction::RecreateTag { name, oid_hex },
-                                    created_at: Instant::now(),
-                                });
-                                this.schedule_undo_expiry(cx);
+                                this.push_undo(
+                                    UndoEntry {
+                                        label: format!("Deleted tag '{}'", name),
+                                        action: UndoAction::RecreateTag { name, oid_hex },
+                                        created_at: Instant::now(),
+                                    },
+                                    cx,
+                                );
                                 this.show_toast(
                                     "Tag deleted. Use command palette 'Undo' to restore.",
                                     ToastKind::Info,
@@ -328,12 +334,17 @@ pub(super) fn subscribe_confirm_dialog(
                                 }
                             });
                             if let Some(oid_hex) = previous_head_oid {
-                                this.last_undo = Some(UndoEntry {
-                                    label: format!("Reset to {}", &target[..7.min(target.len())]),
-                                    action: UndoAction::ResetTo(oid_hex),
-                                    created_at: Instant::now(),
-                                });
-                                this.schedule_undo_expiry(cx);
+                                this.push_undo(
+                                    UndoEntry {
+                                        label: format!(
+                                            "Reset to {}",
+                                            &target[..7.min(target.len())]
+                                        ),
+                                        action: UndoAction::ResetTo(oid_hex),
+                                        created_at: Instant::now(),
+                                    },
+                                    cx,
+                                );
                                 this.show_toast(
                                     "Reset complete. Use command palette 'Undo' to revert.",
                                     ToastKind::Info,
@@ -1029,12 +1040,14 @@ pub(super) fn subscribe_commit_panel(
                 });
                 if !is_amend {
                     if let Some(oid_hex) = previous_head_oid {
-                        this.last_undo = Some(UndoEntry {
-                            label: "Created commit".into(),
-                            action: UndoAction::SoftResetHead(oid_hex),
-                            created_at: Instant::now(),
-                        });
-                        this.schedule_undo_expiry(cx);
+                        this.push_undo(
+                            UndoEntry {
+                                label: "Created commit".into(),
+                                action: UndoAction::SoftResetHead(oid_hex),
+                                created_at: Instant::now(),
+                            },
+                            cx,
+                        );
                     }
                 }
             }
