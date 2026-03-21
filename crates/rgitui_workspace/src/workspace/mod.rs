@@ -211,6 +211,8 @@ impl Workspace {
             focus: FocusState {
                 last_focused_panel: None,
                 pending_focus_restore: false,
+                crash_recovery_available: false,
+                crash_recovery_shown: false,
             },
             toast_layer,
             active_workspace_id: None,
@@ -224,6 +226,31 @@ impl Workspace {
     pub fn start_background_tasks(&self, cx: &mut Context<Self>) {
         // Check for app updates in the background
         update_checker::check_for_updates(cx.entity().downgrade(), cx);
+    }
+
+    /// Set whether crash recovery is available (previous session didn't exit cleanly).
+    pub fn set_crash_recovery_available(&mut self, available: bool) {
+        self.focus.crash_recovery_available = available;
+    }
+
+    /// Show crash recovery toast if available. Called after workspace is fully loaded.
+    pub fn show_crash_recovery_toast(&mut self, cx: &mut Context<Self>) {
+        if self.focus.crash_recovery_available && !self.focus.crash_recovery_shown {
+            self.focus.crash_recovery_shown = true;
+            // The workspace was already restored, just inform the user
+            self.show_toast(
+                "Restored from previous session (unclean exit detected)",
+                ToastKind::Info,
+                cx,
+            );
+        }
+    }
+
+    /// Mark a clean exit when the user explicitly closes or goes home.
+    pub fn mark_clean_exit(&self, cx: &mut Context<Self>) {
+        cx.update_global::<rgitui_settings::SettingsState, _>(|settings, _| {
+            settings.mark_clean_exit();
+        });
     }
 
     /// Show a temporary toast notification.

@@ -49,4 +49,6 @@ pub(crate) struct OperationState {
 pub(crate) struct FocusState {
     pub last_focused_panel: Option<FocusedPanel>,
     pub pending_focus_restore: bool,
+    pub crash_recovery_available: bool,
+    pub crash_recovery_shown: bool,
 }

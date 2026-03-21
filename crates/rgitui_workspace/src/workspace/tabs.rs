@@ -179,6 +179,8 @@ impl Workspace {
     }
 
     pub fn go_home(&mut self, cx: &mut Context<Self>) {
+        // Mark clean exit before clearing workspace
+        self.mark_clean_exit(cx);
         self.tabs.clear();
         self.active_tab = 0;
         self.save_layout(cx);

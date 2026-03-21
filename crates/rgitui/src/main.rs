@@ -61,6 +61,12 @@ fn main() {
         let cli_path = std::env::args().nth(1).map(PathBuf::from);
         let has_cli_path = cli_path.is_some();
 
+        // Check if last session ended cleanly (crash recovery)
+        let was_clean_exit =
+            cx.update_global::<rgitui_settings::SettingsState, _>(|settings, _| {
+                settings.mark_startup()
+            });
+
         let startup_workspace = cx
             .try_global::<rgitui_settings::SettingsState>()
             .and_then(|settings| settings.active_workspace().cloned());
@@ -99,7 +105,11 @@ fn main() {
             }
         };
 
-        log::info!("startup resolved {} repositories", repos_to_open.len());
+        log::info!(
+            "startup resolved {} repositories (clean_exit={})",
+            repos_to_open.len(),
+            was_clean_exit
+        );
 
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
@@ -120,6 +130,9 @@ fn main() {
         cx.open_window(options, |_window, cx| {
             let workspace = cx.new(|cx| {
                 let mut ws = rgitui_workspace::Workspace::new(cx);
+
+                // Store crash recovery state for later use
+                ws.set_crash_recovery_available(!was_clean_exit && startup_workspace.is_some());
 
                 if !has_cli_path {
                     if let Some(snapshot) = startup_workspace.clone() {
@@ -146,6 +159,8 @@ fn main() {
             // Start background tasks like update checking
             workspace.update(cx, |ws, cx| {
                 ws.start_background_tasks(cx);
+                // Show crash recovery toast if applicable
+                ws.show_crash_recovery_toast(cx);
             });
 
             workspace

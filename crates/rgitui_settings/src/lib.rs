@@ -179,6 +179,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub active_workspace_id: Option<String>,
     #[serde(default)]
+    pub clean_exit: bool,
+    #[serde(default)]
     pub compactness: Compactness,
     #[serde(default)]
     pub terminal_command: String,
@@ -415,6 +417,7 @@ impl Default for AppSettings {
             layout: LayoutSettings::default(),
             workspaces: Vec::new(),
             active_workspace_id: None,
+            clean_exit: true, // First run is considered clean
             compactness: Compactness::default(),
             terminal_command: String::new(),
             editor_command: String::new(),
@@ -504,6 +507,26 @@ impl SettingsState {
     pub fn clear_active_workspace(&mut self) {
         self.settings.active_workspace_id = None;
         self.settings.last_workspace.clear();
+    }
+
+    /// Mark that the app is exiting cleanly (user-initiated close).
+    pub fn mark_clean_exit(&mut self) {
+        self.settings.clean_exit = true;
+        let _ = self.save();
+    }
+
+    /// Mark that the app is starting up (clear the clean exit flag).
+    /// Returns whether the previous session ended cleanly.
+    pub fn mark_startup(&mut self) -> bool {
+        let was_clean = self.settings.clean_exit;
+        self.settings.clean_exit = false;
+        let _ = self.save();
+        was_clean
+    }
+
+    /// Check if the last session ended cleanly without modifying state.
+    pub fn was_clean_exit(&self) -> bool {
+        self.settings.clean_exit
     }
 
     pub fn save_workspace_snapshot(
