@@ -5,6 +5,7 @@ mod file_history;
 mod local_ops;
 mod network;
 mod rebase;
+mod reflog;
 mod refresh;
 mod watcher;
 
@@ -21,6 +22,7 @@ pub use blame::{compute_blame, BlameEntry, BlameLine};
 pub use diff::{
     compute_commit_diff, compute_file_diff, compute_staged_diff_text, compute_stash_diff,
 };
+pub use reflog::{compute_reflog, ReflogEntryInfo};
 pub use refresh::gather_refresh_data;
 
 const DEFAULT_COMMIT_LIMIT: usize = 1000;

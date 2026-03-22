@@ -282,6 +282,9 @@ impl Workspace {
             CommandId::FileHistory => {
                 self.toggle_file_history_view(tab, cx);
             }
+            CommandId::Reflog => {
+                self.toggle_reflog_view(tab, cx);
+            }
             CommandId::BisectStart => {
                 let state = tab.project.read(cx).repo_state();
                 if matches!(state, rgitui_git::RepoState::Bisect) {
@@ -449,6 +452,52 @@ impl Workspace {
                         let _ = this.update(cx, |workspace, cx| {
                             workspace.show_toast(
                                 format!("Failed to compute file history: {}", e),
+                                ToastKind::Error,
+                                cx,
+                            );
+                        });
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    fn toggle_reflog_view(&mut self, tab: &ProjectTab, cx: &mut Context<Self>) {
+        if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+            if active_tab.bottom_panel_mode == BottomPanelMode::Reflog {
+                active_tab.bottom_panel_mode = BottomPanelMode::Diff;
+                cx.notify();
+                return;
+            }
+        }
+
+        let project = tab.project.clone();
+        let reflog_view = tab.reflog_view.clone();
+        let active_tab_index = self.active_tab;
+
+        let task = project.update(cx, |proj, cx| proj.reflog_async("HEAD".to_string(), cx));
+
+        cx.spawn(
+            async move |this, cx: &mut gpui::AsyncApp| match task.await {
+                Ok(entries) => {
+                    cx.update(|cx| {
+                        reflog_view.update(cx, |rv, cx| {
+                            rv.set_entries(entries, cx);
+                        });
+                        let _ = this.update(cx, |workspace, cx| {
+                            if let Some(active_tab) = workspace.tabs.get_mut(active_tab_index) {
+                                active_tab.bottom_panel_mode = BottomPanelMode::Reflog;
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+                Err(e) => {
+                    cx.update(|cx| {
+                        let _ = this.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                format!("Failed to compute reflog: {}", e),
                                 ToastKind::Error,
                                 cx,
                             );

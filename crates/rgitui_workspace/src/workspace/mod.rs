@@ -59,6 +59,7 @@ pub(super) enum BottomPanelMode {
     Diff,
     Blame,
     FileHistory,
+    Reflog,
 }
 
 /// Which view is active in the right panel column above the commit panel.
@@ -77,6 +78,7 @@ pub(super) struct ProjectTab {
     pub diff_viewer: Entity<rgitui_diff::DiffViewer>,
     pub blame_view: Entity<crate::BlameView>,
     pub file_history_view: Entity<crate::FileHistoryView>,
+    pub reflog_view: Entity<crate::ReflogView>,
     pub detail_panel: Entity<crate::DetailPanel>,
     pub sidebar: Entity<crate::Sidebar>,
     pub commit_panel: Entity<crate::CommitPanel>,

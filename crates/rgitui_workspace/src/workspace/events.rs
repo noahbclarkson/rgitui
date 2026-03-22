@@ -13,9 +13,10 @@ use crate::{
     BlameView, BlameViewEvent, BranchDialog, BranchDialogEvent, CommandPalette,
     CommandPaletteEvent, CommitPanel, CommitPanelEvent, ConfirmAction, ConfirmDialog,
     ConfirmDialogEvent, DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent,
-    InteractiveRebase, InteractiveRebaseEvent, RenameDialog, RenameDialogEvent, RepoOpener,
-    RepoOpenerEvent, SettingsModal, SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar,
-    SidebarEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
+    InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent, RenameDialog,
+    RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
+    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, TagDialog, TagDialogEvent, ToastKind,
+    Toolbar, ToolbarEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -1237,6 +1238,33 @@ pub(super) fn subscribe_file_history_view(
                 }
             }
             FileHistoryViewEvent::Dismissed => {
+                if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                    tab.bottom_panel_mode = BottomPanelMode::Diff;
+                    cx.notify();
+                }
+            }
+        }
+    })
+    .detach();
+}
+
+pub(super) fn subscribe_reflog_view(
+    cx: &mut Context<Workspace>,
+    reflog_view: &Entity<ReflogView>,
+    graph: &Entity<GraphView>,
+) {
+    let graph = graph.clone();
+
+    cx.subscribe(reflog_view, {
+        move |this, _rv, event: &ReflogViewEvent, cx| match event {
+            ReflogViewEvent::CommitSelected(oid_str) => {
+                if let Ok(oid) = git2::Oid::from_str(oid_str) {
+                    graph.update(cx, |g, cx| {
+                        g.scroll_to_commit(oid, cx);
+                    });
+                }
+            }
+            ReflogViewEvent::Dismissed => {
                 if let Some(tab) = this.tabs.get_mut(this.active_tab) {
                     tab.bottom_panel_mode = BottomPanelMode::Diff;
                     cx.notify();
