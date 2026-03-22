@@ -15,8 +15,8 @@ use crate::{
     ConfirmDialogEvent, DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent,
     InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent, RenameDialog,
     RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
-    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, TagDialog, TagDialogEvent, ToastKind,
-    Toolbar, ToolbarEvent,
+    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, SubmoduleView, SubmoduleViewEvent,
+    TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -1265,6 +1265,49 @@ pub(super) fn subscribe_reflog_view(
                 }
             }
             ReflogViewEvent::Dismissed => {
+                if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                    tab.bottom_panel_mode = BottomPanelMode::Diff;
+                    cx.notify();
+                }
+            }
+        }
+    })
+    .detach();
+}
+
+pub(super) fn subscribe_submodule_view(
+    cx: &mut Context<Workspace>,
+    submodule_view: &Entity<SubmoduleView>,
+    project: &Entity<GitProject>,
+) {
+    let project = project.clone();
+    let submodule_view = submodule_view.clone();
+
+    cx.subscribe(&submodule_view, {
+        move |this, _sv, event: &SubmoduleViewEvent, cx| match event {
+            SubmoduleViewEvent::InitSubmodule(name) => {
+                let name = name.clone();
+                project.update(cx, |proj, cx| {
+                    proj.submodule_init_async(name.clone(), cx).detach();
+                });
+            }
+            SubmoduleViewEvent::UpdateSubmodule(name) => {
+                let name = name.clone();
+                project.update(cx, |proj, cx| {
+                    proj.submodule_update_async(name.clone(), true, cx).detach();
+                });
+            }
+            SubmoduleViewEvent::InitAll => {
+                project.update(cx, |proj, cx| {
+                    proj.submodule_init_all_async(cx).detach();
+                });
+            }
+            SubmoduleViewEvent::UpdateAll => {
+                project.update(cx, |proj, cx| {
+                    proj.submodule_update_all_async(true, cx).detach();
+                });
+            }
+            SubmoduleViewEvent::Dismissed => {
                 if let Some(tab) = this.tabs.get_mut(this.active_tab) {
                     tab.bottom_panel_mode = BottomPanelMode::Diff;
                     cx.notify();

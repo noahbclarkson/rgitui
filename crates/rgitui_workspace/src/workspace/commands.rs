@@ -285,6 +285,9 @@ impl Workspace {
             CommandId::Reflog => {
                 self.toggle_reflog_view(tab, cx);
             }
+            CommandId::Submodules => {
+                self.toggle_submodule_view(tab, cx);
+            }
             CommandId::BisectStart => {
                 let state = tab.project.read(cx).repo_state();
                 if matches!(state, rgitui_git::RepoState::Bisect) {
@@ -498,6 +501,52 @@ impl Workspace {
                         let _ = this.update(cx, |workspace, cx| {
                             workspace.show_toast(
                                 format!("Failed to compute reflog: {}", e),
+                                ToastKind::Error,
+                                cx,
+                            );
+                        });
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    fn toggle_submodule_view(&mut self, tab: &ProjectTab, cx: &mut Context<Self>) {
+        if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+            if active_tab.bottom_panel_mode == BottomPanelMode::Submodules {
+                active_tab.bottom_panel_mode = BottomPanelMode::Diff;
+                cx.notify();
+                return;
+            }
+        }
+
+        let project = tab.project.clone();
+        let submodule_view = tab.submodule_view.clone();
+        let active_tab_index = self.active_tab;
+
+        let task = project.update(cx, |proj, cx| proj.submodules_async(cx));
+
+        cx.spawn(
+            async move |this, cx: &mut gpui::AsyncApp| match task.await {
+                Ok(submodules) => {
+                    cx.update(|cx| {
+                        submodule_view.update(cx, |sv, cx| {
+                            sv.set_submodules(submodules, cx);
+                        });
+                        let _ = this.update(cx, |workspace, cx| {
+                            if let Some(active_tab) = workspace.tabs.get_mut(active_tab_index) {
+                                active_tab.bottom_panel_mode = BottomPanelMode::Submodules;
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+                Err(e) => {
+                    cx.update(|cx| {
+                        let _ = this.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                format!("Failed to compute submodules: {}", e),
                                 ToastKind::Error,
                                 cx,
                             );

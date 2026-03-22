@@ -7,6 +7,7 @@ mod network;
 mod rebase;
 mod reflog;
 mod refresh;
+mod submodule;
 mod watcher;
 
 use anyhow::{Context as _, Result};
@@ -24,6 +25,10 @@ pub use diff::{
 };
 pub use reflog::{compute_reflog, ReflogEntryInfo};
 pub use refresh::gather_refresh_data;
+pub use submodule::{
+    compute_submodules, submodule_init, submodule_init_all, submodule_update, submodule_update_all,
+    SubmoduleInfo,
+};
 
 const DEFAULT_COMMIT_LIMIT: usize = 1000;
 

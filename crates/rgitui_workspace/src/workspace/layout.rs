@@ -119,7 +119,8 @@ impl Render for Workspace {
         let diff_focused = active_tab.diff_viewer.read(cx).is_focused(window)
             || active_tab.blame_view.read(cx).is_focused(window)
             || active_tab.file_history_view.read(cx).is_focused(window)
-            || active_tab.reflog_view.read(cx).is_focused(window);
+            || active_tab.reflog_view.read(cx).is_focused(window)
+            || active_tab.submodule_view.read(cx).is_focused(window);
         let focus_accent = colors.border_focused;
         let bottom_panel_mode = active_tab.bottom_panel_mode;
 
@@ -630,6 +631,9 @@ impl Render for Workspace {
                                     })
                                     .when(bottom_panel_mode == BottomPanelMode::Reflog, |el| {
                                         el.child(active_tab.reflog_view.clone())
+                                    })
+                                    .when(bottom_panel_mode == BottomPanelMode::Submodules, |el| {
+                                        el.child(active_tab.submodule_view.clone())
                                     }),
                             ),
                     )
