@@ -609,8 +609,9 @@ impl DetailPanel {
                     .collect()
             },
         )
-        .flex_1()
-        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .flex_shrink_0()
+        .h(px(row_count as f32 * row_h))
+        .with_sizing_behavior(ListSizingBehavior::Auto)
         .into_any_element()
     }
 
