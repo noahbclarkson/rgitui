@@ -47,6 +47,10 @@ pub enum CommandId {
     SwitchBranch,
     Blame,
     Undo,
+    BisectStart,
+    BisectGood,
+    BisectBad,
+    BisectReset,
 }
 
 impl CommandId {
@@ -87,6 +91,10 @@ impl CommandId {
             Self::SwitchBranch => "switch_branch",
             Self::Blame => "blame",
             Self::Undo => "undo",
+            Self::BisectStart => "bisect_start",
+            Self::BisectGood => "bisect_good",
+            Self::BisectBad => "bisect_bad",
+            Self::BisectReset => "bisect_reset",
         }
     }
 
@@ -127,6 +135,10 @@ impl CommandId {
             Self::SwitchBranch => "switch branch",
             Self::Blame => "blame file",
             Self::Undo => "undo last operation",
+            Self::BisectStart => "bisect start",
+            Self::BisectGood => "bisect good (current)",
+            Self::BisectBad => "bisect bad (current)",
+            Self::BisectReset => "bisect reset",
         }
     }
 }
@@ -177,6 +189,10 @@ impl TryFrom<&str> for CommandId {
             "switch_branch" => Ok(Self::SwitchBranch),
             "blame" => Ok(Self::Blame),
             "undo" => Ok(Self::Undo),
+            "bisect_start" => Ok(Self::BisectStart),
+            "bisect_good" => Ok(Self::BisectGood),
+            "bisect_bad" => Ok(Self::BisectBad),
+            "bisect_reset" => Ok(Self::BisectReset),
             _ => Err(()),
         }
     }
@@ -420,6 +436,30 @@ impl CommandPalette {
                 label: "Edit: Undo Last Operation",
                 shortcut: None,
                 category: "Edit",
+            },
+            PaletteCommand {
+                id: CommandId::BisectStart,
+                label: "Git: Bisect Start",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: CommandId::BisectGood,
+                label: "Git: Bisect Good (mark current)",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: CommandId::BisectBad,
+                label: "Git: Bisect Bad (mark current)",
+                shortcut: None,
+                category: "Git",
+            },
+            PaletteCommand {
+                id: CommandId::BisectReset,
+                label: "Git: Bisect Reset",
+                shortcut: None,
+                category: "Git",
             },
         ];
 

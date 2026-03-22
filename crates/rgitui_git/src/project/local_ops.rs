@@ -2,6 +2,7 @@ use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
 use std::path::PathBuf;
+use std::process::Command;
 
 use rgitui_settings::current_git_auth_runtime;
 
@@ -1900,6 +1901,356 @@ impl GitProject {
                             );
                         }
                     }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    // ============================================================================
+    // Bisect Operations
+    // ============================================================================
+
+    /// Start a bisect session to find a commit that introduced a bug.
+    /// After starting, mark commits as good/bad with bisect_good/bisect_bad.
+    pub fn bisect_start(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Bisect,
+            "Starting bisect...",
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let output = Command::new("git")
+                        .current_dir(&repo_path)
+                        .args(["bisect", "start"])
+                        .output()
+                        .context("Failed to execute git bisect start")?;
+
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !output.status.success() {
+                        anyhow::bail!("git bisect start failed: {}", stderr.trim());
+                    }
+
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                "Bisect started".to_string(),
+                                (
+                                    Some("Mark commits as 'good' or 'bad' to narrow down the problematic commit.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                "Failed to start bisect",
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Mark the specified commit (or current HEAD if None) as "good" during bisect.
+    pub fn bisect_good(
+        &mut self,
+        oid: Option<git2::Oid>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let short_id = oid
+            .map(|o| o.to_string()[..7].to_string())
+            .unwrap_or_else(|| "HEAD".to_string());
+        let operation_id = self.begin_operation(
+            GitOperationKind::Bisect,
+            format!("Marking {} as good...", short_id),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        let oid_str = oid.map(|o| o.to_string());
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(Option<String>, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut cmd = Command::new("git");
+                    cmd.current_dir(&repo_path).args(["bisect", "good"]);
+                    if let Some(ref oid) = oid_str {
+                        cmd.arg(oid);
+                    }
+                    let output = cmd
+                        .output()
+                        .context("Failed to execute git bisect good")?;
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    if !output.status.success() {
+                        anyhow::bail!("git bisect good failed: {}", stderr.trim());
+                    }
+
+                    // Check if bisect found the culprit
+                    let found_match = stdout.contains("is the first bad commit");
+                    let message = if found_match {
+                        Some(stdout.lines().take(10).collect::<Vec<_>>().join("\n"))
+                    } else {
+                        None
+                    };
+
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((message, data))
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok((Some(found_msg), data)) => {
+                            // Bisect found the bad commit
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                "Bisect complete!".to_string(),
+                                (
+                                    Some(format!("Found the first bad commit:\n{}", found_msg)),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Ok((None, data)) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                format!("Marked {} as good", short_id),
+                                (
+                                    Some("Bisect continues. Test the current commit and mark as good/bad.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                format!("Failed to mark {} as good", short_id),
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Mark the specified commit (or current HEAD if None) as "bad" during bisect.
+    pub fn bisect_bad(
+        &mut self,
+        oid: Option<git2::Oid>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let short_id = oid
+            .map(|o| o.to_string()[..7].to_string())
+            .unwrap_or_else(|| "HEAD".to_string());
+        let operation_id = self.begin_operation(
+            GitOperationKind::Bisect,
+            format!("Marking {} as bad...", short_id),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        let oid_str = oid.map(|o| o.to_string());
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(Option<String>, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut cmd = Command::new("git");
+                    cmd.current_dir(&repo_path).args(["bisect", "bad"]);
+                    if let Some(ref oid) = oid_str {
+                        cmd.arg(oid);
+                    }
+                    let output = cmd
+                        .output()
+                        .context("Failed to execute git bisect bad")?;
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    if !output.status.success() {
+                        anyhow::bail!("git bisect bad failed: {}", stderr.trim());
+                    }
+
+                    // Check if bisect found the culprit
+                    let found_match = stdout.contains("is the first bad commit");
+                    let message = if found_match {
+                        Some(stdout.lines().take(10).collect::<Vec<_>>().join("\n"))
+                    } else {
+                        None
+                    };
+
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((message, data))
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok((Some(found_msg), data)) => {
+                            // Bisect found the bad commit
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                "Bisect complete!".to_string(),
+                                (
+                                    Some(format!("Found the first bad commit:\n{}", found_msg)),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Ok((None, data)) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                format!("Marked {} as bad", short_id),
+                                (
+                                    Some("Bisect continues. Test the current commit and mark as good/bad.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                format!("Failed to mark {} as bad", short_id),
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Reset the bisect session and return to the original branch/commit.
+    pub fn bisect_reset(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Bisect,
+            "Resetting bisect...",
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let output = Command::new("git")
+                        .current_dir(&repo_path)
+                        .args(["bisect", "reset"])
+                        .output()
+                        .context("Failed to execute git bisect reset")?;
+
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !output.status.success() {
+                        anyhow::bail!("git bisect reset failed: {}", stderr.trim());
+                    }
+
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                "Bisect reset".to_string(),
+                                (
+                                    Some("Returned to original branch/commit.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                "Failed to reset bisect",
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
                     Ok(())
                 })
             })?

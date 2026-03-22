@@ -922,6 +922,28 @@ pub(super) fn subscribe_graph(
                         );
                     });
                 }
+                GraphViewEvent::BisectGood(oid) => {
+                    let oid = *oid;
+                    let state = project.read(cx).repo_state();
+                    if !matches!(state, rgitui_git::RepoState::Bisect) {
+                        this.show_toast("No bisect in progress. Use 'Bisect Start' first.", ToastKind::Warning, cx);
+                    } else {
+                        project.update(cx, |proj, cx| {
+                            proj.bisect_good(Some(oid), cx).detach();
+                        });
+                    }
+                }
+                GraphViewEvent::BisectBad(oid) => {
+                    let oid = *oid;
+                    let state = project.read(cx).repo_state();
+                    if !matches!(state, rgitui_git::RepoState::Bisect) {
+                        this.show_toast("No bisect in progress. Use 'Bisect Start' first.", ToastKind::Warning, cx);
+                    } else {
+                        project.update(cx, |proj, cx| {
+                            proj.bisect_bad(Some(oid), cx).detach();
+                        });
+                    }
+                }
                 GraphViewEvent::LoadMoreCommits => {
                     this.show_toast(
                         "Showing maximum 1,000 commits. Use search (Ctrl+F) to find older commits."

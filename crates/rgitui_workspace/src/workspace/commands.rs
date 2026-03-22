@@ -279,6 +279,54 @@ impl Workspace {
             CommandId::Blame => {
                 self.toggle_blame_view(tab, cx);
             }
+            CommandId::BisectStart => {
+                let state = tab.project.read(cx).repo_state();
+                if matches!(state, rgitui_git::RepoState::Bisect) {
+                    self.show_toast("Bisect already in progress", ToastKind::Warning, cx);
+                } else {
+                    tab.project.update(cx, |proj, cx| {
+                        proj.bisect_start(cx).detach();
+                    });
+                }
+            }
+            CommandId::BisectGood => {
+                let state = tab.project.read(cx).repo_state();
+                if !matches!(state, rgitui_git::RepoState::Bisect) {
+                    self.show_toast(
+                        "No bisect in progress. Use 'Bisect Start' first.",
+                        ToastKind::Warning,
+                        cx,
+                    );
+                } else {
+                    tab.project.update(cx, |proj, cx| {
+                        proj.bisect_good(None, cx).detach();
+                    });
+                }
+            }
+            CommandId::BisectBad => {
+                let state = tab.project.read(cx).repo_state();
+                if !matches!(state, rgitui_git::RepoState::Bisect) {
+                    self.show_toast(
+                        "No bisect in progress. Use 'Bisect Start' first.",
+                        ToastKind::Warning,
+                        cx,
+                    );
+                } else {
+                    tab.project.update(cx, |proj, cx| {
+                        proj.bisect_bad(None, cx).detach();
+                    });
+                }
+            }
+            CommandId::BisectReset => {
+                let state = tab.project.read(cx).repo_state();
+                if !matches!(state, rgitui_git::RepoState::Bisect) {
+                    self.show_toast("No bisect in progress to reset", ToastKind::Warning, cx);
+                } else {
+                    tab.project.update(cx, |proj, cx| {
+                        proj.bisect_reset(cx).detach();
+                    });
+                }
+            }
             CommandId::Settings
             | CommandId::CreateBranch
             | CommandId::OpenRepo

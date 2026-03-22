@@ -31,6 +31,10 @@ pub enum GraphViewEvent {
     LoadMoreCommits,
     /// The virtual "working tree" row was selected.
     WorkingTreeSelected,
+    /// Mark commit as "good" during bisect.
+    BisectGood(git2::Oid),
+    /// Mark commit as "bad" during bisect.
+    BisectBad(git2::Oid),
 }
 
 /// State for the right-click context menu.
@@ -1590,6 +1594,8 @@ impl Render for GraphView {
                     ("Checkout commit", IconName::Check),
                     ("Create branch here", IconName::GitBranch),
                     ("Create tag here", IconName::Tag),
+                    ("Mark as good (bisect)", IconName::Check),
+                    ("Mark as bad (bisect)", IconName::X),
                     ("Reset to here", IconName::Trash),
                     ("Copy SHA", IconName::Copy),
                 ];
@@ -1636,8 +1642,8 @@ impl Render for GraphView {
                     let label: SharedString = (*label_text).into();
                     let icon = *icon_name;
 
-                    // Add separator before destructive "Reset" and before "Copy SHA"
-                    if idx == 5 || idx == 6 {
+                    // Add separator before bisect options, before destructive "Reset", and before "Copy SHA"
+                    if idx == 5 || idx == 7 || idx == 8 {
                         menu = menu.child(
                             div()
                                 .w_full()
@@ -1730,6 +1736,32 @@ impl Render for GraphView {
                         }
                         5 => {
                             let w = weak.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::BisectGood(oid));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        6 => {
+                            let w = weak.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::BisectBad(oid));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        7 => {
+                            let w = weak.clone();
                             let sha_for_reset = sha_clone.clone();
                             item = item.on_click(
                                 move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -1743,7 +1775,7 @@ impl Render for GraphView {
                                 },
                             );
                         }
-                        6 => {
+                        8 => {
                             let w = weak.clone();
                             let sha_for_click = sha_clone.clone();
                             item = item.on_click(
@@ -1761,9 +1793,13 @@ impl Render for GraphView {
                         _ => {}
                     }
 
-                    // Destructive actions render in error color
-                    let item_color = if idx == 5 { Color::Error } else { Color::Muted };
-                    let label_color = if idx == 5 {
+                    // Destructive actions render in error color (Bad and Reset)
+                    let item_color = if idx == 6 || idx == 7 {
+                        Color::Error
+                    } else {
+                        Color::Muted
+                    };
+                    let label_color = if idx == 6 || idx == 7 {
                         Color::Error
                     } else {
                         Color::Default

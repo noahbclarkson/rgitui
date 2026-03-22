@@ -260,6 +260,7 @@ pub enum GitOperationKind {
     Tag,
     Discard,
     Rebase,
+    Bisect,
 }
 
 impl GitOperationKind {
@@ -282,6 +283,7 @@ impl GitOperationKind {
             GitOperationKind::Tag => "Tag",
             GitOperationKind::Discard => "Discard",
             GitOperationKind::Rebase => "Rebase",
+            GitOperationKind::Bisect => "Bisect",
         }
     }
 }
