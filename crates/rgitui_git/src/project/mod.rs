@@ -1,6 +1,7 @@
 mod auth;
 mod blame;
 mod diff;
+mod file_history;
 mod local_ops;
 mod network;
 mod rebase;

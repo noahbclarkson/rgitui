@@ -117,7 +117,8 @@ impl Render for Workspace {
         let graph_focused = active_tab.graph.read(cx).is_focused(window);
         let detail_focused = active_tab.detail_panel.read(cx).is_focused(window);
         let diff_focused = active_tab.diff_viewer.read(cx).is_focused(window)
-            || active_tab.blame_view.read(cx).is_focused(window);
+            || active_tab.blame_view.read(cx).is_focused(window)
+            || active_tab.file_history_view.read(cx).is_focused(window);
         let focus_accent = colors.border_focused;
         let bottom_panel_mode = active_tab.bottom_panel_mode;
 
@@ -609,7 +610,7 @@ impl Render for Workspace {
                                             )
                                     }),
                             )
-                            // Diff viewer / Blame view
+                            // Diff viewer / Blame view / File History
                             .child(
                                 div()
                                     .h(px(self.layout.diff_viewer_height))
@@ -622,7 +623,11 @@ impl Render for Workspace {
                                     })
                                     .when(bottom_panel_mode == BottomPanelMode::Blame, |el| {
                                         el.child(active_tab.blame_view.clone())
-                                    }),
+                                    })
+                                    .when(
+                                        bottom_panel_mode == BottomPanelMode::FileHistory,
+                                        |el| el.child(active_tab.file_history_view.clone()),
+                                    ),
                             ),
                     )
                     // Right panel: detail + resize handle + commit input

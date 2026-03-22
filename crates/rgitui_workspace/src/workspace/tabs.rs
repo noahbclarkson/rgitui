@@ -51,6 +51,7 @@ impl Workspace {
         let graph = cx.new(rgitui_graph::GraphView::new);
         let diff_viewer = cx.new(rgitui_diff::DiffViewer::new);
         let blame_view = cx.new(crate::BlameView::new);
+        let file_history_view = cx.new(crate::FileHistoryView::new);
         let detail_panel = cx.new(crate::DetailPanel::new);
         let sidebar = cx.new(crate::Sidebar::new);
         let commit_panel = cx.new(crate::CommitPanel::new);
@@ -71,6 +72,7 @@ impl Workspace {
         super::events::subscribe_commit_panel(cx, &project, &self.ai.clone(), &commit_panel);
         super::events::subscribe_toolbar(cx, &project, &toolbar);
         super::events::subscribe_blame_view(cx, &blame_view, &graph);
+        super::events::subscribe_file_history_view(cx, &file_history_view, &graph);
 
         // Initial sync
         {
@@ -152,6 +154,7 @@ impl Workspace {
             graph,
             diff_viewer,
             blame_view,
+            file_history_view,
             detail_panel,
             sidebar,
             commit_panel,

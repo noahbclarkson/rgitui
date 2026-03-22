@@ -11,7 +11,7 @@ use super::GitProjectEvent;
 use super::RefreshData;
 use super::DEFAULT_COMMIT_LIMIT;
 
-fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
+pub(super) fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
     let mut co_authors = Vec::new();
     let mut cleaned_lines = Vec::new();
     let prefix = "co-authored-by:";

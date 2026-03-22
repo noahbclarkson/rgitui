@@ -279,6 +279,9 @@ impl Workspace {
             CommandId::Blame => {
                 self.toggle_blame_view(tab, cx);
             }
+            CommandId::FileHistory => {
+                self.toggle_file_history_view(tab, cx);
+            }
             CommandId::BisectStart => {
                 let state = tab.project.read(cx).repo_state();
                 if matches!(state, rgitui_git::RepoState::Bisect) {
@@ -386,6 +389,66 @@ impl Workspace {
                         let _ = this.update(cx, |workspace, cx| {
                             workspace.show_toast(
                                 format!("Failed to compute blame: {}", e),
+                                ToastKind::Error,
+                                cx,
+                            );
+                        });
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    fn toggle_file_history_view(&mut self, tab: &ProjectTab, cx: &mut Context<Self>) {
+        if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+            if active_tab.bottom_panel_mode == BottomPanelMode::FileHistory {
+                active_tab.bottom_panel_mode = BottomPanelMode::Diff;
+                cx.notify();
+                return;
+            }
+        }
+
+        let file_path = tab.diff_viewer.read(cx).file_path().map(String::from);
+        let Some(file_path) = file_path else {
+            self.show_toast(
+                "No file selected. Select a file first to view history.",
+                ToastKind::Info,
+                cx,
+            );
+            return;
+        };
+
+        let project = tab.project.clone();
+        let file_history_view = tab.file_history_view.clone();
+        let path_for_history = std::path::PathBuf::from(&file_path);
+        let display_path = file_path.clone();
+        let active_tab_index = self.active_tab;
+
+        let task = project.update(cx, |proj, cx| {
+            proj.file_history_async(&path_for_history, 50, cx)
+        });
+
+        cx.spawn(
+            async move |this, cx: &mut gpui::AsyncApp| match task.await {
+                Ok(commits) => {
+                    cx.update(|cx| {
+                        file_history_view.update(cx, |fv, cx| {
+                            fv.set_history(commits, display_path, cx);
+                        });
+                        let _ = this.update(cx, |workspace, cx| {
+                            if let Some(active_tab) = workspace.tabs.get_mut(active_tab_index) {
+                                active_tab.bottom_panel_mode = BottomPanelMode::FileHistory;
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+                Err(e) => {
+                    cx.update(|cx| {
+                        let _ = this.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                format!("Failed to compute file history: {}", e),
                                 ToastKind::Error,
                                 cx,
                             );
