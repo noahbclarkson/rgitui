@@ -1,3 +1,5 @@
+mod tools;
+
 use anyhow::{Context as _, Result};
 use futures::AsyncReadExt;
 use gpui::http_client::{AsyncBody, HttpClient, Method, Request, Response};
@@ -7,6 +9,10 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+pub use tools::{
+    anthropic_tool_definitions, execute_tool, gemini_tool_definitions, openai_tool_definitions,
+    ToolCall, ToolResult,
+};
 
 /// Commit message style options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -89,6 +95,18 @@ impl AiGenerator {
         repo_path: PathBuf,
         cx: &mut Context<Self>,
     ) -> Task<Result<String>> {
+        self.generate_commit_message_with_tools(diff, summary, repo_path, false, cx)
+    }
+
+    /// Generate a commit message with optional tool-calling support.
+    pub fn generate_commit_message_with_tools(
+        &mut self,
+        diff: String,
+        summary: String,
+        repo_path: PathBuf,
+        use_tools: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<String>> {
         if let Some(last_time) = self.last_request_time {
             let elapsed = last_time.elapsed();
             if elapsed < MIN_REQUEST_INTERVAL {
@@ -125,7 +143,7 @@ impl AiGenerator {
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let project_context = if inject_project_context {
-                let repo_path_for_context = repo_path;
+                let repo_path_for_context = repo_path.clone();
                 cx.background_executor()
                     .spawn(async move { collect_project_context(&repo_path_for_context) })
                     .await
@@ -135,40 +153,82 @@ impl AiGenerator {
             let ctx_ref = project_context.as_deref();
             let result = match provider.as_str() {
                 "gemini" => {
-                    generate_gemini(
-                        &client,
-                        &api_key,
-                        &model,
-                        &diff,
-                        &summary,
-                        commit_style,
-                        ctx_ref,
-                    )
-                    .await
+                    if use_tools {
+                        generate_gemini_with_tools(
+                            &client,
+                            &api_key,
+                            &model,
+                            &diff,
+                            &summary,
+                            commit_style,
+                            ctx_ref,
+                            &repo_path,
+                        )
+                        .await
+                    } else {
+                        generate_gemini(
+                            &client,
+                            &api_key,
+                            &model,
+                            &diff,
+                            &summary,
+                            commit_style,
+                            ctx_ref,
+                        )
+                        .await
+                    }
                 }
                 "openai" => {
-                    generate_openai(
-                        &client,
-                        &api_key,
-                        &model,
-                        &diff,
-                        &summary,
-                        commit_style,
-                        ctx_ref,
-                    )
-                    .await
+                    if use_tools {
+                        generate_openai_with_tools(
+                            &client,
+                            &api_key,
+                            &model,
+                            &diff,
+                            &summary,
+                            commit_style,
+                            ctx_ref,
+                            &repo_path,
+                        )
+                        .await
+                    } else {
+                        generate_openai(
+                            &client,
+                            &api_key,
+                            &model,
+                            &diff,
+                            &summary,
+                            commit_style,
+                            ctx_ref,
+                        )
+                        .await
+                    }
                 }
                 "anthropic" => {
-                    generate_anthropic(
-                        &client,
-                        &api_key,
-                        &model,
-                        &diff,
-                        &summary,
-                        commit_style,
-                        ctx_ref,
-                    )
-                    .await
+                    if use_tools {
+                        generate_anthropic_with_tools(
+                            &client,
+                            &api_key,
+                            &model,
+                            &diff,
+                            &summary,
+                            commit_style,
+                            ctx_ref,
+                            &repo_path,
+                        )
+                        .await
+                    } else {
+                        generate_anthropic(
+                            &client,
+                            &api_key,
+                            &model,
+                            &diff,
+                            &summary,
+                            commit_style,
+                            ctx_ref,
+                        )
+                        .await
+                    }
                 }
                 other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
             };
@@ -494,4 +554,475 @@ struct GeminiContent {
 #[derive(Debug, Deserialize)]
 struct GeminiPart {
     text: String,
+}
+
+// ============================================================================
+// Tool-calling versions of generation functions
+// ============================================================================
+
+/// Maximum number of tool-calling iterations to prevent infinite loops.
+const MAX_TOOL_ITERATIONS: usize = 3;
+
+/// Generate a commit message using Anthropic's API with tool-calling support.
+async fn generate_anthropic_with_tools(
+    client: &Arc<dyn HttpClient>,
+    api_key: &Option<String>,
+    model: &str,
+    diff: &str,
+    summary: &str,
+    commit_style: CommitStyle,
+    project_context: Option<&str>,
+    repo_path: &Path,
+) -> Result<String> {
+    let api_key = api_key
+        .as_ref()
+        .context("Anthropic API key not configured. Set it in Settings > AI.")?;
+
+    let system_prompt = build_tool_prompt(diff, summary, commit_style, project_context);
+    let tools = anthropic_tool_definitions();
+    let mut messages: Vec<serde_json::Value> = vec![];
+
+    for _ in 0..MAX_TOOL_ITERATIONS {
+        let json_body = serde_json::json!({
+            "model": model,
+            "max_tokens": 2048,
+            "system": system_prompt,
+            "messages": messages.clone(),
+            "tools": tools,
+        });
+
+        let body_bytes = serde_json::to_vec(&json_body)?;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", api_key.as_str())
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .body(AsyncBody::from(body_bytes))
+            .context("Failed to build Anthropic request")?;
+
+        let mut response = client
+            .send(request)
+            .await
+            .context("Failed to send request to Anthropic API")?;
+
+        let status = response.status();
+        let body = read_response_body(&mut response).await?;
+
+        if !status.is_success() {
+            let text = String::from_utf8_lossy(&body);
+            anyhow::bail!("Anthropic API error ({}): {}", status, text);
+        }
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).context("Failed to parse Anthropic response")?;
+
+        // Check for stop reason
+        let stop_reason = json["stop_reason"].as_str().unwrap_or("");
+
+        if stop_reason == "end_turn" {
+            // Extract text content
+            if let Some(content) = json["content"].as_array() {
+                for block in content {
+                    if block["type"].as_str() == Some("text") {
+                        if let Some(text) = block["text"].as_str() {
+                            return Ok(text.trim().to_string());
+                        }
+                    }
+                }
+            }
+            anyhow::bail!("No text in Anthropic response");
+        }
+
+        if stop_reason == "tool_use" {
+            // Extract tool calls and execute them
+            let mut tool_results = vec![];
+            let mut assistant_content: Vec<serde_json::Value> = vec![];
+
+            if let Some(content) = json["content"].as_array() {
+                for block in content {
+                    assistant_content.push(block.clone());
+
+                    if block["type"].as_str() == Some("tool_use") {
+                        let tool_call = ToolCall {
+                            id: block["id"].as_str().unwrap_or_default().to_string(),
+                            name: block["name"].as_str().unwrap_or_default().to_string(),
+                            arguments: block["input"].clone(),
+                        };
+
+                        let result = execute_tool(&tool_call, repo_path);
+                        let result_content = match result.result {
+                            Ok(output) => output,
+                            Err(e) => format!("Error: {}", e),
+                        };
+
+                        tool_results.push(serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": result.call_id,
+                            "content": result_content
+                        }));
+                    }
+                }
+            }
+
+            // Add assistant message with tool calls
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": assistant_content
+            }));
+
+            // Add user message with tool results
+            messages.push(serde_json::json!({
+                "role": "user",
+                "content": tool_results
+            }));
+
+            continue;
+        }
+
+        // Unknown stop reason - try to extract text anyway
+        if let Some(content) = json["content"].as_array() {
+            for block in content {
+                if block["type"].as_str() == Some("text") {
+                    if let Some(text) = block["text"].as_str() {
+                        return Ok(text.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        anyhow::bail!("Unexpected Anthropic response: stop_reason={}", stop_reason);
+    }
+
+    anyhow::bail!("Max tool iterations reached without generating commit message")
+}
+
+/// Generate a commit message using OpenAI's API with function calling support.
+async fn generate_openai_with_tools(
+    client: &Arc<dyn HttpClient>,
+    api_key: &Option<String>,
+    model: &str,
+    diff: &str,
+    summary: &str,
+    commit_style: CommitStyle,
+    project_context: Option<&str>,
+    repo_path: &Path,
+) -> Result<String> {
+    let api_key = api_key
+        .as_ref()
+        .context("OpenAI API key not configured. Set it in Settings > AI.")?;
+
+    let system_prompt = build_tool_prompt(diff, summary, commit_style, project_context);
+    let tools = openai_tool_definitions();
+    let mut messages: Vec<serde_json::Value> = vec![
+        serde_json::json!({
+            "role": "system",
+            "content": system_prompt
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": "Generate a commit message for these changes."
+        }),
+    ];
+
+    for _ in 0..MAX_TOOL_ITERATIONS {
+        let json_body = serde_json::json!({
+            "model": model,
+            "messages": messages.clone(),
+            "tools": tools,
+            "tool_choice": "auto",
+            "temperature": 0.3,
+            "max_tokens": 2048
+        });
+
+        let body_bytes = serde_json::to_vec(&json_body)?;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .body(AsyncBody::from(body_bytes))
+            .context("Failed to build OpenAI request")?;
+
+        let mut response = client
+            .send(request)
+            .await
+            .context("Failed to send request to OpenAI API")?;
+
+        let status = response.status();
+        let body = read_response_body(&mut response).await?;
+
+        if !status.is_success() {
+            let text = String::from_utf8_lossy(&body);
+            anyhow::bail!("OpenAI API error ({}): {}", status, text);
+        }
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).context("Failed to parse OpenAI response")?;
+
+        let message = &json["choices"][0]["message"];
+        let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("");
+
+        // Add assistant message to history
+        messages.push(message.clone());
+
+        if finish_reason == "stop" {
+            if let Some(content) = message["content"].as_str() {
+                return Ok(content.trim().to_string());
+            }
+            anyhow::bail!("No text in OpenAI response");
+        }
+
+        if finish_reason == "tool_calls" {
+            if let Some(tool_calls) = message["tool_calls"].as_array() {
+                for tool_call in tool_calls {
+                    let function = &tool_call["function"];
+                    let tool_call_obj = ToolCall {
+                        id: tool_call["id"].as_str().unwrap_or_default().to_string(),
+                        name: function["name"].as_str().unwrap_or_default().to_string(),
+                        arguments: serde_json::from_str(
+                            function["arguments"].as_str().unwrap_or("{}"),
+                        )
+                        .unwrap_or(serde_json::json!({})),
+                    };
+
+                    let result = execute_tool(&tool_call_obj, repo_path);
+                    let result_content = match result.result {
+                        Ok(output) => output,
+                        Err(e) => format!("Error: {}", e),
+                    };
+
+                    messages.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": result.call_id,
+                        "content": result_content
+                    }));
+                }
+            }
+            continue;
+        }
+
+        // Try to extract content anyway
+        if let Some(content) = message["content"].as_str() {
+            return Ok(content.trim().to_string());
+        }
+
+        anyhow::bail!(
+            "Unexpected OpenAI response: finish_reason={}",
+            finish_reason
+        );
+    }
+
+    anyhow::bail!("Max tool iterations reached without generating commit message")
+}
+
+/// Generate a commit message using Gemini's API with function calling support.
+async fn generate_gemini_with_tools(
+    client: &Arc<dyn HttpClient>,
+    api_key: &Option<String>,
+    model: &str,
+    diff: &str,
+    summary: &str,
+    commit_style: CommitStyle,
+    project_context: Option<&str>,
+    repo_path: &Path,
+) -> Result<String> {
+    let api_key = api_key
+        .as_ref()
+        .context("Gemini API key not configured. Set it in Settings > AI.")?;
+
+    let prompt = build_tool_prompt(diff, summary, commit_style, project_context);
+    let tools = vec![gemini_tool_definitions()];
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        model, api_key
+    );
+
+    let mut contents = vec![serde_json::json!({
+        "role": "user",
+        "parts": [{ "text": prompt }]
+    })];
+
+    for _ in 0..MAX_TOOL_ITERATIONS {
+        let json_body = serde_json::json!({
+            "contents": contents.clone(),
+            "tools": tools.clone(),
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 2048,
+                "topP": 0.8
+            }
+        });
+
+        let body_bytes = serde_json::to_vec(&json_body)?;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(&url)
+            .header("Content-Type", "application/json")
+            .body(AsyncBody::from(body_bytes))
+            .context("Failed to build Gemini request")?;
+
+        let mut response = client
+            .send(request)
+            .await
+            .context("Failed to send request to Gemini API")?;
+
+        let status = response.status();
+        let body = read_response_body(&mut response).await?;
+
+        if !status.is_success() {
+            let text = String::from_utf8_lossy(&body);
+            anyhow::bail!("Gemini API error ({}): {}", status, text);
+        }
+
+        let json: GeminiToolResponse =
+            serde_json::from_slice(&body).context("Failed to parse Gemini response")?;
+
+        let candidate = json
+            .candidates
+            .first()
+            .context("No candidates in Gemini response")?;
+
+        // Check for function call
+        if let Some(part) = candidate.content.parts.first() {
+            if let Some(fc) = &part.function_call {
+                let tool_call = ToolCall {
+                    id: format!("gemini_{}", uuid::Uuid::new_v4()),
+                    name: fc.name.clone(),
+                    arguments: fc.args.clone(),
+                };
+
+                let result = execute_tool(&tool_call, repo_path);
+                let result_content = match result.result {
+                    Ok(output) => output,
+                    Err(e) => format!("Error: {}", e),
+                };
+
+                // Add model's function call
+                contents.push(serde_json::json!({
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": fc.name,
+                            "args": fc.args
+                        }
+                    }]
+                }));
+
+                // Add function response
+                contents.push(serde_json::json!({
+                    "role": "function",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": fc.name,
+                            "response": { "content": result_content }
+                        }
+                    }]
+                }));
+
+                continue;
+            }
+
+            // Text response
+            if !part.text.is_empty() {
+                return Ok(part.text.trim().to_string());
+            }
+        }
+
+        anyhow::bail!("Unexpected Gemini response format");
+    }
+
+    anyhow::bail!("Max tool iterations reached without generating commit message")
+}
+
+/// Build a prompt that encourages tool usage when appropriate.
+fn build_tool_prompt(
+    diff: &str,
+    summary: &str,
+    commit_style: CommitStyle,
+    project_context: Option<&str>,
+) -> String {
+    let style_instruction = match commit_style {
+        CommitStyle::Conventional => {
+            "Use the Conventional Commits format: <type>(<scope>): <description>\n\
+             Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore\n\
+             Keep the first line under 72 characters.\n\
+             Add a blank line then a detailed body that explains what changed and why.\n\
+             List the key changes as bullet points if there are multiple distinct changes."
+        }
+        CommitStyle::Descriptive => {
+            "Write a clear, descriptive commit message.\n\
+             First line: imperative mood summary under 72 characters.\n\
+             Add a blank line then a detailed body that explains what changed and why.\n\
+             List the key changes as bullet points if there are multiple distinct changes."
+        }
+        CommitStyle::Brief => {
+            "Write a concise commit message in imperative mood.\n\
+             Keep it to a single line under 72 characters."
+        }
+    };
+
+    let max_diff_len = 200_000;
+    let diff_text = if diff.len() > max_diff_len {
+        let truncation_point = diff[..max_diff_len].rfind('\n').unwrap_or(max_diff_len);
+        format!(
+            "{}\n\n[diff truncated — showing {}/{} bytes]",
+            &diff[..truncation_point],
+            truncation_point,
+            diff.len()
+        )
+    } else {
+        diff.to_string()
+    };
+
+    let context_section = match project_context {
+        Some(context) => format!("Project Context:\n{context}\n\n"),
+        None => String::new(),
+    };
+
+    format!(
+        "You are a Git commit message generator. Generate ONLY the commit message, nothing else.\n\
+         No markdown formatting, no code blocks, no explanations.\n\n\
+         {style_instruction}\n\n\
+         You have access to tools to get more context about the repository. Use them if you need to:\n\
+         - Understand what a changed file does (get_file_content)\n\
+         - See the commit message style used in this project (get_recent_commits)\n\
+         - Understand how a file has evolved (get_file_history)\n\n\
+         Only use tools if the diff is unclear and you need more context. If the changes are self-explanatory, generate the commit message directly.\n\n\
+         {context_section}\
+         Files changed:\n{summary}\n\n\
+         Diff:\n{diff_text}"
+    )
+}
+
+/// Gemini response with potential function calls.
+#[derive(Debug, Deserialize)]
+struct GeminiToolResponse {
+    candidates: Vec<GeminiToolCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiToolCandidate {
+    content: GeminiToolContent,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiToolContent {
+    parts: Vec<GeminiToolPart>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiToolPart {
+    #[serde(default)]
+    text: String,
+    #[serde(rename = "functionCall")]
+    function_call: Option<GeminiFunctionCall>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiFunctionCall {
+    name: String,
+    #[serde(default)]
+    args: serde_json::Value,
 }

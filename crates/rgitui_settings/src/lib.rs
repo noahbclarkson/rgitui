@@ -293,6 +293,12 @@ pub struct AiSettings {
     pub enabled: bool,
     #[serde(default = "default_inject_project_context")]
     pub inject_project_context: bool,
+    #[serde(default = "default_use_tools")]
+    pub use_tools: bool,
+}
+
+fn default_use_tools() -> bool {
+    true
 }
 
 fn default_ai_enabled() -> bool {
@@ -399,6 +405,7 @@ impl Default for AiSettings {
             commit_style: default_commit_style(),
             enabled: true,
             inject_project_context: default_inject_project_context(),
+            use_tools: default_use_tools(),
         }
     }
 }

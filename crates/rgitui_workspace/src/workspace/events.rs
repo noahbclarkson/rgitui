@@ -1061,6 +1061,8 @@ pub(super) fn subscribe_commit_panel(
                 let summary = proj.staged_summary();
                 let ai_entity = ai.clone();
                 let diff_repo_path = repo_path.clone();
+                let settings_state = cx.global::<rgitui_settings::SettingsState>();
+                let use_tools = settings_state.settings().ai.use_tools;
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let diff_text = cx
                         .background_executor()
@@ -1072,7 +1074,9 @@ pub(super) fn subscribe_commit_panel(
                     cx.update(|cx| {
                         ai_entity.update(cx, |ai_gen, cx| {
                             ai_gen
-                                .generate_commit_message(diff_text, summary, repo_path, cx)
+                                .generate_commit_message_with_tools(
+                                    diff_text, summary, repo_path, use_tools, cx,
+                                )
                                 .detach();
                         });
                     });

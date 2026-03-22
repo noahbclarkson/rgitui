@@ -4972,6 +4972,7 @@ dependencies = [
  "rgitui_settings",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

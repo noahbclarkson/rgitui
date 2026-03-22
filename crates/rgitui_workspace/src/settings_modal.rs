@@ -194,6 +194,7 @@ pub struct SettingsModal {
     ai_commit_style: String,
     ai_enabled: bool,
     ai_inject_project_context: bool,
+    ai_use_tools: bool,
 
     // AI text editors
     ai_api_key_editor: Entity<TextInput>,
@@ -600,6 +601,7 @@ impl SettingsModal {
             ai_commit_style: settings.ai.commit_style.clone(),
             ai_enabled: settings.ai.enabled,
             ai_inject_project_context: settings.ai.inject_project_context,
+            ai_use_tools: settings.ai.use_tools,
             ai_api_key_editor,
             git_sign_commits: settings.git.sign_commits,
             git_providers,
@@ -673,6 +675,7 @@ impl SettingsModal {
                 self.ai_commit_style = s.ai.commit_style.clone();
                 self.ai_enabled = s.ai.enabled;
                 self.ai_inject_project_context = s.ai.inject_project_context;
+                self.ai_use_tools = s.ai.use_tools;
                 self.git_sign_commits = s.git.sign_commits;
                 self.git_providers = s
                     .git
@@ -823,6 +826,7 @@ impl SettingsModal {
                 commit_style: self.ai_commit_style.clone(),
                 enabled: self.ai_enabled,
                 inject_project_context: self.ai_inject_project_context,
+                use_tools: self.ai_use_tools,
             };
             state.settings_mut().git = GitSettings {
                 legacy_https_token: None,
@@ -1744,6 +1748,52 @@ impl SettingsModal {
                 ),
         );
         section = section.child(inject_ctx_card);
+
+        // Use tools card
+        let use_tools = self.ai_use_tools;
+        let mut use_tools_card = Self::setting_card(cx);
+        use_tools_card = use_tools_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(
+                            Label::new("Use AI tools")
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            Label::new(
+                                "Allow the AI to request file contents and commit history for better messages",
+                            )
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("ai-use-tools-toggle")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.ai_use_tools = !this.ai_use_tools;
+                            this.save_settings(cx);
+                        }))
+                        .child(Checkbox::new(
+                            "ai-use-tools-cb",
+                            if use_tools {
+                                CheckState::Checked
+                            } else {
+                                CheckState::Unchecked
+                            },
+                        )),
+                ),
+        );
+        section = section.child(use_tools_card);
 
         // Provider + Model card
         let mut provider_card = Self::setting_card(cx);
