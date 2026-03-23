@@ -974,16 +974,29 @@ async fn fetch_github_prs(
 
     let response = http.send(request).await.map_err(|e| e.to_string())?;
 
-    if !response.status().is_success() {
-        return Err(format!("GitHub API error: {}", response.status()));
-    }
-
+    let status = response.status();
     let mut body = String::new();
     let mut reader = response.into_body();
     reader
         .read_to_string(&mut body)
         .await
         .map_err(|e| e.to_string())?;
+
+    if !status.is_success() {
+        let detail = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from));
+        return Err(match (status.as_u16(), detail) {
+            (404, _) => format!(
+                "Repository not found — your token may not have access to {}/{}",
+                owner, repo
+            ),
+            (401, _) => "GitHub token is invalid or expired".into(),
+            (403, Some(msg)) => format!("Access denied: {}", msg),
+            (_, Some(msg)) => format!("GitHub API error {}: {}", status, msg),
+            (_, None) => format!("GitHub API error: {}", status),
+        });
+    }
 
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let items = json.as_array().ok_or("Expected JSON array")?;
@@ -1096,16 +1109,23 @@ async fn fetch_pr_comments(
 
     let response = http.send(request).await.map_err(|e| e.to_string())?;
 
-    if !response.status().is_success() {
-        return Err(format!("GitHub API error: {}", response.status()));
-    }
-
+    let status = response.status();
     let mut body = String::new();
     let mut reader = response.into_body();
     reader
         .read_to_string(&mut body)
         .await
         .map_err(|e| e.to_string())?;
+
+    if !status.is_success() {
+        let detail = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from));
+        return Err(match detail {
+            Some(msg) => format!("GitHub API error {}: {}", status, msg),
+            None => format!("GitHub API error: {}", status),
+        });
+    }
 
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let items = json.as_array().ok_or("Expected JSON array")?;

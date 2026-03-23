@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use uuid::Uuid;
 
 /// Controls the compactness of the UI layout.
@@ -465,14 +465,32 @@ impl SettingsState {
         let json = serde_json::to_string_pretty(&self.settings)?;
         let config_path = self.config_path.clone();
         std::thread::spawn(move || {
+            // Serialize concurrent writes to prevent file corruption
+            static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let _guard = WRITE_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+
             if let Some(parent) = config_path.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
                     log::error!("Failed to create settings directory: {}", e);
                     return;
                 }
             }
-            if let Err(e) = std::fs::write(&config_path, json) {
-                log::error!("Failed to write settings file: {}", e);
+            // Atomic write: write to a temp file then rename
+            let tmp_path = config_path.with_extension("json.tmp");
+            if let Err(e) = std::fs::write(&tmp_path, &json) {
+                log::error!("Failed to write settings temp file: {}", e);
+                return;
+            }
+            if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
+                log::error!("Failed to rename settings file: {}", e);
+                // Fallback: try direct write
+                if let Err(e2) = std::fs::write(&config_path, &json) {
+                    log::error!("Fallback write also failed: {}", e2);
+                }
+                let _ = std::fs::remove_file(&tmp_path);
             }
         });
         Ok(())

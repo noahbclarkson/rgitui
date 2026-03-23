@@ -4,7 +4,7 @@ use gpui::{
     KeyDownEvent, Render, SharedString, Window,
 };
 use rgitui_settings::{
-    AiSettings, AutoFetchInterval, Compactness, DiffViewMode, GitProviderSettings, GitSettings,
+    AiSettings, AutoFetchInterval, Compactness, DiffViewMode, GitProviderSettings,
     GraphStyle, SettingsState,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
@@ -804,26 +804,6 @@ impl SettingsModal {
         let editor_command = self.editor_command_editor.read(cx).text().to_string();
 
         let result = cx.update_global::<SettingsState, _>(|state, _cx| -> anyhow::Result<()> {
-            let providers: Vec<GitProviderSettings> = self
-                .git_providers
-                .iter()
-                .filter(|provider| !provider.host.trim().is_empty())
-                .map(|provider| GitProviderSettings {
-                    id: provider.id.clone(),
-                    kind: provider.kind.clone(),
-                    display_name: if provider.display_name.trim().is_empty() {
-                        provider.host.clone()
-                    } else {
-                        provider.display_name.clone()
-                    },
-                    host: provider.host.trim().to_string(),
-                    username: provider.username.trim().to_string(),
-                    legacy_token: None,
-                    has_token: !provider.token.trim().is_empty(),
-                    use_for_https: provider.use_for_https,
-                })
-                .collect();
-
             state.settings_mut().ai = AiSettings {
                 provider: self.ai_provider.clone(),
                 legacy_api_key: None,
@@ -833,22 +813,6 @@ impl SettingsModal {
                 enabled: self.ai_enabled,
                 inject_project_context: self.ai_inject_project_context,
                 use_tools: self.ai_use_tools,
-            };
-            state.settings_mut().git = GitSettings {
-                legacy_https_token: None,
-                has_https_token: !git_https_token.trim().is_empty(),
-                ssh_key_path: if git_ssh_key_path.trim().is_empty() {
-                    None
-                } else {
-                    Some(git_ssh_key_path.trim().to_string())
-                },
-                gpg_key_id: if git_gpg_key_id.trim().is_empty() {
-                    None
-                } else {
-                    Some(git_gpg_key_id.trim().to_string())
-                },
-                sign_commits: self.git_sign_commits,
-                providers,
             };
             state.settings_mut().max_recent_repos = self.max_recent_repos;
             state.settings_mut().compactness = self.compactness;
@@ -861,9 +825,37 @@ impl SettingsModal {
                 self.confirm_destructive_operations;
             state.settings_mut().terminal_command = terminal_command.trim().to_string();
             state.settings_mut().editor_command = editor_command.trim().to_string();
+            {
+                let git = state.settings_mut();
+                git.git.legacy_https_token = None;
+                git.git.has_https_token = !git_https_token.trim().is_empty();
+                git.git.ssh_key_path = if git_ssh_key_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(git_ssh_key_path.trim().to_string())
+                };
+                git.git.gpg_key_id = if git_gpg_key_id.trim().is_empty() {
+                    None
+                } else {
+                    Some(git_gpg_key_id.trim().to_string())
+                };
+                git.git.sign_commits = self.git_sign_commits;
+            }
 
             state.set_ai_api_key(Some(ai_api_key.trim()).filter(|v| !v.is_empty()))?;
             state.set_git_https_token(Some(git_https_token.trim()).filter(|v| !v.is_empty()))?;
+
+            // Write provider tokens to keychain BEFORE replacing providers,
+            // so that sync_auth_runtime inside replace_git_providers can
+            // resolve the tokens from the keychain immediately.
+            for provider in &self.git_providers {
+                if !provider.host.trim().is_empty() {
+                    state.set_git_provider_token(
+                        &provider.id,
+                        Some(provider.token.trim()).filter(|v| !v.is_empty()),
+                    )?;
+                }
+            }
             state.replace_git_providers(
                 self.git_providers
                     .iter()
@@ -884,12 +876,6 @@ impl SettingsModal {
                     })
                     .collect(),
             );
-            for provider in &self.git_providers {
-                state.set_git_provider_token(
-                    &provider.id,
-                    Some(provider.token.trim()).filter(|v| !v.is_empty()),
-                )?;
-            }
             state.save()?;
             Ok(())
         });
@@ -1333,15 +1319,35 @@ impl SettingsModal {
                     Ok(github_device_flow::PollResult::Token(token)) => {
                         cx.update(|cx| {
                             this.update(cx, |modal, cx| {
-                                if let Some(provider) = modal.current_provider_mut() {
+                                // Find the provider that initiated this flow by its ID,
+                                // not by selected_provider_index (which may have changed).
+                                let target_id =
+                                    modal.pending_browser_auth_provider_id.clone();
+                                let target_index = target_id.as_ref().and_then(|id| {
+                                    modal
+                                        .git_providers
+                                        .iter()
+                                        .position(|p| &p.id == id)
+                                });
+                                if let Some(index) = target_index {
+                                    modal.git_providers[index].token = token.clone();
+                                    modal.git_providers[index].has_token = true;
+                                    // Update editor if this provider is currently selected
+                                    if modal.selected_provider_index == index {
+                                        modal.provider_token_editor.update(cx, |e, cx| {
+                                            e.set_text(&token, cx);
+                                        });
+                                    }
+                                } else if let Some(provider) = modal.current_provider_mut() {
+                                    // Fallback: use current provider if ID tracking lost
                                     provider.token = token.clone();
                                     provider.has_token = true;
+                                    modal.provider_token_editor.update(cx, |e, cx| {
+                                        e.set_text(&token, cx);
+                                    });
                                 }
-                                modal.provider_token_editor.update(cx, |e, cx| {
-                                    e.set_text(&token, cx);
-                                });
                                 modal.device_flow_status = DeviceFlowStatus::Success;
-                                modal.complete_browser_onboarding_for_current_provider();
+                                modal.pending_browser_auth_provider_id = None;
                                 modal.save_settings(cx);
                                 modal.feedback_message =
                                     Some("GitHub account connected successfully!".into());
