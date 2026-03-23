@@ -124,8 +124,9 @@ impl Workspace {
         }
 
         let issues_panel = cx.new(crate::IssuesPanel::new);
+        let prs_panel = cx.new(crate::PrsPanel::new);
 
-        // Configure issues panel with GitHub remote info and token
+        // Configure issues and PRs panels with GitHub remote info and token
         {
             let remotes = project.read(cx).remotes();
             let remote_url = remotes
@@ -145,7 +146,10 @@ impl Workspace {
                         .and_then(|p| p.token.clone());
 
                     issues_panel.update(cx, |ip, cx| {
-                        ip.configure(token, owner, repo_name, cx);
+                        ip.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
+                    });
+                    prs_panel.update(cx, |pp, cx| {
+                        pp.configure(token, owner, repo_name, cx);
                     });
                 }
             }
@@ -166,6 +170,7 @@ impl Workspace {
             commit_panel,
             toolbar,
             issues_panel,
+            prs_panel,
             right_panel_mode: RightPanelMode::Details,
             bottom_panel_mode: BottomPanelMode::Diff,
         });

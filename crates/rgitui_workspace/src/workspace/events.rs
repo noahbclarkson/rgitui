@@ -27,7 +27,7 @@ pub(super) fn subscribe_settings_modal(
 ) {
     cx.subscribe(
         settings_modal,
-        |_this, _sm, event: &SettingsModalEvent, cx| match event {
+        |this, _sm, event: &SettingsModalEvent, cx| match event {
             SettingsModalEvent::Dismissed => {
                 cx.notify();
             }
@@ -35,6 +35,41 @@ pub(super) fn subscribe_settings_modal(
                 cx.notify();
             }
             SettingsModalEvent::SettingsChanged => {
+                // Re-configure issues and PRs panels with latest GitHub token
+                let token = rgitui_settings::current_auth_runtime()
+                    .git
+                    .providers
+                    .iter()
+                    .find(|p| p.host == "github.com")
+                    .and_then(|p| p.token.clone());
+
+                for tab in &this.tabs {
+                    let remotes = tab.project.read(cx).remotes();
+                    let remote_url = remotes
+                        .iter()
+                        .find(|r| r.name == "origin")
+                        .or_else(|| remotes.first())
+                        .and_then(|r| r.url.clone());
+
+                    if let Some(url) = remote_url {
+                        if let Some((owner, repo_name)) =
+                            crate::issues_panel::parse_github_owner_repo(&url)
+                        {
+                            tab.issues_panel.update(cx, |ip, cx| {
+                                ip.configure(
+                                    token.clone(),
+                                    owner.clone(),
+                                    repo_name.clone(),
+                                    cx,
+                                );
+                            });
+                            tab.prs_panel.update(cx, |pp, cx| {
+                                pp.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
+                            });
+                        }
+                    }
+                }
+
                 cx.notify();
             }
         },

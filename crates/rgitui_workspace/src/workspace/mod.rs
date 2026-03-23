@@ -68,6 +68,7 @@ pub(super) enum BottomPanelMode {
 pub(super) enum RightPanelMode {
     Details,
     Issues,
+    PullRequests,
 }
 
 /// A single open project tab.
@@ -86,6 +87,7 @@ pub(super) struct ProjectTab {
     pub commit_panel: Entity<crate::CommitPanel>,
     pub toolbar: Entity<crate::Toolbar>,
     pub issues_panel: Entity<crate::IssuesPanel>,
+    pub prs_panel: Entity<crate::PrsPanel>,
     pub right_panel_mode: RightPanelMode,
     pub bottom_panel_mode: BottomPanelMode,
 }
