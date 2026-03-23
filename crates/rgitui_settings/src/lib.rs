@@ -894,28 +894,7 @@ fn default_git_provider_kind() -> String {
 }
 
 fn default_git_providers() -> Vec<GitProviderSettings> {
-    vec![
-        GitProviderSettings {
-            id: "github.com".to_string(),
-            kind: "github".to_string(),
-            display_name: "GitHub".to_string(),
-            host: "github.com".to_string(),
-            username: "x-access-token".to_string(),
-            legacy_token: None,
-            has_token: false,
-            use_for_https: true,
-        },
-        GitProviderSettings {
-            id: "gitlab.com".to_string(),
-            kind: "gitlab".to_string(),
-            display_name: "GitLab".to_string(),
-            host: "gitlab.com".to_string(),
-            username: "oauth2".to_string(),
-            legacy_token: None,
-            has_token: false,
-            use_for_https: true,
-        },
-    ]
+    vec![]
 }
 
 const KEYRING_SERVICE: &str = "rgitui";
@@ -1004,8 +983,21 @@ fn write_secret(account: &str, value: Option<&str>) -> Result<bool> {
 }
 
 fn read_secret(account: &str) -> Option<String> {
-    let entry = secret_entry(account).ok()?;
-    entry.get_password().ok()
+    let entry = match secret_entry(account) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to create keyring entry for '{}': {}", account, e);
+            return None;
+        }
+    };
+    match entry.get_password() {
+        Ok(password) => Some(password),
+        Err(keyring::Error::NoEntry) => None,
+        Err(e) => {
+            log::warn!("Failed to read secret for '{}': {}", account, e);
+            None
+        }
+    }
 }
 
 fn delete_secret(account: &str) -> Result<()> {

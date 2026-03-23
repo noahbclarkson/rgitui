@@ -13,6 +13,8 @@ use rgitui_ui::{
     LabelSize, TextInput, TextInputEvent,
 };
 
+use crate::github_device_flow::{self, DeviceFlowStatus};
+
 /// Events emitted by the settings modal.
 #[derive(Debug, Clone)]
 pub enum SettingsModalEvent {
@@ -238,6 +240,9 @@ pub struct SettingsModal {
     selected_editor_index: Option<usize>,
     feedback_message: Option<String>,
     feedback_is_error: bool,
+
+    // GitHub Device Flow
+    device_flow_status: DeviceFlowStatus,
 }
 
 impl EventEmitter<SettingsModalEvent> for SettingsModal {}
@@ -635,6 +640,7 @@ impl SettingsModal {
             selected_editor_index,
             feedback_message: None,
             feedback_is_error: false,
+            device_flow_status: DeviceFlowStatus::Idle,
         }
     }
 
@@ -1101,6 +1107,7 @@ impl SettingsModal {
         let provider = self.git_providers.remove(self.selected_provider_index);
         if self.pending_browser_auth_provider_id.as_deref() == Some(provider.id.as_str()) {
             self.pending_browser_auth_provider_id = None;
+            self.device_flow_status = DeviceFlowStatus::Idle;
         }
         self.selected_provider_index = self
             .selected_provider_index
@@ -1221,6 +1228,11 @@ impl SettingsModal {
             .get(index)
             .map(|provider| provider.id.clone());
 
+        if kind == "github" {
+            self.start_github_device_flow(cx);
+            return;
+        }
+
         let host = self
             .git_providers
             .get(index)
@@ -1239,6 +1251,128 @@ impl SettingsModal {
             self.feedback_is_error = false;
         }
         cx.notify();
+    }
+
+    fn start_github_device_flow(&mut self, cx: &mut Context<Self>) {
+        self.device_flow_status = DeviceFlowStatus::WaitingForUser {
+            user_code: "Loading...".into(),
+            verification_uri: String::new(),
+        };
+        self.feedback_message = Some("Starting GitHub login...".into());
+        self.feedback_is_error = false;
+        cx.notify();
+
+        let http = cx.http_client();
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let device_code_result = github_device_flow::request_device_code(http.clone()).await;
+
+            let device_resp = match device_code_result {
+                Ok(resp) => resp,
+                Err(e) => {
+                    cx.update(|cx| {
+                        this.update(cx, |modal, cx| {
+                            modal.device_flow_status =
+                                DeviceFlowStatus::Error(e.clone());
+                            modal.feedback_message = Some(format!("Device flow failed: {e}"));
+                            modal.feedback_is_error = true;
+                            cx.notify();
+                        })
+                        .ok();
+                    });
+                    return;
+                }
+            };
+
+            let user_code = device_resp.user_code.clone();
+            let verification_uri = device_resp.verification_uri.clone();
+            let device_code = device_resp.device_code.clone();
+            let mut interval = std::time::Duration::from_secs(device_resp.interval.max(5));
+            let expires_at = std::time::Instant::now()
+                + std::time::Duration::from_secs(device_resp.expires_in);
+
+            cx.update(|cx| {
+                this.update(cx, |modal, cx| {
+                    modal.device_flow_status = DeviceFlowStatus::WaitingForUser {
+                        user_code: user_code.clone(),
+                        verification_uri: verification_uri.clone(),
+                    };
+                    modal.feedback_message = Some(format!(
+                        "Enter code {} at {}",
+                        user_code, verification_uri
+                    ));
+                    modal.feedback_is_error = false;
+                    cx.open_url(&verification_uri);
+                    cx.notify();
+                })
+                .ok();
+            });
+
+            loop {
+                smol::Timer::after(interval).await;
+
+                if std::time::Instant::now() > expires_at {
+                    cx.update(|cx| {
+                        this.update(cx, |modal, cx| {
+                            modal.device_flow_status = DeviceFlowStatus::Error(
+                                "Device code expired. Please try again.".into(),
+                            );
+                            modal.feedback_message =
+                                Some("Device code expired. Please try again.".into());
+                            modal.feedback_is_error = true;
+                            modal.pending_browser_auth_provider_id = None;
+                            cx.notify();
+                        })
+                        .ok();
+                    });
+                    return;
+                }
+
+                match github_device_flow::poll_for_token(http.clone(), &device_code).await {
+                    Ok(github_device_flow::PollResult::Pending) => continue,
+                    Ok(github_device_flow::PollResult::SlowDown) => {
+                        interval += std::time::Duration::from_secs(5);
+                        continue;
+                    }
+                    Ok(github_device_flow::PollResult::Token(token)) => {
+                        cx.update(|cx| {
+                            this.update(cx, |modal, cx| {
+                                if let Some(provider) = modal.current_provider_mut() {
+                                    provider.token = token.clone();
+                                    provider.has_token = true;
+                                }
+                                modal.provider_token_editor.update(cx, |e, cx| {
+                                    e.set_text(&token, cx);
+                                });
+                                modal.device_flow_status = DeviceFlowStatus::Success;
+                                modal.complete_browser_onboarding_for_current_provider();
+                                modal.save_settings(cx);
+                                modal.feedback_message =
+                                    Some("GitHub account connected successfully!".into());
+                                modal.feedback_is_error = false;
+                                cx.notify();
+                            })
+                            .ok();
+                        });
+                        return;
+                    }
+                    Err(e) => {
+                        cx.update(|cx| {
+                            this.update(cx, |modal, cx| {
+                                modal.device_flow_status =
+                                    DeviceFlowStatus::Error(e.clone());
+                                modal.feedback_message = Some(e);
+                                modal.feedback_is_error = true;
+                                modal.pending_browser_auth_provider_id = None;
+                                cx.notify();
+                            })
+                            .ok();
+                        });
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     fn handle_key_down(
@@ -1916,12 +2050,12 @@ impl SettingsModal {
                     .flex_wrap()
                     .gap(px(8.))
                     .child(
-                        Button::new("add-github-account", "Add GitHub Account")
+                        Button::new("add-github-account", "Sign in with GitHub")
                             .style(ButtonStyle::Filled)
                             .size(ButtonSize::Compact)
                             .icon(IconName::Plus)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.add_provider("github", cx);
+                                this.connect_provider_in_browser("github", true, cx);
                             })),
                     )
                     .child(
@@ -1944,6 +2078,101 @@ impl SettingsModal {
                     ),
             );
         section = section.child(quick_setup);
+
+        if let DeviceFlowStatus::WaitingForUser {
+            ref user_code,
+            ref verification_uri,
+        } = self.device_flow_status
+        {
+            let code = user_code.clone();
+            let uri: SharedString = verification_uri.clone().into();
+            let mut device_card = Self::setting_card(cx);
+            device_card = device_card
+                .child(Self::setting_label(
+                    "GitHub Device Login",
+                    "A browser window has been opened. Enter the code below to authorize rgitui.",
+                ))
+                .child(
+                    div()
+                        .v_flex()
+                        .w_full()
+                        .p(px(16.))
+                        .gap(px(12.))
+                        .rounded(px(8.))
+                        .bg(colors.element_background)
+                        .border_1()
+                        .border_color(colors.border_focused)
+                        .child(
+                            div()
+                                .h_flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    Icon::new(IconName::ExternalLink)
+                                        .size(IconSize::Small)
+                                        .color(Color::Accent),
+                                )
+                                .child(
+                                    Label::new(uri)
+                                        .size(LabelSize::Small)
+                                        .color(Color::Accent),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .h_flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    Label::new("Your code:")
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    div()
+                                        .px(px(12.))
+                                        .py(px(6.))
+                                        .rounded(px(6.))
+                                        .bg(colors.surface_background)
+                                        .border_1()
+                                        .border_color(colors.border_variant)
+                                        .child(
+                                            Label::new(code.clone())
+                                                .size(LabelSize::Large)
+                                                .weight(FontWeight::BOLD),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("copy-device-code", "Copy Code")
+                                        .style(ButtonStyle::Outlined)
+                                        .size(ButtonSize::Compact)
+                                        .icon(IconName::Copy)
+                                        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                            cx.write_to_clipboard(
+                                                gpui::ClipboardItem::new_string(code.clone()),
+                                            );
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .h_flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    Icon::new(IconName::Refresh)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Warning),
+                                )
+                                .child(
+                                    Label::new("Waiting for authorization...")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Warning),
+                                ),
+                        ),
+                );
+            section = section.child(device_card);
+        }
 
         let mut profiles_card = Self::setting_card(cx);
         profiles_card = profiles_card.child(Self::setting_label(
@@ -2237,7 +2466,13 @@ impl SettingsModal {
                         .child(
                             Button::new(
                                 "selected-profile-connect",
-                                if kind == "custom" { "Manual Setup" } else { "Connect in Browser" },
+                                if kind == "custom" {
+                                    "Manual Setup"
+                                } else if kind == "github" {
+                                    "Sign in with GitHub"
+                                } else {
+                                    "Connect in Browser"
+                                },
                             )
                             .style(ButtonStyle::Filled)
                             .size(ButtonSize::Compact)

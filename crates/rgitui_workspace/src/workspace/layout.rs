@@ -1233,14 +1233,25 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                 let _ = std::process::Command::new(program)
                     .args(args)
                     .current_dir(&path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .spawn();
             }
         } else {
             #[cfg(target_os = "windows")]
             {
+                use std::os::windows::process::CommandExt;
+                const DETACHED_PROCESS: u32 = 0x00000008;
+                const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+
                 let _ = std::process::Command::new("wt.exe")
                     .arg("-d")
                     .arg(&path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                     .spawn()
                     .or_else(|_| {
                         std::process::Command::new("cmd.exe")
@@ -1248,6 +1259,10 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                             .arg("cd")
                             .arg("/d")
                             .arg(&path)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                             .spawn()
                     });
             }
@@ -1257,16 +1272,25 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                     .arg("-a")
                     .arg("Terminal")
                     .arg(&path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .spawn();
             }
             #[cfg(target_os = "linux")]
             {
                 let _ = std::process::Command::new("x-terminal-emulator")
                     .current_dir(&path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .spawn()
                     .or_else(|_| {
                         std::process::Command::new("xterm")
                             .current_dir(&path)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
                             .spawn()
                     });
             }

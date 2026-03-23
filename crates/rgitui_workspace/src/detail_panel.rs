@@ -98,14 +98,21 @@ fn file_change_color(kind: FileChangeKind) -> Color {
 }
 
 struct CachedFileDiffTree {
-    flat_entries: Vec<CachedFlatEntry>,
+    flat_rows: Vec<CachedFlatRow>,
     tree: CachedTreeNode,
 }
 
-struct CachedFlatEntry {
+#[derive(Clone)]
+struct CachedFlatRow {
     file_index: usize,
     file_name: SharedString,
     dir_path: SharedString,
+    additions: usize,
+    deletions: usize,
+    icon_name: IconName,
+    icon_color: Color,
+    change_code: SharedString,
+    change_color: Color,
 }
 
 #[derive(Default)]
@@ -152,7 +159,7 @@ fn cached_tree_count(node: &CachedTreeNode) -> usize {
 }
 
 fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
-    let flat_entries = files
+    let flat_rows = files
         .iter()
         .enumerate()
         .map(|(i, file)| {
@@ -177,15 +184,21 @@ fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
                 })
                 .unwrap_or_default()
                 .into();
-            CachedFlatEntry {
+            CachedFlatRow {
                 file_index: i,
                 file_name,
                 dir_path,
+                additions: file.additions,
+                deletions: file.deletions,
+                icon_name: file_change_icon(file.kind),
+                icon_color: file_change_color(file.kind),
+                change_code: file.kind.short_code().into(),
+                change_color: file_change_color(file.kind),
             }
         })
         .collect();
     let tree = build_cached_tree(files);
-    CachedFileDiffTree { flat_entries, tree }
+    CachedFileDiffTree { flat_rows, tree }
 }
 
 pub struct DetailPanel {
@@ -474,7 +487,6 @@ impl DetailPanel {
 
     fn render_flat_file_list(
         &self,
-        diff: &CommitDiff,
         cached: &CachedFileDiffTree,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -486,39 +498,7 @@ impl DetailPanel {
             .spacing(26.0);
         let selected_file_index = self.selected_file_index;
         let weak = cx.weak_entity();
-
-        #[derive(Clone)]
-        struct FlatRowData {
-            file_index: usize,
-            file_name: SharedString,
-            dir_path: SharedString,
-            additions: usize,
-            deletions: usize,
-            icon_name: IconName,
-            icon_color: Color,
-            change_code: SharedString,
-            change_color: Color,
-        }
-
-        let rows: Vec<FlatRowData> = cached
-            .flat_entries
-            .iter()
-            .map(|entry| {
-                let file = &diff.files[entry.file_index];
-                FlatRowData {
-                    file_index: entry.file_index,
-                    file_name: entry.file_name.clone(),
-                    dir_path: entry.dir_path.clone(),
-                    additions: file.additions,
-                    deletions: file.deletions,
-                    icon_name: file_change_icon(file.kind),
-                    icon_color: file_change_color(file.kind),
-                    change_code: file.kind.short_code().into(),
-                    change_color: file_change_color(file.kind),
-                }
-            })
-            .collect();
-
+        let rows = cached.flat_rows.clone();
         let row_count = rows.len();
 
         let ghost_element_selected = colors.ghost_element_selected;
@@ -610,7 +590,8 @@ impl DetailPanel {
             },
         )
         .flex_shrink_0()
-        .h(px(row_count as f32 * row_h))
+        .pb_2()
+        .h(px(row_count as f32 * row_h + 8.0))
         .with_sizing_behavior(ListSizingBehavior::Auto)
         .into_any_element()
     }
@@ -1380,7 +1361,7 @@ impl Render for DetailPanel {
             );
 
             let file_list: gpui::AnyElement = match self.file_view_mode {
-                FileViewMode::Flat => self.render_flat_file_list(diff, cached, cx),
+                FileViewMode::Flat => self.render_flat_file_list(cached, cx),
                 FileViewMode::Tree => self
                     .render_tree_file_list(diff, cached, &colors, cx)
                     .into_any_element(),

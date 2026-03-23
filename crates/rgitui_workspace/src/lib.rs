@@ -6,6 +6,7 @@ mod commit_panel;
 mod confirm_dialog;
 mod detail_panel;
 mod file_history_view;
+mod github_device_flow;
 mod interactive_rebase;
 mod issues_panel;
 mod markdown_view;
