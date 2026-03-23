@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
     div, px, ClickEvent, Context, EventEmitter, FocusHandle, FontWeight, KeyDownEvent, Render,
-    SharedString, Window,
+    Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
@@ -9,6 +9,12 @@ use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 #[derive(Debug, Clone)]
 pub enum ShortcutsHelpEvent {
     Dismissed,
+}
+
+struct ShortcutCategory {
+    title: &'static str,
+    description: &'static str,
+    shortcuts: &'static [(&'static str, &'static str)],
 }
 
 pub struct ShortcutsHelp {
@@ -61,65 +67,75 @@ impl ShortcutsHelp {
         }
     }
 
-    fn shortcut_categories() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    fn shortcut_categories() -> Vec<ShortcutCategory> {
         vec![
-            (
-                "Navigation",
-                vec![
-                    ("j / k", "Up / Down in focused panel"),
-                    ("g / G", "First / Last item"),
-                    ("/", "Search in graph"),
-                    ("d", "Toggle diff mode (unified/split)"),
-                    ("Tab", "Next panel"),
-                    ("Shift+Tab", "Previous panel"),
-                    ("Alt+1", "Focus sidebar"),
-                    ("Alt+2", "Focus graph"),
-                    ("Alt+3", "Focus detail panel"),
-                    ("Alt+4", "Focus diff viewer"),
-                    ("Enter / Space", "Activate sidebar item"),
-                    ("s", "Stage / Unstage file (sidebar)"),
-                    ("x / Delete", "Delete selected item (sidebar)"),
-                    ("Ctrl+Tab", "Next tab"),
-                    ("Ctrl+Shift+Tab", "Previous tab"),
+            ShortcutCategory {
+                title: "Workspace",
+                description: "App-level actions available from anywhere outside active overlays.",
+                shortcuts: &[
+                    ("Ctrl+Shift+P", "Open command palette"),
+                    ("Ctrl+O", "Open repository"),
+                    ("Ctrl+H", "Go to workspace home"),
+                    ("Ctrl+W", "Close current tab"),
+                    ("Ctrl+,", "Open settings"),
+                    ("F5", "Refresh repository state"),
+                    ("?", "Open this help"),
                 ],
-            ),
-            (
-                "Git Operations",
-                vec![
-                    ("Ctrl+S", "Stage all"),
-                    ("Ctrl+Shift+S / Ctrl+U", "Unstage All"),
+            },
+            ShortcutCategory {
+                title: "Navigation",
+                description: "Focus a panel first. Plain-letter shortcuts are context-sensitive.",
+                shortcuts: &[
+                    ("j / k", "Move up / down in the focused panel"),
+                    ("g / G", "Jump to first / last item"),
+                    ("Tab / Shift+Tab", "Cycle focused panel"),
+                    ("Alt+1 / 2 / 3 / 4", "Focus sidebar / graph / detail / diff"),
+                    ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+                    ("Enter / Space", "Activate selected sidebar item"),
+                ],
+            },
+            ShortcutCategory {
+                title: "Views & Search",
+                description: "Fast access to panels and graph-specific tools.",
+                shortcuts: &[
+                    ("Ctrl+F", "Toggle commit graph search"),
+                    ("/", "Start in-graph search"),
+                    ("d", "Toggle diff mode (unified / split)"),
+                    ("b", "Toggle blame view for selected file"),
+                    ("h", "Toggle file history view for selected file"),
+                    ("Esc", "Close the active overlay or modal"),
+                ],
+            },
+            ShortcutCategory {
+                title: "Git & AI",
+                description:
+                    "Common write actions. More advanced operations live in the command palette.",
+                shortcuts: &[
+                    ("Ctrl+Shift+F", "Fetch"),
+                    ("Ctrl+S", "Stage all changes"),
+                    ("Ctrl+Shift+S / Ctrl+U", "Unstage all changes"),
                     ("Ctrl+Enter", "Commit"),
-                    ("Ctrl+B", "Create Branch"),
-                    ("Ctrl+Shift+B", "Switch Branch"),
-                    ("Ctrl+Z", "Stash Changes"),
-                    ("Ctrl+Shift+Z", "Pop Stash"),
+                    ("Ctrl+B", "Create branch"),
+                    ("Ctrl+Shift+B", "Switch branch (focus sidebar)"),
+                    ("Ctrl+Z / Ctrl+Shift+Z", "Stash changes / pop stash"),
+                    ("Ctrl+G", "Generate AI commit message"),
+                    ("s", "Stage / unstage selected file in sidebar"),
+                    ("x / Delete", "Discard selected sidebar item"),
                 ],
-            ),
-            (
-                "Panel Management",
-                vec![
-                    ("Ctrl+O", "Open Repository"),
-                    ("Ctrl+F", "Search"),
-                    ("Ctrl+,", "Settings"),
-                    ("Ctrl+Shift+P", "Command Palette"),
-                ],
-            ),
-            (
-                "General",
-                vec![
-                    ("Ctrl+W", "Close tab"),
-                    ("Ctrl+H", "Workspace Home"),
-                    ("F5", "Refresh"),
-                    ("?", "This help"),
-                ],
-            ),
+            },
         ]
+    }
+
+    fn shortcut_count(categories: &[ShortcutCategory]) -> usize {
+        categories
+            .iter()
+            .map(|category| category.shortcuts.len())
+            .sum()
     }
 
     fn render_category(
         &self,
-        title: &str,
-        shortcuts: &[(&str, &str)],
+        category: &ShortcutCategory,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = cx.colors();
@@ -133,14 +149,24 @@ impl ShortcutsHelp {
                 .border_b_1()
                 .border_color(border_variant)
                 .child(
-                    Label::new(SharedString::from(title.to_string()))
-                        .size(LabelSize::Small)
-                        .weight(FontWeight::SEMIBOLD)
-                        .color(Color::Accent),
+                    div()
+                        .v_flex()
+                        .gap(px(4.))
+                        .child(
+                            Label::new(category.title)
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD)
+                                .color(Color::Accent),
+                        )
+                        .child(
+                            Label::new(category.description)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
                 ),
         );
 
-        for (key, desc) in shortcuts {
+        for (key, desc) in category.shortcuts {
             let hover_bg = colors.ghost_element_hover;
             col = col.child(
                 div()
@@ -150,10 +176,11 @@ impl ShortcutsHelp {
                     .px(px(4.))
                     .rounded(px(4.))
                     .items_center()
+                    .gap(px(12.))
                     .hover(move |s| s.bg(hover_bg))
                     .child(
                         div().flex_1().child(
-                            Label::new(SharedString::from(desc.to_string()))
+                            Label::new(*desc)
                                 .size(LabelSize::Small)
                                 .color(Color::Default),
                         ),
@@ -167,7 +194,7 @@ impl ShortcutsHelp {
                             .bg(hint_bg)
                             .items_center()
                             .child(
-                                Label::new(SharedString::from(key.to_string()))
+                                Label::new(*key)
                                     .size(LabelSize::XSmall)
                                     .weight(FontWeight::MEDIUM)
                                     .color(Color::Muted),
@@ -187,18 +214,19 @@ impl Render for ShortcutsHelp {
         }
 
         let categories = Self::shortcut_categories();
+        let total_shortcuts = Self::shortcut_count(&categories);
 
         let left_categories = &categories[..2];
         let right_categories = &categories[2..];
 
         let mut left_col = div().v_flex().flex_1().gap(px(16.));
-        for (title, shortcuts) in left_categories {
-            left_col = left_col.child(self.render_category(title, shortcuts, cx));
+        for category in left_categories {
+            left_col = left_col.child(self.render_category(category, cx));
         }
 
         let mut right_col = div().v_flex().flex_1().gap(px(16.));
-        for (title, shortcuts) in right_categories {
-            right_col = right_col.child(self.render_category(title, shortcuts, cx));
+        for category in right_categories {
+            right_col = right_col.child(self.render_category(category, cx));
         }
 
         let colors = cx.colors();
@@ -228,8 +256,8 @@ impl Render for ShortcutsHelp {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
-            .w(px(640.))
-            .max_h(px(560.))
+            .w(px(760.))
+            .max_h(px(620.))
             .elevation_3(cx)
             .rounded(px(10.))
             .overflow_hidden()
@@ -243,7 +271,7 @@ impl Render for ShortcutsHelp {
                 div()
                     .h_flex()
                     .w_full()
-                    .h(px(48.))
+                    .h(px(56.))
                     .px(px(16.))
                     .items_center()
                     .border_b_1()
@@ -252,7 +280,7 @@ impl Render for ShortcutsHelp {
                     .child(
                         div()
                             .h_flex()
-                            .gap(px(8.))
+                            .gap(px(10.))
                             .items_center()
                             .child(
                                 Icon::new(IconName::Star)
@@ -260,9 +288,22 @@ impl Render for ShortcutsHelp {
                                     .color(Color::Muted),
                             )
                             .child(
-                                Label::new("Keyboard Shortcuts")
-                                    .size(LabelSize::Large)
-                                    .weight(FontWeight::SEMIBOLD),
+                                div()
+                                    .v_flex()
+                                    .gap(px(2.))
+                                    .child(
+                                        Label::new("Keyboard Shortcuts")
+                                            .size(LabelSize::Large)
+                                            .weight(FontWeight::SEMIBOLD),
+                                    )
+                                    .child(
+                                        Label::new(format!(
+                                            "{} shortcuts across navigation, views, workspace, and git actions",
+                                            total_shortcuts
+                                        ))
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                    ),
                             ),
                     )
                     .child(
@@ -288,6 +329,29 @@ impl Render for ShortcutsHelp {
             )
             .child(
                 div()
+                    .w_full()
+                    .px(px(16.))
+                    .pt(px(12.))
+                    .child(
+                        div()
+                            .w_full()
+                            .rounded(px(8.))
+                            .bg(colors.surface_background)
+                            .border_1()
+                            .border_color(colors.border_variant)
+                            .px(px(12.))
+                            .py(px(10.))
+                            .child(
+                                Label::new(
+                                    "Tip: plain-letter shortcuts like d, b, h, j, and k depend on which panel is focused. Use Ctrl+Shift+P for less common actions like reflog, submodules, bisect, and stash management.",
+                                )
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                            ),
+                    ),
+            )
+            .child(
+                div()
                     .id("shortcuts-body")
                     .h_flex()
                     .w_full()
@@ -301,9 +365,10 @@ impl Render for ShortcutsHelp {
                 div()
                     .h_flex()
                     .w_full()
-                    .h(px(32.))
+                    .h(px(36.))
                     .px(px(16.))
                     .items_center()
+                    .justify_between()
                     .border_t_1()
                     .border_color(colors.border_variant)
                     .bg(colors.surface_background)
@@ -311,6 +376,11 @@ impl Render for ShortcutsHelp {
                         Label::new("Press Esc or click outside to close")
                             .size(LabelSize::XSmall)
                             .color(Color::Placeholder),
+                    )
+                    .child(
+                        Label::new("More actions: Ctrl+Shift+P")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             );
 
