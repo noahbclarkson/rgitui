@@ -35,9 +35,7 @@ pub enum DeviceFlowStatus {
     Error(String),
 }
 
-pub async fn request_device_code(
-    http: Arc<dyn HttpClient>,
-) -> Result<DeviceCodeResponse, String> {
+pub async fn request_device_code(http: Arc<dyn HttpClient>) -> Result<DeviceCodeResponse, String> {
     let body = format!("client_id={GITHUB_CLIENT_ID}&scope={GITHUB_SCOPES}");
     let request = Request::builder()
         .method(Method::POST)

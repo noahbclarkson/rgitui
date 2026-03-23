@@ -1271,8 +1271,7 @@ impl SettingsModal {
                 Err(e) => {
                     cx.update(|cx| {
                         this.update(cx, |modal, cx| {
-                            modal.device_flow_status =
-                                DeviceFlowStatus::Error(e.clone());
+                            modal.device_flow_status = DeviceFlowStatus::Error(e.clone());
                             modal.feedback_message = Some(format!("Device flow failed: {e}"));
                             modal.feedback_is_error = true;
                             cx.notify();
@@ -1287,8 +1286,8 @@ impl SettingsModal {
             let verification_uri = device_resp.verification_uri.clone();
             let device_code = device_resp.device_code.clone();
             let mut interval = std::time::Duration::from_secs(device_resp.interval.max(5));
-            let expires_at = std::time::Instant::now()
-                + std::time::Duration::from_secs(device_resp.expires_in);
+            let expires_at =
+                std::time::Instant::now() + std::time::Duration::from_secs(device_resp.expires_in);
 
             cx.update(|cx| {
                 this.update(cx, |modal, cx| {
@@ -1296,10 +1295,8 @@ impl SettingsModal {
                         user_code: user_code.clone(),
                         verification_uri: verification_uri.clone(),
                     };
-                    modal.feedback_message = Some(format!(
-                        "Enter code {} at {}",
-                        user_code, verification_uri
-                    ));
+                    modal.feedback_message =
+                        Some(format!("Enter code {} at {}", user_code, verification_uri));
                     modal.feedback_is_error = false;
                     cx.open_url(&verification_uri);
                     cx.notify();
@@ -1358,8 +1355,7 @@ impl SettingsModal {
                     Err(e) => {
                         cx.update(|cx| {
                             this.update(cx, |modal, cx| {
-                                modal.device_flow_status =
-                                    DeviceFlowStatus::Error(e.clone());
+                                modal.device_flow_status = DeviceFlowStatus::Error(e.clone());
                                 modal.feedback_message = Some(e);
                                 modal.feedback_is_error = true;
                                 modal.pending_browser_auth_provider_id = None;
@@ -2112,11 +2108,7 @@ impl SettingsModal {
                                         .size(IconSize::Small)
                                         .color(Color::Accent),
                                 )
-                                .child(
-                                    Label::new(uri)
-                                        .size(LabelSize::Small)
-                                        .color(Color::Accent),
-                                ),
+                                .child(Label::new(uri).size(LabelSize::Small).color(Color::Accent)),
                         )
                         .child(
                             div()
@@ -2148,9 +2140,9 @@ impl SettingsModal {
                                         .size(ButtonSize::Compact)
                                         .icon(IconName::Copy)
                                         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                                            cx.write_to_clipboard(
-                                                gpui::ClipboardItem::new_string(code.clone()),
-                                            );
+                                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                                code.clone(),
+                                            ));
                                         })),
                                 ),
                         )
