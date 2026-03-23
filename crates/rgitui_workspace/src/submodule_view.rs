@@ -131,16 +131,6 @@ impl SubmoduleView {
         }
     }
 
-    fn status_color(status: &str, cx: &mut Context<Self>) -> Color {
-        let colors = cx.colors();
-        match status {
-            "up to date" => Color::Accent,
-            "modified" => Color::Warning,
-            "not initialized" | "not checked out" => Color::Muted,
-            _ => Color::Default,
-        }
-    }
-
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let colors = cx.colors();
 
@@ -224,7 +214,6 @@ impl Render for SubmoduleView {
         let row_height = 28.0_f32;
         let highlighted_row = self.highlighted_row;
 
-        let selected_bg = colors.ghost_element_selected;
         let highlight_bg = colors.ghost_element_active;
 
         let list = uniform_list(
@@ -263,8 +252,7 @@ impl Render for SubmoduleView {
 
                         let branch_display: SharedString = sub
                             .branch
-                            .as_ref()
-                            .map(|b| b.clone())
+                            .clone()
                             .unwrap_or_else(|| "default".to_string())
                             .into();
 
@@ -278,8 +266,6 @@ impl Render for SubmoduleView {
                         .into();
 
                         let view_click = view.clone();
-                        let name_for_init = sub.name.clone();
-                        let name_for_update = sub.name.clone();
 
                         div()
                             .id(ElementId::NamedInteger("submodule-entry".into(), i as u64))
