@@ -362,13 +362,17 @@ impl DiffViewer {
     fn icon_for_path(path: &str) -> IconName {
         if let Some(ext) = path.rsplit('.').next() {
             match ext {
-                "rs" | "py" | "js" | "ts" | "c" | "cpp" | "h" | "go" | "java" | "rb" | "sh"
-                | "lua" | "zig" | "swift" | "kt" | "cs" | "ex" | "exs" | "hs" | "ml" => {
-                    IconName::File
-                }
-                "toml" | "yaml" | "yml" | "json" | "xml" | "ini" | "conf" | "cfg" => {
+                "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "mjs" | "cjs" | "mts" | "cts"
+                | "c" | "cpp" | "h" | "hpp" | "go" | "java" | "rb" | "sh" | "lua" | "zig"
+                | "swift" | "kt" | "kts" | "cs" | "fs" | "ex" | "exs" | "hs" | "ml" | "elm"
+                | "dart" | "r" | "scala" | "clj" | "erl" | "v" | "odin" | "proto" | "sql"
+                | "vue" | "svelte" | "astro" | "php" | "pl" | "d" => IconName::File,
+                "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5" | "xml" | "ini"
+                | "conf" | "cfg" | "env" | "hcl" | "tf" | "graphql" | "gql" | "prisma" => {
                     IconName::Settings
                 }
+                "css" | "scss" | "sass" | "less" | "styl" | "pcss" => IconName::File,
+                "html" | "htm" | "hbs" | "ejs" | "njk" => IconName::File,
                 "md" | "txt" | "rst" | "org" => IconName::File,
                 "lock" => IconName::Pin,
                 _ => IconName::File,
@@ -435,6 +439,64 @@ impl DiffViewer {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .and_then(|name| assets.syntax_set.find_syntax_by_token(name))
+            })
+            .or_else(|| {
+                // Fallback: map common extensions that syntect's defaults don't cover
+                // to the closest available syntax grammar.
+                let ext = Path::new(path).extension()?.to_str()?;
+                let fallback_name = match ext {
+                    // TypeScript / JSX / TSX → JavaScript
+                    "ts" | "tsx" | "jsx" | "mjs" | "cjs" | "mts" | "cts" => "JavaScript",
+                    // Markup variants → HTML
+                    "vue" | "svelte" | "astro" | "hbs" | "ejs" | "njk" | "liquid" => "HTML",
+                    // Style variants → CSS
+                    "scss" | "sass" | "less" | "styl" | "pcss" | "postcss" => "CSS",
+                    // Config / data → JSON or YAML
+                    "jsonc" | "json5" | "geojson" | "webmanifest" | "eslintrc"
+                    | "prettierrc" | "babelrc" => "JSON",
+                    "toml" | "ini" | "cfg" | "conf" | "env" | "properties" | "editorconfig" => {
+                        // TOML/INI are closest to YAML in structure for basic highlighting
+                        "YAML"
+                    }
+                    // Shell variants → Bash
+                    "ps1" | "psm1" | "psd1" | "nu" => "Bourne Again Shell (bash)",
+                    // Docker / container
+                    "dockerfile" => "Makefile",
+                    // Systems languages → C/C++
+                    "zig" | "odin" | "v" => "C",
+                    "kt" | "kts" => "Java",
+                    "swift" => "Objective-C",
+                    "dart" => "Java",
+                    // Functional languages
+                    "ex" | "exs" | "eex" | "heex" | "leex" => "Ruby",
+                    "elm" | "hs" | "purs" => "Haskell",
+                    "fs" | "fsx" | "fsi" => "C#",
+                    "ml" | "mli" | "re" | "rei" => "OCaml",
+                    // Other
+                    "proto" | "protobuf" => "C",
+                    "graphql" | "gql" => "JavaScript",
+                    "tf" | "hcl" => "JSON",
+                    "cmake" => "Makefile",
+                    "r" | "rmd" => "R",
+                    _ => return None,
+                };
+                assets.syntax_set.find_syntax_by_name(fallback_name)
+            })
+            .or_else(|| {
+                // Final fallback: match known filenames without extensions
+                let filename = Path::new(path).file_name()?.to_str()?;
+                let fallback_name = match filename {
+                    "Dockerfile" | "Containerfile" | "Justfile" | "Brewfile" => "Makefile",
+                    ".bashrc" | ".zshrc" | ".profile" | ".bash_profile" | ".zprofile"
+                    | ".env" | ".envrc" => "Bourne Again Shell (bash)",
+                    ".gitignore" | ".dockerignore" | ".prettierignore" | ".eslintignore" => {
+                        "Bourne Again Shell (bash)"
+                    }
+                    "tsconfig.json" | "package.json" | "composer.json" | ".swcrc" => "JSON",
+                    "CMakeLists.txt" => "Makefile",
+                    _ => return None,
+                };
+                assets.syntax_set.find_syntax_by_name(fallback_name)
             })
     }
 
