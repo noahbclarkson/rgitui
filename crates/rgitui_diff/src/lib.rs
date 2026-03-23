@@ -1,17 +1,22 @@
 use std::ops::Range;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
-    FocusHandle, FontWeight, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render,
-    ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
+    FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListSizingBehavior,
+    MouseButton, MouseDownEvent, Render, ScrollStrategy, SharedString, StyledText,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{DiffLine, FileDiff};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
 };
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{FontStyle as SyntectFontStyle, Theme, ThemeSet};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 #[derive(Debug, Clone)]
 pub enum DiffViewerEvent {
@@ -36,7 +41,7 @@ enum DisplayRow {
     Line {
         old_num: Option<usize>,
         new_num: Option<usize>,
-        content: String,
+        styled: StyledLine,
         kind: DisplayLineKind,
     },
 }
@@ -50,10 +55,10 @@ enum SideBySideRow {
     },
     Pair {
         left_num: Option<usize>,
-        left_content: String,
+        left_styled: StyledLine,
         left_kind: SideBySideLineKind,
         right_num: Option<usize>,
-        right_content: String,
+        right_styled: StyledLine,
         right_kind: SideBySideLineKind,
     },
 }
@@ -71,6 +76,34 @@ enum DisplayLineKind {
     Context,
     Addition,
     Deletion,
+}
+
+#[derive(Clone, Default)]
+struct StyledLine {
+    text: SharedString,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
+impl StyledLine {
+    fn plain(text: impl Into<SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            highlights: Vec::new(),
+        }
+    }
+}
+
+struct SyntaxAssets {
+    syntax_set: SyntaxSet,
+    theme_set: ThemeSet,
+}
+
+enum SyntaxLineHighlighter {
+    Plain,
+    Syntect {
+        syntax_set: &'static SyntaxSet,
+        highlighter: Box<HighlightLines<'static>>,
+    },
 }
 
 /// A diff viewer panel that displays file diffs with syntax coloring.
@@ -117,8 +150,8 @@ impl DiffViewer {
     }
 
     pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, cx: &mut Context<Self>) {
-        self.display_rows = Arc::new(Self::compute_display_rows(&diff));
-        self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff));
+        self.display_rows = Arc::new(Self::compute_display_rows(&diff, &path));
+        self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff, &path));
         self.diff = Some(diff);
         self.file_path = Some(path);
         self.is_staged = staged;
@@ -172,8 +205,8 @@ impl DiffViewer {
                                 text.push_str(header);
                                 text.push('\n');
                             }
-                            DisplayRow::Line { content, .. } => {
-                                text.push_str(content.trim_end());
+                            DisplayRow::Line { styled, .. } => {
+                                text.push_str(styled.text.as_ref());
                                 text.push('\n');
                             }
                         }
@@ -189,14 +222,14 @@ impl DiffViewer {
                                 text.push('\n');
                             }
                             SideBySideRow::Pair {
-                                left_content,
+                                left_styled,
                                 left_kind,
-                                right_content,
+                                right_styled,
                                 right_kind,
                                 ..
                             } => {
                                 if *left_kind != SideBySideLineKind::Empty {
-                                    text.push_str(left_content.trim_end());
+                                    text.push_str(left_styled.text.as_ref());
                                 }
                                 if *left_kind != SideBySideLineKind::Empty
                                     && *right_kind != SideBySideLineKind::Empty
@@ -207,7 +240,7 @@ impl DiffViewer {
                                 if *right_kind != SideBySideLineKind::Empty
                                     && *right_kind != SideBySideLineKind::Context
                                 {
-                                    text.push_str(right_content.trim_end());
+                                    text.push_str(right_styled.text.as_ref());
                                 }
                                 text.push('\n');
                             }
@@ -296,10 +329,6 @@ impl DiffViewer {
             DiffDisplayMode::Unified => DiffDisplayMode::SideBySide,
             DiffDisplayMode::SideBySide => DiffDisplayMode::Unified,
         };
-        if let Some(diff) = &self.diff {
-            self.display_rows = Arc::new(Self::compute_display_rows(diff));
-            self.sbs_rows = Arc::new(Self::compute_sbs_rows(diff));
-        }
         cx.notify();
     }
 
@@ -376,7 +405,133 @@ impl DiffViewer {
         header.to_string()
     }
 
-    fn compute_sbs_rows(diff: &FileDiff) -> Vec<SideBySideRow> {
+    fn syntax_assets() -> &'static SyntaxAssets {
+        static ASSETS: OnceLock<SyntaxAssets> = OnceLock::new();
+        ASSETS.get_or_init(|| SyntaxAssets {
+            syntax_set: SyntaxSet::load_defaults_newlines(),
+            theme_set: ThemeSet::load_defaults(),
+        })
+    }
+
+    fn syntax_theme() -> &'static Theme {
+        let assets = Self::syntax_assets();
+        assets
+            .theme_set
+            .themes
+            .get("base16-ocean.dark")
+            .or_else(|| assets.theme_set.themes.values().next())
+            .expect("syntect theme set should contain at least one theme")
+    }
+
+    fn syntax_for_path(path: &str) -> Option<&'static SyntaxReference> {
+        let assets = Self::syntax_assets();
+        assets
+            .syntax_set
+            .find_syntax_for_file(Path::new(path))
+            .ok()
+            .flatten()
+            .or_else(|| {
+                Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| assets.syntax_set.find_syntax_by_token(name))
+            })
+    }
+
+    fn syntax_line_highlighter(path: &str) -> SyntaxLineHighlighter {
+        let assets = Self::syntax_assets();
+        let Some(syntax) = Self::syntax_for_path(path) else {
+            return SyntaxLineHighlighter::Plain;
+        };
+
+        SyntaxLineHighlighter::Syntect {
+            syntax_set: &assets.syntax_set,
+            highlighter: Box::new(HighlightLines::new(syntax, Self::syntax_theme())),
+        }
+    }
+
+    fn syntect_style_to_highlight(style: syntect::highlighting::Style) -> HighlightStyle {
+        let foreground = style.foreground;
+        let mut highlight = HighlightStyle {
+            color: Some(rgitui_theme::hex_to_hsla(&format!(
+                "#{:02x}{:02x}{:02x}{:02x}",
+                foreground.r, foreground.g, foreground.b, foreground.a
+            ))),
+            ..Default::default()
+        };
+
+        if style.font_style.contains(SyntectFontStyle::BOLD) {
+            highlight.font_weight = Some(FontWeight::BOLD);
+        }
+        if style.font_style.contains(SyntectFontStyle::ITALIC) {
+            highlight.font_style = Some(FontStyle::Italic);
+        }
+
+        highlight
+    }
+
+    fn highlight_text(text: &str, highlighter: &mut SyntaxLineHighlighter) -> StyledLine {
+        let trimmed = text.trim_end();
+        if trimmed.is_empty() {
+            return StyledLine::plain(trimmed.to_string());
+        }
+
+        match highlighter {
+            SyntaxLineHighlighter::Plain => StyledLine::plain(trimmed.to_string()),
+            SyntaxLineHighlighter::Syntect {
+                syntax_set,
+                highlighter,
+            } => {
+                let Ok(ranges) = highlighter.highlight_line(trimmed, syntax_set) else {
+                    return StyledLine::plain(trimmed.to_string());
+                };
+
+                let mut highlights = Vec::new();
+                let mut cursor = 0usize;
+                for (style, segment) in ranges.into_iter() {
+                    let segment: &str = segment;
+                    let len = segment.len();
+                    if len == 0 {
+                        continue;
+                    }
+                    highlights.push((
+                        cursor..cursor + len,
+                        Self::syntect_style_to_highlight(style),
+                    ));
+                    cursor += len;
+                }
+
+                StyledLine {
+                    text: trimmed.to_string().into(),
+                    highlights,
+                }
+            }
+        }
+    }
+
+    fn render_styled_text(
+        window: &Window,
+        text: &StyledLine,
+        default_color: gpui::Hsla,
+    ) -> gpui::AnyElement {
+        let mut text_style = window.text_style();
+        text_style.color = default_color;
+
+        if text.highlights.is_empty() {
+            div()
+                .child(StyledText::new(text.text.clone()))
+                .into_any_element()
+        } else {
+            div()
+                .child(
+                    StyledText::new(text.text.clone())
+                        .with_default_highlights(&text_style, text.highlights.clone()),
+                )
+                .into_any_element()
+        }
+    }
+
+    fn compute_sbs_rows(diff: &FileDiff, path: &str) -> Vec<SideBySideRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
             let header_str = hunk.header.trim().to_string();
@@ -387,33 +542,34 @@ impl DiffViewer {
             });
             let mut old_line = hunk.old_start as usize;
             let mut new_line = hunk.new_start as usize;
+            let mut highlighter = Self::syntax_line_highlighter(path);
 
-            let mut pending_dels: Vec<(usize, String)> = Vec::new();
-            let mut pending_adds: Vec<(usize, String)> = Vec::new();
+            let mut pending_dels: Vec<(usize, StyledLine)> = Vec::new();
+            let mut pending_adds: Vec<(usize, StyledLine)> = Vec::new();
 
             let flush = |rows: &mut Vec<SideBySideRow>,
-                         dels: &mut Vec<(usize, String)>,
-                         adds: &mut Vec<(usize, String)>| {
+                         dels: &mut Vec<(usize, StyledLine)>,
+                         adds: &mut Vec<(usize, StyledLine)>| {
                 let max_len = dels.len().max(adds.len());
                 for j in 0..max_len {
-                    let (left_num, left_content, left_kind) = if let Some((num, text)) = dels.get(j)
-                    {
-                        (Some(*num), text.clone(), SideBySideLineKind::Deletion)
-                    } else {
-                        (None, String::new(), SideBySideLineKind::Empty)
-                    };
-                    let (right_num, right_content, right_kind) =
-                        if let Some((num, text)) = adds.get(j) {
-                            (Some(*num), text.clone(), SideBySideLineKind::Addition)
+                    let (left_num, left_styled, left_kind) =
+                        if let Some((num, styled)) = dels.get(j) {
+                            (Some(*num), styled.clone(), SideBySideLineKind::Deletion)
                         } else {
-                            (None, String::new(), SideBySideLineKind::Empty)
+                            (None, StyledLine::plain(""), SideBySideLineKind::Empty)
+                        };
+                    let (right_num, right_styled, right_kind) =
+                        if let Some((num, styled)) = adds.get(j) {
+                            (Some(*num), styled.clone(), SideBySideLineKind::Addition)
+                        } else {
+                            (None, StyledLine::plain(""), SideBySideLineKind::Empty)
                         };
                     rows.push(SideBySideRow::Pair {
                         left_num,
-                        left_content,
+                        left_styled,
                         left_kind,
                         right_num,
-                        right_content,
+                        right_styled,
                         right_kind,
                     });
                 }
@@ -425,12 +581,13 @@ impl DiffViewer {
                 match line {
                     DiffLine::Context(text) => {
                         flush(&mut rows, &mut pending_dels, &mut pending_adds);
+                        let styled = Self::highlight_text(text, &mut highlighter);
                         rows.push(SideBySideRow::Pair {
                             left_num: Some(old_line),
-                            left_content: text.clone(),
+                            left_styled: styled.clone(),
                             left_kind: SideBySideLineKind::Context,
                             right_num: Some(new_line),
-                            right_content: text.clone(),
+                            right_styled: styled,
                             right_kind: SideBySideLineKind::Context,
                         });
                         old_line += 1;
@@ -440,11 +597,11 @@ impl DiffViewer {
                         if !pending_adds.is_empty() && pending_dels.is_empty() {
                             flush(&mut rows, &mut pending_dels, &mut pending_adds);
                         }
-                        pending_dels.push((old_line, text.clone()));
+                        pending_dels.push((old_line, Self::highlight_text(text, &mut highlighter)));
                         old_line += 1;
                     }
                     DiffLine::Addition(text) => {
-                        pending_adds.push((new_line, text.clone()));
+                        pending_adds.push((new_line, Self::highlight_text(text, &mut highlighter)));
                         new_line += 1;
                     }
                 }
@@ -454,7 +611,7 @@ impl DiffViewer {
         rows
     }
 
-    fn compute_display_rows(diff: &FileDiff) -> Vec<DisplayRow> {
+    fn compute_display_rows(diff: &FileDiff, path: &str) -> Vec<DisplayRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
             let header_str = hunk.header.trim().to_string();
@@ -465,13 +622,14 @@ impl DiffViewer {
             });
             let mut old_line = hunk.old_start as usize;
             let mut new_line = hunk.new_start as usize;
+            let mut highlighter = Self::syntax_line_highlighter(path);
             for line in &hunk.lines {
                 match line {
                     DiffLine::Context(text) => {
                         rows.push(DisplayRow::Line {
                             old_num: Some(old_line),
                             new_num: Some(new_line),
-                            content: text.clone(),
+                            styled: Self::highlight_text(text, &mut highlighter),
                             kind: DisplayLineKind::Context,
                         });
                         old_line += 1;
@@ -481,7 +639,7 @@ impl DiffViewer {
                         rows.push(DisplayRow::Line {
                             old_num: None,
                             new_num: Some(new_line),
-                            content: text.clone(),
+                            styled: Self::highlight_text(text, &mut highlighter),
                             kind: DisplayLineKind::Addition,
                         });
                         new_line += 1;
@@ -490,7 +648,7 @@ impl DiffViewer {
                         rows.push(DisplayRow::Line {
                             old_num: Some(old_line),
                             new_num: None,
-                            content: text.clone(),
+                            styled: Self::highlight_text(text, &mut highlighter),
                             kind: DisplayLineKind::Deletion,
                         });
                         old_line += 1;
@@ -632,7 +790,7 @@ impl Render for DiffViewer {
                 uniform_list(
                     "diff-lines",
                     display_rows.len(),
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                    move |range: Range<usize>, window: &mut Window, _cx: &mut App| {
                         range
                             .map(|i| {
                                 let row = &display_rows[i];
@@ -751,7 +909,7 @@ impl Render for DiffViewer {
                                     DisplayRow::Line {
                                         old_num,
                                         new_num,
-                                        content,
+                                        styled,
                                         kind,
                                     } => {
                                         let (prefix, text_col, line_bg, gutter_accent) = match kind
@@ -776,8 +934,6 @@ impl Render for DiffViewer {
                                             .unwrap_or_else(|| "    ".to_string())
                                             .into();
                                         let prefix_str: SharedString = prefix.into();
-                                        let content_text: SharedString =
-                                            content.trim_end().to_string().into();
                                         let is_highlighted = highlighted_row == Some(i);
                                         let is_selected = selected_lines
                                             .as_ref()
@@ -874,7 +1030,7 @@ impl Render for DiffViewer {
                                                     .font_family("monospace")
                                                     .text_color(text_col)
                                                     .whitespace_nowrap()
-                                                    .child(content_text),
+                                                    .child(Self::render_styled_text(window, styled, text_col)),
                                             )
                                             .into_any_element()
                                     }
@@ -892,7 +1048,7 @@ impl Render for DiffViewer {
                 uniform_list(
                     "diff-lines-sbs",
                     sbs_rows.len(),
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                    move |range: Range<usize>, window: &mut Window, _cx: &mut App| {
                         range
                             .map(|i| {
                                 let row = &sbs_rows[i];
@@ -1010,10 +1166,10 @@ impl Render for DiffViewer {
                                     }
                                     SideBySideRow::Pair {
                                         left_num,
-                                        left_content,
+                                        left_styled,
                                         left_kind,
                                         right_num,
-                                        right_content,
+                                        right_styled,
                                         right_kind,
                                     } => {
                                         let (left_bg, left_gutter_bg, left_text_col) =
@@ -1055,11 +1211,6 @@ impl Render for DiffViewer {
                                             .map(|n| format!("{:>4}", n))
                                             .unwrap_or_else(|| "    ".to_string())
                                             .into();
-                                        let left_text: SharedString =
-                                            left_content.trim_end().to_string().into();
-                                        let right_text: SharedString =
-                                            right_content.trim_end().to_string().into();
-
                                         let is_highlighted = highlighted_row == Some(i);
                                         let is_sbs_selected = selected_lines
                                             .as_ref()
@@ -1139,7 +1290,7 @@ impl Render for DiffViewer {
                                                             .text_color(left_text_col)
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
-                                                            .child(left_text),
+                                                            .child(Self::render_styled_text(window, left_styled, left_text_col)),
                                                     ),
                                             )
                                             .child(
@@ -1186,7 +1337,7 @@ impl Render for DiffViewer {
                                                             .text_color(right_text_col)
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
-                                                            .child(right_text),
+                                                            .child(Self::render_styled_text(window, right_styled, right_text_col)),
                                                     ),
                                             )
                                             .into_any_element()
