@@ -56,12 +56,7 @@ pub(super) fn subscribe_settings_modal(
                             crate::issues_panel::parse_github_owner_repo(&url)
                         {
                             tab.issues_panel.update(cx, |ip, cx| {
-                                ip.configure(
-                                    token.clone(),
-                                    owner.clone(),
-                                    repo_name.clone(),
-                                    cx,
-                                );
+                                ip.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
                             });
                             tab.prs_panel.update(cx, |pp, cx| {
                                 pp.configure(token.clone(), owner.clone(), repo_name.clone(), cx);

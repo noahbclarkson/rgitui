@@ -7,6 +7,8 @@ use gpui::{
     SharedString, UniformListScrollHandle, Window,
 };
 use http_client::HttpClient;
+
+use crate::github_api::{format_github_collection_error, format_github_detail_error};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
@@ -945,19 +947,7 @@ async fn fetch_github_issues(
         .map_err(|e| e.to_string())?;
 
     if !status.is_success() {
-        let detail = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from));
-        return Err(match (status.as_u16(), detail) {
-            (404, _) => format!(
-                "Repository not found — your token may not have access to {}/{}",
-                owner, repo
-            ),
-            (401, _) => "GitHub token is invalid or expired".into(),
-            (403, Some(msg)) => format!("Access denied: {}", msg),
-            (_, Some(msg)) => format!("GitHub API error {}: {}", status, msg),
-            (_, None) => format!("GitHub API error: {}", status),
-        });
+        return Err(format_github_collection_error(status, &body, owner, repo));
     }
 
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
@@ -1063,13 +1053,7 @@ async fn fetch_github_comments(
         .map_err(|e| e.to_string())?;
 
     if !status.is_success() {
-        let detail = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from));
-        return Err(match detail {
-            Some(msg) => format!("GitHub API error {}: {}", status, msg),
-            None => format!("GitHub API error: {}", status),
-        });
+        return Err(format_github_detail_error(status, &body));
     }
 
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;

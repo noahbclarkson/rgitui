@@ -4,8 +4,8 @@ use gpui::{
     KeyDownEvent, Render, SharedString, Window,
 };
 use rgitui_settings::{
-    AiSettings, AutoFetchInterval, Compactness, DiffViewMode, GitProviderSettings,
-    GraphStyle, SettingsState,
+    AiSettings, AutoFetchInterval, Compactness, DiffViewMode, GitProviderSettings, GraphStyle,
+    SettingsState,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
@@ -1321,13 +1321,9 @@ impl SettingsModal {
                             this.update(cx, |modal, cx| {
                                 // Find the provider that initiated this flow by its ID,
                                 // not by selected_provider_index (which may have changed).
-                                let target_id =
-                                    modal.pending_browser_auth_provider_id.clone();
+                                let target_id = modal.pending_browser_auth_provider_id.clone();
                                 let target_index = target_id.as_ref().and_then(|id| {
-                                    modal
-                                        .git_providers
-                                        .iter()
-                                        .position(|p| &p.id == id)
+                                    modal.git_providers.iter().position(|p| &p.id == id)
                                 });
                                 if let Some(index) = target_index {
                                     modal.git_providers[index].token = token.clone();

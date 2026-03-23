@@ -826,8 +826,7 @@ impl Render for Workspace {
                                         |el| el.child(active_tab.issues_panel.clone()),
                                     )
                                     .when(
-                                        active_tab.right_panel_mode
-                                            == RightPanelMode::PullRequests,
+                                        active_tab.right_panel_mode == RightPanelMode::PullRequests,
                                         |el| el.child(active_tab.prs_panel.clone()),
                                     ),
                             )
