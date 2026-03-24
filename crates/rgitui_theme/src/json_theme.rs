@@ -183,3 +183,195 @@ pub fn load_theme_by_name(name: &str) -> Theme {
     // Fallback: load first theme (Catppuccin Mocha)
     load_theme_from_json(BUILTIN_THEME_FILES[0].1).expect("default theme must parse")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ────────────────────────────────────────────────────
+
+    /// Build a minimal valid JSON theme string with every required key.
+    fn minimal_dark_theme_json(name: &str) -> String {
+        let color = "#1e1e2e";
+        let status = "#ff0000";
+        format!(
+            r#"{{
+                "name": "{name}",
+                "appearance": "dark",
+                "colors": {{
+                    "background": "{c}",
+                    "surface_background": "{c}",
+                    "elevated_surface_background": "{c}",
+                    "editor_background": "{c}",
+                    "border": "{c}",
+                    "border_variant": "{c}",
+                    "border_focused": "{c}",
+                    "border_selected": "{c}",
+                    "border_disabled": "{c}",
+                    "border_transparent": "{c}",
+                    "element_background": "{c}",
+                    "element_hover": "{c}",
+                    "element_active": "{c}",
+                    "element_selected": "{c}",
+                    "element_disabled": "{c}",
+                    "ghost_element_background": "{c}",
+                    "ghost_element_hover": "{c}",
+                    "ghost_element_active": "{c}",
+                    "ghost_element_selected": "{c}",
+                    "text": "{c}",
+                    "text_muted": "{c}",
+                    "text_placeholder": "{c}",
+                    "text_disabled": "{c}",
+                    "text_accent": "{c}",
+                    "icon": "{c}",
+                    "icon_muted": "{c}",
+                    "icon_disabled": "{c}",
+                    "icon_accent": "{c}",
+                    "title_bar_background": "{c}",
+                    "toolbar_background": "{c}",
+                    "tab_bar_background": "{c}",
+                    "tab_active_background": "{c}",
+                    "tab_inactive_background": "{c}",
+                    "status_bar_background": "{c}",
+                    "panel_background": "{c}",
+                    "scrollbar_thumb_background": "{c}",
+                    "scrollbar_thumb_hover_background": "{c}",
+                    "vc_added": "{c}",
+                    "vc_modified": "{c}",
+                    "vc_deleted": "{c}",
+                    "vc_conflict": "{c}",
+                    "vc_renamed": "{c}",
+                    "vc_untracked": "{c}"
+                }},
+                "status": {{
+                    "error": "{s}",
+                    "error_background": "{s}",
+                    "warning": "{s}",
+                    "warning_background": "{s}",
+                    "success": "{s}",
+                    "success_background": "{s}",
+                    "info": "{s}",
+                    "info_background": "{s}",
+                    "hint": "{s}"
+                }}
+            }}"#,
+            name = name,
+            c = color,
+            s = status,
+        )
+    }
+
+    // ── load_theme_from_json ───────────────────────────────────────
+
+    #[test]
+    fn load_valid_dark_theme() {
+        let json = minimal_dark_theme_json("Test Dark");
+        let theme = load_theme_from_json(&json).expect("should parse");
+        assert_eq!(theme.name, "Test Dark");
+        assert_eq!(theme.appearance, crate::theme::Appearance::Dark);
+    }
+
+    #[test]
+    fn load_valid_light_theme() {
+        // Reuse helper, then patch appearance field
+        let json = minimal_dark_theme_json("Test Light").replace("\"dark\"", "\"light\"");
+        let theme = load_theme_from_json(&json).expect("should parse");
+        assert_eq!(theme.appearance, crate::theme::Appearance::Light);
+    }
+
+    #[test]
+    fn load_unknown_appearance_errors() {
+        let json = minimal_dark_theme_json("Bad").replace("\"dark\"", "\"rainbow\"");
+        let err = load_theme_from_json(&json).unwrap_err();
+        assert!(err.to_string().contains("unknown appearance"));
+    }
+
+    #[test]
+    fn load_missing_required_color_key_errors() {
+        // Remove one required key
+        let json =
+            minimal_dark_theme_json("Incomplete").replace("\"background\":", "\"_background\":");
+        let err = load_theme_from_json(&json).unwrap_err();
+        assert!(err.to_string().contains("missing color key"));
+    }
+
+    #[test]
+    fn load_invalid_json_errors() {
+        let err = load_theme_from_json("{not valid json").unwrap_err();
+        // anyhow wraps serde_json error
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn load_optional_hint_background_absent_uses_default() {
+        // hint_background has a default — it's OK to omit it
+        let json = minimal_dark_theme_json("No Hint");
+        // hint_background is not in the minimal template — verify it parses fine
+        let theme = load_theme_from_json(&json).expect("should parse without hint_background");
+        assert_eq!(theme.name, "No Hint");
+    }
+
+    // ── load_json_themes / available_themes ───────────────────────
+
+    #[test]
+    fn all_builtin_themes_parse() {
+        let themes = load_json_themes();
+        // 5 built-in themes: mocha, latte, one-dark, github-dark, dracula
+        assert_eq!(
+            themes.len(),
+            5,
+            "expected 5 built-in themes, got {}",
+            themes.len()
+        );
+    }
+
+    #[test]
+    fn builtin_theme_names_are_known() {
+        let themes = load_json_themes();
+        let names: Vec<&str> = themes.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"Catppuccin Mocha"));
+        assert!(names.contains(&"Catppuccin Latte"));
+        assert!(names.contains(&"One Dark"));
+        assert!(names.contains(&"GitHub Dark"));
+        assert!(names.contains(&"Dracula"));
+    }
+
+    #[test]
+    fn catppuccin_mocha_is_dark() {
+        let themes = load_json_themes();
+        let mocha = themes
+            .iter()
+            .find(|t| t.name == "Catppuccin Mocha")
+            .expect("Catppuccin Mocha should exist");
+        assert_eq!(mocha.appearance, crate::theme::Appearance::Dark);
+    }
+
+    #[test]
+    fn catppuccin_latte_is_light() {
+        let themes = load_json_themes();
+        let latte = themes
+            .iter()
+            .find(|t| t.name == "Catppuccin Latte")
+            .expect("Catppuccin Latte should exist");
+        assert_eq!(latte.appearance, crate::theme::Appearance::Light);
+    }
+
+    #[test]
+    fn available_themes_returns_five_names() {
+        let names = available_themes();
+        assert_eq!(names.len(), 5);
+    }
+
+    #[test]
+    fn load_theme_by_name_catppuccin_mocha() {
+        let theme = load_theme_by_name("Catppuccin Mocha");
+        assert_eq!(theme.name, "Catppuccin Mocha");
+    }
+
+    #[test]
+    fn load_theme_by_name_unknown_falls_back_to_default() {
+        // Unknown name → falls back to first theme (Catppuccin Mocha)
+        let theme = load_theme_by_name("does not exist");
+        assert_eq!(theme.name, "Catppuccin Mocha");
+    }
+}

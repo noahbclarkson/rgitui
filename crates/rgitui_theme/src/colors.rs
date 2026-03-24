@@ -758,3 +758,144 @@ pub const GRAPH_LANE_COLORS: &[fn() -> Hsla] = &[
 pub fn lane_color(index: usize) -> Hsla {
     GRAPH_LANE_COLORS[index % GRAPH_LANE_COLORS.len()]()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── hex_to_hsla ────────────────────────────────────────────────
+
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn hex_pure_red_rgb() {
+        // #FF0000 → RGB(1,0,0) → HSL(0°, 100%, 50%)
+        let c = hex_to_hsla("#FF0000");
+        assert!(approx_eq(c.h, 0.0));
+        assert!(approx_eq(c.s, 1.0));
+        assert!(approx_eq(c.l, 0.5));
+        assert!(approx_eq(c.a, 1.0));
+    }
+
+    #[test]
+    fn hex_pure_green_rgb() {
+        // #00FF00 → HSL(120°/360=0.333…, 100%, 50%)
+        let c = hex_to_hsla("#00FF00");
+        assert!(approx_eq(c.h, 1.0 / 3.0));
+        assert!(approx_eq(c.s, 1.0));
+        assert!(approx_eq(c.l, 0.5));
+    }
+
+    #[test]
+    fn hex_pure_blue_rgb() {
+        // #0000FF → HSL(240°/360=0.666…, 100%, 50%)
+        let c = hex_to_hsla("#0000FF");
+        assert!(approx_eq(c.h, 2.0 / 3.0));
+        assert!(approx_eq(c.s, 1.0));
+        assert!(approx_eq(c.l, 0.5));
+    }
+
+    #[test]
+    fn hex_white() {
+        // #FFFFFF → grey (s=0), l=1
+        let c = hex_to_hsla("#FFFFFF");
+        assert!(approx_eq(c.l, 1.0));
+        assert!(approx_eq(c.s, 0.0));
+        assert!(approx_eq(c.a, 1.0));
+    }
+
+    #[test]
+    fn hex_black() {
+        // #000000 → l=0
+        let c = hex_to_hsla("#000000");
+        assert!(approx_eq(c.l, 0.0));
+        assert!(approx_eq(c.a, 1.0));
+    }
+
+    #[test]
+    fn hex_with_alpha_ff() {
+        // #FF0000FF → full opacity red
+        let c = hex_to_hsla("#FF0000FF");
+        assert!(approx_eq(c.a, 1.0));
+    }
+
+    #[test]
+    fn hex_with_alpha_80() {
+        // #FFFFFF80 → ~50% opacity white
+        let c = hex_to_hsla("#FFFFFF80");
+        assert!(approx_eq(c.a, 0x80 as f32 / 255.0));
+    }
+
+    #[test]
+    fn hex_lowercase_digits() {
+        // Should work case-insensitively (upper octets accepted since from_str_radix handles both)
+        let upper = hex_to_hsla("#AABBCC");
+        let lower = hex_to_hsla("#aabbcc");
+        assert!(approx_eq(upper.h, lower.h));
+        assert!(approx_eq(upper.s, lower.s));
+        assert!(approx_eq(upper.l, lower.l));
+    }
+
+    #[test]
+    fn hex_without_hash_prefix() {
+        // hex_to_hsla trims '#' if present; input without '#' should also work
+        let with = hex_to_hsla("#FF0000");
+        let without = hex_to_hsla("FF0000");
+        assert!(approx_eq(with.h, without.h));
+        assert!(approx_eq(with.s, without.s));
+        assert!(approx_eq(with.l, without.l));
+    }
+
+    #[test]
+    fn hex_invalid_length_fallback_black() {
+        // Invalid length → (0, 0, 0, 1.0) fallback
+        let c = hex_to_hsla("#ABC");
+        assert!(approx_eq(c.h, 0.0));
+        assert!(approx_eq(c.s, 0.0));
+        assert!(approx_eq(c.l, 0.0));
+        assert!(approx_eq(c.a, 1.0));
+    }
+
+    #[test]
+    fn hex_empty_fallback_black() {
+        let c = hex_to_hsla("");
+        assert!(approx_eq(c.a, 1.0));
+        assert!(approx_eq(c.l, 0.0));
+    }
+
+    // ── lane_color ─────────────────────────────────────────────────
+
+    #[test]
+    fn lane_color_index_zero_is_valid() {
+        let c = lane_color(0);
+        // Just verify it returns a fully opaque color (a == 1.0)
+        assert!(approx_eq(c.a, 1.0));
+    }
+
+    #[test]
+    fn lane_color_wraps_modulo_palette_length() {
+        let n = super::GRAPH_LANE_COLORS.len();
+        let c0 = lane_color(0);
+        let cn = lane_color(n);
+        // Wrapping should give the same color as index 0
+        assert!(approx_eq(c0.h, cn.h));
+        assert!(approx_eq(c0.s, cn.s));
+        assert!(approx_eq(c0.l, cn.l));
+    }
+
+    #[test]
+    fn lane_color_all_indices_opaque() {
+        let n = super::GRAPH_LANE_COLORS.len();
+        for i in 0..n {
+            let c = lane_color(i);
+            assert!(
+                approx_eq(c.a, 1.0),
+                "lane_color({}) has unexpected alpha {}",
+                i,
+                c.a
+            );
+        }
+    }
+}
