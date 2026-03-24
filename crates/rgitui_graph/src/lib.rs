@@ -2361,3 +2361,125 @@ fn format_relative_time(time: &chrono::DateTime<chrono::Utc>) -> String {
         format!("{}y ago", duration.num_days() / 365)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+    use rgitui_git::{FileChangeKind, FileStatus};
+    use std::path::PathBuf;
+
+    fn make_file_status(kind: FileChangeKind) -> FileStatus {
+        FileStatus {
+            path: PathBuf::from("file.txt"),
+            kind,
+            old_path: None,
+            additions: 0,
+            deletions: 0,
+        }
+    }
+
+    // --- compute_breakdown ---
+
+    #[test]
+    fn compute_breakdown_empty() {
+        let result = compute_breakdown(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn compute_breakdown_single_kind() {
+        let files = vec![
+            make_file_status(FileChangeKind::Modified),
+            make_file_status(FileChangeKind::Modified),
+        ];
+        let result = compute_breakdown(&files);
+        assert_eq!(result.get(&FileChangeKind::Modified), Some(&2));
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn compute_breakdown_mixed_kinds() {
+        let files = vec![
+            make_file_status(FileChangeKind::Added),
+            make_file_status(FileChangeKind::Modified),
+            make_file_status(FileChangeKind::Deleted),
+            make_file_status(FileChangeKind::Added),
+        ];
+        let result = compute_breakdown(&files);
+        assert_eq!(result.get(&FileChangeKind::Added), Some(&2));
+        assert_eq!(result.get(&FileChangeKind::Modified), Some(&1));
+        assert_eq!(result.get(&FileChangeKind::Deleted), Some(&1));
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn compute_breakdown_all_kinds() {
+        let kinds = [
+            FileChangeKind::Added,
+            FileChangeKind::Modified,
+            FileChangeKind::Deleted,
+            FileChangeKind::Renamed,
+            FileChangeKind::Copied,
+            FileChangeKind::TypeChange,
+            FileChangeKind::Untracked,
+            FileChangeKind::Conflicted,
+        ];
+        let files: Vec<FileStatus> = kinds.iter().copied().map(make_file_status).collect();
+        let result = compute_breakdown(&files);
+        assert_eq!(result.len(), 8);
+        for kind in &kinds {
+            assert_eq!(result.get(kind), Some(&1));
+        }
+    }
+
+    // --- format_relative_time ---
+
+    #[test]
+    fn format_relative_time_just_now() {
+        let now = Utc::now();
+        assert_eq!(format_relative_time(&now), "just now");
+    }
+
+    #[test]
+    fn format_relative_time_minutes() {
+        let t = Utc::now() - Duration::minutes(30);
+        let result = format_relative_time(&t);
+        assert_eq!(result, "30m ago");
+    }
+
+    #[test]
+    fn format_relative_time_hours() {
+        let t = Utc::now() - Duration::hours(5);
+        let result = format_relative_time(&t);
+        assert_eq!(result, "5h ago");
+    }
+
+    #[test]
+    fn format_relative_time_days() {
+        let t = Utc::now() - Duration::days(3);
+        let result = format_relative_time(&t);
+        assert_eq!(result, "3d ago");
+    }
+
+    #[test]
+    fn format_relative_time_weeks() {
+        let t = Utc::now() - Duration::weeks(2);
+        let result = format_relative_time(&t);
+        assert_eq!(result, "2w ago");
+    }
+
+    #[test]
+    fn format_relative_time_months() {
+        let t = Utc::now() - Duration::days(60);
+        let result = format_relative_time(&t);
+        assert_eq!(result, "2mo ago");
+    }
+
+    #[test]
+    fn format_relative_time_years() {
+        let t = Utc::now() - Duration::days(400);
+        let result = format_relative_time(&t);
+        assert_eq!(result, "1y ago");
+    }
+}

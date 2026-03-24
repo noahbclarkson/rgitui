@@ -1132,4 +1132,82 @@ mod tests {
         assert!(!migrated);
         assert_eq!(state.settings.version, CURRENT_SETTINGS_VERSION);
     }
+
+    // --- dedup_paths ---
+
+    #[test]
+    fn dedup_paths_removes_duplicates() {
+        let paths = vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/a"),
+        ];
+        let result = dedup_paths(paths);
+        assert_eq!(result, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+    }
+
+    #[test]
+    fn dedup_paths_preserves_order() {
+        let paths = vec![
+            PathBuf::from("/c"),
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/a"),
+        ];
+        let result = dedup_paths(paths);
+        assert_eq!(
+            result,
+            vec![
+                PathBuf::from("/c"),
+                PathBuf::from("/a"),
+                PathBuf::from("/b")
+            ]
+        );
+    }
+
+    #[test]
+    fn dedup_paths_empty_input() {
+        let result = dedup_paths(vec![]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn dedup_paths_no_duplicates() {
+        let paths = vec![PathBuf::from("/x"), PathBuf::from("/y")];
+        let result = dedup_paths(paths.clone());
+        assert_eq!(result, paths);
+    }
+
+    // --- workspace_name_from_repos ---
+
+    #[test]
+    fn workspace_name_empty_repos_is_workspace() {
+        assert_eq!(workspace_name_from_repos(&[]), "Workspace");
+    }
+
+    #[test]
+    fn workspace_name_single_repo_uses_dir_name() {
+        let repos = vec![PathBuf::from("/home/user/my-project")];
+        assert_eq!(workspace_name_from_repos(&repos), "my-project");
+    }
+
+    #[test]
+    fn workspace_name_two_repos_joined_with_plus() {
+        let repos = vec![PathBuf::from("/repos/alpha"), PathBuf::from("/repos/beta")];
+        assert_eq!(workspace_name_from_repos(&repos), "alpha + beta");
+    }
+
+    #[test]
+    fn workspace_name_three_repos_shows_overflow() {
+        let repos = vec![
+            PathBuf::from("/repos/alpha"),
+            PathBuf::from("/repos/beta"),
+            PathBuf::from("/repos/gamma"),
+        ];
+        // takes first 2, then "+N" for the rest
+        let name = workspace_name_from_repos(&repos);
+        assert!(name.contains("alpha"));
+        assert!(name.contains("beta"));
+        assert!(name.contains("+1"));
+    }
 }
