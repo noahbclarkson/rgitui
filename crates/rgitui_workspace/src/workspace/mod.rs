@@ -9,7 +9,7 @@ mod undo;
 mod update_checker;
 
 pub(crate) use state::*;
-pub(crate) use undo::{UndoAction, UndoEntry};
+pub(crate) use undo::{UndoAction, UndoEntry, UndoStack};
 
 use std::time::Instant;
 
@@ -138,7 +138,7 @@ pub struct Workspace {
     pub(super) toast_layer: Entity<ToastLayer>,
     pub(super) active_workspace_id: Option<String>,
     pub(super) status_message: Option<String>,
-    pub(super) undo_history: Vec<UndoEntry>,
+    pub(super) undo_stack: UndoStack,
     pub(super) layout_save_task: Option<gpui::Task<()>>,
 }
 
@@ -225,7 +225,7 @@ impl Workspace {
             toast_layer,
             active_workspace_id: None,
             status_message: None,
-            undo_history: Vec::new(),
+            undo_stack: UndoStack::new(),
             layout_save_task: None,
         }
     }
