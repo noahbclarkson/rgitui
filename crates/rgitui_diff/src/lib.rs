@@ -362,15 +362,13 @@ impl DiffViewer {
     fn icon_for_path(path: &str) -> IconName {
         if let Some(ext) = path.rsplit('.').next() {
             match ext {
-                "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "mjs" | "cjs" | "mts" | "cts"
-                | "c" | "cpp" | "h" | "hpp" | "go" | "java" | "rb" | "sh" | "lua" | "zig"
-                | "swift" | "kt" | "kts" | "cs" | "fs" | "ex" | "exs" | "hs" | "ml" | "elm"
-                | "dart" | "r" | "scala" | "clj" | "erl" | "v" | "odin" | "proto" | "sql"
-                | "vue" | "svelte" | "astro" | "php" | "pl" | "d" => IconName::File,
-                "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5" | "xml" | "ini"
-                | "conf" | "cfg" | "env" | "hcl" | "tf" | "graphql" | "gql" | "prisma" => {
-                    IconName::Settings
-                }
+                "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "mjs" | "cjs" | "mts" | "cts" | "c"
+                | "cpp" | "h" | "hpp" | "go" | "java" | "rb" | "sh" | "lua" | "zig" | "swift"
+                | "kt" | "kts" | "cs" | "fs" | "ex" | "exs" | "hs" | "ml" | "elm" | "dart"
+                | "r" | "scala" | "clj" | "erl" | "v" | "odin" | "proto" | "sql" | "vue"
+                | "svelte" | "astro" | "php" | "pl" | "d" => IconName::File,
+                "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5" | "xml" | "ini" | "conf"
+                | "cfg" | "env" | "hcl" | "tf" | "graphql" | "gql" | "prisma" => IconName::Settings,
                 "css" | "scss" | "sass" | "less" | "styl" | "pcss" => IconName::File,
                 "html" | "htm" | "hbs" | "ejs" | "njk" => IconName::File,
                 "md" | "txt" | "rst" | "org" => IconName::File,
@@ -452,8 +450,8 @@ impl DiffViewer {
                     // Style variants → CSS
                     "scss" | "sass" | "less" | "styl" | "pcss" | "postcss" => "CSS",
                     // Config / data → JSON or YAML
-                    "jsonc" | "json5" | "geojson" | "webmanifest" | "eslintrc"
-                    | "prettierrc" | "babelrc" => "JSON",
+                    "jsonc" | "json5" | "geojson" | "webmanifest" | "eslintrc" | "prettierrc"
+                    | "babelrc" => "JSON",
                     "toml" | "ini" | "cfg" | "conf" | "env" | "properties" | "editorconfig" => {
                         // TOML/INI are closest to YAML in structure for basic highlighting
                         "YAML"
@@ -487,8 +485,8 @@ impl DiffViewer {
                 let filename = Path::new(path).file_name()?.to_str()?;
                 let fallback_name = match filename {
                     "Dockerfile" | "Containerfile" | "Justfile" | "Brewfile" => "Makefile",
-                    ".bashrc" | ".zshrc" | ".profile" | ".bash_profile" | ".zprofile"
-                    | ".env" | ".envrc" => "Bourne Again Shell (bash)",
+                    ".bashrc" | ".zshrc" | ".profile" | ".bash_profile" | ".zprofile" | ".env"
+                    | ".envrc" => "Bourne Again Shell (bash)",
                     ".gitignore" | ".dockerignore" | ".prettierignore" | ".eslintignore" => {
                         "Bourne Again Shell (bash)"
                     }
@@ -1509,5 +1507,40 @@ impl Render for DiffViewer {
         container = container.child(list);
 
         container.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icon_for_path_uses_expected_fallback_icons() {
+        assert_eq!(DiffViewer::icon_for_path("src/main.rs"), IconName::File);
+        assert_eq!(
+            DiffViewer::icon_for_path("config/settings.jsonc"),
+            IconName::Settings
+        );
+        assert_eq!(DiffViewer::icon_for_path("Cargo.lock"), IconName::Pin);
+    }
+
+    #[test]
+    fn syntax_for_path_maps_common_extension_fallbacks() {
+        let tsx = DiffViewer::syntax_for_path("src/app.tsx")
+            .expect("tsx fallback should resolve")
+            .name
+            .as_str();
+        let jsonc = DiffViewer::syntax_for_path("config/biome.jsonc")
+            .expect("jsonc fallback should resolve")
+            .name
+            .as_str();
+        let env = DiffViewer::syntax_for_path(".env")
+            .expect("dot env fallback should resolve")
+            .name
+            .as_str();
+
+        assert_eq!(tsx, "JavaScript");
+        assert_eq!(jsonc, "JSON");
+        assert_eq!(env, "Bourne Again Shell (bash)");
     }
 }
