@@ -681,3 +681,282 @@ mod tests {
         ));
     }
 }
+
+// ── Integration-level diff tests ────────────────────────────────
+
+#[cfg(test)]
+mod diff_integration_tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    /// Set up a git repo with two commits; returns (TempDir, path, commit_oid).
+    /// File content:
+    ///   initial  → "line1\nline2\nline3\n"
+    ///   amended  → "line1\nLINE2_CHANGED\nline3\n"
+    fn make_two_commit_repo() -> (TempDir, std::path::PathBuf, git2::Oid) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        drop(cfg);
+
+        let sig = git2::Signature::now("Test", "t@t.com").unwrap();
+
+        // First commit — write initial content
+        let file = path.join("hello.txt");
+        std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("hello.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let first = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let first_commit = repo.find_commit(first).unwrap();
+
+        // Second commit — change line2
+        std::fs::write(&file, "line1\nLINE2_CHANGED\nline3\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("hello.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let second = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "change line2",
+                &tree,
+                &[&first_commit],
+            )
+            .unwrap();
+
+        (dir, path, second)
+    }
+
+    /// Build a repo where one file is staged (index differs from HEAD).
+    fn make_staged_change_repo() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        drop(cfg);
+
+        let sig = git2::Signature::now("Test", "t@t.com").unwrap();
+
+        // First commit
+        let file = path.join("data.txt");
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("data.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let first = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let first_commit = repo.find_commit(first).unwrap();
+        let _ = first_commit;
+
+        // Modify file and stage it — don't commit
+        std::fs::write(&file, "alpha\nbeta_modified\ngamma\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("data.txt")).unwrap();
+        idx.write().unwrap();
+
+        (dir, path)
+    }
+
+    // ── compute_commit_diff ───────────────────────────────────────
+
+    #[test]
+    fn commit_diff_returns_changed_file() {
+        let (_dir, path, oid) = make_two_commit_repo();
+        let diff = compute_commit_diff(&path, oid).unwrap();
+        assert_eq!(diff.files.len(), 1, "should have exactly one changed file");
+        assert_eq!(diff.files[0].path, Path::new("hello.txt"));
+    }
+
+    #[test]
+    fn commit_diff_counts_additions_and_deletions() {
+        let (_dir, path, oid) = make_two_commit_repo();
+        let diff = compute_commit_diff(&path, oid).unwrap();
+        // "line2" → "LINE2_CHANGED": one deletion + one addition
+        assert_eq!(diff.total_additions, 1);
+        assert_eq!(diff.total_deletions, 1);
+    }
+
+    #[test]
+    fn commit_diff_hunk_has_lines() {
+        let (_dir, path, oid) = make_two_commit_repo();
+        let diff = compute_commit_diff(&path, oid).unwrap();
+        let file = &diff.files[0];
+        assert!(!file.hunks.is_empty(), "should have at least one hunk");
+        let hunk = &file.hunks[0];
+        // Should contain an addition and a deletion
+        let has_addition = hunk
+            .lines
+            .iter()
+            .any(|l| matches!(l, DiffLine::Addition(_)));
+        let has_deletion = hunk
+            .lines
+            .iter()
+            .any(|l| matches!(l, DiffLine::Deletion(_)));
+        assert!(has_addition, "hunk should have an addition line");
+        assert!(has_deletion, "hunk should have a deletion line");
+    }
+
+    #[test]
+    fn commit_diff_invalid_oid_returns_err() {
+        let (_dir, path, _) = make_two_commit_repo();
+        let fake_oid = git2::Oid::from_str("0000000000000000000000000000000000000000").unwrap();
+        assert!(compute_commit_diff(&path, fake_oid).is_err());
+    }
+
+    #[test]
+    fn commit_diff_first_commit_no_parent() {
+        // The first commit has no parent; compute_commit_diff should handle it
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "T").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        drop(cfg);
+        let sig = git2::Signature::now("T", "t@t.com").unwrap();
+        std::fs::write(path.join("f.txt"), "hello\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("f.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "root", &tree, &[])
+            .unwrap();
+        let diff = compute_commit_diff(&path, oid).unwrap();
+        // Root commit: diff against empty tree → f.txt is added
+        assert_eq!(diff.files.len(), 1);
+        assert!(matches!(diff.files[0].kind, FileChangeKind::Added));
+    }
+
+    // ── compute_file_diff (unstaged) ─────────────────────────────
+
+    #[test]
+    fn file_diff_unstaged_no_changes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "T").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        drop(cfg);
+        let sig = git2::Signature::now("T", "t@t.com").unwrap();
+        let f = path.join("clean.txt");
+        std::fs::write(&f, "no changes\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("clean.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        // No modifications — should return empty hunk list
+        let diff = compute_file_diff(&path, Path::new("clean.txt"), false).unwrap();
+        assert!(diff.hunks.is_empty(), "no unstaged changes expected");
+    }
+
+    // ── compute_staged_diff_text ──────────────────────────────────
+
+    #[test]
+    fn staged_diff_text_contains_change() {
+        let (_dir, path) = make_staged_change_repo();
+        let text = compute_staged_diff_text(&path).unwrap();
+        assert!(
+            text.contains("beta_modified") || text.contains("+beta_modified"),
+            "staged diff should include modified content"
+        );
+        assert!(
+            text.contains("-beta") || text.contains("beta"),
+            "staged diff should include original content"
+        );
+    }
+
+    #[test]
+    fn staged_diff_text_has_diff_markers() {
+        let (_dir, path) = make_staged_change_repo();
+        let text = compute_staged_diff_text(&path).unwrap();
+        // compute_staged_diff_text prefixes each line with origin char
+        assert!(
+            text.contains('+') || text.contains('-'),
+            "should have diff markers"
+        );
+    }
+
+    // ── batch_diff_stats ─────────────────────────────────────────
+
+    #[test]
+    fn batch_diff_stats_staged_detects_changed_file() {
+        let (_dir, path) = make_staged_change_repo();
+        let repo = git2::Repository::open(&path).unwrap();
+        let stats = batch_diff_stats(&repo, true);
+        assert!(
+            stats.contains_key(Path::new("data.txt")),
+            "staged stats should include data.txt"
+        );
+        let (adds, dels) = stats[Path::new("data.txt")];
+        assert_eq!(adds, 1, "one line added");
+        assert_eq!(dels, 1, "one line deleted");
+    }
+
+    #[test]
+    fn batch_diff_stats_unstaged_empty_when_clean() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "T").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        drop(cfg);
+        let sig = git2::Signature::now("T", "t@t.com").unwrap();
+        let f = path.join("x.txt");
+        std::fs::write(&f, "clean\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("x.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let stats = batch_diff_stats(&repo, false);
+        // Working tree matches index → no unstaged changes
+        assert!(stats.is_empty(), "no unstaged changes on clean repo");
+    }
+
+    // ── parse_multi_file_diff ─────────────────────────────────────
+
+    #[test]
+    fn parse_multi_file_diff_aggregates_files() {
+        let (_dir, path, oid) = make_two_commit_repo();
+        let repo = git2::Repository::open(&path).unwrap();
+        let commit = repo.find_commit(oid).unwrap();
+        let tree = commit.tree().unwrap();
+        let parent = commit.parent(0).unwrap();
+        let parent_tree = parent.tree().unwrap();
+        let diff = repo
+            .diff_tree_to_tree(Some(&parent_tree), Some(&tree), None)
+            .unwrap();
+        let result = parse_multi_file_diff(&diff).unwrap();
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.total_additions, 1);
+        assert_eq!(result.total_deletions, 1);
+    }
+}
