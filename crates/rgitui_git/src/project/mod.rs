@@ -187,6 +187,8 @@ pub struct GitProject {
     recent_commits: Arc<Vec<CommitInfo>>,
     /// Whether the repository has more commits beyond the loaded set.
     has_more_commits: bool,
+    /// Number of commits currently loaded (used by incremental load-more).
+    commit_offset: usize,
     next_operation_id: u64,
 
     // Filesystem watcher (kept alive)
@@ -212,6 +214,7 @@ impl GitProject {
             status: Arc::new(WorkingTreeStatus::default()),
             recent_commits: Arc::new(Vec::new()),
             has_more_commits: false,
+            commit_offset: 0,
             next_operation_id: 1,
             _watcher: None,
         }
@@ -236,6 +239,7 @@ impl GitProject {
             status: Arc::new(WorkingTreeStatus::default()),
             recent_commits: Arc::new(Vec::new()),
             has_more_commits: false,
+            commit_offset: 0,
             next_operation_id: 1,
             _watcher: None,
         };
@@ -462,10 +466,68 @@ impl GitProject {
         self.status = Arc::new(data.status);
         self.recent_commits = Arc::new(data.recent_commits);
         self.has_more_commits = data.has_more_commits;
+        // Reset offset — the full refresh replaces all commits.
+        self.commit_offset = self.recent_commits.len();
     }
 
     /// Whether there are more commits beyond the currently loaded set.
     pub fn has_more_commits(&self) -> bool {
         self.has_more_commits
+    }
+
+    /// How many commits are currently loaded.
+    pub fn loaded_commit_count(&self) -> usize {
+        self.recent_commits.len()
+    }
+
+    /// Asynchronously load the next batch of commits and append them to the
+    /// existing list.  Emits `GitProjectEvent::StatusChanged` when done so the
+    /// graph view re-renders.
+    pub fn load_more_commits(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let skip = self.commit_offset;
+        // Collect the branch/tag ref-map data we need for labelling
+        let branch_tips: Vec<(git2::Oid, bool, String)> = self
+            .branches
+            .iter()
+            .filter_map(|b| b.tip_oid.map(|oid| (oid, b.is_remote, b.name.clone())))
+            .collect();
+        let tag_tips: Vec<(git2::Oid, String)> =
+            self.tags.iter().map(|t| (t.oid, t.name.clone())).collect();
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let (new_commits, has_more) = cx
+                .background_executor()
+                .spawn(async move {
+                    refresh::load_more_commits_from_repo(
+                        &repo_path,
+                        skip,
+                        DEFAULT_COMMIT_LIMIT,
+                        &branch_tips,
+                        &tag_tips,
+                    )
+                })
+                .await?;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    // Append the new commits, deduplicated by OID.
+                    let existing_oids: std::collections::HashSet<git2::Oid> =
+                        this.recent_commits.iter().map(|c| c.oid).collect();
+                    let mut combined: Vec<CommitInfo> = (*this.recent_commits).clone();
+                    for commit in new_commits {
+                        if !existing_oids.contains(&commit.oid) {
+                            combined.push(commit);
+                        }
+                    }
+                    this.commit_offset = combined.len();
+                    this.has_more_commits = has_more;
+                    this.recent_commits = Arc::new(combined);
+                    cx.emit(GitProjectEvent::StatusChanged);
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
     }
 }

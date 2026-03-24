@@ -976,12 +976,15 @@ pub(super) fn subscribe_graph(
                     }
                 }
                 GraphViewEvent::LoadMoreCommits => {
+                    let already_loaded = project.read(cx).loaded_commit_count();
                     this.show_toast(
-                        "Showing maximum 1,000 commits. Use search (Ctrl+F) to find older commits."
-                            .to_string(),
+                        format!("Loading more commits ({} loaded so far)…", already_loaded),
                         ToastKind::Info,
                         cx,
                     );
+                    project.update(cx, |proj, cx| {
+                        proj.load_more_commits(cx).detach();
+                    });
                 }
                 GraphViewEvent::WorkingTreeSelected => {
                     let dp = detail_panel_ref.clone();

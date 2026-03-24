@@ -372,6 +372,91 @@ impl GitProject {
     }
 }
 
+/// Load the next batch of commits starting at `skip`, without re-fetching branches/status/etc.
+/// Returns `(new_commits, has_more)`.
+pub(super) fn load_more_commits_from_repo(
+    repo_path: &Path,
+    skip: usize,
+    limit: usize,
+    branch_tips: &[(git2::Oid, bool, String)],
+    tag_tips: &[(git2::Oid, String)],
+) -> Result<(Vec<CommitInfo>, bool)> {
+    let repo = Repository::open(repo_path)
+        .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
+
+    // Build ref-label map from the caller-supplied tips (avoids re-enumerating branches).
+    let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
+    if let Ok(head) = repo.head() {
+        if let Some(oid) = head.target() {
+            ref_map.entry(oid).or_default().push(RefLabel::Head);
+        }
+    }
+    for (oid, is_remote, name) in branch_tips {
+        let label = if *is_remote {
+            RefLabel::RemoteBranch(name.clone())
+        } else {
+            RefLabel::LocalBranch(name.clone())
+        };
+        ref_map.entry(*oid).or_default().push(label);
+    }
+    for (oid, name) in tag_tips {
+        ref_map
+            .entry(*oid)
+            .or_default()
+            .push(RefLabel::Tag(name.clone()));
+    }
+
+    let mut revwalk = repo.revwalk()?;
+    let has_head = revwalk.push_head().is_ok();
+    for (oid, _, _) in branch_tips {
+        revwalk.push(*oid).ok();
+    }
+    if !has_head && branch_tips.is_empty() {
+        return Ok((Vec::new(), false));
+    }
+    revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
+
+    let mut commits = Vec::new();
+    let mut has_more = false;
+    for (count, oid_result) in revwalk.enumerate() {
+        let oid = oid_result?;
+        if count < skip {
+            continue;
+        }
+        if count >= skip + limit {
+            has_more = true;
+            break;
+        }
+        let commit = repo.find_commit(oid)?;
+        let author = commit.author();
+        let committer = commit.committer();
+        let time = Utc.timestamp_opt(commit.time().seconds(), 0).single();
+        let refs = ref_map.remove(&oid).unwrap_or_default();
+        let raw_message = commit.message().unwrap_or("").to_string();
+        let (message, co_authors) = parse_co_authors(&raw_message);
+        commits.push(CommitInfo {
+            oid,
+            short_id: format!("{:.7}", oid),
+            summary: commit.summary().unwrap_or("").to_string(),
+            message,
+            author: Signature {
+                name: author.name().unwrap_or("").to_string(),
+                email: author.email().unwrap_or("").to_string(),
+            },
+            committer: Signature {
+                name: committer.name().unwrap_or("").to_string(),
+                email: committer.email().unwrap_or("").to_string(),
+            },
+            co_authors,
+            time: time.unwrap_or_else(Utc::now),
+            parent_oids: commit.parent_ids().collect(),
+            refs,
+        });
+    }
+
+    Ok((commits, has_more))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +537,88 @@ mod tests {
         assert_eq!(authors.len(), 1);
         assert!(cleaned.contains("Body line 1"));
         assert!(cleaned.contains("Body line 2"));
+    }
+}
+
+// ── load_more_commits_from_repo ──────────────────────────────────
+
+#[cfg(test)]
+mod load_more_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a bare temporary git repo with `n` commits on main.
+    fn make_repo_with_commits(n: usize) -> (TempDir, std::path::PathBuf, git2::Oid) {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        // Configure minimal identity so commits succeed.
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+        drop(config);
+
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_oid = {
+            let mut idx = repo.index().unwrap();
+            idx.write_tree().unwrap()
+        };
+
+        let mut last_oid = git2::Oid::zero();
+        for i in 0..n {
+            let tree = repo.find_tree(tree_oid).unwrap();
+            let parents: Vec<git2::Commit> = if i == 0 {
+                vec![]
+            } else {
+                vec![repo.find_commit(last_oid).unwrap()]
+            };
+            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            last_oid = repo
+                .commit(
+                    Some("refs/heads/main"),
+                    &sig,
+                    &sig,
+                    &format!("commit {}", i),
+                    &tree,
+                    &parent_refs,
+                )
+                .unwrap();
+        }
+        let path = dir.path().to_path_buf();
+        (dir, path, last_oid)
+    }
+
+    #[test]
+    fn load_more_returns_next_page() {
+        let (_dir, path, tip) = make_repo_with_commits(5);
+        // Load page 2 (skip first 3, take up to 2)
+        let branch_tips = vec![(tip, false, "main".to_string())];
+        let (commits, has_more) =
+            load_more_commits_from_repo(&path, 3, 2, &branch_tips, &[]).unwrap();
+        // 5 commits total, skip 3 → 2 remaining, no more after that
+        assert_eq!(commits.len(), 2);
+        assert!(!has_more);
+    }
+
+    #[test]
+    fn load_more_detects_has_more() {
+        let (_dir, path, tip) = make_repo_with_commits(5);
+        let branch_tips = vec![(tip, false, "main".to_string())];
+        // skip 0, limit 3 → should have more
+        let (commits, has_more) =
+            load_more_commits_from_repo(&path, 0, 3, &branch_tips, &[]).unwrap();
+        assert_eq!(commits.len(), 3);
+        assert!(has_more);
+    }
+
+    #[test]
+    fn load_more_empty_past_end() {
+        let (_dir, path, tip) = make_repo_with_commits(3);
+        let branch_tips = vec![(tip, false, "main".to_string())];
+        // skip past all commits
+        let (commits, has_more) =
+            load_more_commits_from_repo(&path, 10, 5, &branch_tips, &[]).unwrap();
+        assert!(commits.is_empty());
+        assert!(!has_more);
     }
 }
