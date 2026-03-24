@@ -5041,6 +5041,7 @@ dependencies = [
  "rgitui_settings",
  "serde",
  "serde_json",
+ "tempfile",
  "uuid",
 ]
 

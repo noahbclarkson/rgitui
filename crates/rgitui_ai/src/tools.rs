@@ -625,8 +625,10 @@ fn execute_get_file_tree(
 
         let mut result = String::new();
 
-        let entries: Vec<_> = std::fs::read_dir(path)
-            .unwrap_or_else(|_| std::fs::read_dir(path).unwrap())
+        let Ok(read_dir) = std::fs::read_dir(path) else {
+            return result;
+        };
+        let entries: Vec<_> = read_dir
             .filter_map(|e| e.ok())
             .filter(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
@@ -677,6 +679,10 @@ fn execute_get_file_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ── tool definitions ──────────────────────────────────────────
 
     #[test]
     fn test_tool_definitions_not_empty() {
@@ -686,5 +692,177 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn all_providers_expose_same_tool_names() {
+        let anthropic_defs = anthropic_tool_definitions();
+        let anthropic: Vec<&str> = anthropic_defs
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        let openai_defs = openai_tool_definitions();
+        let openai: Vec<&str> = openai_defs
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        let gemini_arr = gemini_tool_definitions();
+        let gemini: Vec<&str> = gemini_arr["function_declarations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+
+        assert_eq!(anthropic.len(), openai.len());
+        assert_eq!(anthropic.len(), gemini.len());
+        for name in &anthropic {
+            assert!(openai.contains(name), "OpenAI missing tool: {}", name);
+            assert!(gemini.contains(name), "Gemini missing tool: {}", name);
+        }
+    }
+
+    // ── execute_get_file_content ──────────────────────────────────
+
+    fn make_repo_with_file(content: &str) -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("hello.txt");
+        fs::write(&file_path, content).unwrap();
+        let path = dir.path().to_path_buf();
+        (dir, path)
+    }
+
+    #[test]
+    fn file_content_reads_existing_file() {
+        let (_dir, repo) = make_repo_with_file("hello world");
+        let result = execute_get_file_content(&repo, "hello.txt");
+        assert_eq!(result.unwrap(), "hello world");
+    }
+
+    #[test]
+    fn file_content_err_on_missing_file() {
+        let (_dir, repo) = make_repo_with_file("x");
+        let result = execute_get_file_content(&repo, "does_not_exist.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn file_content_rejects_path_traversal() {
+        let (_dir, repo) = make_repo_with_file("x");
+        // Create a file outside the repo dir so canonicalize works
+        let outer = TempDir::new().unwrap();
+        let outer_file = outer.path().join("secret.txt");
+        fs::write(&outer_file, "secret").unwrap();
+        let traversal = format!("../../{}", outer_file.display());
+        let result = execute_get_file_content(&repo, &traversal);
+        assert!(result.is_err());
+    }
+
+    // ── execute_get_file_tree ─────────────────────────────────────
+
+    #[test]
+    fn file_tree_lists_files_at_root() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "").unwrap();
+        fs::write(dir.path().join("b.rs"), "").unwrap();
+        let result = execute_get_file_tree(dir.path(), "", 1).unwrap();
+        assert!(result.contains("a.txt"));
+        assert!(result.contains("b.rs"));
+    }
+
+    #[test]
+    fn file_tree_respects_max_depth() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        let subsub = sub.join("deep");
+        fs::create_dir(&subsub).unwrap();
+        fs::write(subsub.join("deep.txt"), "").unwrap();
+        // max_depth=0: should show sub/ but not its contents
+        let result = execute_get_file_tree(dir.path(), "", 0).unwrap();
+        assert!(result.contains("sub/"));
+        assert!(!result.contains("deep.txt"));
+    }
+
+    #[test]
+    fn file_tree_skips_hidden_files() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".hidden"), "").unwrap();
+        fs::write(dir.path().join("visible.txt"), "").unwrap();
+        let result = execute_get_file_tree(dir.path(), "", 1).unwrap();
+        assert!(!result.contains(".hidden"));
+        assert!(result.contains("visible.txt"));
+    }
+
+    #[test]
+    fn file_tree_skips_target_directory() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("artifact"), "").unwrap();
+        fs::write(dir.path().join("src.rs"), "").unwrap();
+        let result = execute_get_file_tree(dir.path(), "", 2).unwrap();
+        assert!(!result.contains("artifact"));
+        assert!(result.contains("src.rs"));
+    }
+
+    #[test]
+    fn file_tree_rejects_path_outside_repo() {
+        let dir = TempDir::new().unwrap();
+        let result = execute_get_file_tree(dir.path(), "../..", 1);
+        assert!(result.is_err());
+    }
+
+    // ── execute_tool dispatch ─────────────────────────────────────
+
+    #[test]
+    fn execute_tool_unknown_returns_err() {
+        let dir = TempDir::new().unwrap();
+        let call = ToolCall {
+            id: "1".into(),
+            name: "nonexistent_tool".into(),
+            arguments: serde_json::json!({}),
+        };
+        let result = execute_tool(&call, dir.path());
+        assert!(result.result.is_err());
+        assert!(result.result.unwrap_err().contains("Unknown tool"));
+    }
+
+    #[test]
+    fn execute_tool_get_file_content_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("notes.txt"), "test content").unwrap();
+        let call = ToolCall {
+            id: "42".into(),
+            name: TOOL_GET_FILE_CONTENT.into(),
+            arguments: serde_json::json!({ "path": "notes.txt" }),
+        };
+        let result = execute_tool(&call, dir.path());
+        assert_eq!(result.call_id, "42");
+        assert_eq!(result.name, TOOL_GET_FILE_CONTENT);
+        assert_eq!(result.result.unwrap(), "test content");
+    }
+
+    #[test]
+    fn execute_tool_get_file_tree_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let call = ToolCall {
+            id: "7".into(),
+            name: TOOL_GET_FILE_TREE.into(),
+            arguments: serde_json::json!({ "path": "", "max_depth": 1 }),
+        };
+        let result = execute_tool(&call, dir.path());
+        assert!(result.result.is_ok());
+        assert!(result.result.unwrap().contains("main.rs"));
+    }
+
+    // ── build_tree: unreadable dir doesn't panic ──────────────────
+
+    #[test]
+    fn file_tree_on_nonexistent_subpath_returns_err() {
+        let dir = TempDir::new().unwrap();
+        let result = execute_get_file_tree(dir.path(), "no_such_dir", 1);
+        assert!(result.is_err());
     }
 }
