@@ -267,15 +267,13 @@ mod tests {
     #[test]
     fn file_history_nonexistent_file_returns_empty() {
         let (_dir, path) = make_multi_file_repo();
-        let entries =
-            compute_file_history(&path, Path::new("does_not_exist.txt"), 100).unwrap();
+        let entries = compute_file_history(&path, Path::new("does_not_exist.txt"), 100).unwrap();
         assert!(entries.is_empty(), "unknown file should yield 0 entries");
     }
 
     #[test]
     fn file_history_err_on_bad_repo() {
-        let result =
-            compute_file_history(Path::new("/no/such/repo"), Path::new("file.txt"), 10);
+        let result = compute_file_history(Path::new("/no/such/repo"), Path::new("file.txt"), 10);
         assert!(result.is_err());
     }
 }

@@ -318,21 +318,17 @@ impl DiffViewer {
                 // Jump to next hunk header after current position
                 let start = self.highlighted_row.map(|r| r + 1).unwrap_or(0);
                 let next = match self.display_mode {
-                    DiffDisplayMode::Unified => (start..row_count).find(|&i| {
-                        matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })
-                    }),
-                    DiffDisplayMode::SideBySide => (start..row_count).find(|&i| {
-                        matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })
-                    }),
+                    DiffDisplayMode::Unified => (start..row_count)
+                        .find(|&i| matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })),
+                    DiffDisplayMode::SideBySide => (start..row_count)
+                        .find(|&i| matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })),
                 }
                 // Wrap around
                 .or_else(|| match self.display_mode {
-                    DiffDisplayMode::Unified => (0..start).find(|&i| {
-                        matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })
-                    }),
-                    DiffDisplayMode::SideBySide => (0..start).find(|&i| {
-                        matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })
-                    }),
+                    DiffDisplayMode::Unified => (0..start)
+                        .find(|&i| matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })),
+                    DiffDisplayMode::SideBySide => (0..start)
+                        .find(|&i| matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })),
                 });
                 if let Some(pos) = next {
                     self.highlighted_row = Some(pos);
@@ -345,21 +341,21 @@ impl DiffViewer {
                 // Jump to previous hunk header before current position
                 let end = self.highlighted_row.unwrap_or(row_count);
                 let prev = match self.display_mode {
-                    DiffDisplayMode::Unified => (0..end).rev().find(|&i| {
-                        matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })
-                    }),
-                    DiffDisplayMode::SideBySide => (0..end).rev().find(|&i| {
-                        matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })
-                    }),
+                    DiffDisplayMode::Unified => (0..end)
+                        .rev()
+                        .find(|&i| matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })),
+                    DiffDisplayMode::SideBySide => (0..end)
+                        .rev()
+                        .find(|&i| matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })),
                 }
                 // Wrap around
                 .or_else(|| match self.display_mode {
-                    DiffDisplayMode::Unified => (end..row_count).rev().find(|&i| {
-                        matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })
-                    }),
-                    DiffDisplayMode::SideBySide => (end..row_count).rev().find(|&i| {
-                        matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })
-                    }),
+                    DiffDisplayMode::Unified => (end..row_count)
+                        .rev()
+                        .find(|&i| matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })),
+                    DiffDisplayMode::SideBySide => (end..row_count)
+                        .rev()
+                        .find(|&i| matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })),
                 });
                 if let Some(pos) = prev {
                     self.highlighted_row = Some(pos);
@@ -747,7 +743,11 @@ impl DiffViewer {
         rows
     }
 
-    fn compute_display_rows(diff: &FileDiff, path: &str, appearance: Appearance) -> Vec<DisplayRow> {
+    fn compute_display_rows(
+        diff: &FileDiff,
+        path: &str,
+        appearance: Appearance,
+    ) -> Vec<DisplayRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
             let header_str = hunk.header.trim().to_string();

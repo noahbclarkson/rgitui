@@ -348,7 +348,6 @@ impl Sidebar {
                     self.rebuild_nav_items();
                     cx.notify();
                     cx.stop_propagation();
-                    return;
                 }
             }
             "up" | "k" => {
