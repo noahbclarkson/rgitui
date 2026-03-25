@@ -120,6 +120,7 @@ impl FileHistoryView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
         let count = self.commits.len();
         if count == 0 {
             return;
@@ -162,8 +163,17 @@ impl FileHistoryView {
                 cx.stop_propagation();
             }
             "g" => {
-                self.highlighted_row = Some(0);
-                self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                if modifiers.shift {
+                    // G (Shift+G) — jump to last commit
+                    let last = count - 1;
+                    self.highlighted_row = Some(last);
+                    self.scroll_handle
+                        .scroll_to_item(last, ScrollStrategy::Bottom);
+                } else {
+                    // g — jump to first commit
+                    self.highlighted_row = Some(0);
+                    self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                }
                 cx.notify();
                 cx.stop_propagation();
             }

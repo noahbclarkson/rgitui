@@ -137,6 +137,7 @@ impl BlameView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
         let line_count = self.lines.len();
         if line_count == 0 {
             return;
@@ -179,8 +180,17 @@ impl BlameView {
                 cx.stop_propagation();
             }
             "g" => {
-                self.highlighted_row = Some(0);
-                self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                if modifiers.shift {
+                    // G (Shift+G) — jump to last line
+                    let last = line_count - 1;
+                    self.highlighted_row = Some(last);
+                    self.scroll_handle
+                        .scroll_to_item(last, ScrollStrategy::Bottom);
+                } else {
+                    // g — jump to first line
+                    self.highlighted_row = Some(0);
+                    self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                }
                 cx.notify();
                 cx.stop_propagation();
             }
