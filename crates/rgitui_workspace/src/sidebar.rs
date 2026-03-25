@@ -4,14 +4,15 @@ use std::collections::HashSet;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, KeyDownEvent, Render,
-    SharedString, Window,
+    div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, KeyDownEvent,
+    Render, SharedString, Window,
 };
 use rgitui_git::{BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo};
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, DiffStat, Disclosure, IconButton, IconName, Label, LabelSize,
+    TextInput, TextInputEvent,
 };
 
 /// Events from the sidebar.
@@ -107,6 +108,12 @@ pub struct Sidebar {
     cached_unstaged_tree: FileTreeNode,
     /// Cached flat list of navigable items for keyboard navigation.
     cached_nav_items: Vec<SidebarItem>,
+    /// Current branch filter text (case-insensitive substring).
+    branch_filter: String,
+    /// Editor entity backing the branch filter input.
+    branch_filter_editor: Entity<TextInput>,
+    /// Whether the branch filter input is currently visible/active.
+    branch_filter_active: bool,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -128,6 +135,25 @@ impl Sidebar {
             SidebarItem::SectionHeader(SidebarSection::StagedChanges),
             SidebarItem::SectionHeader(SidebarSection::UnstagedChanges),
         ];
+
+        let branch_filter_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Filter branches…");
+            ti
+        });
+
+        cx.subscribe(
+            &branch_filter_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    this.branch_filter = text.to_string();
+                    this.rebuild_nav_items();
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
         Self {
             expanded_sections,
             tags: Vec::new(),
@@ -145,7 +171,24 @@ impl Sidebar {
             cached_staged_tree: FileTreeNode::default(),
             cached_unstaged_tree: FileTreeNode::default(),
             cached_nav_items,
+            branch_filter: String::new(),
+            branch_filter_editor,
+            branch_filter_active: false,
         }
+    }
+
+    /// Returns the branch indices that pass the current filter.
+    fn filtered_local_indices(&self) -> Vec<usize> {
+        if self.branch_filter.is_empty() {
+            return (0..self.local_branches.len()).collect();
+        }
+        let filter_lc = self.branch_filter.to_lowercase();
+        self.local_branches
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.name.to_lowercase().contains(&filter_lc))
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Rebuild the cached navigable items list from current state.
@@ -157,7 +200,7 @@ impl Sidebar {
 
         items.push(SidebarItem::SectionHeader(SidebarSection::LocalBranches));
         if is_expanded(SidebarSection::LocalBranches, &self.expanded_sections) {
-            for i in 0..self.local_branches.len() {
+            for i in self.filtered_local_indices() {
                 items.push(SidebarItem::LocalBranch(i));
             }
         }
@@ -283,7 +326,31 @@ impl Sidebar {
             return;
         }
 
+        let wants_filter = (key == "/" && !ctrl) || (key == "f" && ctrl);
+        if wants_filter && !self.branch_filter_active {
+            self.branch_filter_active = true;
+            self.branch_filter_editor.update(cx, |editor, cx| {
+                editor.focus(_window, cx);
+            });
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+
         match key {
+            "escape" => {
+                if self.branch_filter_active || !self.branch_filter.is_empty() {
+                    self.branch_filter_active = false;
+                    self.branch_filter.clear();
+                    self.branch_filter_editor.update(cx, |editor, cx| {
+                        editor.clear(cx);
+                    });
+                    self.rebuild_nav_items();
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+            }
             "up" | "k" => {
                 let new_idx = match self.keyboard_index {
                     Some(i) if i > 0 => i - 1,
@@ -948,6 +1015,12 @@ impl Render for Sidebar {
 
         // -- Local Branches --
         let local_branch_count = self.local_branches.len();
+        let branch_filter = self.branch_filter.clone();
+        let filtered_count = if branch_filter.is_empty() {
+            local_branch_count
+        } else {
+            self.filtered_local_indices().len()
+        };
 
         let local_expanded = self.is_expanded(SidebarSection::LocalBranches);
         let icon = if local_expanded {
@@ -1005,15 +1078,56 @@ impl Render for Sidebar {
                         .items_center()
                         .justify_center()
                         .child(
-                            Label::new(SharedString::from(format!("{}", local_branch_count)))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                            Label::new(if branch_filter.is_empty() {
+                                SharedString::from(format!("{}", local_branch_count))
+                            } else {
+                                SharedString::from(format!(
+                                    "{}/{}",
+                                    filtered_count, local_branch_count
+                                ))
+                            })
+                            .size(LabelSize::XSmall)
+                            .color(if !branch_filter.is_empty() {
+                                Color::Accent
+                            } else {
+                                Color::Muted
+                            }),
                         ),
                 ),
         );
 
+        // Branch filter input (shown when active or filter is non-empty)
+        let branch_filter_active = self.branch_filter_active;
+        if branch_filter_active || !branch_filter.is_empty() {
+            content = content.child(
+                div()
+                    .id("branch-filter-row")
+                    .h_flex()
+                    .w_full()
+                    .h(px(24.))
+                    .px(px(8.))
+                    .gap(px(4.))
+                    .items_center()
+                    .bg(colors.editor_background)
+                    .border_b_1()
+                    .border_color(colors.border_focused)
+                    .child(
+                        rgitui_ui::Icon::new(IconName::Search)
+                            .size(rgitui_ui::IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(div().flex_1().child(self.branch_filter_editor.clone())),
+            );
+        }
+
         if local_expanded {
-            if self.local_branches.is_empty() {
+            let visible_branch_indices = self.filtered_local_indices();
+            if visible_branch_indices.is_empty() {
+                let empty_msg = if !branch_filter.is_empty() {
+                    "No matching branches"
+                } else {
+                    "No local branches"
+                };
                 content = content.child(
                     div()
                         .h_flex()
@@ -1022,13 +1136,14 @@ impl Render for Sidebar {
                         .px(px(16.))
                         .items_center()
                         .child(
-                            Label::new("No local branches")
+                            Label::new(empty_msg)
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
                 );
             }
-            for (i, branch) in self.local_branches.iter().enumerate() {
+            for i in visible_branch_indices {
+                let branch = &self.local_branches[i];
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
                 let name: SharedString = branch.name.clone().into();
