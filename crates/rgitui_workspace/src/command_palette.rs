@@ -554,18 +554,21 @@ impl CommandPalette {
 
     /// Fuzzy subsequence match. Returns a score (higher = better) or None if
     /// query chars don't all appear in target in order.
-    fn fuzzy_score(query: &str, target: &str) -> Option<usize> {
+    pub(crate) fn fuzzy_score(query: &str, target: &str) -> Option<usize> {
         if query.is_empty() {
             return Some(0);
         }
         let target_len = target.len();
         let mut score: usize = 0;
         let mut t_chars = target.char_indices().peekable();
-        for q_char in query.chars() {
+        // query is already lowercased by caller (update_filter); targets are also lowercased by caller.
+        // We still do case-insensitive for safety in direct calls.
+        let query_lc = query.to_lowercase();
+        for q_char in query_lc.chars() {
             loop {
                 match t_chars.next() {
                     Some((pos, t_char)) => {
-                        if t_char == q_char {
+                        if t_char.to_ascii_lowercase() == q_char {
                             // Prefer matches at earlier positions → higher score
                             score += target_len.saturating_sub(pos);
                             break;
@@ -898,5 +901,65 @@ impl Render for CommandPalette {
             }))
             .child(modal)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CommandPalette;
+
+    #[test]
+    fn fuzzy_score_exact_match_returns_score() {
+        assert!(CommandPalette::fuzzy_score("push", "Push to Remote").is_some());
+    }
+
+    #[test]
+    fn fuzzy_score_case_insensitive() {
+        assert!(CommandPalette::fuzzy_score("push", "PUSH").is_some());
+        assert!(CommandPalette::fuzzy_score("PUSH", "push").is_some());
+    }
+
+    #[test]
+    fn fuzzy_score_missing_char_returns_none() {
+        assert_eq!(CommandPalette::fuzzy_score("xyz", "Push"), None);
+    }
+
+    #[test]
+    fn fuzzy_score_empty_query_returns_zero() {
+        assert_eq!(CommandPalette::fuzzy_score("", "Push to Remote"), Some(0));
+    }
+
+    #[test]
+    fn fuzzy_score_earlier_match_higher_score() {
+        let score_early = CommandPalette::fuzzy_score("sh", "Show").unwrap();
+        let score_late = CommandPalette::fuzzy_score("sh", "Fish").unwrap();
+        assert!(
+            score_early > score_late,
+            "earlier match should score higher: {score_early} vs {score_late}"
+        );
+    }
+
+    #[test]
+    fn fuzzy_score_subsequence_in_order() {
+        assert!(CommandPalette::fuzzy_score("pd", "Push and Delete").is_some());
+        assert_eq!(CommandPalette::fuzzy_score("dp", "Push and Delete"), None);
+    }
+
+    #[test]
+    fn fuzzy_score_longer_target_scores_higher_when_same_prefix() {
+        // Same query "co", same positions, longer target gives higher score
+        // because score = sum(target_len - matched_pos)
+        let score_short = CommandPalette::fuzzy_score("co", "Commit").unwrap();
+        let score_long = CommandPalette::fuzzy_score("co", "Commit Message").unwrap();
+        assert!(
+            score_long > score_short,
+            "longer matching target should score higher: {score_long} vs {score_short}"
+        );
+    }
+
+    #[test]
+    fn fuzzy_score_repeated_chars() {
+        assert_eq!(CommandPalette::fuzzy_score("pp", "Push"), None);
+        assert!(CommandPalette::fuzzy_score("ps", "Push").is_some());
     }
 }
