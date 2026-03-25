@@ -1000,10 +1000,13 @@ pub(super) fn subscribe_graph(
 
 pub(super) fn subscribe_detail_panel(
     cx: &mut Context<Workspace>,
+    project: &Entity<GitProject>,
     diff_viewer: &Entity<DiffViewer>,
     detail_panel: &Entity<DetailPanel>,
 ) {
+    let project = project.clone();
     let diff_viewer = diff_viewer.clone();
+    let detail_panel_cloned = detail_panel.clone();
 
     cx.subscribe(detail_panel, {
         move |this, _dp, event: &DetailPanelEvent, cx| match event {
@@ -1026,6 +1029,67 @@ pub(super) fn subscribe_detail_panel(
                         });
                     }
                 }
+            }
+            DetailPanelEvent::NavigatePrevCommit | DetailPanelEvent::NavigateNextCommit => {
+                let is_prev = matches!(event, DetailPanelEvent::NavigatePrevCommit);
+                let proj = project.read(cx);
+                let commits = proj.recent_commits();
+                if commits.is_empty() {
+                    return;
+                }
+                // Get current commit OID from detail panel's displayed commit
+                let Some(current_oid) = detail_panel_cloned.read(cx).commit().map(|c| c.oid) else {
+                    return;
+                };
+                let Some(pos) = commits.iter().position(|c| c.oid == current_oid) else {
+                    return;
+                };
+                let target_pos = if is_prev {
+                    pos.saturating_sub(1) // older = higher index (next older)
+                } else {
+                    pos.saturating_add(1) // newer = lower index (next newer)
+                };
+                if target_pos >= commits.len() || target_pos == pos {
+                    return;
+                }
+                let target_oid = commits[target_pos].oid;
+                let _ = proj;
+
+                // Re-fetch commit info and diff for the target
+                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let dv = diff_viewer.clone();
+                let dp = detail_panel_cloned.clone();
+                let project_for_async = project.clone();
+                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(
+                            async move { rgitui_git::compute_commit_diff(&repo_path, target_oid) },
+                        )
+                        .await;
+                    cx.update(|cx| {
+                        let commit_info = project_for_async
+                            .read(cx)
+                            .recent_commits()
+                            .iter()
+                            .find(|c| c.oid == target_oid)
+                            .cloned();
+                        if let Some(info) = commit_info {
+                            if let Ok(commit_diff) = result {
+                                dp.update(cx, |dp, cx| {
+                                    dp.set_commit(info.clone(), commit_diff.clone(), cx)
+                                });
+                                if let Some(first_file) = commit_diff.files.first() {
+                                    let path = first_file.path.display().to_string();
+                                    dv.update(cx, |dv, cx| {
+                                        dv.set_diff(first_file.clone(), path, false, cx)
+                                    });
+                                }
+                            }
+                        }
+                    });
+                })
+                .detach();
             }
         }
     })

@@ -69,7 +69,7 @@ impl Workspace {
         super::events::subscribe_project(cx, &project, &graph, &sidebar, &commit_panel, &toolbar);
         super::events::subscribe_sidebar(cx, &project, &sidebar, &diff_viewer, &detail_panel);
         super::events::subscribe_graph(cx, &project, &graph, &diff_viewer, &detail_panel);
-        super::events::subscribe_detail_panel(cx, &diff_viewer, &detail_panel);
+        super::events::subscribe_detail_panel(cx, &project, &diff_viewer, &detail_panel);
         super::events::subscribe_diff_viewer(cx, &project, &diff_viewer);
         super::events::subscribe_commit_panel(cx, &project, &self.ai.clone(), &commit_panel);
         super::events::subscribe_toolbar(cx, &project, &toolbar);

@@ -63,6 +63,8 @@ pub enum DetailPanelEvent {
     FileSelected(FileDiff, String),
     CopySha(String),
     CherryPick(String),
+    NavigatePrevCommit,
+    NavigateNextCommit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +266,10 @@ impl DetailPanel {
         self.focus_handle.is_focused(window)
     }
 
+    pub fn commit(&self) -> Option<&CommitInfo> {
+        self.commit.as_ref()
+    }
+
     fn file_count(&self) -> usize {
         self.commit_diff
             .as_ref()
@@ -279,6 +285,22 @@ impl DetailPanel {
     ) {
         let key = event.keystroke.key.as_str();
         let file_count = self.file_count();
+
+        // Commit prev/next navigation — works regardless of file count
+        match key {
+            "[" => {
+                if self.commit.is_some() {
+                    cx.emit(DetailPanelEvent::NavigatePrevCommit);
+                }
+            }
+            "]" => {
+                if self.commit.is_some() {
+                    cx.emit(DetailPanelEvent::NavigateNextCommit);
+                }
+            }
+            _ => {}
+        }
+
         if file_count == 0 {
             return;
         }
