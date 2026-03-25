@@ -89,6 +89,10 @@ pub struct Sidebar {
     staged: Vec<FileStatus>,
     unstaged: Vec<FileStatus>,
     selected_file: Option<(String, bool)>,
+    /// Currently selected stash index (persists after click for visual highlight).
+    selected_stash: Option<usize>,
+    /// Currently selected tag name (persists after click for visual highlight).
+    selected_tag: Option<String>,
     /// Tracks which directory groups are collapsed in the file change sections.
     /// Key is "staged:<dir>" or "unstaged:<dir>".
     collapsed_dirs: HashSet<String>,
@@ -162,6 +166,8 @@ impl Sidebar {
             staged: Vec::new(),
             unstaged: Vec::new(),
             selected_file: None,
+            selected_stash: None,
+            selected_tag: None,
             collapsed_dirs: HashSet::new(),
             repo_name: String::new(),
             focus_handle: cx.focus_handle(),
@@ -485,6 +491,7 @@ impl Sidebar {
 
     pub fn update_stashes(&mut self, stashes: Vec<StashEntry>, cx: &mut Context<Self>) {
         self.stashes = stashes;
+        self.selected_stash = None;
         self.rebuild_nav_items();
         cx.notify();
     }
@@ -1775,6 +1782,7 @@ impl Render for Sidebar {
             for (i, tag) in self.tags.iter().enumerate() {
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
+                let is_selected = self.selected_tag.as_ref().is_some_and(|s| s == &tag.name);
                 let name: SharedString = tag.name.clone().into();
                 let tag_select = name.clone();
                 let tag_delete = name.clone();
@@ -1789,14 +1797,20 @@ impl Render for Sidebar {
                         .gap_1()
                         .items_center()
                         .overflow_hidden()
-                        .when(kb_active, |el| {
+                        .when(is_selected, |el| {
+                            el.bg(colors.ghost_element_selected)
+                                .border_l_2()
+                                .border_color(kb_accent)
+                        })
+                        .when(kb_active && !is_selected, |el| {
                             el.bg(colors.ghost_element_hover)
                                 .border_l_2()
                                 .border_color(kb_accent)
                         })
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.selected_tag = Some(tag_select.to_string());
                             cx.emit(SidebarEvent::TagSelected(tag_select.to_string()));
                         }))
                         .child(
@@ -1911,6 +1925,7 @@ impl Render for Sidebar {
             for (i, stash) in self.stashes.iter().enumerate() {
                 let kb_active = keyboard_index == Some(nav_idx);
                 nav_idx += 1;
+                let is_selected = self.selected_stash == Some(i);
                 let msg: SharedString = stash.message.clone().into();
                 let stash_index = stash.index;
                 content = content.child(
@@ -1924,14 +1939,20 @@ impl Render for Sidebar {
                         .gap_1()
                         .items_center()
                         .overflow_hidden()
-                        .when(kb_active, |el| {
+                        .when(is_selected, |el| {
+                            el.bg(colors.ghost_element_selected)
+                                .border_l_2()
+                                .border_color(kb_accent)
+                        })
+                        .when(kb_active && !is_selected, |el| {
                             el.bg(colors.ghost_element_hover)
                                 .border_l_2()
                                 .border_color(kb_accent)
                         })
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.selected_stash = Some(stash_index);
                             cx.emit(SidebarEvent::StashSelected(stash_index));
                         }))
                         .child(
