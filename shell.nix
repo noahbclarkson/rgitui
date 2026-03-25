@@ -1,11 +1,19 @@
 { pkgs ? import <nixpkgs> {} }:
 
+let
+  rustOverlay = builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz";
+  pkgsWithRust = import <nixpkgs> {
+    overlays = [ (import rustOverlay) ];
+  };
+  rust = pkgsWithRust.rust-bin.stable.latest.default;
+in
 pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
     pkg-config
     cmake
     perl
-    # Rust toolchain comes from the system (NixOS config), not nix-shell
+    rust
+    patchelf
   ];
 
   buildInputs = with pkgs; [
