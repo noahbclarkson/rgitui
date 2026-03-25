@@ -84,4 +84,87 @@ mod tests {
 
         assert_eq!(error, "GitHub API error: 502 Bad Gateway");
     }
+
+    #[test]
+    fn error_detail_returns_none_when_json_has_no_message_field() {
+        let result = github_error_detail(r#"{"error":"rate limit"}"#);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn error_detail_returns_none_for_non_json_body() {
+        let result = github_error_detail("Internal Server Error");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn error_detail_returns_none_for_empty_body() {
+        let result = github_error_detail("");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn error_detail_extracts_message_from_valid_json() {
+        let result =
+            github_error_detail(r#"{"message":"semi-authenticated request limit reached"}"#);
+        assert_eq!(
+            result,
+            Some("semi-authenticated request limit reached".into())
+        );
+    }
+
+    #[test]
+    fn collection_error_forbidden_without_detail_message() {
+        // 403 with no body / no message key should fall through to the catch-all
+        let error = format_github_collection_error(
+            StatusCode::FORBIDDEN,
+            r#"{"error":"forbidden"}"#,
+            "owner",
+            "repo",
+        );
+        assert_eq!(error, "GitHub API error: 403 Forbidden");
+    }
+
+    #[test]
+    fn collection_error_server_error_with_message() {
+        let error = format_github_collection_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"message":"Something went wrong"}"#,
+            "owner",
+            "repo",
+        );
+        assert_eq!(
+            error,
+            "GitHub API error 500 Internal Server Error: Something went wrong"
+        );
+    }
+
+    #[test]
+    fn collection_error_server_error_without_message() {
+        let error = format_github_collection_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "retry later",
+            "owner",
+            "repo",
+        );
+        assert_eq!(error, "GitHub API error: 503 Service Unavailable");
+    }
+
+    #[test]
+    fn detail_error_server_error_with_json_message() {
+        let error = format_github_detail_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            r#"{"message":"Request timed out"}"#,
+        );
+        assert_eq!(
+            error,
+            "GitHub API error 504 Gateway Timeout: Request timed out"
+        );
+    }
+
+    #[test]
+    fn detail_error_non_json_body_falls_back_to_status() {
+        let error = format_github_detail_error(StatusCode::NOT_IMPLEMENTED, "NotImplemented");
+        assert_eq!(error, "GitHub API error: 501 Not Implemented");
+    }
 }
