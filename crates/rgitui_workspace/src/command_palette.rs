@@ -228,7 +228,8 @@ pub struct CommandPalette {
     visible: bool,
     query_editor: Entity<TextInput>,
     commands: Vec<PaletteCommand>,
-    filtered_indices: Vec<usize>,
+    /// Each entry is `(command_index, fuzzy_score)`, sorted by score descending.
+    filtered_indices: Vec<(usize, usize)>,
     selected_index: usize,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
@@ -493,7 +494,7 @@ impl CommandPalette {
             },
         ];
 
-        let filtered_indices = (0..commands.len()).collect();
+        let filtered_indices: Vec<(usize, usize)> = (0..commands.len()).map(|i| (i, 0)).collect();
 
         let query_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
@@ -551,29 +552,63 @@ impl CommandPalette {
         cx.notify();
     }
 
+    /// Fuzzy subsequence match. Returns a score (higher = better) or None if
+    /// query chars don't all appear in target in order.
+    fn fuzzy_score(query: &str, target: &str) -> Option<usize> {
+        if query.is_empty() {
+            return Some(0);
+        }
+        let target_len = target.len();
+        let mut score: usize = 0;
+        let mut t_chars = target.char_indices().peekable();
+        for q_char in query.chars() {
+            loop {
+                match t_chars.next() {
+                    Some((pos, t_char)) => {
+                        if t_char == q_char {
+                            // Prefer matches at earlier positions → higher score
+                            score += target_len.saturating_sub(pos);
+                            break;
+                        }
+                    }
+                    None => return None, // query char not found
+                }
+            }
+        }
+        Some(score)
+    }
+
     fn update_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.query_editor.read(cx).text().to_lowercase();
         if query.is_empty() {
-            self.filtered_indices = (0..self.commands.len()).collect();
+            self.filtered_indices = (0..self.commands.len()).map(|i| (i, 0)).collect();
         } else {
-            self.filtered_indices = self
+            let mut scored: Vec<(usize, usize)> = self
                 .commands
                 .iter()
                 .enumerate()
-                .filter(|(_, cmd)| {
-                    cmd.label.to_lowercase().contains(&query)
-                        || cmd.id.as_str().contains(&*query)
-                        || cmd.category.to_lowercase().contains(&query)
+                .filter_map(|(i, cmd)| {
+                    // Best score across label, id, and category
+                    let label_lc = cmd.label.to_lowercase();
+                    let id_lc = cmd.id.as_str().to_lowercase();
+                    let cat_lc = cmd.category.to_lowercase();
+                    let score = [label_lc.as_str(), id_lc.as_str(), cat_lc.as_str()]
+                        .iter()
+                        .filter_map(|target| Self::fuzzy_score(&query, target))
+                        .max();
+                    score.map(|s| (i, s))
                 })
-                .map(|(i, _)| i)
                 .collect();
+            // Sort by score descending (best first)
+            scored.sort_by(|a, b| b.1.cmp(&a.1));
+            self.filtered_indices = scored;
         }
         self.selected_index = 0;
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
     }
 
     fn select_current(&mut self, cx: &mut Context<Self>) {
-        if let Some(&idx) = self.filtered_indices.get(self.selected_index) {
+        if let Some(&(idx, _)) = self.filtered_indices.get(self.selected_index) {
             let cmd_id = self.commands[idx].id;
             self.visible = false;
             cx.emit(CommandPaletteEvent::CommandSelected(cmd_id));
@@ -696,7 +731,7 @@ impl Render for CommandPalette {
             let hint_bg = colors.hint_background;
 
             let commands: Arc<Vec<PaletteCommand>> = Arc::new(self.commands.clone());
-            let filtered: Arc<Vec<usize>> = Arc::new(self.filtered_indices.clone());
+            let filtered: Arc<Vec<(usize, usize)>> = Arc::new(self.filtered_indices.clone());
             let view = cx.weak_entity();
 
             let visible_items = filtered_count.min(10);
@@ -708,7 +743,7 @@ impl Render for CommandPalette {
                 move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                     range
                         .map(|display_idx| {
-                            let cmd_idx = filtered[display_idx];
+                            let (cmd_idx, _score) = filtered[display_idx];
                             let cmd = &commands[cmd_idx];
                             let is_selected = display_idx == selected_index;
 
