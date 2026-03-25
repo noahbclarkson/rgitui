@@ -221,6 +221,7 @@ mod tests {
             time: Utc::now(),
             parent_oids: parents.iter().map(|b| make_oid(*b)).collect(),
             refs,
+            is_signed: false,
         }
     }
 

@@ -161,6 +161,7 @@ fn test_compute_graph_with_real_commits() {
             time,
             parent_oids: commit.parent_ids().collect(),
             refs: Vec::new(),
+            is_signed: false,
         });
     }
 

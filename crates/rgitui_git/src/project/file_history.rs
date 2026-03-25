@@ -105,6 +105,7 @@ pub fn compute_file_history(
             time: time.unwrap_or_else(Utc::now),
             parent_oids: commit.parent_ids().collect(),
             refs: Vec::new(), // No refs needed for file history
+            is_signed: commit.header_field_bytes("gpgsig").is_ok(),
         });
     }
 

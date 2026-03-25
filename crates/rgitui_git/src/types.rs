@@ -42,6 +42,8 @@ pub struct CommitInfo {
     pub time: DateTime<Utc>,
     pub parent_oids: Vec<git2::Oid>,
     pub refs: Vec<RefLabel>,
+    /// Whether this commit has a GPG signature (gpgsig header present).
+    pub is_signed: bool,
 }
 
 /// Information about a branch.

@@ -328,6 +328,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                 time: time.unwrap_or_else(Utc::now),
                 parent_oids: commit.parent_ids().collect(),
                 refs,
+                is_signed: commit.header_field_bytes("gpgsig").is_ok(),
             });
         }
 
@@ -451,6 +452,7 @@ pub(super) fn load_more_commits_from_repo(
             time: time.unwrap_or_else(Utc::now),
             parent_oids: commit.parent_ids().collect(),
             refs,
+            is_signed: commit.header_field_bytes("gpgsig").is_ok(),
         });
     }
 

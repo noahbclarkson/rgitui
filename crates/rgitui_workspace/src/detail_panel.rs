@@ -1048,6 +1048,26 @@ impl Render for DetailPanel {
                 }),
         );
 
+        // GPG signed badge
+        if commit.is_signed {
+            header_card = header_card.child(
+                div()
+                    .h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Lock)
+                            .size(IconSize::XSmall)
+                            .color(Color::Success),
+                    )
+                    .child(
+                        Badge::new(SharedString::from("Signed"))
+                            .color(Color::Success)
+                            .bold(),
+                    ),
+            );
+        }
+
         // Parent commits as interactive badges
         if !commit.parent_oids.is_empty() {
             let mut parents_row = div().h_flex().gap(px(8.)).items_center().flex_wrap().child(
