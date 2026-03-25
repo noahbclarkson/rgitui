@@ -1,5 +1,13 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
+
+#[derive(Default, Clone, Copy)]
+#[allow(dead_code)]
+enum FileViewMode {
+    #[default]
+    Flat,
+    Tree,
+}
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
@@ -67,12 +75,6 @@ pub enum DetailPanelEvent {
     NavigateNextCommit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FileViewMode {
-    Flat,
-    Tree,
-}
-
 fn file_change_icon(kind: FileChangeKind) -> IconName {
     match kind {
         FileChangeKind::Added => IconName::FileAdded,
@@ -101,7 +103,6 @@ fn file_change_color(kind: FileChangeKind) -> Color {
 
 struct CachedFileDiffTree {
     flat_rows: Vec<CachedFlatRow>,
-    tree: CachedTreeNode,
 }
 
 #[derive(Clone)]
@@ -115,49 +116,6 @@ struct CachedFlatRow {
     icon_color: Color,
     change_code: SharedString,
     change_color: Color,
-}
-
-#[derive(Default)]
-struct CachedTreeNode {
-    files: Vec<(usize, SharedString)>,
-    children: BTreeMap<String, CachedTreeNode>,
-}
-
-fn build_cached_tree(files: &[FileDiff]) -> CachedTreeNode {
-    let mut root = CachedTreeNode::default();
-    for (i, file) in files.iter().enumerate() {
-        let path_str = file.path.display().to_string();
-        let parts: Vec<&str> = path_str.split('/').collect();
-        let file_name: SharedString = file
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&path_str)
-            .to_string()
-            .into();
-        let mut node = &mut root;
-        for (pi, part) in parts.iter().enumerate() {
-            if pi == parts.len() - 1 {
-                node.files.push((i, file_name.clone()));
-            } else {
-                node = node.children.entry(part.to_string()).or_default();
-            }
-        }
-    }
-    sort_cached_tree(&mut root);
-    root
-}
-
-fn sort_cached_tree(node: &mut CachedTreeNode) {
-    node.files
-        .sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-    for child in node.children.values_mut() {
-        sort_cached_tree(child);
-    }
-}
-
-fn cached_tree_count(node: &CachedTreeNode) -> usize {
-    node.files.len() + node.children.values().map(cached_tree_count).sum::<usize>()
 }
 
 fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
@@ -199,8 +157,7 @@ fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
             }
         })
         .collect();
-    let tree = build_cached_tree(files);
-    CachedFileDiffTree { flat_rows, tree }
+    CachedFileDiffTree { flat_rows }
 }
 
 pub struct DetailPanel {
@@ -209,9 +166,11 @@ pub struct DetailPanel {
     cached_file_tree: Option<CachedFileDiffTree>,
     selected_file_index: Option<usize>,
     focus_handle: FocusHandle,
+    copied_field: Option<(&'static str, Instant)>,
+    file_search_query: Option<String>,
+    file_search_active: bool,
     file_view_mode: FileViewMode,
     collapsed_dirs: HashSet<String>,
-    copied_field: Option<(&'static str, Instant)>,
 }
 
 impl EventEmitter<DetailPanelEvent> for DetailPanel {}
@@ -224,9 +183,11 @@ impl DetailPanel {
             cached_file_tree: None,
             selected_file_index: None,
             focus_handle: cx.focus_handle(),
-            file_view_mode: FileViewMode::Flat,
-            collapsed_dirs: HashSet::new(),
             copied_field: None,
+            file_search_query: None,
+            file_search_active: false,
+            file_view_mode: FileViewMode::default(),
+            collapsed_dirs: HashSet::new(),
         }
     }
 
@@ -284,6 +245,7 @@ impl DetailPanel {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
         let file_count = self.file_count();
 
         // Commit prev/next navigation — works regardless of file count
@@ -299,6 +261,51 @@ impl DetailPanel {
                 }
             }
             _ => {}
+        }
+
+        // File search toggle: / or Ctrl+F
+        if (key == "/" && !modifiers.control && !modifiers.platform)
+            || ((modifiers.control || modifiers.platform) && key == "f")
+        {
+            self.file_search_active = true;
+            cx.notify();
+            return;
+        }
+
+        // Escape clears search
+        if key == "escape" {
+            if self.file_search_query.is_some() || self.file_search_active {
+                self.file_search_query = None;
+                self.file_search_active = false;
+                cx.notify();
+            }
+            return;
+        }
+
+        // When search is active, capture printable characters as query
+        if self.file_search_active {
+            // Use key_char for printable input (same as TextInput)
+            if let Some(kc) = &event.keystroke.key_char {
+                let ch = kc.to_lowercase().chars().next().unwrap_or(' ');
+                let new_query = match &mut self.file_search_query {
+                    Some(q) => {
+                        q.push(ch);
+                        q.clone()
+                    }
+                    None => ch.to_string(),
+                };
+                self.file_search_query = Some(new_query);
+                cx.notify();
+            } else if key == "backspace" {
+                if let Some(q) = &mut self.file_search_query {
+                    q.pop();
+                    if q.is_empty() {
+                        self.file_search_query = None;
+                    }
+                }
+                cx.notify();
+            }
+            return;
         }
 
         if file_count == 0 {
@@ -363,6 +370,9 @@ impl DetailPanel {
         self.commit = Some(commit);
         self.commit_diff = Some(Arc::new(diff));
         self.selected_file_index = None;
+        self.file_search_query = None;
+        self.file_search_active = false;
+        self.collapsed_dirs.clear();
         cx.notify();
     }
 
@@ -371,21 +381,30 @@ impl DetailPanel {
         self.commit_diff = None;
         self.cached_file_tree = None;
         self.selected_file_index = None;
+        self.file_search_query = None;
+        self.file_search_active = false;
+        self.collapsed_dirs.clear();
         cx.notify();
     }
 
-    fn is_dir_collapsed(&self, dir: &str) -> bool {
-        self.collapsed_dirs.contains(dir)
-    }
-
-    fn toggle_dir(&mut self, dir: &str, cx: &mut Context<Self>) {
-        let key = dir.to_string();
-        if self.collapsed_dirs.contains(&key) {
-            self.collapsed_dirs.remove(&key);
-        } else {
-            self.collapsed_dirs.insert(key);
-        }
-        cx.notify();
+    /// Returns file indices matching the search query (using fuzzy_score),
+    /// or all files if no query is set.
+    fn filtered_file_indices(&self) -> Vec<usize> {
+        let query = match &self.file_search_query {
+            Some(q) if !q.is_empty() => q,
+            _ => return (0..self.file_count()).collect(),
+        };
+        let Some(diff) = &self.commit_diff else {
+            return vec![];
+        };
+        diff.files
+            .iter()
+            .enumerate()
+            .filter_map(|(i, file)| {
+                let path = file.path.to_string_lossy();
+                crate::command_palette::CommandPalette::fuzzy_score(query, &path).map(|_| i)
+            })
+            .collect()
     }
 
     fn render_section_header(&self, label: &str) -> impl IntoElement {
@@ -507,9 +526,10 @@ impl DetailPanel {
         avatar_circle
     }
 
-    fn render_flat_file_list(
+    fn render_flat_file_list_filtered(
         &self,
         cached: &CachedFileDiffTree,
+        filtered_indices: &[usize],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors().clone();
@@ -520,7 +540,10 @@ impl DetailPanel {
             .spacing(26.0);
         let selected_file_index = self.selected_file_index;
         let weak = cx.weak_entity();
-        let rows = cached.flat_rows.clone();
+        let rows: Vec<_> = filtered_indices
+            .iter()
+            .filter_map(|&fi| cached.flat_rows.get(fi).cloned())
+            .collect();
         let row_count = rows.len();
 
         let ghost_element_selected = colors.ghost_element_selected;
@@ -529,14 +552,14 @@ impl DetailPanel {
         let ghost_element_hover = colors.ghost_element_hover;
 
         uniform_list(
-            "detail-files-list",
+            "detail-files-filtered",
             row_count,
             move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
                 range
                     .map(|ix| {
                         let row = &rows[ix];
-                        let selected = selected_file_index == Some(row.file_index);
-                        let file_idx = row.file_index;
+                        let actual_file_index = row.file_index;
+                        let selected = selected_file_index == Some(actual_file_index);
                         let weak = weak.clone();
                         let dir_path = row.dir_path.clone();
 
@@ -559,7 +582,7 @@ impl DetailPanel {
                             .cursor_pointer()
                             .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                 weak.update(cx, |this, cx| {
-                                    this.selected_file_index = Some(file_idx);
+                                    this.selected_file_index = Some(actual_file_index);
                                     this.emit_file_selected(cx);
                                     cx.notify();
                                 })
@@ -618,244 +641,131 @@ impl DetailPanel {
         .into_any_element()
     }
 
-    fn render_file_row(
+    /// Renders a filtered tree: only files/dirs whose path matches the search are shown.
+    /// Uses the same cached tree but only emits nodes that contain matching files.
+    fn render_tree_file_list_filtered(
         &self,
-        file_list: gpui::Stateful<gpui::Div>,
-        i: usize,
-        file: &FileDiff,
-        file_name: SharedString,
-        dir_path: SharedString,
-        indent: gpui::Pixels,
+        diff: &CommitDiff,
+        _cached: &CachedFileDiffTree,
+        colors: &rgitui_theme::ThemeColors,
+        filtered_indices: &[usize],
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let colors = cx.colors().clone();
+        let filter_set: std::collections::HashSet<usize> =
+            filtered_indices.iter().cloned().collect();
         let row_h = cx
             .global::<SettingsState>()
             .settings()
             .compactness
             .spacing(26.0);
 
-        let additions = file.additions;
-        let deletions = file.deletions;
-        let selected = self.selected_file_index == Some(i);
-        let file_idx = i;
-
-        let icon_name = file_change_icon(file.kind);
-        let icon_color = file_change_color(file.kind);
-        let change_code: SharedString = file.kind.short_code().into();
-        let change_color = file_change_color(file.kind);
-
-        file_list.child(
-            div()
-                .id(ElementId::NamedInteger("detail-file".into(), i as u64))
-                .h_flex()
-                .w_full()
-                .h(px(row_h))
-                .pl(indent)
-                .pr(px(12.))
-                .gap(px(6.))
-                .items_center()
-                .flex_shrink_0()
-                .border_l_2()
-                .when(selected, |el| {
-                    el.bg(colors.ghost_element_selected)
-                        .border_color(colors.text_accent)
-                })
-                .when(!selected, |el| el.border_color(colors.border_transparent))
-                .hover(|s| s.bg(colors.ghost_element_hover))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.selected_file_index = Some(file_idx);
-                    this.emit_file_selected(cx);
-                    cx.notify();
-                }))
-                .child(
-                    Icon::new(icon_name)
-                        .size(IconSize::XSmall)
-                        .color(icon_color),
-                )
-                .child(
-                    div()
-                        .h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(2.))
-                        .overflow_hidden()
-                        .when(!dir_path.is_empty(), |el| {
-                            el.child(
-                                Label::new(dir_path)
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
-                            )
-                        })
-                        .child(Label::new(file_name).size(LabelSize::XSmall).truncate()),
-                )
-                .child(
-                    div()
-                        .h_flex()
-                        .w(px(16.))
-                        .h(px(16.))
-                        .rounded(px(3.))
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Label::new(change_code)
-                                .size(LabelSize::XSmall)
-                                .color(change_color)
-                                .weight(gpui::FontWeight::BOLD),
-                        ),
-                )
-                .child(DiffStat::new(additions, deletions)),
-        )
-    }
-
-    fn render_tree_file_list(
-        &self,
-        diff: &CommitDiff,
-        cached: &CachedFileDiffTree,
-        colors: &rgitui_theme::ThemeColors,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
         let mut file_list = div()
-            .id("detail-files-list")
+            .id("detail-files-filtered-tree")
             .v_flex()
             .w_full()
             .flex_shrink_0()
             .pb_2();
 
-        file_list = self.render_cached_tree_node(file_list, &cached.tree, diff, "", 0, colors, cx);
-        file_list
-    }
-
-    fn render_cached_tree_node(
-        &self,
-        mut container: gpui::Stateful<gpui::Div>,
-        node: &CachedTreeNode,
-        diff: &CommitDiff,
-        parent_path: &str,
-        depth: usize,
-        colors: &rgitui_theme::ThemeColors,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let row_h = cx
-            .global::<SettingsState>()
-            .settings()
-            .compactness
-            .spacing(26.0);
-        let file_indent = px(if depth == 0 {
-            16.0
-        } else {
-            16.0 + depth as f32 * 14.0
-        });
-
-        for (i, file_name) in &node.files {
-            let file = &diff.files[*i];
-            container = self.render_file_row(
-                container,
-                *i,
-                file,
-                file_name.clone(),
-                SharedString::default(),
-                file_indent,
-                cx,
-            );
+        // Collect which top-level dirs contain matching files
+        let mut matching_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for &fi in filtered_indices {
+            if let Some(file) = diff.files.get(fi) {
+                let path_str = file.path.display().to_string();
+                if let Some(pos) = path_str.rfind('/') {
+                    matching_dirs.insert(path_str[..pos].to_string());
+                }
+            }
         }
 
-        for (dir_name, child) in &node.children {
-            let mut full_dir = if parent_path.is_empty() {
-                dir_name.clone()
-            } else {
-                format!("{}/{}", parent_path, dir_name)
-            };
-            let mut display_label = format!("{dir_name}/");
-            let mut display_node = child;
-
-            while display_node.files.is_empty() && display_node.children.len() == 1 {
-                let Some((next_name, next_child)) = display_node.children.iter().next() else {
-                    break;
-                };
-                full_dir = format!("{full_dir}/{next_name}");
-                display_label = format!("{display_label}{next_name}/");
-                display_node = next_child;
+        // Render only matching top-level items (files + dirs that have matches)
+        for (i, file) in diff.files.iter().enumerate() {
+            if !filter_set.contains(&i) {
+                continue;
             }
-
-            let dir_collapsed = self.is_dir_collapsed(&full_dir);
-            let dir_icon = if dir_collapsed {
-                IconName::ChevronRight
+            let path_str = file.path.display().to_string();
+            let file_name: SharedString = file
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&path_str)
+                .to_string()
+                .into();
+            let dir_path: SharedString = if let Some(pos) = path_str.rfind('/') {
+                format!("{}/", &path_str[..pos]).into()
             } else {
-                IconName::ChevronDown
+                SharedString::default()
             };
-            let dir_clone = full_dir.clone();
-            let dir_indent = px(16.0 + depth as f32 * 14.0);
-            let file_count = cached_tree_count(display_node);
 
-            container = container.child(
+            let indent = px(16.0);
+            let colors = colors.clone();
+            let selected = self.selected_file_index == Some(i);
+            let file_idx = i;
+
+            file_list = file_list.child(
                 div()
-                    .id(SharedString::from(format!("detail-dir-{full_dir}")))
+                    .id(ElementId::NamedInteger("detail-file".into(), i as u64))
                     .h_flex()
                     .w_full()
                     .h(px(row_h))
-                    .flex_shrink_0()
-                    .px_2()
-                    .pl(dir_indent)
-                    .gap_1()
+                    .pl(indent)
+                    .pr(px(12.))
+                    .gap(px(6.))
                     .items_center()
-                    .overflow_hidden()
+                    .flex_shrink_0()
+                    .border_l_2()
+                    .when(selected, |el| {
+                        el.bg(colors.ghost_element_selected)
+                            .border_color(colors.text_accent)
+                    })
+                    .when(!selected, |el| el.border_color(colors.border_transparent))
                     .hover(|s| s.bg(colors.ghost_element_hover))
-                    .active(|s| s.bg(colors.ghost_element_selected))
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.toggle_dir(&dir_clone, cx);
+                        this.selected_file_index = Some(file_idx);
+                        this.emit_file_selected(cx);
+                        cx.notify();
                     }))
                     .child(
-                        Icon::new(dir_icon)
+                        Icon::new(file_change_icon(file.kind))
                             .size(IconSize::XSmall)
-                            .color(Color::Muted),
+                            .color(file_change_color(file.kind)),
                     )
-                    .child(
-                        Icon::new(IconName::Folder)
-                            .size(IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        Label::new(SharedString::from(display_label))
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted)
-                            .truncate(),
-                    )
-                    .child(div().flex_1())
                     .child(
                         div()
                             .h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(2.))
+                            .overflow_hidden()
+                            .when(!dir_path.is_empty(), |el| {
+                                el.child(
+                                    Label::new(dir_path)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                            })
+                            .child(Label::new(file_name).size(LabelSize::XSmall).truncate()),
+                    )
+                    .child(
+                        div()
+                            .h_flex()
+                            .w(px(16.))
                             .h(px(16.))
-                            .min_w(px(20.))
-                            .px(px(6.))
-                            .rounded(px(8.))
-                            .bg(colors.ghost_element_hover)
+                            .rounded(px(3.))
                             .items_center()
                             .justify_center()
                             .child(
-                                Label::new(SharedString::from(format!("{file_count}")))
+                                Label::new(file.kind.short_code())
                                     .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
+                                    .color(file_change_color(file.kind))
+                                    .weight(gpui::FontWeight::BOLD),
                             ),
-                    ),
+                    )
+                    .child(DiffStat::new(file.additions, file.deletions)),
             );
-
-            if !dir_collapsed {
-                container = self.render_cached_tree_node(
-                    container,
-                    display_node,
-                    diff,
-                    &full_dir,
-                    depth + 1,
-                    colors,
-                    cx,
-                );
-            }
         }
 
-        container
+        file_list
     }
 }
 
@@ -1315,80 +1225,169 @@ impl Render for DetailPanel {
 
         // -- Changed Files Section --
         if let (Some(diff), Some(cached)) = (&self.commit_diff, &self.cached_file_tree) {
-            let file_count = diff.files.len();
-            let file_count_text: SharedString = format!(
-                "{} file{} changed",
-                file_count,
-                if file_count == 1 { "" } else { "s" },
-            )
-            .into();
+            let total_file_count = diff.files.len();
+            let filtered_indices = self.filtered_file_indices();
+            let is_searching = self.file_search_active || self.file_search_query.is_some();
+            let query_str = self.file_search_query.clone().unwrap_or_default();
+
+            let file_count_text: SharedString = if is_searching && !query_str.is_empty() {
+                let shown = filtered_indices.len();
+                let total = total_file_count;
+                format!(
+                    "{} / {} file{} changed",
+                    shown,
+                    total,
+                    if total == 1 { "" } else { "s" }
+                )
+                .into()
+            } else {
+                format!(
+                    "{} file{} changed",
+                    total_file_count,
+                    if total_file_count == 1 { "" } else { "s" },
+                )
+                .into()
+            };
+
             let total_additions = diff.total_additions;
             let total_deletions = diff.total_deletions;
 
-            let is_flat = matches!(self.file_view_mode, FileViewMode::Flat);
-            let is_tree = matches!(self.file_view_mode, FileViewMode::Tree);
+            // Build the header with optional search input
+            let header_children = |cx: &mut Context<Self>| -> Vec<gpui::AnyElement> {
+                let mut children: Vec<gpui::AnyElement> = vec![
+                    Icon::new(IconName::File)
+                        .size(IconSize::XSmall)
+                        .color(Color::Muted)
+                        .into_any_element(),
+                    Label::new(file_count_text.clone())
+                        .size(LabelSize::XSmall)
+                        .weight(gpui::FontWeight::SEMIBOLD)
+                        .color(Color::Muted)
+                        .into_any_element(),
+                ];
 
-            content = content.child(
-                div()
-                    .h_flex()
-                    .w_full()
-                    .h(px(28.))
-                    .mt_2()
-                    .px(px(10.))
-                    .gap(px(4.))
-                    .items_center()
-                    .bg(colors.surface_background)
-                    .border_y_1()
-                    .border_color(colors.border_variant)
-                    .child(
-                        Icon::new(IconName::File)
-                            .size(IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        Label::new(file_count_text)
-                            .size(LabelSize::XSmall)
-                            .weight(gpui::FontWeight::SEMIBOLD)
-                            .color(Color::Muted),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .h_flex()
-                            .gap_1()
-                            .child(
-                                IconButton::new("flat-view", IconName::Menu)
-                                    .size(ButtonSize::Compact)
-                                    .style(ButtonStyle::Transparent)
-                                    .selected(is_flat)
-                                    .tooltip("Flat file list")
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                        this.file_view_mode = FileViewMode::Flat;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                IconButton::new("tree-view", IconName::Folder)
-                                    .size(ButtonSize::Compact)
-                                    .style(ButtonStyle::Transparent)
-                                    .selected(is_tree)
-                                    .tooltip("Tree file view")
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                        this.file_view_mode = FileViewMode::Tree;
-                                        cx.notify();
-                                    })),
+                if is_searching {
+                    let query_clone = query_str.clone();
+                    let search_input: gpui::AnyElement = div()
+                        .flex_1()
+                        .h_flex()
+                        .items_center()
+                        .px_2()
+                        .gap_1()
+                        .bg(colors.ghost_element_selected)
+                        .border_1()
+                        .border_color(colors.text_accent)
+                        .rounded(px(4.))
+                        .child(
+                            Icon::new(IconName::Search)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            div().flex_1().child(
+                                Label::new(query_clone.clone())
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Default),
                             ),
-                    )
-                    .child(DiffStat::new(total_additions, total_deletions)),
-            );
+                        )
+                        .child(
+                            IconButton::new("clear-search", IconName::X)
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Transparent)
+                                .tooltip("Clear search (Esc)")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.file_search_query = None;
+                                    this.file_search_active = false;
+                                    cx.notify();
+                                }))
+                                .into_any_element(),
+                        )
+                        .into_any_element();
+                    children.push(search_input);
+                } else {
+                    children.push(div().flex_1().into_any_element());
+                }
 
-            let file_list: gpui::AnyElement = match self.file_view_mode {
-                FileViewMode::Flat => self.render_flat_file_list(cached, cx),
-                FileViewMode::Tree => self
-                    .render_tree_file_list(diff, cached, &colors, cx)
-                    .into_any_element(),
+                // Diff stat
+                let diff_stat: gpui::AnyElement =
+                    DiffStat::new(total_additions, total_deletions).into_any_element();
+                children.push(diff_stat);
+
+                children
             };
-            content = content.child(file_list);
+
+            let header_children = header_children(cx);
+            let mut header = div()
+                .h_flex()
+                .w_full()
+                .h(px(28.))
+                .mt_2()
+                .px(px(10.))
+                .gap_2()
+                .items_center()
+                .bg(colors.surface_background)
+                .border_y_1()
+                .border_color(colors.border_variant);
+
+            for child in header_children {
+                header = header.child(child);
+            }
+            content = content.child(header);
+
+            // Show search hint when not searching and there are files
+            if !is_searching && total_file_count > 0 {
+                content = content.child(
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .h(px(22.))
+                        .px_3()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            Label::new("/ to search files")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Placeholder),
+                        )
+                        .child(div().flex_1()),
+                );
+            }
+
+            // Show "no results" when search has no matches
+            if is_searching && !query_str.is_empty() && filtered_indices.is_empty() {
+                content = content.child(
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .py_4()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            Label::new(format!("No files match \"{}\"", query_str))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Placeholder),
+                        ),
+                );
+            }
+
+            // Render file list with search filter applied
+            if !filtered_indices.is_empty() {
+                let file_list: gpui::AnyElement = match self.file_view_mode {
+                    FileViewMode::Flat => {
+                        self.render_flat_file_list_filtered(cached, &filtered_indices, cx)
+                    }
+                    FileViewMode::Tree => self
+                        .render_tree_file_list_filtered(
+                            diff,
+                            cached,
+                            &colors,
+                            &filtered_indices,
+                            cx,
+                        )
+                        .into_any_element(),
+                };
+                content = content.child(file_list);
+            }
         }
 
         panel = panel.child(content);
