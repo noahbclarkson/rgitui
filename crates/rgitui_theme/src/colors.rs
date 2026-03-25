@@ -741,6 +741,122 @@ pub fn dracula_status() -> StatusColors {
     }
 }
 
+/// High Contrast Dark theme — WCAG AAA compliant.
+/// Pure black background with white text, bright saturated accents.
+/// Designed for maximum readability and visual accessibility.
+pub fn high_contrast_dark_colors() -> ThemeColors {
+    // Near-black backgrounds with clear hierarchy
+    let background = hsla(0.0, 0.0, 0.0, 1.0); // #000000
+    let surface = hsla(0.0, 0.0, 4.0, 1.0); // #0a0a0a
+    let elevated = hsla(0.0, 0.0, 8.0, 1.0); // #141414
+    let editor = hsla(0.0, 0.0, 2.0, 1.0); // #050505
+
+    // High contrast borders — visible but not harsh
+    let border_main = hsla(0.0, 0.0, 35.0, 1.0); // #595959
+    let border_variant = hsla(0.0, 0.0, 20.0, 1.0); // #333333
+                                                    // Accent: bright cyan — maximum visibility on black
+    let accent = hsla(180.0, 100.0, 50.0, 1.0); // #00ffff
+
+    // Text: pure white for maximum contrast on black
+    let text = hsla(0.0, 0.0, 100.0, 1.0); // #ffffff
+                                           // Muted text: light gray — still >7:1 on black (WCAG AAA)
+    let text_muted = hsla(0.0, 0.0, 80.0, 1.0); // #cccccc
+    let text_placeholder = hsla(0.0, 0.0, 55.0, 1.0); // #8c8c8c
+    let text_disabled = hsla(0.0, 0.0, 35.0, 1.0); // #595959
+
+    // Git status — bright saturated for unambiguous distinction
+    let vc_added = hsla(120.0, 100.0, 50.0, 1.0); // #00ff00
+    let vc_modified = hsla(60.0, 100.0, 50.0, 1.0); // #ffff00
+    let vc_deleted = hsla(0.0, 100.0, 55.0, 1.0); // #ff1a1a
+    let vc_conflict = hsla(30.0, 100.0, 55.0, 1.0); // #ff8c00
+    let vc_renamed = hsla(210.0, 100.0, 55.0, 1.0); // #0080ff
+    let vc_untracked = hsla(180.0, 80.0, 55.0, 1.0); // #00e5e5
+
+    ThemeColors {
+        background,
+        surface_background: surface,
+        elevated_surface_background: elevated,
+        editor_background: editor,
+
+        border: border_main,
+        border_variant,
+        border_focused: accent,
+        border_selected: accent,
+        border_disabled: border_variant,
+        border_transparent: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
+
+        element_background: surface,
+        element_hover: elevated,
+        element_active: hsla(0.0, 0.0, 14.0, 1.0),
+        element_selected: elevated,
+        element_disabled: surface,
+        ghost_element_background: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
+        ghost_element_hover: hsla(0.0, 0.0, 14.0, 0.6),
+        ghost_element_active: hsla(0.0, 0.0, 20.0, 0.8),
+        ghost_element_selected: hsla(0.0, 0.0, 14.0, 0.8),
+
+        text,
+        text_muted,
+        text_placeholder,
+        text_disabled,
+        text_accent: accent,
+
+        icon: text,
+        icon_muted: text_muted,
+        icon_disabled: text_disabled,
+        icon_accent: accent,
+
+        title_bar_background: background,
+        toolbar_background: surface,
+        tab_bar_background: surface,
+        tab_active_background: elevated,
+        tab_inactive_background: background,
+        status_bar_background: surface,
+        panel_background: editor,
+        scrollbar_thumb_background: border_main,
+        scrollbar_thumb_hover_background: text_placeholder,
+
+        hint_background: hsla(180.0, 100.0, 50.0, 0.12),
+
+        vc_added,
+        vc_modified,
+        vc_deleted,
+        vc_conflict,
+        vc_renamed,
+        vc_untracked,
+    }
+}
+
+pub fn high_contrast_dark_status() -> StatusColors {
+    let red = hsla(0.0, 100.0, 55.0, 1.0); // #ff1a1a
+    let yellow = hsla(60.0, 100.0, 50.0, 1.0); // #ffff00
+    let green = hsla(120.0, 100.0, 50.0, 1.0); // #00ff00
+    let blue = hsla(210.0, 100.0, 55.0, 1.0); // #0080ff
+    let cyan = hsla(180.0, 100.0, 50.0, 1.0); // #00ffff
+
+    StatusColors {
+        error: red,
+        error_background: hsla(0.0, 100.0, 55.0, 0.2),
+        warning: yellow,
+        warning_background: hsla(60.0, 100.0, 50.0, 0.2),
+        success: green,
+        success_background: hsla(120.0, 100.0, 50.0, 0.2),
+        info: blue,
+        info_background: hsla(210.0, 100.0, 55.0, 0.2),
+        hint: cyan,
+    }
+}
+
 /// Lane colors for the commit graph. Cycles through these for branch visualization.
 pub const GRAPH_LANE_COLORS: &[fn() -> Hsla] = &[
     || hsla(267.0, 84.0, 75.0, 1.0), // mauve (boosted)
@@ -897,5 +1013,56 @@ mod tests {
                 c.a
             );
         }
+    }
+
+    // ── high_contrast_dark ────────────────────────────────────────
+
+    #[test]
+    fn high_contrast_dark_is_fully_opaque() {
+        let colors = super::high_contrast_dark_colors();
+        assert!(approx_eq(colors.background.a, 1.0));
+        assert!(approx_eq(colors.text.a, 1.0));
+        assert!(approx_eq(colors.vc_added.a, 1.0));
+    }
+
+    #[test]
+    fn high_contrast_dark_text_is_pure_white() {
+        let colors = super::high_contrast_dark_colors();
+        assert!(approx_eq(colors.text.h, 0.0));
+        assert!(approx_eq(colors.text.s, 0.0));
+        assert!(approx_eq(colors.text.l, 1.0));
+    }
+
+    #[test]
+    fn high_contrast_dark_background_is_black() {
+        let colors = super::high_contrast_dark_colors();
+        assert!(approx_eq(colors.background.h, 0.0));
+        assert!(approx_eq(colors.background.s, 0.0));
+        assert!(approx_eq(colors.background.l, 0.0));
+    }
+
+    #[test]
+    fn high_contrast_dark_vc_colors_are_distinct() {
+        let colors = super::high_contrast_dark_colors();
+        // All VC colors must be fully saturated (s=1.0) and fully opaque
+        assert!(approx_eq(colors.vc_added.s, 1.0));
+        assert!(approx_eq(colors.vc_modified.s, 1.0));
+        assert!(approx_eq(colors.vc_deleted.s, 1.0));
+        assert!(approx_eq(colors.vc_added.a, 1.0));
+        assert!(approx_eq(colors.vc_modified.a, 1.0));
+        assert!(approx_eq(colors.vc_deleted.a, 1.0));
+        // And visually distinct hues
+        assert_ne!(colors.vc_added.h, colors.vc_modified.h);
+        assert_ne!(colors.vc_modified.h, colors.vc_deleted.h);
+        assert_ne!(colors.vc_added.h, colors.vc_deleted.h);
+    }
+
+    #[test]
+    fn high_contrast_dark_status_is_fully_opaque() {
+        let status = super::high_contrast_dark_status();
+        assert!(approx_eq(status.error.a, 1.0));
+        assert!(approx_eq(status.success.a, 1.0));
+        assert!(approx_eq(status.warning.a, 1.0));
+        assert!(approx_eq(status.info.a, 1.0));
     }
 }

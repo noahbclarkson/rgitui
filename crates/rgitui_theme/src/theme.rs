@@ -5,7 +5,8 @@ use gpui::{point, px, App, BoxShadow, Global, Hsla, Styled};
 use crate::colors::{
     catppuccin_latte_colors, catppuccin_latte_status, catppuccin_mocha_colors,
     catppuccin_mocha_status, dracula_colors, dracula_status, github_dark_colors,
-    github_dark_status, one_dark_colors, one_dark_status, StatusColors, ThemeColors,
+    github_dark_status, high_contrast_dark_colors, high_contrast_dark_status, one_dark_colors,
+    one_dark_status, StatusColors, ThemeColors,
 };
 
 /// Visual appearance mode.
@@ -101,6 +102,12 @@ pub fn builtin_themes() -> Vec<Arc<Theme>> {
             appearance: Appearance::Dark,
             colors: dracula_colors(),
             status: dracula_status(),
+        }),
+        Arc::new(Theme {
+            name: "High Contrast Dark".into(),
+            appearance: Appearance::Dark,
+            colors: high_contrast_dark_colors(),
+            status: high_contrast_dark_status(),
         }),
     ]
 }
