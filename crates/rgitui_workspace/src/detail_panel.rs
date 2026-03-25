@@ -1414,3 +1414,220 @@ impl Render for DetailPanel {
         panel.into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- format_relative_time tests ---
+
+    #[test]
+    fn test_format_relative_time_just_now() {
+        let now = chrono::Utc::now().timestamp();
+        assert_eq!(format_relative_time(now), "just now");
+    }
+
+    #[test]
+    fn test_format_relative_time_minutes() {
+        let five_mins_ago = chrono::Utc::now().timestamp() - 300;
+        assert_eq!(format_relative_time(five_mins_ago), "5 mins ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_one_minute() {
+        let one_min_ago = chrono::Utc::now().timestamp() - 60;
+        assert_eq!(format_relative_time(one_min_ago), "1 min ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_hours() {
+        let two_hours_ago = chrono::Utc::now().timestamp() - 7200;
+        assert_eq!(format_relative_time(two_hours_ago), "2 hours ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_one_hour() {
+        let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
+        assert_eq!(format_relative_time(one_hour_ago), "1 hour ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_days() {
+        let three_days_ago = chrono::Utc::now().timestamp() - 259200;
+        assert_eq!(format_relative_time(three_days_ago), "3 days ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_one_day() {
+        let one_day_ago = chrono::Utc::now().timestamp() - 86400;
+        assert_eq!(format_relative_time(one_day_ago), "1 day ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_months() {
+        let two_months_ago = chrono::Utc::now().timestamp() - 5184000;
+        assert_eq!(format_relative_time(two_months_ago), "2 months ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_one_month() {
+        let one_month_ago = chrono::Utc::now().timestamp() - 2592000;
+        assert_eq!(format_relative_time(one_month_ago), "1 month ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_years() {
+        let two_years_ago = chrono::Utc::now().timestamp() - 63072000;
+        assert_eq!(format_relative_time(two_years_ago), "2 years ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_one_year() {
+        let one_year_ago = chrono::Utc::now().timestamp() - 31536000;
+        assert_eq!(format_relative_time(one_year_ago), "1 year ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_future() {
+        let future = chrono::Utc::now().timestamp() + 1000;
+        assert_eq!(format_relative_time(future), "in the future");
+    }
+
+    // --- format_absolute_date tests ---
+
+    #[test]
+    fn test_format_absolute_date_valid() {
+        let ts = 1704067200; // 2024-01-01 00:00:00 UTC
+        let result = format_absolute_date(ts);
+        assert!(result.contains("2024"));
+    }
+
+    #[test]
+    fn test_format_absolute_date_zero() {
+        // timestamp 0 is 1970-01-01 00:00:00 UTC — valid epoch, not unknown
+        let result = format_absolute_date(0);
+        assert!(result.contains("1970"));
+    }
+
+    #[test]
+    fn test_format_absolute_date_before_epoch() {
+        // negative timestamps before epoch 0 are valid in chrono
+        let result = format_absolute_date(-86400);
+        assert!(result.contains("1969"));
+    }
+
+    // --- file_change_icon tests ---
+
+    #[test]
+    fn test_file_change_icon_added() {
+        assert_eq!(file_change_icon(FileChangeKind::Added), IconName::FileAdded);
+    }
+
+    #[test]
+    fn test_file_change_icon_modified() {
+        assert_eq!(
+            file_change_icon(FileChangeKind::Modified),
+            IconName::FileModified
+        );
+    }
+
+    #[test]
+    fn test_file_change_icon_deleted() {
+        assert_eq!(
+            file_change_icon(FileChangeKind::Deleted),
+            IconName::FileDeleted
+        );
+    }
+
+    #[test]
+    fn test_file_change_icon_renamed() {
+        assert_eq!(
+            file_change_icon(FileChangeKind::Renamed),
+            IconName::FileRenamed
+        );
+    }
+
+    #[test]
+    fn test_file_change_icon_copied() {
+        // Copied maps to FileRenamed (same icon)
+        assert_eq!(
+            file_change_icon(FileChangeKind::Copied),
+            IconName::FileRenamed
+        );
+    }
+
+    #[test]
+    fn test_file_change_icon_type_change() {
+        assert_eq!(
+            file_change_icon(FileChangeKind::TypeChange),
+            IconName::FileModified
+        );
+    }
+
+    #[test]
+    fn test_file_change_icon_untracked() {
+        assert_eq!(
+            file_change_icon(FileChangeKind::Untracked),
+            IconName::FileAdded
+        );
+    }
+
+    #[test]
+    fn test_file_change_icon_conflicted() {
+        assert_eq!(
+            file_change_icon(FileChangeKind::Conflicted),
+            IconName::FileConflict
+        );
+    }
+
+    // --- file_change_color tests ---
+
+    #[test]
+    fn test_file_change_color_added() {
+        assert_eq!(file_change_color(FileChangeKind::Added), Color::Added);
+    }
+
+    #[test]
+    fn test_file_change_color_modified() {
+        assert_eq!(file_change_color(FileChangeKind::Modified), Color::Modified);
+    }
+
+    #[test]
+    fn test_file_change_color_deleted() {
+        assert_eq!(file_change_color(FileChangeKind::Deleted), Color::Deleted);
+    }
+
+    #[test]
+    fn test_file_change_color_renamed() {
+        assert_eq!(file_change_color(FileChangeKind::Renamed), Color::Renamed);
+    }
+
+    #[test]
+    fn test_file_change_color_copied() {
+        assert_eq!(file_change_color(FileChangeKind::Copied), Color::Info);
+    }
+
+    #[test]
+    fn test_file_change_color_type_change() {
+        assert_eq!(
+            file_change_color(FileChangeKind::TypeChange),
+            Color::Warning
+        );
+    }
+
+    #[test]
+    fn test_file_change_color_untracked() {
+        assert_eq!(
+            file_change_color(FileChangeKind::Untracked),
+            Color::Untracked
+        );
+    }
+
+    #[test]
+    fn test_file_change_color_conflicted() {
+        assert_eq!(
+            file_change_color(FileChangeKind::Conflicted),
+            Color::Conflict
+        );
+    }
+}
