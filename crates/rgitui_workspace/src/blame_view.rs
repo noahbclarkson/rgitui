@@ -85,7 +85,7 @@ impl BlameView {
         self.focus_handle.is_focused(window)
     }
 
-    fn compute_oid_color_map(lines: &[BlameLine]) -> HashMap<String, usize> {
+    pub(crate) fn compute_oid_color_map(lines: &[BlameLine]) -> HashMap<String, usize> {
         let mut map = HashMap::new();
         let mut next_idx = 0usize;
         for line in lines {
@@ -98,7 +98,7 @@ impl BlameView {
         map
     }
 
-    fn format_relative_time(timestamp: i64) -> String {
+    pub(crate) fn format_relative_time(timestamp: i64) -> String {
         let now = chrono::Utc::now().timestamp();
         let diff = now - timestamp;
         if diff < 0 {
@@ -542,5 +542,189 @@ impl Render for BlameView {
             )
             .child(list)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use git2::Oid;
+    use rgitui_git::BlameEntry;
+
+    fn make_blame_line(oid: &str, line_no: usize, content: &str) -> BlameLine {
+        BlameLine {
+            line_no,
+            content: content.to_string(),
+            entry: BlameEntry {
+                oid: Oid::from_str(oid).unwrap(),
+                short_id: oid[..7].to_string(),
+                author: "Test Author".to_string(),
+                email: "test@example.com".to_string(),
+                time: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+                start_line: line_no,
+                line_count: 1,
+            },
+        }
+    }
+
+    // --- compute_oid_color_map tests ---
+
+    #[test]
+    fn test_compute_oid_color_map_empty() {
+        let lines: &[BlameLine] = &[];
+        let result = BlameView::compute_oid_color_map(lines);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_compute_oid_color_map_single_author() {
+        let lines = vec![
+            make_blame_line("aabbccddee00112233445566778899aabbccdd00", 1, "line 1"),
+            make_blame_line("aabbccddee00112233445566778899aabbccdd00", 2, "line 2"),
+            make_blame_line("aabbccddee00112233445566778899aabbccdd00", 3, "line 3"),
+        ];
+        let result = BlameView::compute_oid_color_map(&lines);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            *result
+                .get("aabbccddee00112233445566778899aabbccdd00")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_compute_oid_color_map_multiple_authors() {
+        let lines = vec![
+            make_blame_line("aaaa000000000000000000000000000000000000", 1, "line 1"),
+            make_blame_line("bbbb000000000000000000000000000000000000", 2, "line 2"),
+            make_blame_line("aaaa000000000000000000000000000000000000", 3, "line 3"),
+        ];
+        let result = BlameView::compute_oid_color_map(&lines);
+        assert_eq!(result.len(), 2);
+        // aaaa appears first → index 0
+        assert_eq!(
+            *result
+                .get("aaaa000000000000000000000000000000000000")
+                .unwrap(),
+            0
+        );
+        // bbbb appears second → index 1
+        assert_eq!(
+            *result
+                .get("bbbb000000000000000000000000000000000000")
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_compute_oid_color_map_three_authors() {
+        let lines = vec![
+            make_blame_line("cccc000000000000000000000000000000000000", 1, "line 1"),
+            make_blame_line("dddd000000000000000000000000000000000000", 2, "line 2"),
+            make_blame_line("eeee000000000000000000000000000000000000", 3, "line 3"),
+        ];
+        let result = BlameView::compute_oid_color_map(&lines);
+        assert_eq!(result.len(), 3);
+        assert_eq!(
+            *result
+                .get("cccc000000000000000000000000000000000000")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            *result
+                .get("dddd000000000000000000000000000000000000")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            *result
+                .get("eeee000000000000000000000000000000000000")
+                .unwrap(),
+            2
+        );
+    }
+
+    // --- format_relative_time tests (blame_view abbreviated variant) ---
+
+    #[test]
+    fn test_format_relative_time_future() {
+        let future = chrono::Utc::now().timestamp() + 3600;
+        assert_eq!(BlameView::format_relative_time(future), "in the future");
+    }
+
+    #[test]
+    fn test_format_relative_time_just_now() {
+        let now = chrono::Utc::now().timestamp();
+        assert_eq!(BlameView::format_relative_time(now), "just now");
+    }
+
+    #[test]
+    fn test_format_relative_time_seconds() {
+        let past = chrono::Utc::now().timestamp() - 30;
+        assert_eq!(BlameView::format_relative_time(past), "just now");
+    }
+
+    #[test]
+    fn test_format_relative_time_minutes() {
+        let past = chrono::Utc::now().timestamp() - 300; // 5m ago
+        assert_eq!(BlameView::format_relative_time(past), "5m ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_single_minute() {
+        let past = chrono::Utc::now().timestamp() - 60;
+        assert_eq!(BlameView::format_relative_time(past), "1m ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_hours() {
+        let past = chrono::Utc::now().timestamp() - 7200; // 2h ago
+        assert_eq!(BlameView::format_relative_time(past), "2h ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_single_hour() {
+        let past = chrono::Utc::now().timestamp() - 3600;
+        assert_eq!(BlameView::format_relative_time(past), "1h ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_days() {
+        let past = chrono::Utc::now().timestamp() - 172800; // 2d ago
+        assert_eq!(BlameView::format_relative_time(past), "2d ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_single_day() {
+        let past = chrono::Utc::now().timestamp() - 86400;
+        assert_eq!(BlameView::format_relative_time(past), "1d ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_months() {
+        let past = chrono::Utc::now().timestamp() - 5184000; // ~2mo ago
+        assert_eq!(BlameView::format_relative_time(past), "2mo ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_single_month() {
+        let past = chrono::Utc::now().timestamp() - 2592000;
+        assert_eq!(BlameView::format_relative_time(past), "1mo ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_years() {
+        let past = chrono::Utc::now().timestamp() - 63072000; // ~2y ago
+        assert_eq!(BlameView::format_relative_time(past), "2y ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_single_year() {
+        let past = chrono::Utc::now().timestamp() - 31536000;
+        assert_eq!(BlameView::format_relative_time(past), "1y ago");
     }
 }
