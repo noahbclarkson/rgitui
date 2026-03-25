@@ -10,7 +10,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{DiffLine, FileDiff};
-use rgitui_theme::{ActiveTheme, Color, StyledExt};
+use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
 };
@@ -119,6 +119,8 @@ pub struct DiffViewer {
     highlighted_row: Option<usize>,
     selected_lines: Option<Range<usize>>,
     selection_anchor: Option<usize>,
+    /// Tracks the current theme appearance to drive syntax highlighting.
+    current_appearance: Appearance,
 }
 
 impl EventEmitter<DiffViewerEvent> for DiffViewer {}
@@ -137,6 +139,7 @@ impl DiffViewer {
             highlighted_row: None,
             selected_lines: None,
             selection_anchor: None,
+            current_appearance: Appearance::Dark,
         }
     }
 
@@ -150,8 +153,10 @@ impl DiffViewer {
     }
 
     pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, cx: &mut Context<Self>) {
-        self.display_rows = Arc::new(Self::compute_display_rows(&diff, &path));
-        self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff, &path));
+        let appearance = cx.theme().appearance;
+        self.current_appearance = appearance;
+        self.display_rows = Arc::new(Self::compute_display_rows(&diff, &path, appearance));
+        self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff, &path, appearance));
         self.diff = Some(diff);
         self.file_path = Some(path);
         self.is_staged = staged;
@@ -469,12 +474,29 @@ impl DiffViewer {
         })
     }
 
-    fn syntax_theme() -> &'static Theme {
+    fn syntax_theme(appearance: Appearance) -> &'static Theme {
         let assets = Self::syntax_assets();
+        let preferred_name = match appearance {
+            Appearance::Dark => "base16-ocean.dark",
+            Appearance::Light => "base16-ocean.light",
+        };
         assets
             .theme_set
             .themes
-            .get("base16-ocean.dark")
+            .get(preferred_name)
+            .or_else(|| {
+                // Graceful fallback: for light pick any non-dark theme, else any
+                if appearance == Appearance::Light {
+                    assets
+                        .theme_set
+                        .themes
+                        .iter()
+                        .find(|(k, _)| k.contains("light") || k.contains("Light"))
+                        .map(|(_, v)| v)
+                } else {
+                    None
+                }
+            })
             .or_else(|| assets.theme_set.themes.values().next())
             .expect("syntect theme set should contain at least one theme")
     }
@@ -552,7 +574,7 @@ impl DiffViewer {
             })
     }
 
-    fn syntax_line_highlighter(path: &str) -> SyntaxLineHighlighter {
+    fn syntax_line_highlighter(path: &str, appearance: Appearance) -> SyntaxLineHighlighter {
         let assets = Self::syntax_assets();
         let Some(syntax) = Self::syntax_for_path(path) else {
             return SyntaxLineHighlighter::Plain;
@@ -560,7 +582,7 @@ impl DiffViewer {
 
         SyntaxLineHighlighter::Syntect {
             syntax_set: &assets.syntax_set,
-            highlighter: Box::new(HighlightLines::new(syntax, Self::syntax_theme())),
+            highlighter: Box::new(HighlightLines::new(syntax, Self::syntax_theme(appearance))),
         }
     }
 
@@ -645,7 +667,7 @@ impl DiffViewer {
         }
     }
 
-    fn compute_sbs_rows(diff: &FileDiff, path: &str) -> Vec<SideBySideRow> {
+    fn compute_sbs_rows(diff: &FileDiff, path: &str, appearance: Appearance) -> Vec<SideBySideRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
             let header_str = hunk.header.trim().to_string();
@@ -656,7 +678,7 @@ impl DiffViewer {
             });
             let mut old_line = hunk.old_start as usize;
             let mut new_line = hunk.new_start as usize;
-            let mut highlighter = Self::syntax_line_highlighter(path);
+            let mut highlighter = Self::syntax_line_highlighter(path, appearance);
 
             let mut pending_dels: Vec<(usize, StyledLine)> = Vec::new();
             let mut pending_adds: Vec<(usize, StyledLine)> = Vec::new();
@@ -725,7 +747,7 @@ impl DiffViewer {
         rows
     }
 
-    fn compute_display_rows(diff: &FileDiff, path: &str) -> Vec<DisplayRow> {
+    fn compute_display_rows(diff: &FileDiff, path: &str, appearance: Appearance) -> Vec<DisplayRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
             let header_str = hunk.header.trim().to_string();
@@ -736,7 +758,7 @@ impl DiffViewer {
             });
             let mut old_line = hunk.old_start as usize;
             let mut new_line = hunk.new_start as usize;
-            let mut highlighter = Self::syntax_line_highlighter(path);
+            let mut highlighter = Self::syntax_line_highlighter(path, appearance);
             for line in &hunk.lines {
                 match line {
                     DiffLine::Context(text) => {
