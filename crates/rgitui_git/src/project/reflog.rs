@@ -92,3 +92,149 @@ impl GitProject {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    /// Create a git repo with N sequential commits on HEAD.
+    fn make_repo_with_commits(n: usize) -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        drop(cfg);
+
+        let sig = git2::Signature::now("Test", "t@t.com").unwrap();
+        let mut parent: Option<git2::Oid> = None;
+
+        for i in 0..n {
+            let file = path.join("file.txt");
+            std::fs::write(&file, format!("content {}\n", i)).unwrap();
+            let mut idx = repo.index().unwrap();
+            idx.add_path(Path::new("file.txt")).unwrap();
+            idx.write().unwrap();
+            let tree_oid = idx.write_tree().unwrap();
+            let tree = repo.find_tree(tree_oid).unwrap();
+            let parents: Vec<git2::Commit> = parent
+                .map(|oid| repo.find_commit(oid).unwrap())
+                .into_iter()
+                .collect();
+            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            let oid = repo
+                .commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    &format!("commit {}", i),
+                    &tree,
+                    &parent_refs,
+                )
+                .unwrap();
+            parent = Some(oid);
+        }
+
+        (dir, path)
+    }
+
+    #[test]
+    fn reflog_returns_entries_for_head() {
+        let (_dir, path) = make_repo_with_commits(3);
+        let entries = compute_reflog(&path, "HEAD").unwrap();
+        // Each commit produces a reflog entry; 3 commits → at least 3 entries
+        assert!(
+            entries.len() >= 3,
+            "expected ≥3 entries, got {}",
+            entries.len()
+        );
+    }
+
+    #[test]
+    fn reflog_entries_have_short_ids() {
+        let (_dir, path) = make_repo_with_commits(2);
+        let entries = compute_reflog(&path, "HEAD").unwrap();
+        assert!(!entries.is_empty());
+        let first = &entries[0];
+        // new_short_id should be exactly 7 hex chars
+        assert_eq!(first.new_short_id.len(), 7, "short id should be 7 chars");
+    }
+
+    #[test]
+    fn reflog_initial_entry_has_empty_old_short_id() {
+        let (_dir, path) = make_repo_with_commits(1);
+        let entries = compute_reflog(&path, "HEAD").unwrap();
+        // The initial commit entry should have no old OID
+        let last = entries.last().unwrap();
+        assert_eq!(
+            last.old_short_id, "",
+            "initial reflog entry should have empty old_short_id"
+        );
+    }
+
+    #[test]
+    fn reflog_entries_newest_first() {
+        let (_dir, path) = make_repo_with_commits(3);
+        let entries = compute_reflog(&path, "HEAD").unwrap();
+        // The newest entry should point to the same OID as HEAD
+        let repo = git2::Repository::open(&path).unwrap();
+        let head_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        assert_eq!(
+            entries[0].new_oid, head_oid,
+            "first entry should be newest (HEAD)"
+        );
+    }
+
+    #[test]
+    fn reflog_entry_committer_name() {
+        let (_dir, path) = make_repo_with_commits(1);
+        let entries = compute_reflog(&path, "HEAD").unwrap();
+        assert!(!entries.is_empty());
+        assert_eq!(entries[0].committer, "Test");
+    }
+
+    #[test]
+    fn reflog_entry_has_message() {
+        let (_dir, path) = make_repo_with_commits(2);
+        let entries = compute_reflog(&path, "HEAD").unwrap();
+        // Latest entry should have a message
+        let first = &entries[0];
+        assert!(
+            first.message.is_some(),
+            "reflog entry should have a message"
+        );
+        let msg = first.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("commit"),
+            "message should mention commit, got: {:?}",
+            msg
+        );
+    }
+
+    #[test]
+    fn reflog_caps_at_max_entries() {
+        // Verify the function doesn't panic and returns ≤ MAX_REFLOG_ENTRIES
+        let (_dir, path) = make_repo_with_commits(5);
+        let entries = compute_reflog(&path, "HEAD").unwrap();
+        assert!(entries.len() <= 200);
+    }
+
+    #[test]
+    fn reflog_unknown_ref_returns_empty_or_err() {
+        let (_dir, path) = make_repo_with_commits(1);
+        // git2 may return Ok([]) or Err for unknown refs; both are acceptable
+        if let Ok(entries) = compute_reflog(&path, "refs/heads/nonexistent-branch-zz99") {
+            assert!(entries.is_empty(), "unknown ref should yield no entries");
+        }
+    }
+
+    #[test]
+    fn reflog_err_on_bad_repo_path() {
+        let result = compute_reflog(Path::new("/no/such/repo"), "HEAD");
+        assert!(result.is_err());
+    }
+}

@@ -39,20 +39,23 @@ pub fn compute_file_history(
             let parent_tree = parent.tree()?;
             let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&tree), None)?;
 
-            // Check if the file is in the diff
+            // Check if the file is in the diff.
+            // Note: returning `false` from the callback causes git2 to surface
+            // an EUSER(-7) error — we treat that as a normal early-exit, not a
+            // real failure.
             let mut found = false;
-            diff.foreach(
+            let foreach_result = diff.foreach(
                 &mut |delta, _| {
                     if let Some(new_path) = delta.new_file().path() {
                         if new_path == file_path {
                             found = true;
-                            return false; // Stop iteration
+                            return false; // stop iteration
                         }
                     }
                     if let Some(old_path) = delta.old_file().path() {
                         if old_path == file_path {
                             found = true;
-                            return false; // Stop iteration
+                            return false; // stop iteration
                         }
                     }
                     true
@@ -60,7 +63,14 @@ pub fn compute_file_history(
                 None,
                 None,
                 None,
-            )?;
+            );
+            match foreach_result {
+                Ok(_) => {}
+                Err(e) if e.code() == git2::ErrorCode::User => {
+                    // EUSER is the expected early-exit signal from the callback
+                }
+                Err(e) => return Err(e.into()),
+            }
             found
         } else {
             // First commit - check if file exists in tree
@@ -125,5 +135,147 @@ impl GitProject {
                 .spawn(async move { compute_file_history(&repo_path, &file_path, limit) })
                 .await
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    // Build a repo where:
+    // - "tracked.txt" is created in commit 1, modified in commit 3
+    // - "other.txt"   is created in commit 2
+    fn make_multi_file_repo() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Alice").unwrap();
+        cfg.set_str("user.email", "alice@example.com").unwrap();
+        drop(cfg);
+
+        let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
+
+        // Commit 1: create tracked.txt
+        let tracked = path.join("tracked.txt");
+        std::fs::write(&tracked, "hello\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("tracked.txt")).unwrap();
+        idx.write().unwrap();
+        let t1 = idx.write_tree().unwrap();
+        let tree1 = repo.find_tree(t1).unwrap();
+        let c1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "add tracked.txt", &tree1, &[])
+            .unwrap();
+        let c1 = repo.find_commit(c1).unwrap();
+
+        // Commit 2: create other.txt (tracked.txt unchanged)
+        let other = path.join("other.txt");
+        std::fs::write(&other, "world\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("other.txt")).unwrap();
+        idx.write().unwrap();
+        let t2 = idx.write_tree().unwrap();
+        let tree2 = repo.find_tree(t2).unwrap();
+        let c2 = repo
+            .commit(Some("HEAD"), &sig, &sig, "add other.txt", &tree2, &[&c1])
+            .unwrap();
+        let c2 = repo.find_commit(c2).unwrap();
+
+        // Commit 3: modify tracked.txt
+        std::fs::write(&tracked, "hello updated\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("tracked.txt")).unwrap();
+        idx.write().unwrap();
+        let t3 = idx.write_tree().unwrap();
+        let tree3 = repo.find_tree(t3).unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "modify tracked.txt",
+            &tree3,
+            &[&c2],
+        )
+        .unwrap();
+
+        (dir, path)
+    }
+
+    #[test]
+    fn file_history_returns_only_touching_commits() {
+        let (_dir, path) = make_multi_file_repo();
+        let entries = compute_file_history(&path, Path::new("tracked.txt"), 100).unwrap();
+        // commit 1 (add) + commit 3 (modify) touch tracked.txt; commit 2 does not
+        assert_eq!(entries.len(), 2, "expected 2 commits for tracked.txt");
+    }
+
+    #[test]
+    fn file_history_unrelated_file_excluded() {
+        let (_dir, path) = make_multi_file_repo();
+        let entries = compute_file_history(&path, Path::new("other.txt"), 100).unwrap();
+        // Only commit 2 touches other.txt
+        assert_eq!(entries.len(), 1, "expected 1 commit for other.txt");
+    }
+
+    #[test]
+    fn file_history_latest_commit_first() {
+        let (_dir, path) = make_multi_file_repo();
+        let entries = compute_file_history(&path, Path::new("tracked.txt"), 100).unwrap();
+        // The most recent touching commit is commit 3 ("modify tracked.txt")
+        assert!(
+            entries[0].summary.contains("modify"),
+            "first entry should be the latest modification, got: {:?}",
+            entries[0].summary
+        );
+    }
+
+    #[test]
+    fn file_history_limit_respected() {
+        let (_dir, path) = make_multi_file_repo();
+        // tracked.txt has 2 touching commits; requesting limit=1 should return 1
+        let entries = compute_file_history(&path, Path::new("tracked.txt"), 1).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn file_history_author_populated() {
+        let (_dir, path) = make_multi_file_repo();
+        let entries = compute_file_history(&path, Path::new("tracked.txt"), 100).unwrap();
+        assert!(!entries.is_empty());
+        assert_eq!(entries[0].author.name, "Alice");
+        assert_eq!(entries[0].author.email, "alice@example.com");
+    }
+
+    #[test]
+    fn file_history_short_id_is_seven_chars() {
+        let (_dir, path) = make_multi_file_repo();
+        let entries = compute_file_history(&path, Path::new("tracked.txt"), 100).unwrap();
+        for entry in &entries {
+            assert_eq!(
+                entry.short_id.len(),
+                7,
+                "short_id should be 7 chars, got {:?}",
+                entry.short_id
+            );
+        }
+    }
+
+    #[test]
+    fn file_history_nonexistent_file_returns_empty() {
+        let (_dir, path) = make_multi_file_repo();
+        let entries =
+            compute_file_history(&path, Path::new("does_not_exist.txt"), 100).unwrap();
+        assert!(entries.is_empty(), "unknown file should yield 0 entries");
+    }
+
+    #[test]
+    fn file_history_err_on_bad_repo() {
+        let result =
+            compute_file_history(Path::new("/no/such/repo"), Path::new("file.txt"), 10);
+        assert!(result.is_err());
     }
 }
