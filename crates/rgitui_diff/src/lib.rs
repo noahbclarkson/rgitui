@@ -1619,4 +1619,116 @@ mod tests {
         assert_eq!(jsonc, "JSON");
         assert_eq!(env, "Bourne Again Shell (bash)");
     }
+
+    #[test]
+    fn icon_for_path_covers_common_extensions() {
+        // Code files
+        assert_eq!(DiffViewer::icon_for_path("main.rs"), IconName::File);
+        assert_eq!(DiffViewer::icon_for_path("server.go"), IconName::File);
+        assert_eq!(DiffViewer::icon_for_path("script.py"), IconName::File);
+        assert_eq!(DiffViewer::icon_for_path("app.js"), IconName::File);
+        assert_eq!(DiffViewer::icon_for_path("types.ts"), IconName::File);
+        // Config files
+        assert_eq!(DiffViewer::icon_for_path("Cargo.toml"), IconName::Settings);
+        assert_eq!(DiffViewer::icon_for_path("config.yaml"), IconName::Settings);
+        assert_eq!(DiffViewer::icon_for_path("deploy.yml"), IconName::Settings);
+        assert_eq!(
+            DiffViewer::icon_for_path("settings.json"),
+            IconName::Settings
+        );
+        // Lock files
+        assert_eq!(DiffViewer::icon_for_path("yarn.lock"), IconName::Pin);
+        // package-lock.json has extension .json → Settings, not Pin
+        assert_eq!(
+            DiffViewer::icon_for_path("package-lock.json"),
+            IconName::Settings
+        );
+        // Other
+        assert_eq!(DiffViewer::icon_for_path("styles.css"), IconName::File);
+        assert_eq!(DiffViewer::icon_for_path("index.html"), IconName::File);
+        assert_eq!(DiffViewer::icon_for_path("README.md"), IconName::File);
+        // No extension → File
+        assert_eq!(DiffViewer::icon_for_path("Makefile"), IconName::File);
+        assert_eq!(DiffViewer::icon_for_path(".gitignore"), IconName::File);
+    }
+
+    #[test]
+    fn extract_context_name_parses_hunk_header() {
+        // Normal hunk with function name
+        let header = "@@ -1,5 +1,7 @@ fn main()";
+        assert_eq!(DiffViewer::extract_context_name(header), "fn main()");
+
+        // Multi-line Rust function signature
+        let header = "@@ -10,5 +10,7 @@ pub fn process_items<T>(items: Vec<T>) where T: Clone";
+        assert_eq!(
+            DiffViewer::extract_context_name(header),
+            "pub fn process_items<T>(items: Vec<T>) where T: Clone"
+        );
+
+        // Empty context after @@ (no function name)
+        let header = "@@ -0,0 +1,4 @@";
+        assert_eq!(DiffViewer::extract_context_name(header), "");
+
+        // No second @@
+        let header = "@@ -1,3 +1,4";
+        assert_eq!(DiffViewer::extract_context_name(header), "");
+
+        // Not a hunk header at all
+        let header = "just some text";
+        assert_eq!(DiffViewer::extract_context_name(header), "");
+
+        // Class method
+        let header = "@@ -5,10 +5,12 @@ impl<T> MyStruct<T> {";
+        assert_eq!(
+            DiffViewer::extract_context_name(header),
+            "impl<T> MyStruct<T> {"
+        );
+    }
+
+    #[test]
+    fn extract_line_range_parses_hunk_header() {
+        // Normal multi-line hunk
+        let header = "@@ -1,5 +1,7 @@ fn main()";
+        assert_eq!(DiffViewer::extract_line_range(header), "@@ -1,5 +1,7 @@");
+
+        // Single-line hunk (deletion only)
+        let header = "@@ -3,1 +3,0 @@";
+        assert_eq!(DiffViewer::extract_line_range(header), "@@ -3,1 +3,0 @@");
+
+        // Single-line hunk (addition only)
+        let header = "@@ -0,0 +1,1 @@";
+        assert_eq!(DiffViewer::extract_line_range(header), "@@ -0,0 +1,1 @@");
+
+        // Non-hunk string returns as-is
+        let header = "no markers here";
+        assert_eq!(DiffViewer::extract_line_range(header), "no markers here");
+    }
+
+    #[test]
+    fn syntax_for_path_covers_rust_and_config_extensions() {
+        let rs = DiffViewer::syntax_for_path("src/lib.rs")
+            .expect("rust file should resolve")
+            .name
+            .as_str();
+        assert_eq!(rs, "Rust");
+
+        let toml = DiffViewer::syntax_for_path("workspace.toml")
+            .expect("toml file should resolve")
+            .name
+            .as_str();
+        // Fallback maps .toml → YAML (closest in structure for basic highlighting)
+        assert_eq!(toml, "YAML");
+
+        let yaml = DiffViewer::syntax_for_path("ci.yml")
+            .expect("yaml file should resolve")
+            .name
+            .as_str();
+        assert_eq!(yaml, "YAML");
+
+        let css = DiffViewer::syntax_for_path("style.css")
+            .expect("css file should resolve")
+            .name
+            .as_str();
+        assert_eq!(css, "CSS");
+    }
 }
