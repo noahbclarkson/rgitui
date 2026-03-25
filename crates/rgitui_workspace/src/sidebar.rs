@@ -2299,3 +2299,214 @@ impl Render for Sidebar {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rgitui_git::{FileChangeKind, FileStatus};
+    use std::path::PathBuf;
+
+    // --- file_change_symbol tests ---
+
+    #[test]
+    fn test_file_change_symbol_all_kinds() {
+        assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Added), "+");
+        assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Modified), "~");
+        assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Deleted), "-");
+        assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Renamed), "R");
+        assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Copied), "C");
+        assert_eq!(Sidebar::file_change_symbol(FileChangeKind::TypeChange), "T");
+        assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Untracked), "?");
+        assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Conflicted), "!");
+    }
+
+    // --- file_kind_counts tests ---
+
+    #[test]
+    fn test_file_kind_counts_empty() {
+        let files: Vec<FileStatus> = vec![];
+        let counts = Sidebar::file_kind_counts(&files);
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_file_kind_counts_single_kind() {
+        let files = vec![
+            make_file("src/main.rs", FileChangeKind::Modified),
+            make_file("src/lib.rs", FileChangeKind::Modified),
+        ];
+        let counts = Sidebar::file_kind_counts(&files);
+        assert_eq!(*counts.get(&FileChangeKind::Modified).unwrap(), 2);
+        assert_eq!(counts.len(), 1);
+    }
+
+    #[test]
+    fn test_file_kind_counts_multiple_kinds() {
+        let files = vec![
+            make_file("src/main.rs", FileChangeKind::Added),
+            make_file("src/lib.rs", FileChangeKind::Modified),
+            make_file("README.md", FileChangeKind::Added),
+            make_file("Cargo.toml", FileChangeKind::Deleted),
+        ];
+        let counts = Sidebar::file_kind_counts(&files);
+        assert_eq!(*counts.get(&FileChangeKind::Added).unwrap(), 2);
+        assert_eq!(*counts.get(&FileChangeKind::Modified).unwrap(), 1);
+        assert_eq!(*counts.get(&FileChangeKind::Deleted).unwrap(), 1);
+        assert_eq!(counts.len(), 3);
+    }
+
+    #[test]
+    fn test_file_kind_counts_all_kinds() {
+        let files = vec![
+            make_file("added.rs", FileChangeKind::Added),
+            make_file("modified.rs", FileChangeKind::Modified),
+            make_file("deleted.rs", FileChangeKind::Deleted),
+            make_file("renamed.rs", FileChangeKind::Renamed),
+            make_file("copied.rs", FileChangeKind::Copied),
+            make_file("typechange.rs", FileChangeKind::TypeChange),
+            make_file("untracked.rs", FileChangeKind::Untracked),
+            make_file("conflicted.rs", FileChangeKind::Conflicted),
+        ];
+        let counts = Sidebar::file_kind_counts(&files);
+        for kind in [
+            FileChangeKind::Added,
+            FileChangeKind::Modified,
+            FileChangeKind::Deleted,
+            FileChangeKind::Renamed,
+            FileChangeKind::Copied,
+            FileChangeKind::TypeChange,
+            FileChangeKind::Untracked,
+            FileChangeKind::Conflicted,
+        ] {
+            assert_eq!(*counts.get(&kind).unwrap(), 1, "kind {kind:?}");
+        }
+        assert_eq!(counts.len(), 8);
+    }
+
+    // --- build_file_tree tests ---
+
+    #[test]
+    fn test_build_file_tree_empty() {
+        let files: Vec<FileStatus> = vec![];
+        let tree = Sidebar::build_file_tree(&files);
+        assert!(tree.file_indices.is_empty());
+        assert!(tree.children.is_empty());
+    }
+
+    #[test]
+    fn test_build_file_tree_flat_files() {
+        // Files with no directory component go directly to root
+        let files = vec![
+            make_file("a.rs", FileChangeKind::Modified),
+            make_file("b.rs", FileChangeKind::Added),
+        ];
+        let tree = Sidebar::build_file_tree(&files);
+        // Root-level files are indexed at root with empty parent path
+        assert_eq!(tree.file_indices.len(), 2);
+    }
+
+    #[test]
+    fn test_build_file_tree_nested_files() {
+        let files = vec![
+            make_file("src/main.rs", FileChangeKind::Modified),
+            make_file("src/lib.rs", FileChangeKind::Added),
+            make_file("src/foo/bar.rs", FileChangeKind::Deleted),
+            make_file("tests/integration_test.rs", FileChangeKind::Added),
+        ];
+        let tree = Sidebar::build_file_tree(&files);
+        assert!(tree.children.contains_key("src"));
+        assert!(tree.children.contains_key("tests"));
+        // src/foo/bar.rs: parent is src/foo, so "foo" is a child of "src" with bar.rs as a file
+        let foo_node = tree
+            .children
+            .get("src")
+            .unwrap()
+            .children
+            .get("foo")
+            .unwrap();
+        assert_eq!(foo_node.file_indices.len(), 1); // bar.rs
+                                                    // tests/integration_test.rs: parent is tests
+        assert_eq!(tree.children.get("tests").unwrap().file_indices.len(), 1); // integration_test.rs
+    }
+
+    #[test]
+    fn test_build_file_tree_deep_nesting() {
+        let files = vec![make_file("a/b/c/d/e.rs", FileChangeKind::Modified)];
+        let tree = Sidebar::build_file_tree(&files);
+        let node = tree
+            .children
+            .get("a")
+            .unwrap()
+            .children
+            .get("b")
+            .unwrap()
+            .children
+            .get("c")
+            .unwrap()
+            .children
+            .get("d")
+            .unwrap();
+        assert_eq!(node.file_indices.len(), 1);
+    }
+
+    // --- file_tree_file_count tests ---
+
+    #[test]
+    fn test_file_tree_file_count_empty() {
+        let node = FileTreeNode::default();
+        assert_eq!(Sidebar::file_tree_file_count(&node), 0);
+    }
+
+    #[test]
+    fn test_file_tree_file_count_only_root_files() {
+        let files = vec![
+            make_file("a.rs", FileChangeKind::Added),
+            make_file("b.rs", FileChangeKind::Modified),
+        ];
+        let tree = Sidebar::build_file_tree(&files);
+        assert_eq!(Sidebar::file_tree_file_count(&tree), 2);
+    }
+
+    #[test]
+    fn test_file_tree_file_count_nested() {
+        let files = vec![
+            make_file("src/main.rs", FileChangeKind::Modified),
+            make_file("src/lib.rs", FileChangeKind::Added),
+            make_file("tests/test.rs", FileChangeKind::Modified),
+        ];
+        let tree = Sidebar::build_file_tree(&files);
+        assert_eq!(Sidebar::file_tree_file_count(&tree), 3);
+    }
+
+    #[test]
+    fn test_file_tree_file_count_deep() {
+        let files = vec![
+            make_file("a/b/c.rs", FileChangeKind::Added),
+            make_file("a/d.rs", FileChangeKind::Modified),
+        ];
+        let tree = Sidebar::build_file_tree(&files);
+        // a/b/c.rs and a/d.rs = 2 files total
+        assert_eq!(Sidebar::file_tree_file_count(&tree), 2);
+    }
+
+    // --- filtered_local_indices tests ---
+    // Requires Sidebar struct with nav_items set up — testing the pure helper logic.
+
+    #[test]
+    fn test_file_tree_node_default() {
+        let node = FileTreeNode::default();
+        assert!(node.file_indices.is_empty());
+        assert!(node.children.is_empty());
+    }
+
+    // --- Helper ---
+    fn make_file(path: &str, kind: FileChangeKind) -> FileStatus {
+        FileStatus {
+            path: PathBuf::from(path),
+            kind,
+            old_path: None,
+            additions: 0,
+            deletions: 0,
+        }
+    }
+}
