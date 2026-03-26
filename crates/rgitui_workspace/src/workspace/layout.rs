@@ -1303,7 +1303,7 @@ pub(crate) fn build_terminal_args(
             #[cfg(target_os = "windows")]
             "powershell" | "pwsh" | "pwsh.exe" | "powershell.exe" => {
                 // PowerShell: `-NoExit -Command "cd '<path>'"`
-                let args = vec!["-NoExit".to_string(), "-Command".to_string()];
+                let mut args = vec!["-NoExit".to_string(), "-Command".to_string()];
                 args.push(format!("cd '{}'", path_str.replace('\'', "''")));
                 (program.to_string(), args)
             }
@@ -1312,7 +1312,7 @@ pub(crate) fn build_terminal_args(
                 // Command Prompt: `/K cd /d <path>`
                 // This explicitly changes directory, unlike current_dir() which may not
                 // be respected when cmd.exe is spawned as a detached process from a GUI app.
-                let mut args = vec![
+                let args = vec![
                     "/K".to_string(),
                     "cd".to_string(),
                     "/d".to_string(),
