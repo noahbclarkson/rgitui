@@ -1381,7 +1381,7 @@ pub(crate) fn build_terminal_args(
 #[cfg(target_os = "windows")]
 pub(crate) fn build_editor_args(
     custom_command: &str,
-    path: &std::path::Path,
+    _path: &std::path::Path,
 ) -> (String, Vec<String>, bool) {
     // Returns (program, base_args, path_is_bare_arg)
     // path_is_bare_arg = true means append <path> as a bare final argument
