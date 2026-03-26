@@ -308,3 +308,138 @@ pub struct GitOperationUpdate {
     pub branch_name: Option<String>,
     pub retryable: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ref_label_display_name() {
+        assert_eq!(RefLabel::Head.display_name(), "HEAD");
+        assert_eq!(RefLabel::LocalBranch("main".into()).display_name(), "main");
+        assert_eq!(
+            RefLabel::RemoteBranch("origin/main".into()).display_name(),
+            "origin/main"
+        );
+        assert_eq!(RefLabel::Tag("v1.0.0".into()).display_name(), "v1.0.0");
+    }
+
+    #[test]
+    fn file_change_kind_short_code() {
+        assert_eq!(FileChangeKind::Added.short_code(), "A");
+        assert_eq!(FileChangeKind::Modified.short_code(), "M");
+        assert_eq!(FileChangeKind::Deleted.short_code(), "D");
+        assert_eq!(FileChangeKind::Renamed.short_code(), "R");
+        assert_eq!(FileChangeKind::Copied.short_code(), "C");
+        assert_eq!(FileChangeKind::TypeChange.short_code(), "T");
+        assert_eq!(FileChangeKind::Untracked.short_code(), "?");
+        assert_eq!(FileChangeKind::Conflicted.short_code(), "!");
+    }
+
+    #[test]
+    fn repo_state_from_git2() {
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::Clean),
+            RepoState::Clean
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::Merge),
+            RepoState::Merge
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::Revert),
+            RepoState::Revert
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::RevertSequence),
+            RepoState::RevertSequence
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::CherryPick),
+            RepoState::CherryPick
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::CherryPickSequence),
+            RepoState::CherryPickSequence
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::Bisect),
+            RepoState::Bisect
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::Rebase),
+            RepoState::Rebase
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::RebaseInteractive),
+            RepoState::RebaseInteractive
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::RebaseMerge),
+            RepoState::RebaseMerge
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::ApplyMailbox),
+            RepoState::ApplyMailbox
+        );
+        assert_eq!(
+            RepoState::from_git2(git2::RepositoryState::ApplyMailboxOrRebase),
+            RepoState::ApplyMailboxOrRebase
+        );
+    }
+
+    #[test]
+    fn repo_state_is_clean() {
+        assert!(RepoState::Clean.is_clean());
+        assert!(!RepoState::Merge.is_clean());
+        assert!(!RepoState::Rebase.is_clean());
+        assert!(!RepoState::RebaseInteractive.is_clean());
+        assert!(!RepoState::CherryPick.is_clean());
+        assert!(!RepoState::Bisect.is_clean());
+        assert!(!RepoState::ApplyMailbox.is_clean());
+    }
+
+    #[test]
+    fn repo_state_label() {
+        assert_eq!(RepoState::Clean.label(), "Clean");
+        assert_eq!(RepoState::Merge.label(), "Merging");
+        assert_eq!(RepoState::Revert.label(), "Reverting");
+        assert_eq!(RepoState::RevertSequence.label(), "Reverting");
+        assert_eq!(RepoState::CherryPick.label(), "Cherry-picking");
+        assert_eq!(RepoState::CherryPickSequence.label(), "Cherry-picking");
+        assert_eq!(RepoState::Bisect.label(), "Bisecting");
+        assert_eq!(RepoState::Rebase.label(), "Rebasing");
+        assert_eq!(
+            RepoState::RebaseInteractive.label(),
+            "Rebasing (interactive)"
+        );
+        assert_eq!(RepoState::RebaseMerge.label(), "Rebasing");
+        assert_eq!(RepoState::ApplyMailbox.label(), "Applying patches");
+        assert_eq!(RepoState::ApplyMailboxOrRebase.label(), "Applying patches");
+    }
+
+    #[test]
+    fn git_operation_kind_display_name() {
+        assert_eq!(GitOperationKind::Fetch.display_name(), "Fetch");
+        assert_eq!(GitOperationKind::Pull.display_name(), "Pull");
+        assert_eq!(GitOperationKind::Push.display_name(), "Push");
+        assert_eq!(GitOperationKind::Checkout.display_name(), "Checkout");
+        assert_eq!(GitOperationKind::Merge.display_name(), "Merge");
+        assert_eq!(GitOperationKind::CherryPick.display_name(), "Cherry-pick");
+        assert_eq!(GitOperationKind::Revert.display_name(), "Revert");
+        assert_eq!(GitOperationKind::Reset.display_name(), "Reset");
+        assert_eq!(
+            GitOperationKind::RemoveRemote.display_name(),
+            "Remove remote"
+        );
+        assert_eq!(GitOperationKind::Commit.display_name(), "Commit");
+        assert_eq!(GitOperationKind::Stage.display_name(), "Stage");
+        assert_eq!(GitOperationKind::Unstage.display_name(), "Unstage");
+        assert_eq!(GitOperationKind::Stash.display_name(), "Stash");
+        assert_eq!(GitOperationKind::Branch.display_name(), "Branch");
+        assert_eq!(GitOperationKind::Tag.display_name(), "Tag");
+        assert_eq!(GitOperationKind::Discard.display_name(), "Discard");
+        assert_eq!(GitOperationKind::Rebase.display_name(), "Rebase");
+        assert_eq!(GitOperationKind::Bisect.display_name(), "Bisect");
+    }
+}
