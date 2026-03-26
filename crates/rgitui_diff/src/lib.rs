@@ -800,6 +800,23 @@ impl Render for DiffViewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
+        // Re-render with syntax highlighting if the theme appearance changed while a diff
+        // was open. Without this, switching themes (e.g. Dark → Light) leaves the stored
+        // rows with the old syntect palette until the next `set_diff` call.
+        if self.diff.is_some() {
+            let appearance = cx.theme().appearance;
+            if appearance != self.current_appearance {
+                self.current_appearance = appearance;
+                if let Some(ref diff) = self.diff {
+                    if let Some(ref path) = self.file_path {
+                        self.display_rows =
+                            Arc::new(Self::compute_display_rows(diff, path, appearance));
+                        self.sbs_rows = Arc::new(Self::compute_sbs_rows(diff, path, appearance));
+                    }
+                }
+            }
+        }
+
         if self.diff.is_none() {
             return div()
                 .id("diff-viewer")
