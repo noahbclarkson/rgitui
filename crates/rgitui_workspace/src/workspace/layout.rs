@@ -1294,21 +1294,21 @@ pub(crate) fn build_terminal_args(
         // as the initial args to pass through.
         match program.to_ascii_lowercase().as_str() {
             #[cfg(target_os = "windows")]
-            ("wt" | "wt.exe") => {
+            "wt" | "wt.exe" => {
                 // Windows Terminal: `-d <path>`
                 let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 args.push(path_str);
                 (program.to_string(), args)
             }
             #[cfg(target_os = "windows")]
-            ("powershell" | "pwsh" | "pwsh.exe" | "powershell.exe") => {
+            "powershell" | "pwsh" | "pwsh.exe" | "powershell.exe" => {
                 // PowerShell: `-NoExit -Command "cd '<path>'"`
-                let mut args = vec!["-NoExit".to_string(), "-Command".to_string()];
+                let args = vec!["-NoExit".to_string(), "-Command".to_string()];
                 args.push(format!("cd '{}'", path_str.replace('\'', "''")));
                 (program.to_string(), args)
             }
             #[cfg(target_os = "windows")]
-            ("cmd" | "cmd.exe" | "command.com") => {
+            "cmd" | "cmd.exe" | "command.com" => {
                 // Command Prompt: `/K cd /d <path>`
                 // This explicitly changes directory, unlike current_dir() which may not
                 // be respected when cmd.exe is spawned as a detached process from a GUI app.
@@ -1321,7 +1321,7 @@ pub(crate) fn build_terminal_args(
                 (program.to_string(), args)
             }
             #[cfg(target_os = "windows")]
-            ("alacritty" | "alacritty.exe") => {
+            "alacritty" | "alacritty.exe" => {
                 // Alacritty: `--working-directory <path>`
                 let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 args.push("--working-directory".to_string());
@@ -1329,7 +1329,7 @@ pub(crate) fn build_terminal_args(
                 (program.to_string(), args)
             }
             #[cfg(target_os = "windows")]
-            ("wezterm" | "wezterm.exe" | "wezterm-mux-server" | "wezterm-cli") => {
+            "wezterm" | "wezterm.exe" | "wezterm-mux-server" | "wezterm-cli" => {
                 // WezTerm: `--cwd <path>`
                 let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 args.push("--cwd".to_string());
@@ -1337,7 +1337,7 @@ pub(crate) fn build_terminal_args(
                 (program.to_string(), args)
             }
             #[cfg(target_os = "windows")]
-            ("kitty" | "kitty.exe") => {
+            "kitty" | "kitty.exe" => {
                 // Kitty: `--directory <path>`
                 let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 args.push("--directory".to_string());
@@ -1345,7 +1345,7 @@ pub(crate) fn build_terminal_args(
                 (program.to_string(), args)
             }
             #[cfg(target_os = "windows")]
-            ("macos" | "terminal" | "terminal.app" | "iterm" | "iterm2") => {
+            "macos" | "terminal" | "terminal.app" | "iterm" | "iterm2" => {
                 // These are handled by macOS-specific code paths; pass path as bare arg.
                 let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 args.push(path_str);
