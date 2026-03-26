@@ -1386,7 +1386,6 @@ pub(crate) fn build_editor_args(
     // Returns (program, base_args, path_is_bare_arg)
     // path_is_bare_arg = true means append <path> as a bare final argument
     // path_is_bare_arg = false means the path is incorporated into args already
-    let path_str = path.to_string_lossy().to_string();
     let parts: Vec<&str> = custom_command.split_whitespace().collect();
 
     if let Some((program, rest)) = parts.split_first() {
