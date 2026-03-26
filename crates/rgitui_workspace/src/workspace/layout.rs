@@ -1295,9 +1295,9 @@ pub(crate) fn build_terminal_args(
         match program.to_ascii_lowercase().as_str() {
             #[cfg(target_os = "windows")]
             "wt" | "wt.exe" => {
-                // Windows Terminal: `-d <path>`
+                // Windows Terminal: `-d <path>` — the -d flag is mandatory for wt
                 let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                args.extend(["-d".to_string(), path_str]);
                 (program.to_string(), args)
             }
             #[cfg(target_os = "windows")]
@@ -1391,10 +1391,9 @@ pub(crate) fn build_editor_args(
 
     if let Some((program, rest)) = parts.split_first() {
         match program.to_ascii_lowercase().as_str() {
-            // VS Code: appends path as bare arg (works with "code .")
+            // VS Code: path appended as bare arg by caller via path_is_bare_arg
             "code" => {
-                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                let args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 (program.to_string(), args, true)
             }
             // JetBrains IDEs: path as bare arg
@@ -1402,44 +1401,37 @@ pub(crate) fn build_editor_args(
             | "webstorm" | "webstorm.exe" | "rider" | "rider.exe" | "goland" | "goland.exe"
             | "datagrip" | "datagrip.exe" | "phpstorm" | "phpstorm.exe" | "rubymine"
             | "rubymine.exe" | "clion" | "clion.exe" | "fleet" | "fleet.exe" => {
-                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                let args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 (program.to_string(), args, true)
             }
             // Vim/Neovim: path as bare arg (vim file, nvim file)
             "vim" | "vim.exe" | "vi" | "nvim" | "nvim.exe" | "gvim" | "gvim.exe" => {
-                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                let args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 (program.to_string(), args, true)
             }
             // Emacs: path as bare arg (emacs file) or --directory for folder
             "emacs" | "emacs.exe" | "emacsclient" | "emacsclient.exe" => {
-                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                let args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 (program.to_string(), args, true)
             }
             // Sublime Text: path as bare arg
             "subl" | "sublime" | "sublime_text" | "sublime_text.exe" => {
-                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                let args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 (program.to_string(), args, true)
             }
             // Atom: path as bare arg
             "atom" | "atom.exe" => {
-                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                let args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 (program.to_string(), args, true)
             }
             // Notepad++: path as bare arg
             "notepad++" | "notepad++.exe" => {
-                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                let args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 (program.to_string(), args, true)
             }
             _ => {
                 // Unknown editor: treat as bare-arg (most editors accept path as final arg)
-                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                let args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 (program.to_string(), args, true)
             }
         }
