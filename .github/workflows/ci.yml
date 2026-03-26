@@ -78,7 +78,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run tests
+        if: runner.os == 'Linux'
         run: xvfb-run -a cargo test --workspace
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --workspace
 
       - name: Build release binary
         run: cargo build --release --package rgitui
