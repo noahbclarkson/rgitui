@@ -278,4 +278,154 @@ mod tests {
         // Branch tip should get a different lane
         assert_ne!(rows[1].node_lane, rows[0].node_lane);
     }
+
+    #[test]
+    fn test_octopus_merge_three_parents() {
+        // A commit with 3 parents — octopus merge
+        let commits = vec![
+            make_commit(1, &[2, 3, 4], vec![RefLabel::Head]),
+            make_commit(2, &[5], vec![]),
+            make_commit(3, &[5], vec![]),
+            make_commit(4, &[5], vec![]),
+            make_commit(5, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        assert!(rows[0].is_merge);
+        // Octopus merge: 1 primary + 2 secondary = 2 merge edges
+        let merge_edges: Vec<_> = rows[0].edges.iter().filter(|e| e.is_merge).collect();
+        assert_eq!(merge_edges.len(), 2);
+    }
+
+    #[test]
+    fn test_ref_labels_tag_and_remote() {
+        let commits = vec![
+            make_commit(
+                1,
+                &[2],
+                vec![RefLabel::Head, RefLabel::Tag("v1.0.0".into())],
+            ),
+            make_commit(2, &[3], vec![RefLabel::RemoteBranch("origin/main".into())]),
+            make_commit(3, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        assert!(rows[0].is_head);
+        assert!(!rows[1].is_head);
+        assert!(!rows[2].is_head);
+    }
+
+    #[test]
+    fn test_lane_count_grows_with_parallel_branches() {
+        // Create parallel branches: main and feature both active
+        let commits = vec![
+            make_commit(1, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[3], vec![]),
+            make_commit(3, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        // Linear history: lane_count stays 1
+        assert_eq!(rows[0].lane_count, 1);
+        assert_eq!(rows[1].lane_count, 1);
+
+        // Now with a branch tip appearing later
+        let commits_with_branch = vec![
+            make_commit(1, &[3], vec![RefLabel::Head]),
+            make_commit(2, &[3], vec![RefLabel::LocalBranch("feature".into())]),
+            make_commit(3, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits_with_branch);
+        // When feature tip (row 1) is active, lane_count = 2
+        assert!(rows[1].lane_count >= 2);
+    }
+
+    #[test]
+    fn test_merge_edge_flags_on_secondary_parents() {
+        let commits = vec![
+            make_commit(1, &[2, 3], vec![RefLabel::Head]),
+            make_commit(2, &[4], vec![]),
+            make_commit(3, &[4], vec![]),
+            make_commit(4, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        // Row 0 (merge commit) has 2 outgoing edges: primary (is_merge=false) and secondary (is_merge=true)
+        let edges = &rows[0].edges;
+        let merge_flagged: Vec<_> = edges.iter().filter(|e| e.is_merge).collect();
+        let primary_edges: Vec<_> = edges.iter().filter(|e| !e.is_merge).collect();
+        assert_eq!(merge_flagged.len(), 1); // one secondary parent → one merge edge
+        assert!(!primary_edges.is_empty()); // at least one primary edge
+    }
+
+    #[test]
+    fn test_commit_index_matches_input_order() {
+        let commits = vec![
+            make_commit(10, &[20], vec![RefLabel::Head]),
+            make_commit(20, &[30], vec![]),
+            make_commit(30, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        assert_eq!(rows[0].commit_index, 0);
+        assert_eq!(rows[1].commit_index, 1);
+        assert_eq!(rows[2].commit_index, 2);
+    }
+
+    #[test]
+    fn test_primary_parent_continues_same_lane() {
+        // In a simple linear chain, each commit continues the same lane
+        let commits = vec![
+            make_commit(1, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[3], vec![]),
+            make_commit(3, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        // Each row should continue on lane 0
+        for row in &rows {
+            assert_eq!(row.node_lane, 0);
+        }
+        // No merge edges in linear history
+        for row in &rows {
+            assert!(
+                !row.edges.iter().any(|e| e.is_merge),
+                "linear history should have no merge edges"
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_color_from_lane() {
+        // Edge color_index should match the source lane's node_color
+        let commits = vec![
+            make_commit(1, &[3], vec![RefLabel::Head]),
+            make_commit(2, &[3], vec![RefLabel::LocalBranch("feature".into())]),
+            make_commit(3, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        let row0_color = rows[0].node_color;
+        // Edges from row 0's lane should carry row 0's color
+        let row0_outgoing: Vec<_> = rows[0]
+            .edges
+            .iter()
+            .filter(|e| e.from_lane == rows[0].node_lane)
+            .collect();
+        for edge in row0_outgoing {
+            assert_eq!(
+                edge.color_index, row0_color,
+                "outgoing edge from a lane should carry that lane's color"
+            );
+        }
+    }
+
+    #[test]
+    fn test_has_incoming_false_for_first_and_new_branches() {
+        let commits = vec![
+            make_commit(1, &[3], vec![RefLabel::Head]),
+            make_commit(2, &[3], vec![RefLabel::LocalBranch("feature".into())]),
+            make_commit(3, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        // Row 0 (HEAD tip): first commit, no incoming
+        assert!(!rows[0].has_incoming);
+        // Row 1 (feature tip): new branch, no incoming
+        assert!(!rows[1].has_incoming);
+        // Row 2 (merge): expected by both previous commits, has incoming
+        assert!(rows[2].has_incoming);
+    }
 }
