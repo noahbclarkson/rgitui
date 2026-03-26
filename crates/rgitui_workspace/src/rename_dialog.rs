@@ -355,3 +355,224 @@ impl Render for RenameDialog {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── valid names ─────────────────────────────────────────────
+
+    #[test]
+    fn validate_accepts_simple_branch_name() {
+        assert!(RenameDialog::validate("main").is_none());
+    }
+
+    #[test]
+    fn validate_accepts_branch_with_slash() {
+        assert!(RenameDialog::validate("feature/test").is_none());
+    }
+
+    #[test]
+    fn validate_accepts_version_tag() {
+        assert!(RenameDialog::validate("v1.0.0").is_none());
+    }
+
+    #[test]
+    fn validate_accepts_underscore_separated() {
+        assert!(RenameDialog::validate("branch_name").is_none());
+    }
+
+    #[test]
+    fn validate_accepts_single_char() {
+        assert!(RenameDialog::validate("a").is_none());
+    }
+
+    #[test]
+    fn validate_accepts_hyphen_separated() {
+        assert!(RenameDialog::validate("foo-bar").is_none());
+    }
+
+    #[test]
+    fn validate_accepts_dot_separated() {
+        assert!(RenameDialog::validate("foo.bar").is_none());
+    }
+
+    // ── empty ────────────────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_empty() {
+        assert_eq!(
+            RenameDialog::validate(""),
+            Some("Branch name cannot be empty".to_string())
+        );
+    }
+
+    // ── spaces ───────────────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_spaces() {
+        assert_eq!(
+            RenameDialog::validate("branch name"),
+            Some("Branch name cannot contain spaces".to_string())
+        );
+    }
+
+    // ── leading dot / dash ───────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_leading_dot() {
+        assert_eq!(
+            RenameDialog::validate(".name"),
+            Some("Cannot start with '.' or '-'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_leading_dash() {
+        assert_eq!(
+            RenameDialog::validate("-name"),
+            Some("Cannot start with '.' or '-'".to_string())
+        );
+    }
+
+    // ── trailing dot / slash ─────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_trailing_dot() {
+        assert_eq!(
+            RenameDialog::validate("name."),
+            Some("Cannot end with '.' or '/'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_trailing_slash() {
+        assert_eq!(
+            RenameDialog::validate("name/"),
+            Some("Cannot end with '.' or '/'".to_string())
+        );
+    }
+
+    // ── double dots / slashes ───────────────────────────────────
+
+    #[test]
+    fn validate_rejects_double_dots() {
+        assert_eq!(
+            RenameDialog::validate("na..me"),
+            Some("Cannot contain '..' or '//'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_double_slashes() {
+        assert_eq!(
+            RenameDialog::validate("na//me"),
+            Some("Cannot contain '..' or '//'".to_string())
+        );
+    }
+
+    // ── invalid git ref characters ─────────────────────────────
+
+    #[test]
+    fn validate_rejects_tilde() {
+        assert_eq!(
+            RenameDialog::validate("na~me"),
+            Some("Contains invalid characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_caret() {
+        assert_eq!(
+            RenameDialog::validate("na^me"),
+            Some("Contains invalid characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_colon() {
+        assert_eq!(
+            RenameDialog::validate("na:me"),
+            Some("Contains invalid characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_backslash() {
+        assert_eq!(
+            RenameDialog::validate("na\\me"),
+            Some("Contains invalid characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_question_mark() {
+        assert_eq!(
+            RenameDialog::validate("na?me"),
+            Some("Contains invalid characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_asterisk() {
+        assert_eq!(
+            RenameDialog::validate("na*me"),
+            Some("Contains invalid characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_bracket() {
+        assert_eq!(
+            RenameDialog::validate("na[me"),
+            Some("Contains invalid characters".to_string())
+        );
+    }
+
+    // ── control characters ──────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_del_char() {
+        assert_eq!(
+            RenameDialog::validate("na\x7fme"),
+            Some("Contains control characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_embedded_null() {
+        // \0 is a control character
+        assert_eq!(
+            RenameDialog::validate("na\0me"),
+            Some("Contains control characters".to_string())
+        );
+    }
+
+    // ── @ ref syntax ────────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_at_curly() {
+        assert_eq!(
+            RenameDialog::validate("na@{me"),
+            Some("Invalid ref name".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_at_alone() {
+        assert_eq!(
+            RenameDialog::validate("@"),
+            Some("Invalid ref name".to_string())
+        );
+    }
+
+    // ── .lock suffix ─────────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_lock_suffix() {
+        assert_eq!(
+            RenameDialog::validate("name.lock"),
+            Some("Cannot end with '.lock'".to_string())
+        );
+    }
+}

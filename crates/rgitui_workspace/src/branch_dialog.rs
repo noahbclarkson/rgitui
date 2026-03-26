@@ -359,3 +359,229 @@ impl Render for BranchDialog {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── valid names ─────────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_accepts_simple_name() {
+        assert!(BranchDialog::validate_branch_name("main").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_accepts_feature_slash() {
+        assert!(BranchDialog::validate_branch_name("feature/test").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_accepts_version_tag() {
+        assert!(BranchDialog::validate_branch_name("v1.0.0").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_accepts_underscore() {
+        assert!(BranchDialog::validate_branch_name("branch_name").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_accepts_single_char() {
+        assert!(BranchDialog::validate_branch_name("a").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_accepts_hyphen() {
+        assert!(BranchDialog::validate_branch_name("foo-bar").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_accepts_dot() {
+        assert!(BranchDialog::validate_branch_name("foo.bar").is_none());
+    }
+
+    // ── empty ────────────────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_empty() {
+        assert_eq!(
+            BranchDialog::validate_branch_name(""),
+            Some("Branch name cannot be empty".to_string())
+        );
+    }
+
+    // ── spaces ───────────────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_spaces() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("branch name"),
+            Some("Branch name cannot contain spaces".to_string())
+        );
+    }
+
+    // ── leading dot / dash ───────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_leading_dot() {
+        assert_eq!(
+            BranchDialog::validate_branch_name(".name"),
+            Some("Branch name cannot start with '.' or '-'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_leading_dash() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("-name"),
+            Some("Branch name cannot start with '.' or '-'".to_string())
+        );
+    }
+
+    // ── trailing dot / slash ─────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_trailing_dot() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("name."),
+            Some("Branch name cannot end with '.' or '/'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_trailing_slash() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("name/"),
+            Some("Branch name cannot end with '.' or '/'".to_string())
+        );
+    }
+
+    // ── double dots ─────────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_double_dots() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na..me"),
+            Some("Branch name cannot contain '..'".to_string())
+        );
+    }
+
+    // ── double slashes ──────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_double_slashes() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na//me"),
+            Some("Branch name cannot contain consecutive slashes".to_string())
+        );
+    }
+
+    // ── git ref characters ──────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_tilde() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na~me"),
+            Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_caret() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na^me"),
+            Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_colon() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na:me"),
+            Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_backslash() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na\\me"),
+            Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string())
+        );
+    }
+
+    // ── glob characters ─────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_question_mark() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na?me"),
+            Some("Branch name cannot contain glob characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_asterisk() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na*me"),
+            Some("Branch name cannot contain glob characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_bracket() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na[me"),
+            Some("Branch name cannot contain glob characters".to_string())
+        );
+    }
+
+    // ── control characters ──────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_del_char() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na\x7fme"),
+            Some("Branch name cannot contain control characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_embedded_null() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na\0me"),
+            Some("Branch name cannot contain control characters".to_string())
+        );
+    }
+
+    // ── @{-syntax ───────────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_at_curly() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("na@{me"),
+            Some("Branch name cannot contain '@{'".to_string())
+        );
+    }
+
+    // ── @ alone ──────────────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_at_alone() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("@"),
+            Some("Branch name cannot be '@'".to_string())
+        );
+    }
+
+    // ── .lock suffix ─────────────────────────────────────────────
+
+    #[test]
+    fn validate_branch_name_rejects_lock_suffix() {
+        assert_eq!(
+            BranchDialog::validate_branch_name("name.lock"),
+            Some("Branch name cannot end with '.lock'".to_string())
+        );
+    }
+}
