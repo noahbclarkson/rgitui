@@ -103,6 +103,7 @@ impl ShortcutsHelp {
                     ("d", "Toggle diff mode (unified / split)"),
                     ("b", "Toggle blame view for selected file"),
                     ("h", "Toggle file history view for selected file"),
+                    ("y", "Copy SHA of selected commit"),
                     ("Esc", "Close the active overlay or modal"),
                 ],
             },

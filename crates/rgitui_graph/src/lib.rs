@@ -526,6 +526,15 @@ impl GraphView {
                 if self.context_menu.is_some() => {
                     self.dismiss_context_menu(cx);
                 }
+            "y" | "Y" if !ctrl && !keystroke.modifiers.shift => {
+                // Copy SHA of selected commit (standard GitKraken shortcut)
+                if let Some(idx) = self.selected_index {
+                    if let Some(commit) = self.commits.get(idx) {
+                        let sha = format!("{}", commit.oid);
+                        cx.emit(GraphViewEvent::CopyCommitSha(sha));
+                    }
+                }
+            }
             _ => {}
         }
     }
