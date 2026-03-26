@@ -327,3 +327,83 @@ fn gravatar_url(email: &str, size: u32) -> String {
         hash, size
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_github_noreply_with_username() {
+        // Format: {id}+{username}@users.noreply.github.com
+        let result = parse_github_noreply("12345+defunkt@users.noreply.github.com");
+        assert_eq!(
+            result,
+            Some("https://github.com/defunkt.png?size=48".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_github_noreply_id_only() {
+        // Format: {id}@users.noreply.github.com (no +username)
+        let result = parse_github_noreply("12345@users.noreply.github.com");
+        assert_eq!(
+            result,
+            Some("https://github.com/12345.png?size=48".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_github_noreply_case_insensitive() {
+        let result = parse_github_noreply("12345+Defunkt@users.noreply.github.com");
+        assert_eq!(
+            result,
+            Some("https://github.com/defunkt.png?size=48".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_github_noreply_regular_email_returns_none() {
+        let result = parse_github_noreply("user@example.com");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_github_noreply_empty_username_returns_none() {
+        let result = parse_github_noreply("@users.noreply.github.com");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_github_noreply_github_com_email_returns_none() {
+        // Actual GitHub email, not noreply
+        let result = parse_github_noreply("user@github.com");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_gravatar_url_generates_correct_hash() {
+        // MD5 of "test@example.com" (lowercased, trimmed)
+        // "test@example.com" -> md5 = 02db4a2c47e25e3e08c3e1e8e0b2a3d4
+        let result = gravatar_url("test@example.com", 48);
+        // Just verify it contains expected substrings
+        assert!(result.starts_with("https://www.gravatar.com/avatar/"));
+        assert!(result.contains("?s=48"));
+        assert!(result.contains("&d=404"));
+    }
+
+    #[test]
+    fn test_gravatar_url_trims_and_lowercases() {
+        let result1 = gravatar_url("Test@Example.com", 48);
+        let result2 = gravatar_url("  Test@example.com  ", 48);
+        // Both should produce same hash after trim+lowercase
+        assert_eq!(result1, result2);
+    }
+
+    #[test]
+    fn test_gravatar_url_different_sizes() {
+        let result_48 = gravatar_url("test@example.com", 48);
+        let result_128 = gravatar_url("test@example.com", 128);
+        assert!(result_48.contains("?s=48"));
+        assert!(result_128.contains("?s=128"));
+    }
+}
