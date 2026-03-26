@@ -1274,20 +1274,207 @@ pub(crate) fn open_file_explorer(path: &std::path::Path) {
     });
 }
 
+/// Builds the terminal command arguments from a custom command string and repo path.
+/// Returns `(program, args)` where `args` does NOT include the path — callers
+/// that need `current_dir` use it directly, callers that pass the path as an
+/// argument construct the final args list accordingly.
+///
+/// This is a pure function to enable unit testing.
+pub(crate) fn build_terminal_args(
+    custom_command: &str,
+    path: &std::path::Path,
+) -> (String, Vec<String>) {
+    let path_str = path.to_string_lossy().to_string();
+    let parts: Vec<&str> = custom_command.split_whitespace().collect();
+
+    if let Some((program, rest)) = parts.split_first() {
+        // For known single-word commands, apply terminal-specific argument conventions.
+        // For multi-word commands (e.g. "wt -d"), treat all parts after the program
+        // as the initial args to pass through.
+        match program.to_ascii_lowercase().as_str() {
+            #[cfg(target_os = "windows")]
+            ("wt" | "wt.exe") => {
+                // Windows Terminal: `-d <path>`
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args)
+            }
+            #[cfg(target_os = "windows")]
+            ("powershell" | "pwsh" | "pwsh.exe" | "powershell.exe") => {
+                // PowerShell: `-NoExit -Command "cd '<path>'"`
+                let mut args = vec!["-NoExit".to_string(), "-Command".to_string()];
+                args.push(format!("cd '{}'", path_str.replace('\'', "''")));
+                (program.to_string(), args)
+            }
+            #[cfg(target_os = "windows")]
+            ("cmd" | "cmd.exe" | "command.com") => {
+                // Command Prompt: `/K cd /d <path>`
+                // This explicitly changes directory, unlike current_dir() which may not
+                // be respected when cmd.exe is spawned as a detached process from a GUI app.
+                let mut args = vec![
+                    "/K".to_string(),
+                    "cd".to_string(),
+                    "/d".to_string(),
+                    path_str,
+                ];
+                (program.to_string(), args)
+            }
+            #[cfg(target_os = "windows")]
+            ("alacritty" | "alacritty.exe") => {
+                // Alacritty: `--working-directory <path>`
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push("--working-directory".to_string());
+                args.push(path_str);
+                (program.to_string(), args)
+            }
+            #[cfg(target_os = "windows")]
+            ("wezterm" | "wezterm.exe" | "wezterm-mux-server" | "wezterm-cli") => {
+                // WezTerm: `--cwd <path>`
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push("--cwd".to_string());
+                args.push(path_str);
+                (program.to_string(), args)
+            }
+            #[cfg(target_os = "windows")]
+            ("kitty" | "kitty.exe") => {
+                // Kitty: `--directory <path>`
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push("--directory".to_string());
+                args.push(path_str);
+                (program.to_string(), args)
+            }
+            #[cfg(target_os = "windows")]
+            ("macos" | "terminal" | "terminal.app" | "iterm" | "iterm2") => {
+                // These are handled by macOS-specific code paths; pass path as bare arg.
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args)
+            }
+            #[cfg(target_os = "windows")]
+            _ => {
+                // Unknown command on Windows: split normally and append the path as a bare arg.
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args)
+            }
+            #[cfg(not(target_os = "windows"))]
+            _ => {
+                // Non-Windows: path is set via current_dir(), pass as bare arg.
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args)
+            }
+        }
+    } else {
+        // Empty command — fall back to default terminal detection.
+        ("cmd.exe".to_string(), vec![])
+    }
+}
+
+/// Builds the editor command arguments from a custom command string and a file path.
+/// Unlike terminal commands which can use `current_dir()`, editors need the path
+/// passed as a proper argument in a way the specific editor understands.
+///
+/// Returns `(program, args)` where the file path is NOT included — callers
+/// construct the final command by appending the path appropriately per-editor.
+#[cfg(target_os = "windows")]
+pub(crate) fn build_editor_args(
+    custom_command: &str,
+    path: &std::path::Path,
+) -> (String, Vec<String>, bool) {
+    // Returns (program, base_args, path_is_bare_arg)
+    // path_is_bare_arg = true means append <path> as a bare final argument
+    // path_is_bare_arg = false means the path is incorporated into args already
+    let path_str = path.to_string_lossy().to_string();
+    let parts: Vec<&str> = custom_command.split_whitespace().collect();
+
+    if let Some((program, rest)) = parts.split_first() {
+        match program.to_ascii_lowercase().as_str() {
+            // VS Code: appends path as bare arg (works with "code .")
+            "code" => {
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args, true)
+            }
+            // JetBrains IDEs: path as bare arg
+            "idea" | "idea64" | "idea.exe" | "pycharm" | "pycharm64" | "pycharm.exe"
+            | "webstorm" | "webstorm.exe" | "rider" | "rider.exe" | "goland" | "goland.exe"
+            | "datagrip" | "datagrip.exe" | "phpstorm" | "phpstorm.exe" | "rubymine"
+            | "rubymine.exe" | "clion" | "clion.exe" | "fleet" | "fleet.exe" => {
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args, true)
+            }
+            // Vim/Neovim: path as bare arg (vim file, nvim file)
+            "vim" | "vim.exe" | "vi" | "nvim" | "nvim.exe" | "gvim" | "gvim.exe" => {
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args, true)
+            }
+            // Emacs: path as bare arg (emacs file) or --directory for folder
+            "emacs" | "emacs.exe" | "emacsclient" | "emacsclient.exe" => {
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args, true)
+            }
+            // Sublime Text: path as bare arg
+            "subl" | "sublime" | "sublime_text" | "sublime_text.exe" => {
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args, true)
+            }
+            // Atom: path as bare arg
+            "atom" | "atom.exe" => {
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args, true)
+            }
+            // Notepad++: path as bare arg
+            "notepad++" | "notepad++.exe" => {
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args, true)
+            }
+            _ => {
+                // Unknown editor: treat as bare-arg (most editors accept path as final arg)
+                let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                args.push(path_str);
+                (program.to_string(), args, true)
+            }
+        }
+    } else {
+        ("code".to_string(), vec![], true)
+    }
+}
+
 pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
     let path = path.to_path_buf();
     let custom_command = custom_command.to_string();
     std::thread::spawn(move || {
         if !custom_command.is_empty() {
-            let parts: Vec<&str> = custom_command.split_whitespace().collect();
-            if let Some((program, args)) = parts.split_first() {
-                let _ = std::process::Command::new(program)
-                    .args(args)
+            #[cfg(target_os = "windows")]
+            {
+                let (program, args) = build_terminal_args(&custom_command, &path);
+                let _ = std::process::Command::new(&program)
+                    .args(&args)
                     .current_dir(&path)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn();
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let parts: Vec<&str> = custom_command.split_whitespace().collect();
+                if let Some((program, args)) = parts.split_first() {
+                    let _ = std::process::Command::new(program)
+                        .args(args)
+                        .current_dir(&path)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                }
             }
         } else {
             #[cfg(target_os = "windows")]
@@ -1354,12 +1541,26 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
     let custom_command = custom_command.to_string();
     std::thread::spawn(move || {
         if !custom_command.is_empty() {
-            let parts: Vec<&str> = custom_command.split_whitespace().collect();
-            if let Some((program, args)) = parts.split_first() {
-                let _ = std::process::Command::new(program)
-                    .args(args)
-                    .arg(&path)
-                    .spawn();
+            #[cfg(target_os = "windows")]
+            {
+                let (program, base_args, path_is_bare_arg) =
+                    build_editor_args(&custom_command, &path);
+                let mut cmd = std::process::Command::new(&program);
+                cmd.args(&base_args);
+                if path_is_bare_arg {
+                    cmd.arg(&path);
+                }
+                let _ = cmd.spawn();
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let parts: Vec<&str> = custom_command.split_whitespace().collect();
+                if let Some((program, args)) = parts.split_first() {
+                    let _ = std::process::Command::new(program)
+                        .args(args)
+                        .current_dir(&path)
+                        .spawn();
+                }
             }
         } else {
             #[cfg(target_os = "windows")]
@@ -1388,4 +1589,303 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
             }
         }
     });
+}
+
+#[cfg(target_os = "windows")]
+#[cfg(test)]
+mod terminal_args_tests {
+    use super::*;
+
+    fn winpath(s: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(s)
+    }
+
+    #[test]
+    fn cmd_custom_command_uses_cd_args() {
+        let path = winpath("C:\\Projects\\myrepo");
+        let (program, args) = build_terminal_args("cmd", &path);
+        assert_eq!(program, "cmd");
+        assert_eq!(args, &["/K", "cd", "/d", "C:\\Projects\\myrepo"]);
+    }
+
+    #[test]
+    fn cmd_with_uppercase_variant() {
+        let path = winpath("D:\\Work");
+        let (program, args) = build_terminal_args("CMD", &path);
+        assert_eq!(program, "CMD");
+        assert_eq!(args, &["/K", "cd", "/d", "D:\\Work"]);
+    }
+
+    #[test]
+    fn powershell_custom_command_uses_noexit_cd() {
+        let path = winpath("C:\\Repos\\app");
+        let (program, args) = build_terminal_args("powershell", &path);
+        assert_eq!(program, "powershell");
+        assert_eq!(args, &["-NoExit", "-Command", "cd 'C:\\Repos\\app'"]);
+    }
+
+    #[test]
+    fn pwsh_short_name() {
+        let path = winpath("C:\\test");
+        let (program, args) = build_terminal_args("pwsh", &path);
+        assert_eq!(program, "pwsh");
+        assert!(args.starts_with(&["-NoExit".to_string(), "-Command".to_string()]));
+    }
+
+    #[test]
+    fn wt_custom_command_uses_dash_d() {
+        let path = winpath("E:\\Code\\rgitui");
+        let (program, args) = build_terminal_args("wt", &path);
+        assert_eq!(program, "wt");
+        assert_eq!(args, &["-d", "E:\\Code\\rgitui"]);
+    }
+
+    #[test]
+    fn wt_with_extra_flags() {
+        let path = winpath("C:\\test");
+        let (program, args) = build_terminal_args("wt --title MyTitle", &path);
+        assert_eq!(program, "wt");
+        assert_eq!(args, &["--title", "MyTitle", "-d", "C:\\test"]);
+    }
+
+    #[test]
+    fn alacritty_uses_working_directory() {
+        let path = winpath("C:\\AlacrittyTest");
+        let (program, args) = build_terminal_args("alacritty", &path);
+        assert_eq!(program, "alacritty");
+        assert_eq!(args, &["--working-directory", "C:\\AlacrittyTest"]);
+    }
+
+    #[test]
+    fn alacritty_with_profile_flag() {
+        let path = winpath("C:\\test");
+        let (program, args) = build_terminal_args("alacritty -o AlwaysUsePipeFrontend=true", &path);
+        assert_eq!(program, "alacritty");
+        assert_eq!(
+            args,
+            &[
+                "-o",
+                "AlwaysUsePipeFrontend=true",
+                "--working-directory",
+                "C:\\test"
+            ]
+        );
+    }
+
+    #[test]
+    fn wezterm_uses_cwd() {
+        let path = winpath("C:\\WeztermTest");
+        let (program, args) = build_terminal_args("wezterm", &path);
+        assert_eq!(program, "wezterm");
+        assert_eq!(args, &["--cwd", "C:\\WeztermTest"]);
+    }
+
+    #[test]
+    fn kitty_uses_directory() {
+        let path = winpath("C:\\KittyTest");
+        let (program, args) = build_terminal_args("kitty", &path);
+        assert_eq!(program, "kitty");
+        assert_eq!(args, &["--directory", "C:\\KittyTest"]);
+    }
+
+    #[test]
+    fn unknown_terminal_appends_path_as_bare_arg() {
+        let path = winpath("C:\\UnknownTerminal");
+        let (program, args) = build_terminal_args("mystic_term", &path);
+        assert_eq!(program, "mystic_term");
+        assert_eq!(args, &["C:\\UnknownTerminal"]);
+    }
+
+    #[test]
+    fn unknown_terminal_with_flags() {
+        let path = winpath("C:\\test");
+        let (program, args) = build_terminal_args("custom --flag value", &path);
+        assert_eq!(program, "custom");
+        assert_eq!(args, &["--flag", "value", "C:\\test"]);
+    }
+
+    #[test]
+    fn path_with_single_quotes_escaped_in_powershell() {
+        let path = winpath("C:\\O'Reilly\\Test");
+        let (program, args) = build_terminal_args("powershell", &path);
+        assert_eq!(program, "powershell");
+        // Single quotes in path should be doubled: ' becomes ''
+        assert!(args[2].contains("''"));
+    }
+
+    #[test]
+    fn empty_command_returns_fallback() {
+        let path = winpath("C:\\test");
+        let (program, args) = build_terminal_args("", &path);
+        assert_eq!(program, "cmd.exe");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn cmd_exe_explicit() {
+        let path = winpath("C:\\test");
+        let (program, args) = build_terminal_args("cmd.exe", &path);
+        assert_eq!(program, "cmd.exe");
+        assert_eq!(args, &["/K", "cd", "/d", "C:\\test"]);
+    }
+
+    // ─── build_editor_args tests ───────────────────────────────────────────────
+
+    #[test]
+    fn vscode_editor_appends_path_as_bare_arg() {
+        let path = winpath("C:\\Projects\\myrepo");
+        let (program, args, path_is_bare) = build_editor_args("code", &path);
+        assert_eq!(program, "code");
+        assert!(args.is_empty());
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn vscode_editor_with_wait_flag() {
+        let path = winpath("C:\\Projects\\myrepo");
+        let (program, args, path_is_bare) = build_editor_args("code --wait", &path);
+        assert_eq!(program, "code");
+        assert_eq!(args, &["--wait"]);
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn vscode_editor_unknown_flags_passed_through() {
+        let path = winpath("C:\\test");
+        let (program, args, path_is_bare) =
+            build_editor_args("code --disable-extensions --new-window", &path);
+        assert_eq!(program, "code");
+        assert_eq!(args, &["--disable-extensions", "--new-window"]);
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn jetbrains_idea_appends_path() {
+        let path = winpath("C:\\Projects\\myrepo");
+        let (program, args, path_is_bare) = build_editor_args("idea", &path);
+        assert_eq!(program, "idea");
+        assert!(args.is_empty());
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn jetbrains_pycharm_with_project_flag() {
+        let path = winpath("C:\\Projects\\myrepo");
+        let (program, args, path_is_bare) = build_editor_args("pycharm --new-project", &path);
+        assert_eq!(program, "pycharm");
+        assert_eq!(args, &["--new-project"]);
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn vim_editor_appends_path() {
+        let path = winpath("C:\\test\\file.rs");
+        let (program, args, path_is_bare) = build_editor_args("vim", &path);
+        assert_eq!(program, "vim");
+        assert!(args.is_empty());
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn neovim_editor_appends_path() {
+        let path = winpath("C:\\test\\file.txt");
+        let (program, args, path_is_bare) = build_editor_args("nvim", &path);
+        assert_eq!(program, "nvim");
+        assert!(args.is_empty());
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn sublime_editor_appends_path() {
+        let path = winpath("C:\\test\\file.txt");
+        let (program, args, path_is_bare) = build_editor_args("subl", &path);
+        assert_eq!(program, "subl");
+        assert!(args.is_empty());
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn unknown_editor_appends_path_as_bare_arg() {
+        let path = winpath("C:\\test\\file.txt");
+        let (program, args, path_is_bare) = build_editor_args("fancy_editor", &path);
+        assert_eq!(program, "fancy_editor");
+        assert!(args.is_empty());
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn unknown_editor_with_flags() {
+        let path = winpath("C:\\test");
+        let (program, args, path_is_bare) = build_editor_args("custom --flag value", &path);
+        assert_eq!(program, "custom");
+        assert_eq!(args, &["--flag", "value"]);
+        assert!(path_is_bare);
+    }
+
+    #[test]
+    fn empty_editor_returns_code_fallback() {
+        let path = winpath("C:\\test");
+        let (program, args, path_is_bare) = build_editor_args("", &path);
+        assert_eq!(program, "code");
+        assert!(args.is_empty());
+        assert!(path_is_bare);
+    }
+}
+
+// Cross-platform tests for build_terminal_args (runs on all platforms).
+// On non-Windows, the known-terminal match arms are not available, so all
+// custom commands fall through to the "append path as bare arg" behavior.
+// This verifies that non-Windows platforms get a predictable, testable interface.
+#[cfg(not(target_os = "windows"))]
+#[cfg(test)]
+mod terminal_args_cross_platform_tests {
+    use super::*;
+
+    fn path(s: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(s)
+    }
+
+    #[test]
+    fn unknown_terminal_appends_path_as_bare_arg_on_linux() {
+        // On Linux, all terminals go through the unknown-terminal path since
+        // the Windows-specific match arms (wt, cmd, etc.) are cfg-gated out.
+        let path = path("/home/user/repo");
+        let (program, args) = build_terminal_args("gnome-terminal", &path);
+        assert_eq!(program, "gnome-terminal");
+        assert_eq!(args, &["/home/user/repo"]);
+    }
+
+    #[test]
+    fn unknown_terminal_with_flags_appends_path() {
+        let path = path("/home/user/repo");
+        let (program, args) = build_terminal_args("konsole --workdir", &path);
+        assert_eq!(program, "konsole");
+        assert_eq!(args, &["--workdir", "/home/user/repo"]);
+    }
+
+    #[test]
+    fn empty_command_returns_fallback_on_linux() {
+        let path = path("/home/user/repo");
+        let (program, args) = build_terminal_args("", &path);
+        assert_eq!(program, "cmd.exe"); // fallback program (platform-neutral fallback)
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn xterm_explicit_command() {
+        let path = path("/tmp/test");
+        let (program, args) = build_terminal_args("xterm", &path);
+        assert_eq!(program, "xterm");
+        assert_eq!(args, &["/tmp/test"]);
+    }
+
+    #[test]
+    fn kitty_on_linux_appends_directory_flag() {
+        // Kitty is only cfg-gated on Windows; on Linux it's treated as unknown.
+        // This tests that Linux gets consistent unknown-terminal behavior.
+        let path = path("/home/user/kitty-test");
+        let (program, args) = build_terminal_args("kitty", &path);
+        assert_eq!(program, "kitty");
+        assert_eq!(args, &["/home/user/kitty-test"]);
+    }
 }

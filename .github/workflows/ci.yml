@@ -60,7 +60,8 @@ jobs:
             libdrm-dev \
             libgbm-dev \
             libzstd-dev \
-            vulkan-tools
+            vulkan-tools \
+            xvfb
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -77,7 +78,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace
+        run: xvfb-run -a cargo test --workspace
 
       - name: Build release binary
         run: cargo build --release --package rgitui
