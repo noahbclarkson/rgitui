@@ -124,6 +124,17 @@ impl Workspace {
             return;
         }
 
+        // / to start graph search
+        if !any_overlay_active && key == "/" {
+            if let Some(tab) = self.tabs.get(self.active_tab) {
+                let graph = tab.graph.clone();
+                graph.update(cx, |g, cx| {
+                    g.toggle_search_focused(window, cx);
+                });
+            }
+            return;
+        }
+
         // Ctrl+G to generate AI commit message
         if !any_overlay_active
             && (modifiers.control || modifiers.platform)
