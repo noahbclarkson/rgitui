@@ -459,3 +459,96 @@ impl Render for ReflogView {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_relative_time_just_now() {
+        let now = chrono::Utc::now().timestamp();
+        assert_eq!(ReflogView::format_relative_time(now), "just now");
+    }
+
+    #[test]
+    fn format_relative_time_seconds() {
+        let thirty_secs_ago = chrono::Utc::now().timestamp() - 30;
+        assert_eq!(
+            ReflogView::format_relative_time(thirty_secs_ago),
+            "just now"
+        );
+    }
+
+    #[test]
+    fn format_relative_time_one_minute() {
+        let one_min_ago = chrono::Utc::now().timestamp() - 60;
+        assert_eq!(ReflogView::format_relative_time(one_min_ago), "1m ago");
+    }
+
+    #[test]
+    fn format_relative_time_minutes() {
+        let five_mins_ago = chrono::Utc::now().timestamp() - 300;
+        assert_eq!(ReflogView::format_relative_time(five_mins_ago), "5m ago");
+    }
+
+    #[test]
+    fn format_relative_time_one_hour() {
+        let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
+        assert_eq!(ReflogView::format_relative_time(one_hour_ago), "1h ago");
+    }
+
+    #[test]
+    fn format_relative_time_hours() {
+        let three_hours_ago = chrono::Utc::now().timestamp() - 10800;
+        assert_eq!(ReflogView::format_relative_time(three_hours_ago), "3h ago");
+    }
+
+    #[test]
+    fn format_relative_time_one_day() {
+        let one_day_ago = chrono::Utc::now().timestamp() - 86400;
+        assert_eq!(ReflogView::format_relative_time(one_day_ago), "1d ago");
+    }
+
+    #[test]
+    fn format_relative_time_days() {
+        let five_days_ago = chrono::Utc::now().timestamp() - 432000;
+        assert_eq!(ReflogView::format_relative_time(five_days_ago), "5d ago");
+    }
+
+    #[test]
+    fn format_relative_time_one_month() {
+        // 30 days ago
+        let one_month_ago = chrono::Utc::now().timestamp() - 2592000;
+        assert_eq!(ReflogView::format_relative_time(one_month_ago), "1mo ago");
+    }
+
+    #[test]
+    fn format_relative_time_months() {
+        // 90 days ago
+        let three_months_ago = chrono::Utc::now().timestamp() - 7776000;
+        assert_eq!(
+            ReflogView::format_relative_time(three_months_ago),
+            "3mo ago"
+        );
+    }
+
+    #[test]
+    fn format_relative_time_one_year() {
+        // 365 days ago
+        let one_year_ago = chrono::Utc::now().timestamp() - 31536000;
+        assert_eq!(ReflogView::format_relative_time(one_year_ago), "1y ago");
+    }
+
+    #[test]
+    fn format_relative_time_years() {
+        // 2 years ago
+        let two_years_ago = chrono::Utc::now().timestamp() - 63072000;
+        assert_eq!(ReflogView::format_relative_time(two_years_ago), "2y ago");
+    }
+
+    #[test]
+    fn format_relative_time_future() {
+        let future = chrono::Utc::now().timestamp() + 1000;
+        assert_eq!(ReflogView::format_relative_time(future), "in the future");
+    }
+}
