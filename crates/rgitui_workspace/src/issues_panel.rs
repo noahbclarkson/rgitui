@@ -1128,3 +1128,79 @@ pub fn parse_github_owner_repo(url: &str) -> Option<(String, String)> {
 
     Some((owner, repo))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_issue_filter_api_value() {
+        assert_eq!(IssueFilter::Open.api_value(), "open");
+        assert_eq!(IssueFilter::Closed.api_value(), "closed");
+        assert_eq!(IssueFilter::All.api_value(), "all");
+    }
+
+    #[test]
+    fn test_issue_filter_label() {
+        assert_eq!(IssueFilter::Open.label(), "Open");
+        assert_eq!(IssueFilter::Closed.label(), "Closed");
+        assert_eq!(IssueFilter::All.label(), "All");
+    }
+
+    #[test]
+    fn test_format_github_date() {
+        assert_eq!(format_github_date("2024-01-15T10:30:00Z"), "2024-01-15");
+        assert_eq!(format_github_date("2024-03-20"), "2024-03-20");
+        assert_eq!(format_github_date(""), "");
+        assert_eq!(format_github_date("2024-01"), "2024-01");
+        assert_eq!(format_github_date("2024-03-20T14:22:00Z"), "2024-03-20");
+        assert_eq!(format_github_date("2024-06-01T08:00:00.000Z"), "2024-06-01");
+    }
+
+    #[test]
+    fn test_parse_github_owner_repo_https() {
+        assert_eq!(
+            parse_github_owner_repo("https://github.com/owner/repo"),
+            Some(("owner".to_string(), "repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_owner_repo("https://github.com/owner/repo.git"),
+            Some(("owner".to_string(), "repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_owner_repo("http://github.com/owner/repo"),
+            Some(("owner".to_string(), "repo".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_github_owner_repo_ssh() {
+        assert_eq!(
+            parse_github_owner_repo("git@github.com:owner/repo.git"),
+            Some(("owner".to_string(), "repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_owner_repo("git@github.com:owner/repo"),
+            Some(("owner".to_string(), "repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_owner_repo("ssh://git@github.com/owner/repo"),
+            Some(("owner".to_string(), "repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_owner_repo("ssh://git@github.com/owner/repo.git"),
+            Some(("owner".to_string(), "repo".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_github_owner_repo_invalid() {
+        assert_eq!(parse_github_owner_repo("https://github.com/owner"), None);
+        assert_eq!(parse_github_owner_repo("https://github.com/owner/"), None);
+        assert_eq!(parse_github_owner_repo("git@github.com:owner"), None);
+        assert_eq!(
+            parse_github_owner_repo("https://gitlab.com/owner/repo"),
+            None
+        );
+    }
+}
