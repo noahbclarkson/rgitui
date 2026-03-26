@@ -717,3 +717,151 @@ impl Render for InteractiveRebase {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── RebaseAction::label ────────────────────────────────────────
+
+    #[test]
+    fn rebase_action_label_pick() {
+        assert_eq!(RebaseAction::Pick.label(), "Pick");
+    }
+
+    #[test]
+    fn rebase_action_label_reword() {
+        assert_eq!(RebaseAction::Reword("fix bug".into()).label(), "Reword");
+    }
+
+    #[test]
+    fn rebase_action_label_squash() {
+        assert_eq!(RebaseAction::Squash.label(), "Squash");
+    }
+
+    #[test]
+    fn rebase_action_label_fixup() {
+        assert_eq!(RebaseAction::Fixup.label(), "Fixup");
+    }
+
+    #[test]
+    fn rebase_action_label_drop() {
+        assert_eq!(RebaseAction::Drop.label(), "Drop");
+    }
+
+    // ── RebaseAction::next ─────────────────────────────────────────
+
+    #[test]
+    fn rebase_action_next_pick() {
+        assert!(matches!(RebaseAction::Pick.next(), RebaseAction::Reword(_)));
+    }
+
+    #[test]
+    fn rebase_action_next_reword() {
+        assert!(matches!(
+            RebaseAction::Reword("msg".into()).next(),
+            RebaseAction::Squash
+        ));
+    }
+
+    #[test]
+    fn rebase_action_next_squash() {
+        assert!(matches!(RebaseAction::Squash.next(), RebaseAction::Fixup));
+    }
+
+    #[test]
+    fn rebase_action_next_fixup() {
+        assert!(matches!(RebaseAction::Fixup.next(), RebaseAction::Drop));
+    }
+
+    #[test]
+    fn rebase_action_next_drop() {
+        assert!(matches!(RebaseAction::Drop.next(), RebaseAction::Pick));
+    }
+
+    #[test]
+    fn rebase_action_next_cycles_all() {
+        // Full cycle: Pick → Reword → Squash → Fixup → Drop → Pick
+        let mut action = RebaseAction::Pick;
+        action = action.next(); // Reword
+        action = action.next(); // Squash
+        action = action.next(); // Fixup
+        action = action.next(); // Drop
+        action = action.next(); // Pick
+        assert!(matches!(action, RebaseAction::Pick));
+    }
+
+    // ── RebaseAction::color ────────────────────────────────────────
+
+    #[test]
+    fn rebase_action_color_pick() {
+        assert!(matches!(RebaseAction::Pick.color(), Color::Success));
+    }
+
+    #[test]
+    fn rebase_action_color_reword() {
+        assert!(matches!(
+            RebaseAction::Reword("msg".into()).color(),
+            Color::Accent
+        ));
+    }
+
+    #[test]
+    fn rebase_action_color_squash() {
+        assert!(matches!(RebaseAction::Squash.color(), Color::Warning));
+    }
+
+    #[test]
+    fn rebase_action_color_fixup() {
+        assert!(matches!(RebaseAction::Fixup.color(), Color::Info));
+    }
+
+    #[test]
+    fn rebase_action_color_drop() {
+        assert!(matches!(RebaseAction::Drop.color(), Color::Deleted));
+    }
+
+    // ── RebaseEntry ────────────────────────────────────────────────
+
+    #[test]
+    fn rebase_entry_clone() {
+        let entry = RebaseEntry {
+            oid: "abc123".into(),
+            original_message: "fix: bug".into(),
+            author: "Noah".into(),
+            action: RebaseAction::Pick,
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.oid, entry.oid);
+        assert_eq!(cloned.original_message, entry.original_message);
+        assert_eq!(cloned.author, entry.author);
+        assert_eq!(cloned.action, entry.action);
+    }
+
+    #[test]
+    fn rebase_entry_action_is_pick() {
+        let entry = RebaseEntry {
+            oid: "abc123".into(),
+            original_message: "fix: bug".into(),
+            author: "Noah".into(),
+            action: RebaseAction::Pick,
+        };
+        assert!(matches!(entry.action, RebaseAction::Pick));
+    }
+
+    #[test]
+    fn rebase_entry_action_reword_carries_message() {
+        let msg = "updated message".to_string();
+        let entry = RebaseEntry {
+            oid: "abc123".into(),
+            original_message: "old message".into(),
+            author: "Noah".into(),
+            action: RebaseAction::Reword(msg.clone()),
+        };
+        if let RebaseAction::Reword(m) = &entry.action {
+            assert_eq!(m, &msg);
+        } else {
+            panic!("expected Reword");
+        }
+    }
+}
