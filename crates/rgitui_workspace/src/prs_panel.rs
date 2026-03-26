@@ -1150,3 +1150,76 @@ fn format_github_date(date_str: &str) -> String {
         date_str.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // PrFilter::api_value
+
+    #[test]
+    fn pr_filter_api_value_open() {
+        assert_eq!(PrFilter::Open.api_value(), "open");
+    }
+
+    #[test]
+    fn pr_filter_api_value_closed() {
+        assert_eq!(PrFilter::Closed.api_value(), "closed");
+    }
+
+    #[test]
+    fn pr_filter_api_value_all() {
+        assert_eq!(PrFilter::All.api_value(), "all");
+    }
+
+    // PrFilter::label
+
+    #[test]
+    fn pr_filter_label_open() {
+        assert_eq!(PrFilter::Open.label(), "Open");
+    }
+
+    #[test]
+    fn pr_filter_label_closed() {
+        assert_eq!(PrFilter::Closed.label(), "Closed");
+    }
+
+    #[test]
+    fn pr_filter_label_all() {
+        assert_eq!(PrFilter::All.label(), "All");
+    }
+
+    // format_github_date
+
+    #[test]
+    fn format_github_date_full_iso() {
+        assert_eq!(format_github_date("2024-01-15T10:30:00Z"), "2024-01-15");
+    }
+
+    #[test]
+    fn format_github_date_already_short() {
+        assert_eq!(format_github_date("2024-01-15"), "2024-01-15");
+    }
+
+    #[test]
+    fn format_github_date_empty() {
+        assert_eq!(format_github_date(""), "");
+    }
+
+    #[test]
+    fn format_github_date_truncated() {
+        // len < 10, returns as-is
+        assert_eq!(format_github_date("2024-1-5"), "2024-1-5");
+    }
+
+    #[test]
+    fn format_github_date_exactly_10_chars() {
+        assert_eq!(format_github_date("2024-01-15"), "2024-01-15");
+    }
+
+    #[test]
+    fn format_github_date_much_longer() {
+        // longer than 10, slices first 10
+        assert_eq!(format_github_date("2024-01-15T10:30:00Z"), "2024-01-15");
+    }
+}
