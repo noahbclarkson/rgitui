@@ -1280,6 +1280,7 @@ pub(crate) fn open_file_explorer(path: &std::path::Path) {
 /// argument construct the final args list accordingly.
 ///
 /// This is a pure function to enable unit testing.
+#[allow(dead_code)]
 pub(crate) fn build_terminal_args(
     custom_command: &str,
     path: &std::path::Path,
