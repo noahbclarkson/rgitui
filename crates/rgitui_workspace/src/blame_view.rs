@@ -98,38 +98,6 @@ impl BlameView {
         map
     }
 
-    pub(crate) fn format_relative_time(timestamp: i64) -> String {
-        let now = chrono::Utc::now().timestamp();
-        let diff = now - timestamp;
-        if diff < 0 {
-            return "in the future".to_string();
-        }
-        let diff = diff as u64;
-        match diff {
-            0..=59 => "just now".to_string(),
-            60..=3599 => {
-                let mins = diff / 60;
-                format!("{}m ago", mins)
-            }
-            3600..=86399 => {
-                let hours = diff / 3600;
-                format!("{}h ago", hours)
-            }
-            86400..=2591999 => {
-                let days = diff / 86400;
-                format!("{}d ago", days)
-            }
-            2592000..=31535999 => {
-                let months = diff / 2592000;
-                format!("{}mo ago", months)
-            }
-            _ => {
-                let years = diff / 31536000;
-                format!("{}y ago", years)
-            }
-        }
-    }
-
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -346,7 +314,10 @@ impl Render for BlameView {
                         };
 
                         let time_display: SharedString = if is_first_in_hunk {
-                            BlameView::format_relative_time(line.entry.time.timestamp()).into()
+                            crate::time::format_relative_time_abbreviated(
+                                line.entry.time.timestamp(),
+                            )
+                            .into()
                         } else {
                             SharedString::default()
                         };
@@ -363,7 +334,9 @@ impl Render for BlameView {
                         let tooltip_text: SharedString = format!(
                             "{} ({}) - {} <{}>",
                             line.entry.short_id,
-                            BlameView::format_relative_time(line.entry.time.timestamp()),
+                            crate::time::format_relative_time_abbreviated(
+                                line.entry.time.timestamp()
+                            ),
                             line.entry.author,
                             line.entry.email,
                         )
@@ -548,6 +521,7 @@ impl Render for BlameView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::format_relative_time_abbreviated;
     use chrono::{TimeZone, Utc};
     use git2::Oid;
     use rgitui_git::BlameEntry;
@@ -653,78 +627,78 @@ mod tests {
     #[test]
     fn test_format_relative_time_future() {
         let future = chrono::Utc::now().timestamp() + 3600;
-        assert_eq!(BlameView::format_relative_time(future), "in the future");
+        assert_eq!(format_relative_time_abbreviated(future), "in the future");
     }
 
     #[test]
     fn test_format_relative_time_just_now() {
         let now = chrono::Utc::now().timestamp();
-        assert_eq!(BlameView::format_relative_time(now), "just now");
+        assert_eq!(format_relative_time_abbreviated(now), "just now");
     }
 
     #[test]
     fn test_format_relative_time_seconds() {
         let past = chrono::Utc::now().timestamp() - 30;
-        assert_eq!(BlameView::format_relative_time(past), "just now");
+        assert_eq!(format_relative_time_abbreviated(past), "just now");
     }
 
     #[test]
     fn test_format_relative_time_minutes() {
         let past = chrono::Utc::now().timestamp() - 300; // 5m ago
-        assert_eq!(BlameView::format_relative_time(past), "5m ago");
+        assert_eq!(format_relative_time_abbreviated(past), "5m ago");
     }
 
     #[test]
     fn test_format_relative_time_single_minute() {
         let past = chrono::Utc::now().timestamp() - 60;
-        assert_eq!(BlameView::format_relative_time(past), "1m ago");
+        assert_eq!(format_relative_time_abbreviated(past), "1m ago");
     }
 
     #[test]
     fn test_format_relative_time_hours() {
         let past = chrono::Utc::now().timestamp() - 7200; // 2h ago
-        assert_eq!(BlameView::format_relative_time(past), "2h ago");
+        assert_eq!(format_relative_time_abbreviated(past), "2h ago");
     }
 
     #[test]
     fn test_format_relative_time_single_hour() {
         let past = chrono::Utc::now().timestamp() - 3600;
-        assert_eq!(BlameView::format_relative_time(past), "1h ago");
+        assert_eq!(format_relative_time_abbreviated(past), "1h ago");
     }
 
     #[test]
     fn test_format_relative_time_days() {
         let past = chrono::Utc::now().timestamp() - 172800; // 2d ago
-        assert_eq!(BlameView::format_relative_time(past), "2d ago");
+        assert_eq!(format_relative_time_abbreviated(past), "2d ago");
     }
 
     #[test]
     fn test_format_relative_time_single_day() {
         let past = chrono::Utc::now().timestamp() - 86400;
-        assert_eq!(BlameView::format_relative_time(past), "1d ago");
+        assert_eq!(format_relative_time_abbreviated(past), "1d ago");
     }
 
     #[test]
     fn test_format_relative_time_months() {
         let past = chrono::Utc::now().timestamp() - 5184000; // ~2mo ago
-        assert_eq!(BlameView::format_relative_time(past), "2mo ago");
+        assert_eq!(format_relative_time_abbreviated(past), "2mo ago");
     }
 
     #[test]
     fn test_format_relative_time_single_month() {
         let past = chrono::Utc::now().timestamp() - 2592000;
-        assert_eq!(BlameView::format_relative_time(past), "1mo ago");
+        assert_eq!(format_relative_time_abbreviated(past), "1mo ago");
     }
 
     #[test]
     fn test_format_relative_time_years() {
         let past = chrono::Utc::now().timestamp() - 63072000; // ~2y ago
-        assert_eq!(BlameView::format_relative_time(past), "2y ago");
+        assert_eq!(format_relative_time_abbreviated(past), "2y ago");
     }
 
     #[test]
     fn test_format_relative_time_single_year() {
         let past = chrono::Utc::now().timestamp() - 31536000;
-        assert_eq!(BlameView::format_relative_time(past), "1y ago");
+        assert_eq!(format_relative_time_abbreviated(past), "1y ago");
     }
 }

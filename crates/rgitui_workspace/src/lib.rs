@@ -21,6 +21,7 @@ mod sidebar;
 mod status_bar;
 mod submodule_view;
 mod tag_dialog;
+pub(crate) mod time;
 mod title_bar;
 mod toast;
 mod toolbar;

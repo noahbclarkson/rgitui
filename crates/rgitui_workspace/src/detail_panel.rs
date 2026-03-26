@@ -26,38 +26,6 @@ use rgitui_ui::{
 
 use crate::markdown_view::render_markdown;
 
-fn format_relative_time(timestamp: i64) -> String {
-    let now = chrono::Utc::now().timestamp();
-    let diff = now - timestamp;
-    if diff < 0 {
-        return "in the future".to_string();
-    }
-    let diff = diff as u64;
-    match diff {
-        0..=59 => "just now".to_string(),
-        60..=3599 => {
-            let mins = diff / 60;
-            format!("{} min{} ago", mins, if mins == 1 { "" } else { "s" })
-        }
-        3600..=86399 => {
-            let hours = diff / 3600;
-            format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-        }
-        86400..=2591999 => {
-            let days = diff / 86400;
-            format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
-        }
-        2592000..=31535999 => {
-            let months = diff / 2592000;
-            format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
-        }
-        _ => {
-            let years = diff / 31536000;
-            format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
-        }
-    }
-}
-
 fn format_absolute_date(timestamp: i64) -> String {
     let dt = chrono::DateTime::from_timestamp(timestamp, 0);
     match dt {
@@ -843,7 +811,7 @@ impl Render for DetailPanel {
         let sha_for_cherry = full_sha.clone();
         let author_name: SharedString = commit.author.name.clone().into();
         let author_email: SharedString = commit.author.email.clone().into();
-        let relative_time = format_relative_time(commit.time.timestamp());
+        let relative_time = crate::time::format_relative_time_full(commit.time.timestamp());
         let absolute_date = format_absolute_date(commit.time.timestamp());
         let date: SharedString = format!("{} ({})", absolute_date, relative_time).into();
         let refs = commit.refs.clone();
@@ -1418,79 +1386,80 @@ impl Render for DetailPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::format_relative_time_full;
 
     // --- format_relative_time tests ---
 
     #[test]
     fn test_format_relative_time_just_now() {
         let now = chrono::Utc::now().timestamp();
-        assert_eq!(format_relative_time(now), "just now");
+        assert_eq!(format_relative_time_full(now), "just now");
     }
 
     #[test]
     fn test_format_relative_time_minutes() {
         let five_mins_ago = chrono::Utc::now().timestamp() - 300;
-        assert_eq!(format_relative_time(five_mins_ago), "5 mins ago");
+        assert_eq!(format_relative_time_full(five_mins_ago), "5 mins ago");
     }
 
     #[test]
     fn test_format_relative_time_one_minute() {
         let one_min_ago = chrono::Utc::now().timestamp() - 60;
-        assert_eq!(format_relative_time(one_min_ago), "1 min ago");
+        assert_eq!(format_relative_time_full(one_min_ago), "1 min ago");
     }
 
     #[test]
     fn test_format_relative_time_hours() {
         let two_hours_ago = chrono::Utc::now().timestamp() - 7200;
-        assert_eq!(format_relative_time(two_hours_ago), "2 hours ago");
+        assert_eq!(format_relative_time_full(two_hours_ago), "2 hours ago");
     }
 
     #[test]
     fn test_format_relative_time_one_hour() {
         let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
-        assert_eq!(format_relative_time(one_hour_ago), "1 hour ago");
+        assert_eq!(format_relative_time_full(one_hour_ago), "1 hour ago");
     }
 
     #[test]
     fn test_format_relative_time_days() {
         let three_days_ago = chrono::Utc::now().timestamp() - 259200;
-        assert_eq!(format_relative_time(three_days_ago), "3 days ago");
+        assert_eq!(format_relative_time_full(three_days_ago), "3 days ago");
     }
 
     #[test]
     fn test_format_relative_time_one_day() {
         let one_day_ago = chrono::Utc::now().timestamp() - 86400;
-        assert_eq!(format_relative_time(one_day_ago), "1 day ago");
+        assert_eq!(format_relative_time_full(one_day_ago), "1 day ago");
     }
 
     #[test]
     fn test_format_relative_time_months() {
         let two_months_ago = chrono::Utc::now().timestamp() - 5184000;
-        assert_eq!(format_relative_time(two_months_ago), "2 months ago");
+        assert_eq!(format_relative_time_full(two_months_ago), "2 months ago");
     }
 
     #[test]
     fn test_format_relative_time_one_month() {
         let one_month_ago = chrono::Utc::now().timestamp() - 2592000;
-        assert_eq!(format_relative_time(one_month_ago), "1 month ago");
+        assert_eq!(format_relative_time_full(one_month_ago), "1 month ago");
     }
 
     #[test]
     fn test_format_relative_time_years() {
         let two_years_ago = chrono::Utc::now().timestamp() - 63072000;
-        assert_eq!(format_relative_time(two_years_ago), "2 years ago");
+        assert_eq!(format_relative_time_full(two_years_ago), "2 years ago");
     }
 
     #[test]
     fn test_format_relative_time_one_year() {
         let one_year_ago = chrono::Utc::now().timestamp() - 31536000;
-        assert_eq!(format_relative_time(one_year_ago), "1 year ago");
+        assert_eq!(format_relative_time_full(one_year_ago), "1 year ago");
     }
 
     #[test]
     fn test_format_relative_time_future() {
         let future = chrono::Utc::now().timestamp() + 1000;
-        assert_eq!(format_relative_time(future), "in the future");
+        assert_eq!(format_relative_time_full(future), "in the future");
     }
 
     // --- format_absolute_date tests ---

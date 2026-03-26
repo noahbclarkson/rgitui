@@ -81,38 +81,6 @@ impl FileHistoryView {
         self.focus_handle.is_focused(window)
     }
 
-    fn format_relative_time(timestamp: i64) -> String {
-        let now = chrono::Utc::now().timestamp();
-        let diff = now - timestamp;
-        if diff < 0 {
-            return "in the future".to_string();
-        }
-        let diff = diff as u64;
-        match diff {
-            0..=59 => "just now".to_string(),
-            60..=3599 => {
-                let mins = diff / 60;
-                format!("{}m ago", mins)
-            }
-            3600..=86399 => {
-                let hours = diff / 3600;
-                format!("{}h ago", hours)
-            }
-            86400..=2591999 => {
-                let days = diff / 86400;
-                format!("{}d ago", days)
-            }
-            2592000..=31535999 => {
-                let months = diff / 2592000;
-                format!("{}mo ago", months)
-            }
-            _ => {
-                let years = diff / 31536000;
-                format!("{}y ago", years)
-            }
-        }
-    }
-
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -298,7 +266,8 @@ impl Render for FileHistoryView {
                         let summary_display: SharedString = commit.summary.clone().into();
                         let author_display: SharedString = commit.author.name.clone().into();
                         let time_display: SharedString =
-                            Self::format_relative_time(commit.time.timestamp()).into();
+                            super::time::format_relative_time_abbreviated(commit.time.timestamp())
+                                .into();
 
                         let tooltip_text: SharedString = format!(
                             "{}\n{}\n{} <{}>",
@@ -462,118 +431,5 @@ impl Render for FileHistoryView {
             )
             .child(list)
             .into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn format_relative_time_just_now() {
-        let now = chrono::Utc::now().timestamp();
-        assert_eq!(FileHistoryView::format_relative_time(now), "just now");
-    }
-
-    #[test]
-    fn format_relative_time_seconds() {
-        let thirty_secs_ago = chrono::Utc::now().timestamp() - 30;
-        assert_eq!(
-            FileHistoryView::format_relative_time(thirty_secs_ago),
-            "just now"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_one_minute() {
-        let one_min_ago = chrono::Utc::now().timestamp() - 60;
-        assert_eq!(FileHistoryView::format_relative_time(one_min_ago), "1m ago");
-    }
-
-    #[test]
-    fn format_relative_time_minutes() {
-        let five_mins_ago = chrono::Utc::now().timestamp() - 300;
-        assert_eq!(
-            FileHistoryView::format_relative_time(five_mins_ago),
-            "5m ago"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_one_hour() {
-        let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
-        assert_eq!(
-            FileHistoryView::format_relative_time(one_hour_ago),
-            "1h ago"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_hours() {
-        let three_hours_ago = chrono::Utc::now().timestamp() - 10800;
-        assert_eq!(
-            FileHistoryView::format_relative_time(three_hours_ago),
-            "3h ago"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_one_day() {
-        let one_day_ago = chrono::Utc::now().timestamp() - 86400;
-        assert_eq!(FileHistoryView::format_relative_time(one_day_ago), "1d ago");
-    }
-
-    #[test]
-    fn format_relative_time_days() {
-        let five_days_ago = chrono::Utc::now().timestamp() - 432000;
-        assert_eq!(
-            FileHistoryView::format_relative_time(five_days_ago),
-            "5d ago"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_one_month() {
-        let one_month_ago = chrono::Utc::now().timestamp() - 2592000;
-        assert_eq!(
-            FileHistoryView::format_relative_time(one_month_ago),
-            "1mo ago"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_months() {
-        let three_months_ago = chrono::Utc::now().timestamp() - 7776000;
-        assert_eq!(
-            FileHistoryView::format_relative_time(three_months_ago),
-            "3mo ago"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_one_year() {
-        let one_year_ago = chrono::Utc::now().timestamp() - 31536000;
-        assert_eq!(
-            FileHistoryView::format_relative_time(one_year_ago),
-            "1y ago"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_years() {
-        let two_years_ago = chrono::Utc::now().timestamp() - 63072000;
-        assert_eq!(
-            FileHistoryView::format_relative_time(two_years_ago),
-            "2y ago"
-        );
-    }
-
-    #[test]
-    fn format_relative_time_future() {
-        let future = chrono::Utc::now().timestamp() + 1000;
-        assert_eq!(
-            FileHistoryView::format_relative_time(future),
-            "in the future"
-        );
     }
 }
