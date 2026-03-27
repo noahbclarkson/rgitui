@@ -375,7 +375,60 @@ impl DiffViewer {
                 self.selected_lines = Some(0..row_count);
                 cx.notify();
             }
+            "s" | "S" if event.keystroke.modifiers.alt && !ctrl => {
+                // Alt+S: stage the current hunk
+                if !self.is_staged {
+                    if let Some(idx) = self.current_hunk_index() {
+                        cx.emit(DiffViewerEvent::HunkStageRequested(idx));
+                    }
+                }
+                cx.stop_propagation();
+            }
+            "u" | "U" if event.keystroke.modifiers.alt && !ctrl => {
+                // Alt+U: unstage the current hunk
+                if self.is_staged {
+                    if let Some(idx) = self.current_hunk_index() {
+                        cx.emit(DiffViewerEvent::HunkUnstageRequested(idx));
+                    }
+                }
+                cx.stop_propagation();
+            }
             _ => {}
+        }
+    }
+
+    /// Returns the hunk index at or before the currently highlighted row.
+    /// If the highlighted row itself is a hunk header, returns its index.
+    /// Otherwise searches backwards to find the nearest preceding hunk.
+    fn current_hunk_index(&self) -> Option<usize> {
+        let pos = self.highlighted_row?;
+        match self.display_mode {
+            DiffDisplayMode::Unified => {
+                // Check current position first
+                if let DisplayRow::HunkHeader { hunk_index, .. } = &self.display_rows[pos] {
+                    return Some(*hunk_index);
+                }
+                // Search backwards for nearest hunk header
+                (0..pos).rev().find_map(|i| {
+                    if let DisplayRow::HunkHeader { hunk_index, .. } = &self.display_rows[i] {
+                        Some(*hunk_index)
+                    } else {
+                        None
+                    }
+                })
+            }
+            DiffDisplayMode::SideBySide => {
+                if let SideBySideRow::HunkHeader { hunk_index, .. } = &self.sbs_rows[pos] {
+                    return Some(*hunk_index);
+                }
+                (0..pos).rev().find_map(|i| {
+                    if let SideBySideRow::HunkHeader { hunk_index, .. } = &self.sbs_rows[i] {
+                        Some(*hunk_index)
+                    } else {
+                        None
+                    }
+                })
+            }
         }
     }
 
