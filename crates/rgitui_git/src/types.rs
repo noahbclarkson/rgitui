@@ -74,6 +74,23 @@ pub struct RemoteInfo {
     pub push_url: Option<String>,
 }
 
+/// Information about a worktree attached to this repository.
+#[derive(Debug, Clone)]
+pub struct WorktreeInfo {
+    /// The worktree name (directory name or custom name).
+    pub name: String,
+    /// Absolute path to the worktree working directory.
+    pub path: PathBuf,
+    /// Whether the worktree is locked (e.g. by a running operation).
+    pub is_locked: bool,
+    /// Whether this is the current worktree (the main repository).
+    pub is_current: bool,
+    /// The branch currently checked out in this worktree, if any.
+    pub branch: Option<String>,
+    /// OID of the HEAD commit in this worktree.
+    pub head_oid: Option<git2::Oid>,
+}
+
 /// Information about a stash entry.
 #[derive(Debug, Clone)]
 pub struct StashEntry {

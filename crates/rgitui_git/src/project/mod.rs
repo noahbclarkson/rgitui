@@ -156,6 +156,7 @@ pub struct RefreshData {
     pub tags: Vec<TagInfo>,
     pub remotes: Vec<RemoteInfo>,
     pub stashes: Vec<StashEntry>,
+    pub worktrees: Vec<WorktreeInfo>,
     pub status: WorkingTreeStatus,
     pub recent_commits: Vec<CommitInfo>,
     /// Whether there are more commits beyond the loaded limit.

@@ -42,6 +42,74 @@ pub(super) fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
     (cleaned, co_authors)
 }
 
+/// Gather information about all worktrees attached to this repository.
+fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
+    let mut worktrees = Vec::new();
+
+    // Current (main) worktree
+    let workdir = repo.workdir().unwrap_or_else(|| repo.path());
+    let current_name = workdir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("main")
+        .to_string();
+    worktrees.push(WorktreeInfo {
+        name: current_name,
+        path: workdir.to_path_buf(),
+        is_locked: false,
+        is_current: true,
+        branch: repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(String::from)),
+        head_oid: repo.head().ok().and_then(|h| h.target()),
+    });
+
+    // List all worktrees from the main repo
+    if let Ok(names) = repo.worktrees() {
+        for name in names.iter().flatten() {
+            if name.is_empty() {
+                continue;
+            }
+            if let Ok(wt) = repo.find_worktree(name) {
+                let path = wt.path().to_path_buf();
+                let is_locked = match wt.is_locked() {
+                    Ok(git2::WorktreeLockStatus::Locked(_)) => true,
+                    Ok(git2::WorktreeLockStatus::Unlocked) | Err(_) => false,
+                };
+
+                // Try to open the worktree repo to get branch/HEAD info
+                let wt_repo = Repository::open(&path).ok();
+                let branch = wt_repo
+                    .as_ref()
+                    .and_then(|r| r.head().ok().and_then(|h| h.shorthand().map(String::from)));
+                let head_oid = wt_repo
+                    .as_ref()
+                    .and_then(|r| r.head().ok().and_then(|h| h.target()));
+
+                worktrees.push(WorktreeInfo {
+                    name: name.to_string(),
+                    path,
+                    is_locked,
+                    is_current: false,
+                    branch,
+                    head_oid,
+                });
+            }
+        }
+    }
+
+    // Sort: current worktree first, then alphabetically by name
+    worktrees.sort_by(|a, b| {
+        if a.is_current != b.is_current {
+            return b.is_current.cmp(&a.is_current);
+        }
+        a.name.cmp(&b.name)
+    });
+
+    worktrees
+}
+
 /// Gather all refresh data from a repository at the given path.
 /// This is a standalone function (no `&self`) so it can run on a background thread.
 pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
@@ -152,6 +220,9 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
             true
         })?;
     }
+
+    // Worktrees
+    let worktrees = gather_worktrees(&repo);
 
     // Status
     let status = {
@@ -286,6 +357,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                 tags,
                 remotes,
                 stashes,
+                worktrees,
                 status,
                 recent_commits: commits,
                 has_more_commits: false,
@@ -346,6 +418,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
         status,
         recent_commits,
         has_more_commits,
+        worktrees,
     })
 }
 
