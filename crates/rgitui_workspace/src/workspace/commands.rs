@@ -244,6 +244,13 @@ impl Workspace {
                     self.show_toast("No HEAD commit to tag", ToastKind::Error, cx);
                 }
             }
+            CommandId::CreateWorktree => {
+                let proj = tab.project.read(cx);
+                let branch = proj.head_branch().map(String::from);
+                self.dialogs.worktree_dialog.update(cx, |wd, cx| {
+                    wd.show_visible(branch, cx);
+                });
+            }
             CommandId::ResetHard => {
                 self.dialogs.confirm_dialog.update(cx, |cd, cx| {
                     cd.show_visible(
