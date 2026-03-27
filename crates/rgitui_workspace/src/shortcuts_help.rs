@@ -121,6 +121,10 @@ impl ShortcutsHelp {
                     ("Ctrl+Z / Ctrl+Shift+Z", "Stash changes / pop stash"),
                     ("Ctrl+G", "Generate AI commit message"),
                     ("s", "Stage / unstage selected file in sidebar"),
+                    (
+                        "Alt+S / Alt+U",
+                        "Stage / unstage current hunk in diff viewer",
+                    ),
                     ("x / Delete", "Discard selected sidebar item"),
                 ],
             },
