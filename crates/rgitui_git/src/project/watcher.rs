@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::refresh::gather_refresh_data;
+use super::refresh::gather_refresh_data_lightweight;
 use super::{GitProject, GitProjectEvent};
 
 impl GitProject {
@@ -83,12 +83,19 @@ impl GitProject {
 
                 if dirty.swap(false, Ordering::Relaxed) {
                     smol::Timer::after(Duration::from_millis(200)).await;
-                    dirty.store(false, Ordering::Relaxed);
+
+                    // Only clear dirty if no new events arrived during the batch wait.
+                    // If dirty was re-set, loop back immediately to refresh again without
+                    // the 300ms poll interval delay — prevents missed refreshes under
+                    // bursty file system activity (e.g. git checkout touching 20 files).
+                    if !dirty.load(Ordering::Relaxed) {
+                        dirty.store(false, Ordering::Relaxed);
+                    }
 
                     let path = watcher_repo_path.clone();
                     let data = cx
                         .background_executor()
-                        .spawn(async move { gather_refresh_data(&path) })
+                        .spawn(async move { gather_refresh_data_lightweight(&path) })
                         .await;
 
                     let data = match data {

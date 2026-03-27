@@ -113,6 +113,22 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
 /// Gather all refresh data from a repository at the given path.
 /// This is a standalone function (no `&self`) so it can run on a background thread.
 pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
+    gather_refresh_data_internal(repo_path, true)
+}
+
+/// Gather refresh data without computing ahead/behind for every branch.
+///
+/// Use this for filesystem watcher events where only file status needs updating.
+/// Ahead/behind values will be (0, 0) — they'll be recomputed on the next
+/// full refresh from a git operation (fetch/push/pull) or explicit user refresh.
+pub fn gather_refresh_data_lightweight(repo_path: &Path) -> Result<RefreshData> {
+    gather_refresh_data_internal(repo_path, false)
+}
+
+fn gather_refresh_data_internal(
+    repo_path: &Path,
+    compute_ahead_behind: bool,
+) -> Result<RefreshData> {
     let repo = Repository::open(repo_path)
         .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
 
@@ -144,7 +160,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                 .ok()
                 .and_then(|u| u.name().ok().flatten().map(String::from));
 
-            let (ahead, behind) =
+            let (ahead, behind) = if compute_ahead_behind {
                 if let (Some(local_oid), Ok(upstream_ref)) = (tip_oid, branch.upstream()) {
                     if let Some(remote_oid) = upstream_ref.get().target() {
                         repo.graph_ahead_behind(local_oid, remote_oid)
@@ -154,7 +170,10 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
                     }
                 } else {
                     (0, 0)
-                };
+                }
+            } else {
+                (0, 0)
+            };
 
             branches.push(BranchInfo {
                 name,
