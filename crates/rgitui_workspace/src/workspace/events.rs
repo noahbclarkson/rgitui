@@ -414,6 +414,22 @@ pub(super) fn subscribe_confirm_dialog(
                                 );
                             }
                         }
+                        ConfirmAction::ResetSoft(target) => {
+                            let target = target.clone();
+                            project.update(cx, |proj, cx| {
+                                if let Ok(oid) = git2::Oid::from_str(&target) {
+                                    proj.reset_soft(oid, cx).detach();
+                                }
+                            });
+                        }
+                        ConfirmAction::ResetMixed(target) => {
+                            let target = target.clone();
+                            project.update(cx, |proj, cx| {
+                                if let Ok(oid) = git2::Oid::from_str(&target) {
+                                    proj.reset_mixed(oid, cx).detach();
+                                }
+                            });
+                        }
                         ConfirmAction::RemoveRemote(name) => {
                             let name = name.clone();
                             project.update(cx, |proj, cx| {
@@ -1456,6 +1472,57 @@ pub(super) fn subscribe_reflog_view(
                     tab.bottom_panel_mode = BottomPanelMode::Diff;
                     cx.notify();
                 }
+            }
+            ReflogViewEvent::CopyOID(oid) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(oid.clone()));
+                let short = &oid[..7.min(oid.len())];
+                this.show_toast(
+                    format!("Copied OID: {}", short),
+                    ToastKind::Success,
+                    cx,
+                );
+            }
+            ReflogViewEvent::ResetHard(oid) => {
+                let short = &oid[..7.min(oid.len())];
+                this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Reset (hard)",
+                        format!(
+                            "Hard reset the current branch to {}? All uncommitted changes and commits after this point will be lost.",
+                            short
+                        ),
+                        ConfirmAction::ResetHard(oid.clone()),
+                        cx,
+                    );
+                });
+            }
+            ReflogViewEvent::ResetSoft(oid) => {
+                let short = &oid[..7.min(oid.len())];
+                this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Reset (soft)",
+                        format!(
+                            "Soft reset the current branch to {}? Changes will be preserved in the index.",
+                            short
+                        ),
+                        ConfirmAction::ResetSoft(oid.clone()),
+                        cx,
+                    );
+                });
+            }
+            ReflogViewEvent::ResetMixed(oid) => {
+                let short = &oid[..7.min(oid.len())];
+                this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Reset (mixed)",
+                        format!(
+                            "Mixed reset the current branch to {}? Changes will be unstaged.",
+                            short
+                        ),
+                        ConfirmAction::ResetMixed(oid.clone()),
+                        cx,
+                    );
+                });
             }
         }
     })

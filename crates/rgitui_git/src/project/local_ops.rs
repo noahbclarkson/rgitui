@@ -1452,6 +1452,67 @@ impl GitProject {
         })
     }
 
+    /// Mixed-reset the current branch to a specific commit, unstaging all changes.
+    pub fn reset_mixed(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let short_id = oid.to_string()[..7].to_string();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Reset,
+            format!("Mixed-resetting to {}...", short_id),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let commit = repo.find_commit(oid)?;
+                    repo.reset(commit.as_object(), git2::ResetType::Mixed, None)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Reset,
+                                format!("Mixed reset to {}", short_id),
+                                (
+                                    Some("Changes unstaged; index and working tree reset.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Reset,
+                                format!("Mixed reset to {} failed", short_id),
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Revert a commit (creates a new commit that undoes the given commit).
     pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();

@@ -17,6 +17,8 @@ pub enum ConfirmAction {
     TagDelete(String),
     RemoveRemote(String),
     ResetHard(String),
+    ResetSoft(String),
+    ResetMixed(String),
     AbortMerge,
     WorktreeRemove(String),
 }
@@ -155,6 +157,8 @@ impl ConfirmDialog {
             Some(ConfirmAction::RemoveRemote(_)) => "Remove",
             Some(ConfirmAction::StashDrop(_)) => "Drop Stash",
             Some(ConfirmAction::ResetHard(_)) => "Reset",
+            Some(ConfirmAction::ResetSoft(_)) => "Reset",
+            Some(ConfirmAction::ResetMixed(_)) => "Reset",
             Some(ConfirmAction::AbortMerge) => "Abort",
             Some(ConfirmAction::ForcePush) => "Force Push",
             Some(ConfirmAction::WorktreeRemove(_)) => "Remove Worktree",
