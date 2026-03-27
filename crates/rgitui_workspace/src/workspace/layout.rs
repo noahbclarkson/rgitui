@@ -1446,26 +1446,49 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
         if !custom_command.is_empty() {
             #[cfg(target_os = "windows")]
             {
+                use std::os::windows::process::CommandExt;
+                const DETACHED_PROCESS: u32 = 0x00000008;
+                const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+
                 let (program, args) = build_terminal_args(&custom_command, &path);
-                let _ = std::process::Command::new(&program)
+                let spawn_result = std::process::Command::new(&program)
                     .args(&args)
                     .current_dir(&path)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
+                    .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                     .spawn();
+
+                if let Err(e) = spawn_result {
+                    log::error!(
+                        "Failed to open terminal '{}' with args {:?} in '{}': {}",
+                        program,
+                        args,
+                        path.display(),
+                        e
+                    );
+                }
             }
             #[cfg(not(target_os = "windows"))]
             {
                 let parts: Vec<&str> = custom_command.split_whitespace().collect();
                 if let Some((program, args)) = parts.split_first() {
-                    let _ = std::process::Command::new(program)
+                    if let Err(e) = std::process::Command::new(program)
                         .args(args)
                         .current_dir(&path)
                         .stdin(std::process::Stdio::null())
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
-                        .spawn();
+                        .spawn()
+                    {
+                        log::error!(
+                            "Failed to open terminal '{}' in '{}': {}",
+                            program,
+                            path.display(),
+                            e
+                        );
+                    }
                 }
             }
         } else {

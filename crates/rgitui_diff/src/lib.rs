@@ -548,6 +548,7 @@ impl DiffViewer {
                     "tf" | "hcl" => "JSON",
                     "cmake" => "Makefile",
                     "r" | "rmd" => "R",
+                    "sql" | "pgsql" | "mysql" | "tsql" => "SQL",
                     _ => return None,
                 };
                 assets.syntax_set.find_syntax_by_name(fallback_name)
@@ -1631,10 +1632,15 @@ mod tests {
             .expect("dot env fallback should resolve")
             .name
             .as_str();
+        let sql = DiffViewer::syntax_for_path("queries/migrate.sql")
+            .expect("sql fallback should resolve")
+            .name
+            .as_str();
 
         assert_eq!(tsx, "JavaScript");
         assert_eq!(jsonc, "JSON");
         assert_eq!(env, "Bourne Again Shell (bash)");
+        assert_eq!(sql, "SQL");
     }
 
     #[test]
