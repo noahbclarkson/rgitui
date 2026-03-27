@@ -648,7 +648,7 @@ mod tests {
             panic!("expected Paragraph");
         };
         // SoftBreak becomes a space
-        assert!(spans.len() >= 1);
+        assert!(!spans.is_empty());
     }
 
     #[test]
