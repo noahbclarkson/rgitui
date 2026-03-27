@@ -18,6 +18,7 @@ pub enum ConfirmAction {
     RemoveRemote(String),
     ResetHard(String),
     AbortMerge,
+    WorktreeRemove(String),
 }
 
 /// Events emitted by the confirmation dialog.
@@ -125,6 +126,7 @@ impl ConfirmDialog {
                     | ConfirmAction::StashDrop(_)
                     | ConfirmAction::ResetHard(_)
                     | ConfirmAction::AbortMerge
+                    | ConfirmAction::WorktreeRemove(_)
             )
         )
     }
@@ -155,6 +157,7 @@ impl ConfirmDialog {
             Some(ConfirmAction::ResetHard(_)) => "Reset",
             Some(ConfirmAction::AbortMerge) => "Abort",
             Some(ConfirmAction::ForcePush) => "Force Push",
+            Some(ConfirmAction::WorktreeRemove(_)) => "Remove Worktree",
             None => "Confirm",
         }
     }

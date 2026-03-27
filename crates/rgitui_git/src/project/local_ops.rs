@@ -2256,6 +2256,145 @@ impl GitProject {
             })?
         })
     }
+
+    /// Create a new Git worktree.
+    pub fn create_worktree(
+        &mut self,
+        name: String,
+        path: PathBuf,
+        branch: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let name_clone = name.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Worktree,
+            format!("Creating worktree '{}'...", name),
+            None,
+            self.head_branch.clone(),
+            cx,
+        );
+        let repo_path = self.repo_path.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+
+                    // Resolve branch reference before building options (lifetime constraint).
+                    let reference = if let Some(ref branch_name) = branch {
+                        repo.find_branch(branch_name, git2::BranchType::Local)
+                            .ok()
+                            .map(|b| b.into_reference())
+                    } else {
+                        None
+                    };
+
+                    let mut opts = git2::WorktreeAddOptions::new();
+                    if let Some(ref r) = reference {
+                        opts.reference(Some(r));
+                    }
+
+                    repo.worktree(&name, &path, Some(&opts))?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Worktree,
+                                format!("Created worktree '{}'", name_clone),
+                                (None, None, this.head_branch.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Worktree,
+                                format!("Create worktree '{}' failed", name_clone),
+                                e.to_string(),
+                                (None, this.head_branch.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Remove a Git worktree.
+    pub fn remove_worktree(&mut self, path: PathBuf, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let display_path = path.display().to_string();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Worktree,
+            format!("Removing worktree '{}'...", display_path),
+            None,
+            self.head_branch.clone(),
+            cx,
+        );
+        let repo_path = self.repo_path.clone();
+        let display_path_async = display_path.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let output = Command::new("git")
+                        .current_dir(&repo_path)
+                        .args(["worktree", "remove", "--force", &display_path_async])
+                        .output()
+                        .context("Failed to execute git worktree remove")?;
+
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !output.status.success() {
+                        anyhow::bail!("git worktree remove failed: {}", stderr.trim());
+                    }
+
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Worktree,
+                                format!("Removed worktree '{}'", display_path),
+                                (None, None, this.head_branch.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Worktree,
+                                format!("Remove worktree '{}' failed", display_path),
+                                e.to_string(),
+                                (None, this.head_branch.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
 }
 
 fn sign_with_gpg(content: &str, key_id: &str) -> Result<String> {

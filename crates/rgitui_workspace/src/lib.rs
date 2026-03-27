@@ -26,6 +26,7 @@ mod title_bar;
 mod toast;
 mod toolbar;
 mod workspace;
+pub(crate) mod worktree_dialog;
 
 pub use blame_view::*;
 pub use branch_dialog::*;
@@ -51,3 +52,4 @@ pub use title_bar::*;
 pub use toast::*;
 pub use toolbar::*;
 pub use workspace::*;
+pub use worktree_dialog::*;

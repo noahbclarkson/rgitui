@@ -16,7 +16,8 @@ use crate::{
     InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent, RenameDialog,
     RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
     ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, SubmoduleView, SubmoduleViewEvent,
-    TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
+    TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent, WorktreeDialog,
+    WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -218,6 +219,36 @@ pub(super) fn subscribe_tag_dialog(cx: &mut Context<Workspace>, tag_dialog: &Ent
     .detach();
 }
 
+pub(super) fn subscribe_worktree_dialog(
+    cx: &mut Context<Workspace>,
+    worktree_dialog: &Entity<WorktreeDialog>,
+) {
+    cx.subscribe(
+        worktree_dialog,
+        |this, _wd, event: &WorktreeDialogEvent, cx| match event {
+            WorktreeDialogEvent::CreateWorktree { name, path, branch } => {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    let project = tab.project.clone();
+                    let name = name.clone();
+                    let path = std::path::PathBuf::from(path.clone());
+                    let branch = branch.clone();
+                    project.update(cx, |proj, cx| {
+                        proj.create_worktree(name.clone(), path.clone(), branch.clone(), cx)
+                            .detach();
+                    });
+                    this.show_toast(
+                        format!("Creating worktree '{}' at '{}'", name, path.display()),
+                        ToastKind::Info,
+                        cx,
+                    );
+                }
+            }
+            WorktreeDialogEvent::Dismissed => {}
+        },
+    )
+    .detach();
+}
+
 pub(super) fn subscribe_rename_dialog(
     cx: &mut Context<Workspace>,
     rename_dialog: &Entity<RenameDialog>,
@@ -392,6 +423,12 @@ pub(super) fn subscribe_confirm_dialog(
                         ConfirmAction::AbortMerge => {
                             project.update(cx, |proj, cx| {
                                 proj.abort_operation(cx).detach();
+                            });
+                        }
+                        ConfirmAction::WorktreeRemove(path) => {
+                            let path = std::path::PathBuf::from(path.clone());
+                            project.update(cx, |proj, cx| {
+                                proj.remove_worktree(path, cx).detach();
                             });
                         }
                     }
@@ -774,6 +811,39 @@ pub(super) fn subscribe_sidebar(
                                 g.scroll_to_commit(oid, cx);
                             });
                         }
+                    }
+                }
+            }
+            SidebarEvent::WorktreeCreate => {
+                let branch = project.read(cx).head_branch().map(|s| s.to_string());
+                this.dialogs.worktree_dialog.update(cx, |wd, cx| {
+                    wd.show_visible(branch, cx);
+                });
+            }
+            SidebarEvent::WorktreeRemove(index) => {
+                let worktrees = project.read(cx).worktrees().to_vec();
+                if let Some(wt) = worktrees.get(*index) {
+                    if wt.is_current {
+                        this.show_toast(
+                            "Cannot remove the current worktree".to_string(),
+                            ToastKind::Error,
+                            cx,
+                        );
+                    } else {
+                        let path_display = wt.path.display().to_string();
+                        let path = wt.path.clone();
+                        this.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                            cd.show_visible(
+                                "Remove Worktree",
+                                format!(
+                                    "Are you sure you want to remove worktree '{}'? \
+                                     This will delete the working tree at '{}'.",
+                                    wt.name, path_display
+                                ),
+                                ConfirmAction::WorktreeRemove(path.to_string_lossy().to_string()),
+                                cx,
+                            );
+                        });
                     }
                 }
             }

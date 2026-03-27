@@ -60,6 +60,15 @@ impl Workspace {
             return;
         }
 
+        // Dismiss worktree dialog on Escape
+        if key == "escape" && self.dialogs.worktree_dialog.read(cx).is_visible() {
+            self.dialogs.worktree_dialog.update(cx, |wd, cx| {
+                wd.dismiss(cx);
+            });
+            self.restore_focus(window, cx);
+            return;
+        }
+
         // Dismiss rename dialog on Escape
         if key == "escape" && self.dialogs.rename_dialog.read(cx).is_visible() {
             self.dialogs.rename_dialog.update(cx, |rd, cx| {
@@ -94,6 +103,7 @@ impl Workspace {
             || self.overlays.settings_modal.read(cx).is_visible()
             || self.dialogs.branch_dialog.read(cx).is_visible()
             || self.dialogs.tag_dialog.read(cx).is_visible()
+            || self.dialogs.worktree_dialog.read(cx).is_visible()
             || self.dialogs.rename_dialog.read(cx).is_visible()
             || self.overlays.repo_opener.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()

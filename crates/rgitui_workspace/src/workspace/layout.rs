@@ -77,6 +77,7 @@ impl Render for Workspace {
                 .child(self.overlays.settings_modal.clone())
                 .child(self.dialogs.branch_dialog.clone())
                 .child(self.dialogs.tag_dialog.clone())
+                .child(self.dialogs.worktree_dialog.clone())
                 .child(self.dialogs.rename_dialog.clone())
                 .child(self.overlays.repo_opener.clone())
                 .child(self.overlays.shortcuts_help.clone())
@@ -107,6 +108,7 @@ impl Render for Workspace {
             || self.overlays.settings_modal.read(cx).is_visible()
             || self.dialogs.branch_dialog.read(cx).is_visible()
             || self.dialogs.tag_dialog.read(cx).is_visible()
+            || self.dialogs.worktree_dialog.read(cx).is_visible()
             || self.dialogs.rename_dialog.read(cx).is_visible()
             || self.overlays.repo_opener.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()
@@ -910,6 +912,8 @@ impl Render for Workspace {
             .child(self.dialogs.branch_dialog.clone())
             // Tag dialog overlay
             .child(self.dialogs.tag_dialog.clone())
+            // Worktree dialog overlay
+            .child(self.dialogs.worktree_dialog.clone())
             // Rename dialog overlay
             .child(self.dialogs.rename_dialog.clone())
             // Repo opener overlay

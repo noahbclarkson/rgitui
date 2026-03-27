@@ -36,6 +36,8 @@ pub enum SidebarEvent {
     StashApply(usize),
     StashDrop(usize),
     WorktreeSelected(usize),
+    WorktreeCreate,
+    WorktreeRemove(usize),
     FileSelected { path: String, staged: bool },
     StageFile(String),
     UnstageFile(String),
@@ -62,6 +64,9 @@ enum SidebarSection {
 struct FileTreeNode {
     file_indices: Vec<usize>,
     children: BTreeMap<String, FileTreeNode>,
+    /// Precomputed total file count (self + all descendants), avoiding
+    /// O(n*d) repeated traversal during every render.
+    file_count: usize,
 }
 
 /// Represents a navigable item in the sidebar's flat list.
@@ -660,7 +665,17 @@ impl Sidebar {
             node.file_indices.push(idx);
         }
         Self::sort_file_tree(&mut root, files);
+        Self::compute_file_counts(&mut root);
         root
+    }
+
+    /// Recursively compute `file_count` for each node (post-order).
+    fn compute_file_counts(node: &mut FileTreeNode) {
+        for child in node.children.values_mut() {
+            Self::compute_file_counts(child);
+        }
+        node.file_count =
+            node.file_indices.len() + node.children.values().map(|c| c.file_count).sum::<usize>();
     }
 
     fn sort_file_tree(node: &mut FileTreeNode, files: &[FileStatus]) {
@@ -682,6 +697,7 @@ impl Sidebar {
         }
     }
 
+    #[allow(dead_code)]
     fn file_tree_file_count(node: &FileTreeNode) -> usize {
         node.file_indices.len()
             + node
@@ -917,7 +933,7 @@ impl Sidebar {
             let prefix_key = prefix.to_string();
             let dir_clone = full_dir.clone();
             let dir_indent = px(16.0 + depth as f32 * 14.0);
-            let file_count = Self::file_tree_file_count(display_node);
+            let file_count = display_node.file_count;
 
             body = body.child(
                 div()
@@ -2091,6 +2107,18 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(div().flex_1())
+                .child(
+                    div().id("new-worktree-btn").child(
+                        Button::new("new-worktree", "New Worktree")
+                            .icon(IconName::Plus)
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Subtle)
+                            .color(Color::Muted)
+                            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                cx.emit(SidebarEvent::WorktreeCreate);
+                            })),
+                    ),
+                )
                 .child(
                     div()
                         .h_flex()

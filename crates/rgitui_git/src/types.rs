@@ -280,6 +280,7 @@ pub enum GitOperationKind {
     Discard,
     Rebase,
     Bisect,
+    Worktree,
 }
 
 impl GitOperationKind {
@@ -303,6 +304,7 @@ impl GitOperationKind {
             GitOperationKind::Discard => "Discard",
             GitOperationKind::Rebase => "Rebase",
             GitOperationKind::Bisect => "Bisect",
+            GitOperationKind::Worktree => "Worktree",
         }
     }
 }

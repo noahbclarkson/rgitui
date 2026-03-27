@@ -154,6 +154,7 @@ impl Workspace {
 
         let branch_dialog = cx.new(crate::BranchDialog::new);
         let tag_dialog = cx.new(crate::TagDialog::new);
+        let worktree_dialog = cx.new(crate::WorktreeDialog::new);
         let rename_dialog = cx.new(crate::RenameDialog::new);
         let confirm_dialog = cx.new(crate::ConfirmDialog::new);
         let repo_opener = cx.new(crate::RepoOpener::new);
@@ -166,6 +167,7 @@ impl Workspace {
         events::subscribe_command_palette(cx, &command_palette);
         events::subscribe_branch_dialog(cx, &branch_dialog);
         events::subscribe_tag_dialog(cx, &tag_dialog);
+        events::subscribe_worktree_dialog(cx, &worktree_dialog);
         events::subscribe_rename_dialog(cx, &rename_dialog);
         events::subscribe_confirm_dialog(cx, &confirm_dialog);
         events::subscribe_repo_opener(cx, &repo_opener);
@@ -200,6 +202,7 @@ impl Workspace {
                 tag_dialog,
                 rename_dialog,
                 confirm_dialog,
+                worktree_dialog,
             },
             overlays: OverlayState {
                 command_palette,
