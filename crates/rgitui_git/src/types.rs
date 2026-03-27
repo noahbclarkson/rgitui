@@ -47,7 +47,7 @@ pub struct CommitInfo {
 }
 
 /// Information about a branch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BranchInfo {
     pub name: String,
     pub is_head: bool,
@@ -59,7 +59,7 @@ pub struct BranchInfo {
 }
 
 /// Information about a tag.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TagInfo {
     pub name: String,
     pub oid: git2::Oid,
@@ -67,7 +67,7 @@ pub struct TagInfo {
 }
 
 /// Information about a remote.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RemoteInfo {
     pub name: String,
     pub url: Option<String>,
@@ -75,7 +75,7 @@ pub struct RemoteInfo {
 }
 
 /// Information about a worktree attached to this repository.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorktreeInfo {
     /// The worktree name (directory name or custom name).
     pub name: String,
@@ -92,7 +92,7 @@ pub struct WorktreeInfo {
 }
 
 /// Information about a stash entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StashEntry {
     pub index: usize,
     pub message: String,
@@ -128,7 +128,7 @@ impl FileChangeKind {
 }
 
 /// A file change in the working tree or staging area.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FileStatus {
     pub path: PathBuf,
     pub kind: FileChangeKind,

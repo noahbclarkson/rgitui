@@ -491,6 +491,9 @@ impl Sidebar {
             a.name.to_lowercase().cmp(&b.name.to_lowercase())
         });
         let (local, remote): (Vec<_>, Vec<_>) = branches.into_iter().partition(|b| !b.is_remote);
+        if self.local_branches == local && self.remote_branches == remote {
+            return;
+        }
         self.local_branches = local;
         self.remote_branches = remote;
         self.rebuild_nav_items();
@@ -499,18 +502,27 @@ impl Sidebar {
 
     pub fn update_tags(&mut self, mut tags: Vec<TagInfo>, cx: &mut Context<Self>) {
         tags.sort_by_key(|a| a.name.to_lowercase());
+        if self.tags == tags {
+            return;
+        }
         self.tags = tags;
         self.rebuild_nav_items();
         cx.notify();
     }
 
     pub fn update_remotes(&mut self, remotes: Vec<RemoteInfo>, cx: &mut Context<Self>) {
+        if self.remotes == remotes {
+            return;
+        }
         self.remotes = remotes;
         self.rebuild_nav_items();
         cx.notify();
     }
 
     pub fn update_stashes(&mut self, stashes: Vec<StashEntry>, cx: &mut Context<Self>) {
+        if self.stashes == stashes {
+            return;
+        }
         self.stashes = stashes;
         self.selected_stash = None;
         self.rebuild_nav_items();
@@ -518,6 +530,9 @@ impl Sidebar {
     }
 
     pub fn update_worktrees(&mut self, worktrees: Vec<WorktreeInfo>, cx: &mut Context<Self>) {
+        if self.worktrees == worktrees {
+            return;
+        }
         self.worktrees = worktrees;
         self.selected_worktree = None;
         self.rebuild_nav_items();
@@ -530,6 +545,9 @@ impl Sidebar {
         unstaged: Vec<FileStatus>,
         cx: &mut Context<Self>,
     ) {
+        if self.staged == staged && self.unstaged == unstaged {
+            return;
+        }
         self.cached_staged_tree = Self::build_file_tree(&staged);
         self.cached_unstaged_tree = Self::build_file_tree(&unstaged);
         self.staged = staged;

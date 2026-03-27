@@ -77,6 +77,13 @@ impl Toolbar {
         has_changes: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.can_push == can_push
+            && self.can_pull == can_pull
+            && self.has_stashes == has_stashes
+            && self.has_changes == has_changes
+        {
+            return;
+        }
         self.can_push = can_push;
         self.can_pull = can_pull;
         self.has_stashes = has_stashes;
@@ -85,22 +92,34 @@ impl Toolbar {
     }
 
     pub fn set_ahead_behind(&mut self, ahead: usize, behind: usize, cx: &mut Context<Self>) {
+        if self.ahead == ahead && self.behind == behind {
+            return;
+        }
         self.ahead = ahead;
         self.behind = behind;
         cx.notify();
     }
 
     pub fn set_fetching(&mut self, fetching: bool, cx: &mut Context<Self>) {
+        if self.is_fetching == fetching {
+            return;
+        }
         self.is_fetching = fetching;
         cx.notify();
     }
 
     pub fn set_pulling(&mut self, pulling: bool, cx: &mut Context<Self>) {
+        if self.is_pulling == pulling {
+            return;
+        }
         self.is_pulling = pulling;
         cx.notify();
     }
 
     pub fn set_pushing(&mut self, pushing: bool, cx: &mut Context<Self>) {
+        if self.is_pushing == pushing {
+            return;
+        }
         self.is_pushing = pushing;
         cx.notify();
     }
