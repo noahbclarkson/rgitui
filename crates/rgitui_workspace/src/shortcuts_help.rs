@@ -125,6 +125,10 @@ impl ShortcutsHelp {
                         "Alt+S / Alt+U",
                         "Stage / unstage current hunk in diff viewer",
                     ),
+                    (
+                        "s / u",
+                        "Stage / unstage hunks under selection (or cursor hunk)",
+                    ),
                     ("x / Delete", "Discard selected sidebar item"),
                 ],
             },

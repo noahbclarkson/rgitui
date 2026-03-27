@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -375,6 +376,38 @@ impl DiffViewer {
                 self.selected_lines = Some(0..row_count);
                 cx.notify();
             }
+            "s" | "S" if !event.keystroke.modifiers.alt && !ctrl => {
+                // s: stage hunks under selection (or cursor hunk if no selection)
+                if !self.is_staged {
+                    let hunks = if let Some(sel) = &self.selected_lines {
+                        self.hunks_under_selection(sel.clone())
+                    } else {
+                        self.current_hunk_index()
+                            .map(|i| vec![i])
+                            .unwrap_or_default()
+                    };
+                    for idx in hunks {
+                        cx.emit(DiffViewerEvent::HunkStageRequested(idx));
+                    }
+                }
+                cx.stop_propagation();
+            }
+            "u" | "U" if !event.keystroke.modifiers.alt && !ctrl => {
+                // u: unstage hunks under selection (or cursor hunk if no selection)
+                if self.is_staged {
+                    let hunks = if let Some(sel) = &self.selected_lines {
+                        self.hunks_under_selection(sel.clone())
+                    } else {
+                        self.current_hunk_index()
+                            .map(|i| vec![i])
+                            .unwrap_or_default()
+                    };
+                    for idx in hunks {
+                        cx.emit(DiffViewerEvent::HunkUnstageRequested(idx));
+                    }
+                }
+                cx.stop_propagation();
+            }
             "s" | "S" if event.keystroke.modifiers.alt && !ctrl => {
                 // Alt+S: stage the current hunk
                 if !self.is_staged {
@@ -430,6 +463,46 @@ impl DiffViewer {
                 })
             }
         }
+    }
+
+    /// Returns all unique hunk indices that have at least one row within `range`.
+    /// Works by tracking the current hunk as we iterate through display rows,
+    /// emitting the hunk index each time we encounter a hunk header within the range.
+    fn hunks_under_selection(&self, range: Range<usize>) -> Vec<usize> {
+        let mut hunks = Vec::new();
+        let mut seen = HashSet::new();
+        let start = range.start;
+        let end = range.end.min(self.row_count());
+
+        match &self.display_mode {
+            DiffDisplayMode::Unified => {
+                let rows = &self.display_rows;
+                let mut current_hunk: Option<usize> = None;
+                for i in start..end {
+                    if let DisplayRow::HunkHeader { hunk_index, .. } = &rows[i] {
+                        current_hunk = Some(*hunk_index);
+                    } else if let Some(h) = current_hunk {
+                        if seen.insert(h) {
+                            hunks.push(h);
+                        }
+                    }
+                }
+            }
+            DiffDisplayMode::SideBySide => {
+                let rows = &self.sbs_rows;
+                let mut current_hunk: Option<usize> = None;
+                for i in start..end {
+                    if let SideBySideRow::HunkHeader { hunk_index, .. } = &rows[i] {
+                        current_hunk = Some(*hunk_index);
+                    } else if let Some(h) = current_hunk {
+                        if seen.insert(h) {
+                            hunks.push(h);
+                        }
+                    }
+                }
+            }
+        }
+        hunks
     }
 
     pub fn toggle_display_mode(&mut self, cx: &mut Context<Self>) {
