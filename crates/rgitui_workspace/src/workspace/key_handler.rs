@@ -1,6 +1,6 @@
-use gpui::{Context, KeyDownEvent, Window};
+use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 
-use crate::CommandId;
+use crate::{CommandId, ToastKind};
 
 use super::{FocusedPanel, Workspace};
 
@@ -293,6 +293,38 @@ impl Workspace {
                 self.execute_command(CommandId::Blame, cx);
                 return;
             }
+        }
+
+        // 'y' to copy SHA of selected commit
+        if !any_overlay_active
+            && key == "y"
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.shift
+            && !modifiers.platform
+        {
+            if let Some(tab) = self.tabs.get(self.active_tab) {
+                let graph = tab.graph.clone();
+                if let Some(commit) = graph.read(cx).selected_commit() {
+                    let sha = commit.oid.to_string();
+                    cx.write_to_clipboard(ClipboardItem::new_string(sha.clone()));
+                    let short = &sha[..7.min(sha.len())];
+                    self.show_toast(format!("Copied SHA: {}", short), ToastKind::Success, cx);
+                }
+            }
+            return;
+        }
+
+        // 'h' to toggle file history view for selected file
+        if !any_overlay_active
+            && key == "h"
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.shift
+            && !modifiers.platform
+        {
+            self.execute_command(CommandId::FileHistory, cx);
+            return;
         }
 
         // Ctrl+[ / Ctrl+] to resize detail panel width
