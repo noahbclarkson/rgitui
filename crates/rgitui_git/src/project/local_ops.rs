@@ -575,6 +575,74 @@ impl GitProject {
         })
     }
 
+    /// Checkout a tag, putting HEAD in detached state.
+    pub fn checkout_tag(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let name = name.to_string();
+        let task_name = name.clone();
+        let repo_path = self.repo_path.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Checkout,
+            format!("Checking out tag '{}'...", name),
+            None,
+            Some(name.clone()),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    ensure_clean_worktree(&repo, "Checkout")?;
+                    let obj = repo.revparse_single(&format!("refs/tags/{}", task_name))?;
+                    let commit = obj.peel_to_commit()?;
+                    let oid = commit.id();
+                    let obj = commit.into_object();
+                    let mut checkout_opts = git2::build::CheckoutBuilder::new();
+                    checkout_opts.safe();
+                    repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
+                    repo.set_head_detached(oid)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Checkout,
+                                format!("Checked out tag '{}'", name),
+                                (
+                                    Some("HEAD is now detached at the selected tag.".into()),
+                                    None,
+                                    Some(name.clone()),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Checkout,
+                                format!("Checkout of tag '{}' failed", name),
+                                e.to_string(),
+                                (None, Some(name.clone()), true),
+                                cx,
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Create a new branch from HEAD.
     pub fn create_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         self.create_branch_at(name, None, cx)

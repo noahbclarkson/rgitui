@@ -886,6 +886,12 @@ pub(super) fn subscribe_sidebar(
                     ro.toggle_visible(cx);
                 });
             }
+            SidebarEvent::TagCheckout(name) => {
+                let name = name.clone();
+                project.update(cx, |proj, cx| {
+                    proj.checkout_tag(&name, cx).detach();
+                });
+            }
             SidebarEvent::TagDelete(name) => {
                 let name = name.clone();
                 this.dialogs.confirm_dialog.update(cx, |cd, cx| {

@@ -31,6 +31,7 @@ pub enum SidebarEvent {
     RemotePush(String),
     RemoteRemove(String),
     TagSelected(String),
+    TagCheckout(String),
     TagDelete(String),
     StashSelected(usize),
     StashApply(usize),
@@ -1848,6 +1849,7 @@ impl Render for Sidebar {
                 let name: SharedString = tag.name.clone().into();
                 let tag_select = name.clone();
                 let tag_delete = name.clone();
+                let tag_checkout = name.clone();
                 content = content.child(
                     div()
                         .id(ElementId::NamedInteger("tag-item".into(), i as u64))
@@ -1886,6 +1888,20 @@ impl Render for Sidebar {
                                 .color(Color::Warning),
                         )
                         .child(div().flex_1())
+                        .child(
+                            IconButton::new(
+                                ElementId::NamedInteger("checkout-tag".into(), i as u64),
+                                IconName::ArrowDown,
+                            )
+                            .size(ButtonSize::Compact)
+                            .color(Color::Muted)
+                            .tooltip("Checkout tag")
+                            .on_click(cx.listener(
+                                move |_this, _: &ClickEvent, _, cx| {
+                                    cx.emit(SidebarEvent::TagCheckout(tag_checkout.to_string()));
+                                },
+                            )),
+                        )
                         .child(
                             IconButton::new(
                                 ElementId::NamedInteger("delete-tag".into(), i as u64),
