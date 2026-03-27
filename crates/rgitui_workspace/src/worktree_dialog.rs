@@ -132,7 +132,7 @@ impl WorktreeDialog {
         self.visible
     }
 
-    fn validate_name(name: &str) -> Option<String> {
+    pub(crate) fn validate_name(name: &str) -> Option<String> {
         if name.is_empty() {
             return Some("Worktree name cannot be empty".to_string());
         }
@@ -148,7 +148,7 @@ impl WorktreeDialog {
         None
     }
 
-    fn validate_path(path: &str) -> Option<String> {
+    pub(crate) fn validate_path(path: &str) -> Option<String> {
         if path.is_empty() {
             return Some("Directory path cannot be empty".to_string());
         }
@@ -381,5 +381,70 @@ impl Render for WorktreeDialog {
                 )
             })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- validate_name tests ---
+
+    #[test]
+    fn validate_name_empty() {
+        let err = WorktreeDialog::validate_name("").unwrap();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn validate_name_with_space() {
+        let err = WorktreeDialog::validate_name("feat x").unwrap();
+        assert!(err.contains("spaces"));
+    }
+
+    #[test]
+    fn validate_name_starts_with_dot() {
+        let err = WorktreeDialog::validate_name(".hidden").unwrap();
+        assert!(err.contains("'.'") || err.contains("cannot start"));
+    }
+
+    #[test]
+    fn validate_name_starts_with_slash() {
+        let err = WorktreeDialog::validate_name("/abs").unwrap();
+        assert!(err.contains("'/'") || err.contains("cannot start"));
+    }
+
+    #[test]
+    fn validate_name_consecutive_slashes() {
+        let err = WorktreeDialog::validate_name("feat//x").unwrap();
+        assert!(err.contains("consecutive slashes"));
+    }
+
+    #[test]
+    fn validate_name_valid_simple() {
+        assert!(WorktreeDialog::validate_name("feature-x").is_none());
+    }
+
+    #[test]
+    fn validate_name_valid_underscore() {
+        assert!(WorktreeDialog::validate_name("feature_x").is_none());
+    }
+
+    #[test]
+    fn validate_name_valid_with_numbers() {
+        assert!(WorktreeDialog::validate_name("feature-1").is_none());
+    }
+
+    // --- validate_path tests ---
+
+    #[test]
+    fn validate_path_empty() {
+        let err = WorktreeDialog::validate_path("").unwrap();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn validate_path_valid() {
+        assert!(WorktreeDialog::validate_path("/home/user/worktree").is_none());
     }
 }

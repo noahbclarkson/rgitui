@@ -8,6 +8,7 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use rgitui_theme::{ActiveTheme, StyledExt};
 use rgitui_ui::{Label, LabelSize};
 
+#[derive(Debug)]
 enum MarkdownBlock {
     Heading {
         level: u8,
@@ -30,7 +31,7 @@ enum MarkdownBlock {
     HorizontalRule,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum InlineSpan {
     Text(String),
     Bold(String),
@@ -466,4 +467,258 @@ pub fn render_markdown(text: &str, window: &Window, cx: &gpui::App) -> gpui::Any
         container = container.child(render_block(block, window, cx));
     }
     container.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_markdown tests ---
+
+    #[test]
+    fn parse_markdown_empty_string() {
+        let blocks = parse_markdown("");
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn parse_markdown_plain_text() {
+        let blocks = parse_markdown("Hello world");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::Paragraph { spans } = &blocks[0] else {
+            panic!("expected Paragraph, got {:?}", blocks[0]);
+        };
+        assert_eq!(spans.len(), 1);
+        assert!(matches!(&spans[0], InlineSpan::Text(t) if t == "Hello world"));
+    }
+
+    #[test]
+    fn parse_markdown_heading_level_1() {
+        let blocks = parse_markdown("# Hello");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::Heading { level, spans } = &blocks[0] else {
+            panic!("expected Heading");
+        };
+        assert_eq!(*level, 1);
+        assert!(matches!(&spans[0], InlineSpan::Text(t) if t == "Hello"));
+    }
+
+    #[test]
+    fn parse_markdown_heading_level_2() {
+        let blocks = parse_markdown("## Hello");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::Heading { level, .. } = &blocks[0] else {
+            panic!("expected Heading");
+        };
+        assert_eq!(*level, 2);
+    }
+
+    #[test]
+    fn parse_markdown_heading_level_6() {
+        let blocks = parse_markdown("###### H6");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::Heading { level, .. } = &blocks[0] else {
+            panic!("expected Heading");
+        };
+        assert_eq!(*level, 6);
+    }
+
+    #[test]
+    fn parse_markdown_code_block() {
+        let blocks = parse_markdown("```\nlet x = 1;\n```");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::CodeBlock { code } = &blocks[0] else {
+            panic!("expected CodeBlock");
+        };
+        assert_eq!(code, "let x = 1;");
+    }
+
+    #[test]
+    fn parse_markdown_code_block_trims_trailing_whitespace() {
+        let blocks = parse_markdown("```\nlet x = 1;   \n```");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::CodeBlock { code } = &blocks[0] else {
+            panic!("expected CodeBlock");
+        };
+        assert_eq!(code, "let x = 1;");
+    }
+
+    #[test]
+    fn parse_markdown_blockquote() {
+        let blocks = parse_markdown("> Hello");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::BlockQuote { blocks: inner } = &blocks[0] else {
+            panic!("expected BlockQuote");
+        };
+        assert_eq!(inner.len(), 1);
+        assert!(matches!(&inner[0], MarkdownBlock::Paragraph { .. }));
+    }
+
+    #[test]
+    fn parse_markdown_unordered_list() {
+        let blocks = parse_markdown("- item1\n- item2");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::List { ordered, items, .. } = &blocks[0] else {
+            panic!("expected List");
+        };
+        assert!(!*ordered);
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn parse_markdown_ordered_list() {
+        let blocks = parse_markdown("1. first\n2. second");
+        assert_eq!(blocks.len(), 1);
+        let MarkdownBlock::List { ordered, .. } = &blocks[0] else {
+            panic!("expected List");
+        };
+        assert!(*ordered);
+    }
+
+    #[test]
+    fn parse_markdown_horizontal_rule() {
+        let blocks = parse_markdown("---\ntext");
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], MarkdownBlock::HorizontalRule));
+    }
+
+    #[test]
+    fn parse_markdown_bold() {
+        let blocks = parse_markdown("**bold**");
+        let MarkdownBlock::Paragraph { spans } = &blocks[0] else {
+            panic!("expected Paragraph");
+        };
+        assert!(matches!(&spans[0], InlineSpan::Bold(t) if t == "bold"));
+    }
+
+    #[test]
+    fn parse_markdown_italic() {
+        let blocks = parse_markdown("*italic*");
+        let MarkdownBlock::Paragraph { spans } = &blocks[0] else {
+            panic!("expected Paragraph");
+        };
+        assert!(matches!(&spans[0], InlineSpan::Italic(t) if t == "italic"));
+    }
+
+    #[test]
+    fn parse_markdown_bold_italic() {
+        let blocks = parse_markdown("***bold italic***");
+        let MarkdownBlock::Paragraph { spans } = &blocks[0] else {
+            panic!("expected Paragraph");
+        };
+        assert!(matches!(&spans[0], InlineSpan::BoldItalic(t) if t == "bold italic"));
+    }
+
+    #[test]
+    fn parse_markdown_inline_code() {
+        let blocks = parse_markdown("`code`");
+        let MarkdownBlock::Paragraph { spans } = &blocks[0] else {
+            panic!("expected Paragraph");
+        };
+        assert!(matches!(&spans[0], InlineSpan::Code(t) if t == "code"));
+    }
+
+    #[test]
+    fn parse_markdown_link() {
+        let blocks = parse_markdown("[link text](http://example.com)");
+        let MarkdownBlock::Paragraph { spans } = &blocks[0] else {
+            panic!("expected Paragraph");
+        };
+        assert!(matches!(&spans[0], InlineSpan::Link { text } if text == "link text"));
+    }
+
+    #[test]
+    fn parse_markdown_strikethrough() {
+        // Strikethrough events are not explicitly handled in the parser,
+        // so ~~strike~~ becomes plain text "strike" (markers stripped by pulldown_cmark
+        // when ENABLE_STRIKETHROUGH is set but no handler exists).
+        let blocks = parse_markdown("~~strike~~");
+        let MarkdownBlock::Paragraph { spans } = &blocks[0] else {
+            panic!("expected Paragraph");
+        };
+        // strikethrough is not handled, falls through to default; text is emitted as-is
+        assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn parse_markdown_multiline_paragraph() {
+        let blocks = parse_markdown("Line one\nLine two");
+        // pulldown_cmark emits SoftBreak between lines in the same paragraph
+        let MarkdownBlock::Paragraph { spans } = &blocks[0] else {
+            panic!("expected Paragraph");
+        };
+        // SoftBreak becomes a space
+        assert!(spans.len() >= 1);
+    }
+
+    #[test]
+    fn parse_markdown_table() {
+        let blocks = parse_markdown("| a | b |\n|---|---|\n| 1 | 2 |");
+        // Tables are supported via ENABLE_TABLES
+        assert!(!blocks.is_empty());
+    }
+
+    // --- spans_to_plain_text tests ---
+
+    #[test]
+    fn spans_to_plain_text_text_only() {
+        let spans = vec![InlineSpan::Text("hello".to_string())];
+        let result: SharedString = spans_to_plain_text(&spans);
+        assert_eq!(result.to_string(), "hello");
+    }
+
+    #[test]
+    fn spans_to_plain_text_bold() {
+        let spans = vec![InlineSpan::Bold("bold".to_string())];
+        let result: SharedString = spans_to_plain_text(&spans);
+        assert_eq!(result.to_string(), "bold");
+    }
+
+    #[test]
+    fn spans_to_plain_text_italic() {
+        let spans = vec![InlineSpan::Italic("italic".to_string())];
+        let result: SharedString = spans_to_plain_text(&spans);
+        assert_eq!(result.to_string(), "italic");
+    }
+
+    #[test]
+    fn spans_to_plain_text_bold_italic() {
+        let spans = vec![InlineSpan::BoldItalic("bi".to_string())];
+        let result: SharedString = spans_to_plain_text(&spans);
+        assert_eq!(result.to_string(), "bi");
+    }
+
+    #[test]
+    fn spans_to_plain_text_code() {
+        let spans = vec![InlineSpan::Code("code".to_string())];
+        let result: SharedString = spans_to_plain_text(&spans);
+        assert_eq!(result.to_string(), "code");
+    }
+
+    #[test]
+    fn spans_to_plain_text_link() {
+        let spans = vec![InlineSpan::Link {
+            text: "link text".to_string(),
+        }];
+        let result: SharedString = spans_to_plain_text(&spans);
+        assert_eq!(result.to_string(), "link text");
+    }
+
+    #[test]
+    fn spans_to_plain_text_multiple_spans() {
+        let spans = vec![
+            InlineSpan::Text("hello".to_string()),
+            InlineSpan::Bold(" bold".to_string()),
+            InlineSpan::Italic(" italic".to_string()),
+        ];
+        let result: SharedString = spans_to_plain_text(&spans);
+        assert_eq!(result.to_string(), "hello bold italic");
+    }
+
+    #[test]
+    fn spans_to_plain_text_empty() {
+        let spans: Vec<InlineSpan> = vec![];
+        let result: SharedString = spans_to_plain_text(&spans);
+        assert_eq!(result.to_string(), "");
+    }
 }
