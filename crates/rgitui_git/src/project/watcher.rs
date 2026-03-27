@@ -12,9 +12,16 @@ impl GitProject {
     pub(super) fn start_watcher(&mut self, cx: &mut Context<Self>) {
         let repo_path = self.repo_path.clone();
         let dirty = Arc::new(AtomicBool::new(false));
-        let dirty_flag = dirty.clone();
 
-        let watcher =
+        // Track .git/index mtime to detect git index-only changes (e.g. `git add`,
+        // `git reset HEAD`) which do not produce working-directory filesystem events.
+        let index_path = repo_path.join(".git/index");
+        let last_index_mtime = Arc::new(std::sync::Mutex::new(
+            index_path.metadata().ok().and_then(|m| m.modified().ok()),
+        ));
+
+        let watcher = {
+            let dirty_flag = dirty.clone();
             notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
                     let dominated_by_git = event
@@ -33,7 +40,8 @@ impl GitProject {
                         _ => {}
                     }
                 }
-            });
+            })
+        };
 
         if let Ok(mut watcher) = watcher {
             if let Err(e) = watcher.watch(&repo_path, RecursiveMode::Recursive) {
@@ -45,8 +53,33 @@ impl GitProject {
             self._watcher = Some(watcher);
 
             let watcher_repo_path = repo_path.clone();
+            let dirty_flag = dirty.clone();
+            let index_path = index_path.clone();
+            let index_mtime = last_index_mtime.clone();
             cx.spawn(async move |weak, cx: &mut AsyncApp| loop {
                 smol::Timer::after(Duration::from_millis(300)).await;
+
+                // Detect git index-only changes that don't produce working-directory events.
+                let index_changed = index_mtime
+                    .lock()
+                    .ok()
+                    .and_then(|guard| {
+                        let current = index_path.metadata().ok()?.modified().ok();
+                        let changed = current.is_some() && current != *guard;
+                        if changed {
+                            Some(current)
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten();
+
+                if let Some(new_mtime) = index_changed {
+                    if let Ok(mut guard) = index_mtime.lock() {
+                        *guard = Some(new_mtime);
+                    }
+                    dirty_flag.store(true, Ordering::Relaxed);
+                }
 
                 if dirty.swap(false, Ordering::Relaxed) {
                     smol::Timer::after(Duration::from_millis(200)).await;

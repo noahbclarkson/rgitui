@@ -200,12 +200,18 @@ impl GraphView {
         unstaged_breakdown: HashMap<FileChangeKind, usize>,
         cx: &mut Context<Self>,
     ) {
+        let changed = self.staged_count != staged
+            || self.unstaged_count != unstaged
+            || self.staged_breakdown != staged_breakdown
+            || self.unstaged_breakdown != unstaged_breakdown;
         self.staged_count = staged;
         self.unstaged_count = unstaged;
         self.cached_merge_breakdown = merge_breakdowns(&staged_breakdown, &unstaged_breakdown);
         self.staged_breakdown = staged_breakdown;
         self.unstaged_breakdown = unstaged_breakdown;
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
     }
 
     /// Whether we show the virtual working tree row (only when there are uncommitted changes).
@@ -1425,10 +1431,24 @@ impl Render for GraphView {
             .bg(panel_bg)
             .on_mouse_down(MouseButton::Left, {
                 let view_dismiss = cx.weak_entity();
-                move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                move |event: &MouseDownEvent, _: &mut Window, cx: &mut App| {
                     view_dismiss
                         .update(cx, |this: &mut GraphView, cx| {
-                            this.dismiss_context_menu(cx);
+                            // Only dismiss if click is outside the context menu bounds.
+                            // Menu dimensions: 200px wide, 220px tall, anchored at clamped_x/clamped_y.
+                            let click_inside_menu = this.context_menu.as_ref().is_some_and(|cm| {
+                                let menu_w: Pixels = px(200.);
+                                let menu_h: Pixels = px(220.);
+                                let x = event.position.x;
+                                let y = event.position.y;
+                                x >= cm.position.x
+                                    && x < cm.position.x + menu_w
+                                    && y >= cm.position.y
+                                    && y < cm.position.y + menu_h
+                            });
+                            if !click_inside_menu {
+                                this.dismiss_context_menu(cx);
+                            }
                             if this.show_settings_popover {
                                 this.show_settings_popover = false;
                                 cx.notify();
