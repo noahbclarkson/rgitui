@@ -460,6 +460,7 @@ pub(super) fn subscribe_project(
                 let tags = proj.tags().to_vec();
                 let remotes = proj.remotes().to_vec();
                 let stashes = proj.stashes().to_vec();
+                let worktrees = proj.worktrees().to_vec();
                 let has_stashes = !stashes.is_empty();
                 let has_changes = proj.has_changes();
                 let staged_count = wt_status.staged.len();
@@ -497,6 +498,7 @@ pub(super) fn subscribe_project(
                     s.update_tags(tags, cx);
                     s.update_remotes(remotes, cx);
                     s.update_stashes(stashes, cx);
+                    s.update_worktrees(worktrees, cx);
                     s.update_status(wt_status.staged.clone(), wt_status.unstaged.clone(), cx);
                 });
 
@@ -761,6 +763,18 @@ pub(super) fn subscribe_sidebar(
                     }
                 } else {
                     log::warn!("Could not resolve tag '{}' to a commit", name);
+                }
+            }
+            SidebarEvent::WorktreeSelected(index) => {
+                let worktrees = project.read(cx).worktrees().to_vec();
+                if let Some(wt) = worktrees.get(*index) {
+                    if let Some(oid) = wt.head_oid {
+                        if let Some(tab) = this.tabs.get(this.active_tab) {
+                            tab.graph.update(cx, |g, cx| {
+                                g.scroll_to_commit(oid, cx);
+                            });
+                        }
+                    }
                 }
             }
             SidebarEvent::BranchSelected(name) => {

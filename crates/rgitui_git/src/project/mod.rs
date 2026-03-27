@@ -184,6 +184,7 @@ pub struct GitProject {
     tags: Vec<TagInfo>,
     remotes: Vec<RemoteInfo>,
     stashes: Vec<StashEntry>,
+    worktrees: Vec<WorktreeInfo>,
     status: Arc<WorkingTreeStatus>,
     recent_commits: Arc<Vec<CommitInfo>>,
     /// Whether the repository has more commits beyond the loaded set.
@@ -212,6 +213,7 @@ impl GitProject {
             tags: Vec::new(),
             remotes: Vec::new(),
             stashes: Vec::new(),
+            worktrees: Vec::new(),
             status: Arc::new(WorkingTreeStatus::default()),
             recent_commits: Arc::new(Vec::new()),
             has_more_commits: false,
@@ -237,6 +239,7 @@ impl GitProject {
             tags: Vec::new(),
             remotes: Vec::new(),
             stashes: Vec::new(),
+            worktrees: Vec::new(),
             status: Arc::new(WorkingTreeStatus::default()),
             recent_commits: Arc::new(Vec::new()),
             has_more_commits: false,
@@ -413,6 +416,10 @@ impl GitProject {
         &self.stashes
     }
 
+    pub fn worktrees(&self) -> &[WorktreeInfo] {
+        &self.worktrees
+    }
+
     pub fn status(&self) -> &WorkingTreeStatus {
         &self.status
     }
@@ -464,6 +471,7 @@ impl GitProject {
         self.tags = data.tags;
         self.remotes = data.remotes;
         self.stashes = data.stashes;
+        self.worktrees = data.worktrees;
         self.status = Arc::new(data.status);
         self.recent_commits = Arc::new(data.recent_commits);
         self.has_more_commits = data.has_more_commits;

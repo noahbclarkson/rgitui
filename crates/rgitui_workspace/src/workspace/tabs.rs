@@ -88,6 +88,7 @@ impl Workspace {
             let tags = proj.tags().to_vec();
             let remotes = proj.remotes().to_vec();
             let stashes = proj.stashes().to_vec();
+            let worktrees = proj.worktrees().to_vec();
             let staged_count = init_status.staged.len();
             let mut seen = std::collections::HashSet::new();
             let authors: Vec<(String, String)> = commits
@@ -117,6 +118,7 @@ impl Workspace {
                 s.update_tags(tags, cx);
                 s.update_remotes(remotes, cx);
                 s.update_stashes(stashes, cx);
+                s.update_worktrees(worktrees, cx);
                 s.update_status(init_status.staged.clone(), init_status.unstaged.clone(), cx);
             });
 

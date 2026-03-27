@@ -7,7 +7,9 @@ use gpui::{
     div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, KeyDownEvent,
     Render, SharedString, Window,
 };
-use rgitui_git::{BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo};
+use rgitui_git::{
+    BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
+};
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
@@ -33,6 +35,7 @@ pub enum SidebarEvent {
     StashSelected(usize),
     StashApply(usize),
     StashDrop(usize),
+    WorktreeSelected(usize),
     FileSelected { path: String, staged: bool },
     StageFile(String),
     UnstageFile(String),
@@ -50,6 +53,7 @@ enum SidebarSection {
     RemoteBranches,
     Tags,
     Stashes,
+    Worktrees,
     StagedChanges,
     UnstagedChanges,
 }
@@ -69,6 +73,7 @@ enum SidebarItem {
     RemoteBranch(usize), // index into remote branches
     Tag(usize),          // index into tags
     Stash(usize),        // index into stashes
+    Worktree(usize),     // index into worktrees
     StagedFile(usize),   // index into staged files
     UnstagedFile(usize), // index into unstaged files
 }
@@ -86,6 +91,7 @@ pub struct Sidebar {
     tags: Vec<TagInfo>,
     remotes: Vec<RemoteInfo>,
     stashes: Vec<StashEntry>,
+    worktrees: Vec<WorktreeInfo>,
     staged: Vec<FileStatus>,
     unstaged: Vec<FileStatus>,
     selected_file: Option<(String, bool)>,
@@ -93,6 +99,8 @@ pub struct Sidebar {
     selected_stash: Option<usize>,
     /// Currently selected tag name (persists after click for visual highlight).
     selected_tag: Option<String>,
+    /// Currently selected worktree index (persists after click for visual highlight).
+    selected_worktree: Option<usize>,
     /// Tracks which directory groups are collapsed in the file change sections.
     /// Key is "staged:<dir>" or "unstaged:<dir>".
     collapsed_dirs: HashSet<String>,
@@ -136,6 +144,7 @@ impl Sidebar {
             SidebarItem::SectionHeader(SidebarSection::RemoteBranches),
             SidebarItem::SectionHeader(SidebarSection::Tags),
             SidebarItem::SectionHeader(SidebarSection::Stashes),
+            SidebarItem::SectionHeader(SidebarSection::Worktrees),
             SidebarItem::SectionHeader(SidebarSection::StagedChanges),
             SidebarItem::SectionHeader(SidebarSection::UnstagedChanges),
         ];
@@ -163,11 +172,13 @@ impl Sidebar {
             tags: Vec::new(),
             remotes: Vec::new(),
             stashes: Vec::new(),
+            worktrees: Vec::new(),
             staged: Vec::new(),
             unstaged: Vec::new(),
             selected_file: None,
             selected_stash: None,
             selected_tag: None,
+            selected_worktree: None,
             collapsed_dirs: HashSet::new(),
             repo_name: String::new(),
             focus_handle: cx.focus_handle(),
@@ -239,6 +250,13 @@ impl Sidebar {
             }
         }
 
+        items.push(SidebarItem::SectionHeader(SidebarSection::Worktrees));
+        if is_expanded(SidebarSection::Worktrees, &self.expanded_sections) {
+            for i in 0..self.worktrees.len() {
+                items.push(SidebarItem::Worktree(i));
+            }
+        }
+
         items.push(SidebarItem::SectionHeader(SidebarSection::StagedChanges));
         if is_expanded(SidebarSection::StagedChanges, &self.expanded_sections) {
             for i in 0..self.staged.len() {
@@ -291,6 +309,9 @@ impl Sidebar {
             }
             SidebarItem::Stash(i) => {
                 cx.emit(SidebarEvent::StashSelected(i));
+            }
+            SidebarItem::Worktree(i) => {
+                cx.emit(SidebarEvent::WorktreeSelected(i));
             }
             SidebarItem::StagedFile(i) => {
                 if let Some(file) = self.staged.get(i) {
@@ -492,6 +513,13 @@ impl Sidebar {
     pub fn update_stashes(&mut self, stashes: Vec<StashEntry>, cx: &mut Context<Self>) {
         self.stashes = stashes;
         self.selected_stash = None;
+        self.rebuild_nav_items();
+        cx.notify();
+    }
+
+    pub fn update_worktrees(&mut self, worktrees: Vec<WorktreeInfo>, cx: &mut Context<Self>) {
+        self.worktrees = worktrees;
+        self.selected_worktree = None;
         self.rebuild_nav_items();
         cx.notify();
     }
@@ -1994,6 +2022,161 @@ impl Render for Sidebar {
                                         },
                                     )),
                                 ),
+                        ),
+                );
+            }
+        }
+
+        // -- Worktrees --
+        let worktrees_expanded = self.is_expanded(SidebarSection::Worktrees);
+        let icon = if worktrees_expanded {
+            IconName::ChevronDown
+        } else {
+            IconName::ChevronRight
+        };
+
+        let kb_active = keyboard_index == Some(nav_idx);
+        nav_idx += 1;
+        content = content.child(
+            div()
+                .id("section-worktrees")
+                .h_flex()
+                .w_full()
+                .h(px(item_h))
+                .px(px(8.))
+                .gap(px(4.))
+                .items_center()
+                .bg(colors.toolbar_background)
+                .border_b_1()
+                .border_color(colors.border_variant)
+                .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
+                .hover(|s| s.bg(colors.ghost_element_hover))
+                .active(|s| s.bg(colors.ghost_element_active))
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.toggle_section(SidebarSection::Worktrees, cx);
+                }))
+                .child(
+                    rgitui_ui::Icon::new(icon)
+                        .size(rgitui_ui::IconSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(
+                    rgitui_ui::Icon::new(IconName::GitBranch)
+                        .size(rgitui_ui::IconSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(
+                    Label::new("Worktrees")
+                        .size(LabelSize::XSmall)
+                        .weight(gpui::FontWeight::SEMIBOLD)
+                        .color(Color::Muted),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .h_flex()
+                        .h(px(15.))
+                        .min_w(px(18.))
+                        .px(px(5.))
+                        .rounded(px(3.))
+                        .bg(colors.ghost_element_hover)
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            Label::new(SharedString::from(format!("{}", self.worktrees.len())))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
+                ),
+        );
+
+        if worktrees_expanded {
+            if self.worktrees.is_empty() {
+                content = content.child(
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(16.))
+                        .items_center()
+                        .child(
+                            Label::new("No worktrees")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Placeholder),
+                        ),
+                );
+            }
+            for (i, worktree) in self.worktrees.iter().enumerate() {
+                let kb_active = keyboard_index == Some(nav_idx);
+                nav_idx += 1;
+                let is_selected = self.selected_worktree == Some(i);
+                let worktree_index = i;
+                let name: SharedString = worktree.name.clone().into();
+                let path: SharedString = worktree.path.display().to_string().into();
+                content = content.child(
+                    div()
+                        .id(ElementId::NamedInteger("worktree-item".into(), i as u64))
+                        .h_flex()
+                        .w_full()
+                        .h(px(item_h))
+                        .px_2()
+                        .pl(px(16.))
+                        .gap_1()
+                        .items_center()
+                        .overflow_hidden()
+                        .when(is_selected, |el| {
+                            el.bg(colors.ghost_element_selected)
+                                .border_l_2()
+                                .border_color(kb_accent)
+                        })
+                        .when(kb_active && !is_selected, |el| {
+                            el.bg(colors.ghost_element_hover)
+                                .border_l_2()
+                                .border_color(kb_accent)
+                        })
+                        .hover(|s| s.bg(colors.ghost_element_hover))
+                        .active(|s| s.bg(colors.ghost_element_active))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.selected_worktree = Some(worktree_index);
+                            cx.emit(SidebarEvent::WorktreeSelected(worktree_index));
+                        }))
+                        .child(
+                            rgitui_ui::Icon::new(IconName::GitBranch)
+                                .size(rgitui_ui::IconSize::XSmall)
+                                .color(if worktree.is_current {
+                                    Color::Info
+                                } else {
+                                    Color::Muted
+                                }),
+                        )
+                        .child(Label::new(name.clone()).size(LabelSize::XSmall).color(
+                            if worktree.is_current {
+                                Color::Info
+                            } else {
+                                Color::Default
+                            },
+                        ))
+                        .when(worktree.is_current, |el| {
+                            el.child(
+                                Label::new("(current)")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            )
+                        })
+                        .when(worktree.is_locked, |el| {
+                            el.child(
+                                rgitui_ui::Icon::new(IconName::Lock)
+                                    .size(rgitui_ui::IconSize::XSmall)
+                                    .color(Color::Warning),
+                            )
+                        })
+                        .child(div().flex_1())
+                        .child(
+                            Label::new(path)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted)
+                                .truncate(),
                         ),
                 );
             }
