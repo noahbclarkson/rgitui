@@ -63,6 +63,9 @@ pub struct GraphView {
     search_editor: Entity<rgitui_ui::TextInput>,
     graph_focus: FocusHandle,
     all_commits_loaded: bool,
+    /// OID to scroll to once the commit list is refreshed and the OID is present.
+    /// Used when scroll_to_commit is called for a commit not yet in the loaded list.
+    pending_scroll_oid: Option<git2::Oid>,
     cached_graph_hash: u64,
     search_debounce_task: Option<gpui::Task<()>>,
     staged_count: usize,
@@ -117,6 +120,7 @@ impl GraphView {
             search_editor,
             graph_focus: cx.focus_handle(),
             all_commits_loaded: false,
+            pending_scroll_oid: None,
             cached_graph_hash: 0,
             search_debounce_task: None,
             staged_count: 0,
@@ -183,6 +187,22 @@ impl GraphView {
         if self.show_search && !self.search_editor.read(cx).is_empty() {
             self.update_search_filter(cx);
         }
+
+        // Check if a pending scroll target has just been loaded.
+        if let Some(pending_oid) = self.pending_scroll_oid {
+            if let Some(index) = self.commits.iter().position(|c| c.oid == pending_oid) {
+                let list_index = index + offset;
+                self.select_list_index(list_index, cx);
+                self.scroll_handle
+                    .scroll_to_item(list_index, ScrollStrategy::Top);
+            }
+            // Keep pending_scroll_oid set if not found yet — more loads may be needed.
+            // Only clear it when all commits are loaded and still not found.
+            if self.all_commits_loaded {
+                self.pending_scroll_oid = None;
+            }
+        }
+
         cx.notify();
     }
 
@@ -280,6 +300,10 @@ impl GraphView {
             self.select_list_index(list_index, cx);
             self.scroll_handle
                 .scroll_to_item(list_index, ScrollStrategy::Top);
+        } else if !self.all_commits_loaded {
+            // Commit not in loaded list — set as pending and trigger loading.
+            self.pending_scroll_oid = Some(oid);
+            cx.emit(GraphViewEvent::LoadMoreCommits);
         }
     }
 
