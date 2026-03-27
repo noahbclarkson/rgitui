@@ -25,6 +25,7 @@ pub enum GraphViewEvent {
     CreateBranchAtCommit(git2::Oid),
     CheckoutCommit(git2::Oid),
     CopyCommitSha(String),
+    CopyCommitMessage(String),
     CreateTagAtCommit(git2::Oid),
     ResetToCommit(git2::Oid, String),
     /// Request to load more commits beyond the current set.
@@ -1632,6 +1633,7 @@ impl Render for GraphView {
             if let Some(commit) = self.commits.get(menu_state.commit_index) {
                 let oid = commit.oid;
                 let sha = format!("{}", oid);
+                let msg_clone = commit.message.clone();
                 let pos = menu_state.position;
                 let weak = cx.weak_entity();
                 let sha_clone = sha.clone();
@@ -1651,12 +1653,13 @@ impl Render for GraphView {
                     ("Mark as bad (bisect)", IconName::X),
                     ("Reset to here", IconName::Trash),
                     ("Copy SHA", IconName::Copy),
+                    ("Copy commit message", IconName::Edit),
                 ];
 
                 // Clamp menu position to stay within window bounds.
                 // Approximate menu dimensions: 200px wide, 220px tall.
                 let menu_w = px(200.);
-                let menu_h = px(220.);
+                let menu_h = px(260.);
                 let win_bounds = window.bounds();
                 let max_x = win_bounds.size.width - menu_w;
                 let max_y = win_bounds.size.height - menu_h;
@@ -1695,8 +1698,8 @@ impl Render for GraphView {
                     let label: SharedString = (*label_text).into();
                     let icon = *icon_name;
 
-                    // Add separator before bisect options, before destructive "Reset", and before "Copy SHA"
-                    if idx == 5 || idx == 7 || idx == 8 {
+                    // Add separator before bisect options, before destructive "Reset", and before clipboard ops
+                    if idx == 5 || idx == 7 || idx == 9 {
                         menu = menu.child(
                             div()
                                 .w_full()
@@ -1837,6 +1840,21 @@ impl Render for GraphView {
                                     w.update(cx, |this: &mut GraphView, cx| {
                                         this.context_menu = None;
                                         cx.emit(GraphViewEvent::CopyCommitSha(sha_val));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        9 => {
+                            let w = weak.clone();
+                            let msg_for_click = msg_clone.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    let msg_val = msg_for_click.clone();
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::CopyCommitMessage(msg_val));
                                         cx.notify();
                                     })
                                     .ok();

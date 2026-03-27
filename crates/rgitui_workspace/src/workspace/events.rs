@@ -1037,6 +1037,21 @@ pub(super) fn subscribe_graph(
                         cx,
                     );
                 }
+                GraphViewEvent::CopyCommitMessage(msg) => {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(msg.clone()));
+                    // Show first line of message as confirmation
+                    let first_line = msg.lines().next().unwrap_or(msg);
+                    let preview = if first_line.len() > 40 {
+                        format!("{}...", &first_line[..40])
+                    } else {
+                        first_line.to_string()
+                    };
+                    this.show_toast(
+                        format!("Copied: {}", preview),
+                        ToastKind::Success,
+                        cx,
+                    );
+                }
                 GraphViewEvent::CreateTagAtCommit(oid) => {
                     let oid = *oid;
                     this.dialogs.tag_dialog.update(cx, |td, cx| {
