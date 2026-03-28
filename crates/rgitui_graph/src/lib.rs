@@ -1642,14 +1642,24 @@ impl Render for GraphView {
                             .ok();
                     })
                     .child(
-                        Icon::new(IconName::ChevronDown)
-                            .size(IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        Label::new("Load more commits")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(12.))
+                            .py(px(6.))
+                            .rounded(px(6.))
+                            .bg(colors.ghost_element_hover)
+                            .child(
+                                Icon::new(IconName::ChevronDown)
+                                    .size(IconSize::XSmall)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new("Load more commits")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
                     ),
             );
         }

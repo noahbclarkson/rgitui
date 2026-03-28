@@ -49,6 +49,46 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         return Vec::new();
     }
 
+    // Build a lookup: OID -> commit index for fast ancestor checks
+    let oid_to_idx: std::collections::HashMap<git2::Oid, usize> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.oid, i))
+        .collect();
+
+    /// Check if `ancestor` is an ancestor of `descendant` using only the commit list.
+    /// The commit list is in topological order (descendants before ancestors),
+    /// so we walk `descendant`'s parent chain and check if `ancestor` appears.
+    fn is_ancestor_of(
+        ancestor: git2::Oid,
+        descendant: git2::Oid,
+        commits: &[CommitInfo],
+        oid_to_idx: &std::collections::HashMap<git2::Oid, usize>,
+    ) -> bool {
+        if ancestor == descendant {
+            return true;
+        }
+        let mut queue = vec![descendant];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(current) = queue.pop() {
+            if visited.insert(current) {
+                if current == ancestor {
+                    return true;
+                }
+                if let Some(&idx) = oid_to_idx.get(&current) {
+                    for &parent_oid in &commits[idx].parent_oids {
+                        if parent_oid != ancestor {
+                            queue.push(parent_oid);
+                        } else {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     // Detect HEAD oid
     let head_oid = commits.first().and_then(|c| {
         if c.refs.iter().any(|r| matches!(r, RefLabel::Head)) {
@@ -70,10 +110,21 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         let is_head = head_oid == Some(oid);
 
         // Find which lane this commit sits in
+        // 1. Exact OID match: the lane already has this commit's OID as expected
+        // 2. Ancestor match: some lane's expected commit is a descendant of the current
+        //    commit (descendants are processed before ancestors in topological order)
         let (node_lane, has_incoming) = if let Some(pos) = lanes
             .iter()
             .position(|s| matches!(s, Some((o, _)) if *o == oid))
         {
+            (pos, true)
+        } else if let Some(pos) = lanes.iter().position(|s| {
+            matches!(s, Some((expected_oid, _)) if is_ancestor_of(oid, *expected_oid, commits, &oid_to_idx))
+        }) {
+            // Current commit is an ancestor of the lane's expected commit — reuse this lane.
+            // The lane's color is preserved so the branch line stays consistent.
+            let color = lanes[pos].map(|(_, c)| c).unwrap_or(next_color);
+            lanes[pos] = Some((oid, color));
             (pos, true)
         } else {
             // New branch tip — allocate a lane with a fresh color
@@ -116,6 +167,12 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
             {
                 // Already expected in another lane -- route edge to that lane
                 target
+            } else if let Some(target) = lanes.iter().position(|s| {
+                matches!(s, Some((expected_oid, _)) if is_ancestor_of(primary, *expected_oid, commits, &oid_to_idx))
+            }) {
+                // Primary parent is an ancestor of a lane's expected commit —
+                // route to that lane so the edge merges correctly.
+                target
             } else {
                 // No lane is expecting the primary parent yet.
                 // Continue in the same lane with the same color.
@@ -136,6 +193,10 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
                     .iter()
                     .position(|s| matches!(s, Some((o, _)) if *o == parent))
                 {
+                    pos
+                } else if let Some(pos) = lanes.iter().position(|s| {
+                    matches!(s, Some((expected_oid, _)) if is_ancestor_of(parent, *expected_oid, commits, &oid_to_idx))
+                }) {
                     pos
                 } else {
                     // New lane for this merge parent with a fresh color
