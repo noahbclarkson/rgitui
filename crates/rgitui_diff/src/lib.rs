@@ -1022,7 +1022,10 @@ impl DiffViewer {
     ///
     /// Uses `similar::capture_diff_slices` (word-tokenized) to identify changed
     /// word spans. Deleted words get red highlights; inserted words get green.
-    fn compute_word_diff(old_text: &str, new_text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    pub(crate) fn compute_word_diff(
+        old_text: &str,
+        new_text: &str,
+    ) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
         let old_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(old_text);
         let new_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(new_text);
 
@@ -1070,7 +1073,7 @@ impl DiffViewer {
     }
 
     /// Split `text` into words, returning each word's byte-offset range.
-    fn split_word_ranges(text: &str) -> Vec<Range<usize>> {
+    pub(crate) fn split_word_ranges(text: &str) -> Vec<Range<usize>> {
         let mut result = Vec::new();
         let mut word_start: Option<usize> = None;
 
@@ -2069,5 +2072,137 @@ mod tests {
             .name
             .as_str();
         assert_eq!(css, "CSS");
+    }
+
+    // --- Word-level diff tests ---
+
+    #[test]
+    fn split_word_ranges_simple() {
+        let words = DiffViewer::split_word_ranges("hello world");
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0], 0..5); // "hello"
+        assert_eq!(words[1], 6..11); // "world"
+    }
+
+    #[test]
+    fn split_word_ranges_single_word() {
+        let words = DiffViewer::split_word_ranges("hello");
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0], 0..5);
+    }
+
+    #[test]
+    fn split_word_ranges_empty() {
+        assert!(DiffViewer::split_word_ranges("").is_empty());
+    }
+
+    #[test]
+    fn split_word_ranges_only_spaces() {
+        // All-whitespace input yields no word ranges
+        assert!(DiffViewer::split_word_ranges("   ").is_empty());
+    }
+
+    #[test]
+    fn split_word_ranges_leading_trailing_spaces() {
+        // Leading/trailing spaces are trimmed; only "foo" is a word
+        let words = DiffViewer::split_word_ranges("  foo  ");
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0], 2..5);
+    }
+
+    #[test]
+    fn split_word_ranges_multiple_spaces_between_words() {
+        // Multiple spaces between words: each gap is a separator
+        let words = DiffViewer::split_word_ranges("foo  bar");
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0], 0..3); // "foo"
+        assert_eq!(words[1], 5..8); // "bar" (indices skip the two spaces)
+    }
+
+    #[test]
+    fn split_word_ranges_mixed_whitespace() {
+        let words = DiffViewer::split_word_ranges("foo\tbar\nbaz");
+        assert_eq!(words.len(), 3);
+        assert_eq!(words[0], 0..3); // "foo"
+        assert_eq!(words[1], 4..7); // "bar" (\t at index 3)
+        assert_eq!(words[2], 8..11); // "baz" (\n at index 7)
+    }
+
+    #[test]
+    fn split_word_ranges_with_unicode() {
+        // Non-ASCII chars treated as word characters
+        let words = DiffViewer::split_word_ranges("日本語 English");
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0], 0..9); // "日本語" = 3 chars × 3 bytes = 9 bytes
+        assert_eq!(words[1], 10..17); // " English" — space at 9, then 7 chars
+    }
+
+    #[test]
+    fn compute_word_diff_unchanged() {
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("hello world", "hello world");
+        assert!(del_spans.is_empty());
+        assert!(add_spans.is_empty());
+    }
+
+    #[test]
+    fn compute_word_diff_simple_word_change() {
+        // "foo" → "bar": both single words, should produce one del + one add
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo", "bar");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 0..3); // "foo"
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 0..3); // "bar"
+    }
+
+    #[test]
+    fn compute_word_diff_addition_only() {
+        // New text has "bar" added
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo", "foo bar");
+        assert!(del_spans.is_empty());
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 4..7); // "bar"
+    }
+
+    #[test]
+    fn compute_word_diff_deletion_only() {
+        // "bar" deleted from old text
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo bar", "foo");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 4..7); // "bar"
+        assert!(add_spans.is_empty());
+    }
+
+    #[test]
+    fn compute_word_diff_both_empty() {
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("", "");
+        assert!(del_spans.is_empty());
+        assert!(add_spans.is_empty());
+    }
+
+    #[test]
+    fn compute_word_diff_word_replaced_in_sentence() {
+        // "The quick brown fox" → "The slow brown fox"
+        let (del_spans, add_spans) =
+            DiffViewer::compute_word_diff("The quick brown fox", "The slow brown fox");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 4..9); // "quick"
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 4..8); // "slow"
+    }
+
+    #[test]
+    fn compute_word_diff_empty_old_new_has_content() {
+        // Pure addition (new file)
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("", "hello world");
+        assert!(del_spans.is_empty());
+        assert_eq!(add_spans.len(), 2); // "hello" and "world"
+    }
+
+    #[test]
+    fn compute_word_diff_old_has_content_new_empty() {
+        // Pure deletion (deleted file)
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("hello world", "");
+        assert_eq!(del_spans.len(), 2); // "hello" and "world"
+        assert!(add_spans.is_empty());
     }
 }
