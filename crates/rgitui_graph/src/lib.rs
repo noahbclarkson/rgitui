@@ -578,7 +578,7 @@ impl GraphView {
 }
 
 impl Render for GraphView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
         if self.commits.is_empty() {
