@@ -7,7 +7,7 @@ use gpui::{
     canvas, div, img, point, px, uniform_list, App, Bounds, ClickEvent, Context, CursorStyle,
     ElementId, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, ListSizingBehavior,
     MouseButton, MouseDownEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy,
-    SharedString, UniformListScrollHandle, WeakEntity, Window,
+    SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel};
 use rgitui_settings::{GraphStyle, SettingsState};
@@ -81,6 +81,9 @@ pub struct GraphView {
     show_author_column: bool,
     show_date_column: bool,
     show_avatars: bool,
+    /// Cached bounds of the graph container div, used to convert window-relative
+    /// click positions to container-relative coordinates for context menu placement.
+    container_bounds: Bounds<Pixels>,
 }
 
 impl EventEmitter<GraphViewEvent> for GraphView {}
@@ -136,6 +139,7 @@ impl GraphView {
             show_author_column: true,
             show_date_column: true,
             show_avatars: true,
+            container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
         }
     }
 
@@ -1446,6 +1450,25 @@ impl Render for GraphView {
         .flex_grow()
         .track_scroll(&self.scroll_handle);
 
+        // Track container bounds so we can convert window-relative click positions
+        // to container-relative coordinates for context menu placement.
+        let view_bounds = cx.weak_entity();
+        let bounds_tracker = canvas(
+            {
+                let view_bounds = view_bounds.clone();
+                move |bounds: Bounds<Pixels>, _: &mut Window, cx: &mut App| {
+                    view_bounds
+                        .update(cx, |this: &mut GraphView, _| {
+                            this.container_bounds = bounds;
+                        })
+                        .ok();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+
         let mut container = div()
             .id("graph-view")
             .track_focus(&self.graph_focus)
@@ -1456,6 +1479,7 @@ impl Render for GraphView {
             .size_full()
             .overflow_hidden()
             .bg(panel_bg)
+            .child(bounds_tracker)
             .on_mouse_down(MouseButton::Left, {
                 let view_dismiss = cx.weak_entity();
                 move |event: &MouseDownEvent, _: &mut Window, cx: &mut App| {
@@ -1662,15 +1686,19 @@ impl Render for GraphView {
                     ("Copy date", IconName::Clock),
                 ];
 
-                // Clamp menu position to stay within window bounds.
-                // Approximate menu dimensions: 200px wide, 280px tall (12 items).
+                // Convert window-relative click position to container-relative coordinates,
+                // then clamp to keep the menu within the container bounds.
                 let menu_w = px(200.);
                 let menu_h = px(280.);
-                let win_bounds = window.bounds();
-                let max_x = win_bounds.size.width - menu_w;
-                let max_y = win_bounds.size.height - menu_h;
-                let clamped_x = if pos.x > max_x { max_x } else { pos.x };
-                let clamped_y = if pos.y > max_y { max_y } else { pos.y };
+                let container_bounds = self.container_bounds;
+                // Convert click position from window coordinates to container-relative.
+                let rel_x = pos.x - container_bounds.origin.x;
+                let rel_y = pos.y - container_bounds.origin.y;
+                // Clamp so menu stays within container.
+                let max_x = container_bounds.size.width - menu_w;
+                let max_y = container_bounds.size.height - menu_h;
+                let clamped_x = rel_x.max(px(0.)).min(max_x);
+                let clamped_y = rel_y.max(px(0.)).min(max_y);
 
                 let mut menu = div()
                     .id("graph-context-menu")
