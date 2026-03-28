@@ -8,6 +8,7 @@ use gpui::{
     ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::ReflogEntryInfo;
+use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
@@ -239,7 +240,8 @@ impl Render for ReflogView {
         let border_variant = colors.border_variant;
         let text_accent = colors.text_accent;
 
-        let row_height = 24.0_f32;
+        let compactness = cx.global::<SettingsState>().settings().compactness;
+        let row_height = compactness.spacing(24.0);
         let highlighted_row = self.highlighted_row;
         let selected_row = self.selected_row;
 

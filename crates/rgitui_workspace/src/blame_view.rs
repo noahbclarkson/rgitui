@@ -9,6 +9,7 @@ use gpui::{
     ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::BlameLine;
+use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
@@ -249,7 +250,8 @@ impl Render for BlameView {
         let surface_bg = colors.surface_background;
         let ghost_hover = colors.ghost_element_hover;
 
-        let row_height = 20.0_f32;
+        let compactness = cx.global::<SettingsState>().settings().compactness;
+        let row_height = compactness.spacing(20.0);
         let highlighted_row = self.highlighted_row;
         let selected_line = self.selected_line;
         let hovered_oid = self.hovered_oid.clone();
