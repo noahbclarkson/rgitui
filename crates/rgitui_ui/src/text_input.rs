@@ -474,18 +474,18 @@ impl Render for TextInput {
         let is_empty = self.text.is_empty();
         let cursor_idx = self.cursor;
 
-        let display_text: SharedString = if is_empty {
-            self.placeholder.clone()
-        } else if self.masked {
-            "•".repeat(self.text.len()).into()
-        } else {
-            self.text.clone().into()
-        };
         let text_color_val = if is_empty {
             Color::Placeholder.color(cx)
         } else {
             colors.text
         };
+
+        let mut text_style = window.text_style();
+        text_style.color = text_color_val;
+        let font_size_px = text_style.font_size.to_pixels(window.rem_size());
+        let target_line_height = font_size_px + px(6.0);
+        text_style.line_height =
+            gpui::DefiniteLength::Absolute(gpui::AbsoluteLength::Pixels(target_line_height));
 
         let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
         if is_focused && !is_empty {
@@ -496,20 +496,36 @@ impl Render for TextInput {
             }
         }
 
-        let mut text_style = window.text_style();
-        text_style.color = text_color_val;
-        let font_size_px = text_style.font_size.to_pixels(window.rem_size());
-        let target_line_height = font_size_px + px(6.0);
-        text_style.line_height =
-            gpui::DefiniteLength::Absolute(gpui::AbsoluteLength::Pixels(target_line_height));
+        // Compute the layout from UNMASKED text for correct cursor positioning.
+        // When masked, bullets are visually narrower than real chars, so we must
+        // use the unmasked layout to get correct click→cursor mapping.
+        let unmasked_display: SharedString = if is_empty {
+            self.placeholder.clone()
+        } else {
+            self.text.clone().into()
+        };
+        let unmasked_element = if highlights.is_empty() {
+            StyledText::new(unmasked_display)
+        } else {
+            StyledText::new(unmasked_display)
+                .with_default_highlights(&text_style, highlights.clone())
+        };
+        self.text_layout = unmasked_element.layout().clone();
+        let layout_ref = self.text_layout.clone();
+
+        // Render the appropriate visual text: bullets when masked, real text otherwise.
+        let display_text: SharedString = if is_empty {
+            self.placeholder.clone()
+        } else if self.masked {
+            "•".repeat(self.text.len()).into()
+        } else {
+            self.text.clone().into()
+        };
         let text_element = if highlights.is_empty() {
             StyledText::new(display_text)
         } else {
-            StyledText::new(display_text).with_default_highlights(&text_style, highlights)
+            StyledText::new(display_text).with_default_highlights(&text_style, highlights.clone())
         };
-
-        self.text_layout = text_element.layout().clone();
-        let layout_ref = self.text_layout.clone();
 
         let cursor_overlay = canvas(
             move |_, _, _| Size::<Pixels>::default(),
