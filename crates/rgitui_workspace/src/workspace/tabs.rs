@@ -4,6 +4,7 @@ use gpui::Context;
 use rgitui_git::GitProject;
 use rgitui_settings::{LayoutSettings, StoredWorkspace};
 
+use crate::command_palette::CommandContext;
 use crate::ToastKind;
 
 use super::{BottomPanelMode, ProjectTab, RightPanelMode, Workspace};
@@ -18,6 +19,30 @@ impl Workspace {
             .position(|t| t.project.read(cx).repo_path() == path)
         {
             self.active_tab = idx;
+            // Update command palette with the switched-to project's context.
+            let proj = self.tabs[idx].project.read(cx);
+            let ctx = CommandContext {
+                has_remotes: !proj.remotes().is_empty(),
+                has_changes: proj.has_changes(),
+                worktree_clean: proj.repo_state().is_clean(),
+                is_bisecting: matches!(proj.repo_state(), rgitui_git::RepoState::Bisect),
+                has_stashes: !proj.stashes().is_empty(),
+                has_staged: !proj.status().staged.is_empty(),
+                in_progress_operation: matches!(
+                    proj.repo_state(),
+                    rgitui_git::RepoState::Merge
+                        | rgitui_git::RepoState::Rebase
+                        | rgitui_git::RepoState::RebaseInteractive
+                        | rgitui_git::RepoState::RebaseMerge
+                        | rgitui_git::RepoState::CherryPick
+                        | rgitui_git::RepoState::CherryPickSequence
+                        | rgitui_git::RepoState::Revert
+                        | rgitui_git::RepoState::RevertSequence
+                ),
+            };
+            self.overlays.command_palette.update(cx, |cp, _cx| {
+                cp.set_context(ctx);
+            });
             cx.notify();
             return Ok(());
         }
@@ -157,7 +182,27 @@ impl Workspace {
             }
         }
 
-        let name = project.read(cx).repo_name().to_string();
+        let proj = project.read(cx);
+        let name = proj.repo_name().to_string();
+        let ctx = CommandContext {
+            has_remotes: !proj.remotes().is_empty(),
+            has_changes: proj.has_changes(),
+            worktree_clean: proj.repo_state().is_clean(),
+            is_bisecting: matches!(proj.repo_state(), rgitui_git::RepoState::Bisect),
+            has_stashes: !proj.stashes().is_empty(),
+            has_staged: !proj.status().staged.is_empty(),
+            in_progress_operation: matches!(
+                proj.repo_state(),
+                rgitui_git::RepoState::Merge
+                    | rgitui_git::RepoState::Rebase
+                    | rgitui_git::RepoState::RebaseInteractive
+                    | rgitui_git::RepoState::RebaseMerge
+                    | rgitui_git::RepoState::CherryPick
+                    | rgitui_git::RepoState::CherryPickSequence
+                    | rgitui_git::RepoState::Revert
+                    | rgitui_git::RepoState::RevertSequence
+            ),
+        };
         self.tabs.push(ProjectTab {
             name,
             project,
@@ -177,6 +222,9 @@ impl Workspace {
             bottom_panel_mode: BottomPanelMode::Diff,
         });
         self.active_tab = self.tabs.len() - 1;
+        self.overlays.command_palette.update(cx, |cp, _cx| {
+            cp.set_context(ctx);
+        });
         self.persist_workspace_snapshot(cx);
 
         cx.notify();
