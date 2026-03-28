@@ -8,6 +8,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+similar.workspace = true
 gpui.workspace = true
 rgitui_theme.workspace = true
 rgitui_ui.workspace = true

@@ -42,6 +42,7 @@ rgitui_settings = { path = "crates/rgitui_settings" }
 
 # Core
 anyhow = "1"
+similar = "2.6"
 log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }

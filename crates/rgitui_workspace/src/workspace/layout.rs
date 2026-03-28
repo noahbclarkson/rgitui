@@ -1567,21 +1567,29 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                 if path_is_bare_arg {
                     cmd.arg(&path);
                 }
-                let _ = cmd.spawn();
+                if let Err(e) = cmd.spawn() {
+                    log::error!(
+                        "Failed to open editor '{}' for '{}': {}",
+                        program,
+                        path.display(),
+                        e
+                    );
+                }
             }
             #[cfg(not(target_os = "windows"))]
             {
                 let parts: Vec<&str> = custom_command.split_whitespace().collect();
                 if let Some((program, args)) = parts.split_first() {
+                    let cwd = path.parent().unwrap_or(&path);
                     if let Err(e) = std::process::Command::new(program)
                         .args(args)
-                        .current_dir(&path)
+                        .current_dir(cwd)
                         .spawn()
                     {
                         log::error!(
                             "Failed to open editor '{}' in '{}': {}",
                             program,
-                            path.display(),
+                            cwd.display(),
                             e
                         );
                     }

@@ -3,6 +3,8 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use similar::capture_diff_slices;
+
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
@@ -92,6 +94,26 @@ impl StyledLine {
             highlights: Vec::new(),
         }
     }
+
+    /// Merge word-level highlight spans into the existing highlights list.
+    /// `deletion_spans` are byte ranges of deleted words (highlighted red).
+    /// `addition_spans` are byte ranges of inserted words (highlighted green).
+    /// Word-level spans are appended after syntax spans; GPUI renders later
+    /// highlights on top of earlier ones, so word-level takes visual priority.
+    fn apply_word_highlights(
+        &mut self,
+        deletion_spans: Vec<Range<usize>>,
+        addition_spans: Vec<Range<usize>>,
+        deleted_word_bg: HighlightStyle,
+        added_word_bg: HighlightStyle,
+    ) {
+        for span in deletion_spans {
+            self.highlights.push((span, deleted_word_bg));
+        }
+        for span in addition_spans {
+            self.highlights.push((span, added_word_bg));
+        }
+    }
 }
 
 struct SyntaxAssets {
@@ -155,8 +177,29 @@ impl DiffViewer {
 
     pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, cx: &mut Context<Self>) {
         let appearance = cx.theme().appearance;
+        let colors = cx.colors();
+        let added_word_bg = HighlightStyle {
+            background_color: Some(gpui::Hsla {
+                a: 0.25,
+                ..colors.vc_added
+            }),
+            ..Default::default()
+        };
+        let deleted_word_bg = HighlightStyle {
+            background_color: Some(gpui::Hsla {
+                a: 0.25,
+                ..colors.vc_deleted
+            }),
+            ..Default::default()
+        };
         self.current_appearance = appearance;
-        self.display_rows = Arc::new(Self::compute_display_rows(&diff, &path, appearance));
+        self.display_rows = Arc::new(Self::compute_display_rows(
+            &diff,
+            &path,
+            appearance,
+            added_word_bg,
+            deleted_word_bg,
+        ));
         self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff, &path, appearance));
         self.diff = Some(diff);
         self.file_path = Some(path);
@@ -874,6 +917,8 @@ impl DiffViewer {
         diff: &FileDiff,
         path: &str,
         appearance: Appearance,
+        added_word_bg: HighlightStyle,
+        deleted_word_bg: HighlightStyle,
     ) -> Vec<DisplayRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
@@ -886,9 +931,26 @@ impl DiffViewer {
             let mut old_line = hunk.old_start as usize;
             let mut new_line = hunk.new_start as usize;
             let mut highlighter = Self::syntax_line_highlighter(path, appearance);
+
+            // Buffer for pending deletions: (old_line_num, text, styled_line)
+            let mut pending_dels: Vec<(usize, String, StyledLine)> = Vec::new();
+
+            let flush_dels =
+                |rows: &mut Vec<DisplayRow>, dels: &mut Vec<(usize, String, StyledLine)>| {
+                    for (ln, _text, styled) in dels.drain(..) {
+                        rows.push(DisplayRow::Line {
+                            old_num: Some(ln),
+                            new_num: None,
+                            styled,
+                            kind: DisplayLineKind::Deletion,
+                        });
+                    }
+                };
+
             for line in &hunk.lines {
                 match line {
                     DiffLine::Context(text) => {
+                        flush_dels(&mut rows, &mut pending_dels);
                         rows.push(DisplayRow::Line {
                             old_num: Some(old_line),
                             new_num: Some(new_line),
@@ -898,28 +960,133 @@ impl DiffViewer {
                         old_line += 1;
                         new_line += 1;
                     }
-                    DiffLine::Addition(text) => {
-                        rows.push(DisplayRow::Line {
-                            old_num: None,
-                            new_num: Some(new_line),
-                            styled: Self::highlight_text(text, &mut highlighter),
-                            kind: DisplayLineKind::Addition,
-                        });
-                        new_line += 1;
-                    }
                     DiffLine::Deletion(text) => {
-                        rows.push(DisplayRow::Line {
-                            old_num: Some(old_line),
-                            new_num: None,
-                            styled: Self::highlight_text(text, &mut highlighter),
-                            kind: DisplayLineKind::Deletion,
-                        });
+                        pending_dels.push((
+                            old_line,
+                            text.clone(),
+                            Self::highlight_text(text, &mut highlighter),
+                        ));
                         old_line += 1;
+                    }
+                    DiffLine::Addition(text) => {
+                        let add_styled = Self::highlight_text(text, &mut highlighter);
+                        if let Some((del_line, del_text, mut del_styled)) = pending_dels.pop() {
+                            // Pair deletion + addition → compute word-level highlights
+                            let (del_spans, add_spans) = Self::compute_word_diff(&del_text, text);
+                            del_styled.apply_word_highlights(
+                                del_spans,
+                                Vec::new(),
+                                deleted_word_bg,
+                                added_word_bg,
+                            );
+                            let mut add_styled = add_styled;
+                            add_styled.apply_word_highlights(
+                                Vec::new(),
+                                add_spans,
+                                deleted_word_bg,
+                                added_word_bg,
+                            );
+                            rows.push(DisplayRow::Line {
+                                old_num: Some(del_line),
+                                new_num: None,
+                                styled: del_styled,
+                                kind: DisplayLineKind::Deletion,
+                            });
+                            rows.push(DisplayRow::Line {
+                                old_num: None,
+                                new_num: Some(new_line),
+                                styled: add_styled,
+                                kind: DisplayLineKind::Addition,
+                            });
+                        } else {
+                            // Unpaired addition
+                            rows.push(DisplayRow::Line {
+                                old_num: None,
+                                new_num: Some(new_line),
+                                styled: add_styled,
+                                kind: DisplayLineKind::Addition,
+                            });
+                        }
+                        new_line += 1;
                     }
                 }
             }
+            flush_dels(&mut rows, &mut pending_dels);
         }
         rows
+    }
+
+    /// Compute word-level diff highlights between `old_text` and `new_text`.
+    /// Returns `(deletion_spans, addition_spans)` as byte-index ranges into
+    /// each respective string.
+    ///
+    /// Uses `similar::capture_diff_slices` (word-tokenized) to identify changed
+    /// word spans. Deleted words get red highlights; inserted words get green.
+    fn compute_word_diff(old_text: &str, new_text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+        let old_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(old_text);
+        let new_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(new_text);
+
+        if old_word_ranges.is_empty() && new_word_ranges.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        let old_wv: Vec<&str> = old_word_ranges
+            .iter()
+            .map(|r| &old_text[r.clone()])
+            .collect();
+        let new_wv: Vec<&str> = new_word_ranges
+            .iter()
+            .map(|r| &new_text[r.clone()])
+            .collect();
+
+        let ops = capture_diff_slices(similar::Algorithm::Myers, &old_wv, &new_wv);
+
+        let mut del_spans: Vec<Range<usize>> = Vec::new();
+        let mut add_spans: Vec<Range<usize>> = Vec::new();
+
+        for op in ops {
+            for change in op.iter_changes(&old_wv, &new_wv) {
+                match change.tag() {
+                    similar::ChangeTag::Delete => {
+                        if let Some(idx) = change.old_index() {
+                            if idx < old_word_ranges.len() {
+                                del_spans.push(old_word_ranges[idx].clone());
+                            }
+                        }
+                    }
+                    similar::ChangeTag::Insert => {
+                        if let Some(idx) = change.new_index() {
+                            if idx < new_word_ranges.len() {
+                                add_spans.push(new_word_ranges[idx].clone());
+                            }
+                        }
+                    }
+                    similar::ChangeTag::Equal => {}
+                }
+            }
+        }
+
+        (del_spans, add_spans)
+    }
+
+    /// Split `text` into words, returning each word's byte-offset range.
+    fn split_word_ranges(text: &str) -> Vec<Range<usize>> {
+        let mut result = Vec::new();
+        let mut word_start: Option<usize> = None;
+
+        for (i, ch) in text.char_indices() {
+            if ch.is_whitespace() {
+                if let Some(start) = word_start.take() {
+                    result.push(start..i);
+                }
+            } else if word_start.is_none() {
+                word_start = Some(i);
+            }
+        }
+        if let Some(start) = word_start {
+            result.push(start..text.len());
+        }
+        result
     }
 }
 
@@ -933,11 +1100,30 @@ impl Render for DiffViewer {
         if self.diff.is_some() {
             let appearance = cx.theme().appearance;
             if appearance != self.current_appearance {
+                let added_word_bg = HighlightStyle {
+                    background_color: Some(gpui::Hsla {
+                        a: 0.25,
+                        ..colors.vc_added
+                    }),
+                    ..Default::default()
+                };
+                let deleted_word_bg = HighlightStyle {
+                    background_color: Some(gpui::Hsla {
+                        a: 0.25,
+                        ..colors.vc_deleted
+                    }),
+                    ..Default::default()
+                };
                 self.current_appearance = appearance;
                 if let Some(ref diff) = self.diff {
                     if let Some(ref path) = self.file_path {
-                        self.display_rows =
-                            Arc::new(Self::compute_display_rows(diff, path, appearance));
+                        self.display_rows = Arc::new(Self::compute_display_rows(
+                            diff,
+                            path,
+                            appearance,
+                            added_word_bg,
+                            deleted_word_bg,
+                        ));
                         self.sbs_rows = Arc::new(Self::compute_sbs_rows(diff, path, appearance));
                     }
                 }
