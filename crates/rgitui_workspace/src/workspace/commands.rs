@@ -343,6 +343,20 @@ impl Workspace {
                     });
                 }
             }
+            CommandId::BisectSkip => {
+                let state = tab.project.read(cx).repo_state();
+                if !matches!(state, rgitui_git::RepoState::Bisect) {
+                    self.show_toast(
+                        "No bisect in progress. Use 'Bisect Start' first.",
+                        ToastKind::Warning,
+                        cx,
+                    );
+                } else {
+                    tab.project.update(cx, |proj, cx| {
+                        proj.bisect_skip(None, cx).detach();
+                    });
+                }
+            }
             CommandId::Settings
             | CommandId::CreateBranch
             | CommandId::OpenRepo

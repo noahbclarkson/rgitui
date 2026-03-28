@@ -131,6 +131,7 @@ pub enum CommandId {
     BisectGood,
     BisectBad,
     BisectReset,
+    BisectSkip,
 }
 
 impl CommandId {
@@ -179,6 +180,7 @@ impl CommandId {
             Self::BisectGood => "bisect_good",
             Self::BisectBad => "bisect_bad",
             Self::BisectReset => "bisect_reset",
+            Self::BisectSkip => "bisect_skip",
         }
     }
 
@@ -227,6 +229,7 @@ impl CommandId {
             Self::BisectGood => "bisect good (current)",
             Self::BisectBad => "bisect bad (current)",
             Self::BisectReset => "bisect reset",
+            Self::BisectSkip => "bisect skip (current)",
         }
     }
 }
@@ -285,6 +288,7 @@ impl TryFrom<&str> for CommandId {
             "bisect_good" => Ok(Self::BisectGood),
             "bisect_bad" => Ok(Self::BisectBad),
             "bisect_reset" => Ok(Self::BisectReset),
+            "bisect_skip" => Ok(Self::BisectSkip),
             _ => Err(()),
         }
     }
@@ -530,6 +534,13 @@ impl CommandPalette {
             .with_predicate(is_bisecting),
             PaletteCommand::new(CommandId::BisectReset, "Git: Bisect Reset", None, "Git")
                 .with_predicate(is_bisecting),
+            PaletteCommand::new(
+                CommandId::BisectSkip,
+                "Git: Bisect Skip (skip this commit)",
+                None,
+                "Git",
+            )
+            .with_predicate(is_bisecting),
             PaletteCommand::new(CommandId::Reflog, "View: Reflog", None, "View"),
             PaletteCommand::new(CommandId::Submodules, "View: Submodules", None, "View"),
         ];

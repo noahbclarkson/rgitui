@@ -2390,6 +2390,132 @@ impl GitProject {
         })
     }
 
+    /// Mark the current commit (or specified commit) as skipped during bisect.
+    /// Skipped commits are excluded from the bisect search.
+    pub fn bisect_skip(
+        &mut self,
+        oid: Option<git2::Oid>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let short_id = oid
+            .map(|o| o.to_string()[..7].to_string())
+            .unwrap_or_else(|| "HEAD".to_string());
+        let operation_id = self.begin_operation(
+            GitOperationKind::Bisect,
+            format!("Skipping {}...", short_id),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        let oid_str = oid.map(|o| o.to_string());
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<(Option<String>, RefreshData)> = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut cmd = Command::new("git");
+                    cmd.current_dir(&repo_path).args(["bisect", "skip"]);
+                    if let Some(ref oid) = oid_str {
+                        cmd.arg(oid);
+                    }
+                    let output = cmd.output().context("Failed to execute git bisect skip")?;
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    if !output.status.success() {
+                        anyhow::bail!("git bisect skip failed: {}", stderr.trim());
+                    }
+
+                    // Check if bisect can no longer continue (only skipped commits remain)
+                    let exhausted = stdout.contains("only skipped commits left to test")
+                        || stderr.contains("only skipped commits left to test");
+                    let message = if exhausted {
+                        Some(
+                            "Bisect cannot continue: only skipped commits remain.\n\
+                             Consider using 'Bisect Reset' and manually narrowing down."
+                                .into(),
+                        )
+                    } else {
+                        // git bisect skip outputs lines like:
+                        // "Skipping commit <sha>"
+                        // "Bisecting: N commits left to test"
+                        let lines: Vec<_> = stdout.lines().filter(|l| !l.is_empty()).collect();
+                        if lines.is_empty() {
+                            None
+                        } else {
+                            Some(lines.join("\n"))
+                        }
+                    };
+
+                    let data = gather_refresh_data(&repo_path)?;
+                    Ok((message, data))
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok((Some(msg), data)) if msg.contains("cannot continue") => {
+                            this.apply_refresh_data(data);
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                "Bisect exhausted".to_string(),
+                                msg,
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Ok((Some(msg), data)) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                format!("Skipped {}", short_id),
+                                (Some(msg), None, branch_name.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Ok((None, data)) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                format!("Skipped {}", short_id),
+                                (
+                                    Some("Bisect continues. Test the current commit.".into()),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Bisect,
+                                format!("Failed to skip {}", short_id),
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Reset the bisect session and return to the original branch/commit.
     pub fn bisect_reset(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
