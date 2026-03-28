@@ -69,6 +69,9 @@ pub struct GraphView {
     /// OID to scroll to once the commit list is refreshed and the OID is present.
     /// Used when scroll_to_commit is called for a commit not yet in the loaded list.
     pending_scroll_oid: Option<git2::Oid>,
+    /// Search query to re-run once more commits have been loaded.
+    /// Used when a search returns no matches but more commits are available.
+    pending_search_query: Option<SharedString>,
     cached_graph_hash: u64,
     search_debounce_task: Option<gpui::Task<()>>,
     staged_count: usize,
@@ -127,6 +130,7 @@ impl GraphView {
             graph_focus: cx.focus_handle(),
             all_commits_loaded: false,
             pending_scroll_oid: None,
+            pending_search_query: None,
             cached_graph_hash: 0,
             search_debounce_task: None,
             staged_count: 0,
@@ -415,6 +419,7 @@ impl GraphView {
 
         if self.search_editor.read(cx).is_empty() {
             self.filter_match_set_arc = Arc::new(HashSet::new());
+            self.pending_search_query = None;
             return;
         }
 
@@ -431,6 +436,15 @@ impl GraphView {
             }
         }
         self.filter_match_set_arc = Arc::new(self.filter_match_set.clone());
+
+        // If no matches but more commits are available, auto-load more.
+        if self.filter_matches.is_empty() && !self.all_commits_loaded {
+            self.pending_search_query = Some(query.into());
+            cx.emit(GraphViewEvent::LoadMoreCommits);
+        } else {
+            // Matches found, or no more commits to load — clear any pending search.
+            self.pending_search_query = None;
+        }
     }
 
     /// Jump to the next search match, selecting and scrolling to it.
