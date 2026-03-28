@@ -311,6 +311,31 @@ impl Workspace {
             return;
         }
 
+        // 'Shift+C' to copy commit message of selected commit
+        if !any_overlay_active
+            && key == "c"
+            && !modifiers.control
+            && !modifiers.alt
+            && modifiers.shift
+            && !modifiers.platform
+        {
+            if let Some(tab) = self.tabs.get(self.active_tab) {
+                let graph = tab.graph.clone();
+                if let Some(commit) = graph.read(cx).selected_commit() {
+                    let msg = commit.message.clone();
+                    cx.write_to_clipboard(ClipboardItem::new_string(msg.clone()));
+                    let first_line = msg.lines().next().unwrap_or(&msg);
+                    let preview = if first_line.len() > 40 {
+                        format!("{}...", &first_line[..40])
+                    } else {
+                        first_line.to_string()
+                    };
+                    self.show_toast(format!("Copied: {}", preview), ToastKind::Success, cx);
+                }
+            }
+            return;
+        }
+
         // 'h' to toggle file history view for selected file
         if !any_overlay_active
             && key == "h"
