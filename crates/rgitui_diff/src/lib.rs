@@ -1046,7 +1046,11 @@ impl Render for DiffViewer {
             ..text_color
         };
 
-        let row_height = 20.0_f32;
+        let compactness = cx
+            .global::<rgitui_settings::SettingsState>()
+            .settings()
+            .compactness;
+        let row_height = compactness.spacing(20.0);
         let hunk_header_height = row_height;
 
         let highlighted_row = self.highlighted_row;
