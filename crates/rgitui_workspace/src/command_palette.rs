@@ -972,4 +972,41 @@ mod tests {
         assert_eq!(CommandPalette::fuzzy_score("pp", "Push"), None);
         assert!(CommandPalette::fuzzy_score("ps", "Push").is_some());
     }
+
+    #[test]
+    fn fuzzy_score_single_char_query() {
+        // Single char should match first occurrence
+        assert!(CommandPalette::fuzzy_score("a", "Push").is_none());
+        assert!(CommandPalette::fuzzy_score("p", "Push").is_some());
+        assert!(CommandPalette::fuzzy_score("u", "Push").is_some());
+        assert!(CommandPalette::fuzzy_score("s", "Push").is_some());
+    }
+
+    #[test]
+    fn fuzzy_score_query_longer_than_target() {
+        // Query longer than target: should fail
+        assert_eq!(CommandPalette::fuzzy_score("pushit", "Push"), None);
+    }
+
+    #[test]
+    fn fuzzy_score_empty_target() {
+        // Non-empty query with empty target should fail
+        assert_eq!(CommandPalette::fuzzy_score("abc", ""), None);
+    }
+
+    #[test]
+    fn fuzzy_score_numbers_and_special_chars() {
+        // Numbers in query and target
+        assert!(CommandPalette::fuzzy_score("42", "Answer 42").is_some());
+        assert!(CommandPalette::fuzzy_score("v2", "version2").is_some());
+        // Special characters
+        assert!(CommandPalette::fuzzy_score("rmrf", "rm -rf").is_some());
+    }
+
+    #[test]
+    fn fuzzy_score_unicode() {
+        // Unicode characters
+        assert!(CommandPalette::fuzzy_score("caf", "Café").is_some());
+        assert!(CommandPalette::fuzzy_score("日本語", "日本語テスト").is_some());
+    }
 }
