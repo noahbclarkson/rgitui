@@ -144,6 +144,8 @@ pub struct DiffViewer {
     selection_anchor: Option<usize>,
     /// Tracks the current theme appearance to drive syntax highlighting.
     current_appearance: Appearance,
+    /// Top item index to restore after a display mode switch.
+    pending_scroll_top: Option<usize>,
 }
 
 impl EventEmitter<DiffViewerEvent> for DiffViewer {}
@@ -163,6 +165,7 @@ impl DiffViewer {
             selected_lines: None,
             selection_anchor: None,
             current_appearance: Appearance::Dark,
+            pending_scroll_top: None,
         }
     }
 
@@ -549,6 +552,9 @@ impl DiffViewer {
     }
 
     pub fn toggle_display_mode(&mut self, cx: &mut Context<Self>) {
+        // Capture the current top item so we can restore scroll position after the switch.
+        let top_item = self.scroll_handle.0.borrow().base_handle.top_item();
+        self.pending_scroll_top = Some(top_item);
         self.display_mode = match self.display_mode {
             DiffDisplayMode::Unified => DiffDisplayMode::SideBySide,
             DiffDisplayMode::SideBySide => DiffDisplayMode::Unified,
@@ -1256,6 +1262,15 @@ impl Render for DiffViewer {
             ..colors.text_accent
         };
         let selected_lines = self.selected_lines.clone();
+
+        // Restore scroll position after a display mode switch. The deferred scroll is
+        // applied by GPUI's layout pass before the list content is painted, so the
+        // user sees the correct scroll position immediately.
+        if let Some(top_ix) = self.pending_scroll_top.take() {
+            let target_ix = top_ix.min(self.row_count().saturating_sub(1));
+            self.scroll_handle
+                .scroll_to_item(target_ix, ScrollStrategy::Top);
+        }
 
         let list = match display_mode {
             DiffDisplayMode::Unified => {
