@@ -134,6 +134,21 @@ pub struct Sidebar {
     branch_filter_active: bool,
 }
 
+/// Pure filtering function: returns indices into `branches` whose names contain
+/// `filter` (case-insensitive substring). When filter is empty, returns all indices.
+pub(crate) fn filter_local_branch_indices(branches: &[BranchInfo], filter: &str) -> Vec<usize> {
+    if filter.is_empty() {
+        return (0..branches.len()).collect();
+    }
+    let filter_lc = filter.to_lowercase();
+    branches
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.name.to_lowercase().contains(&filter_lc))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 impl EventEmitter<SidebarEvent> for Sidebar {}
 
 impl Sidebar {
@@ -202,16 +217,7 @@ impl Sidebar {
 
     /// Returns the branch indices that pass the current filter.
     fn filtered_local_indices(&self) -> Vec<usize> {
-        if self.branch_filter.is_empty() {
-            return (0..self.local_branches.len()).collect();
-        }
-        let filter_lc = self.branch_filter.to_lowercase();
-        self.local_branches
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.name.to_lowercase().contains(&filter_lc))
-            .map(|(i, _)| i)
-            .collect()
+        filter_local_branch_indices(&self.local_branches, &self.branch_filter)
     }
 
     /// Rebuild the cached navigable items list from current state.
@@ -2566,7 +2572,7 @@ impl Render for Sidebar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rgitui_git::{FileChangeKind, FileStatus};
+    use rgitui_git::{BranchInfo, FileChangeKind, FileStatus};
     use std::path::PathBuf;
 
     // --- file_change_symbol tests ---
@@ -2760,6 +2766,117 @@ mod tests {
         let node = FileTreeNode::default();
         assert!(node.file_indices.is_empty());
         assert!(node.children.is_empty());
+    }
+
+    // --- filter_local_branch_indices tests ---
+
+    fn make_branch(name: &str) -> BranchInfo {
+        BranchInfo {
+            name: name.to_string(),
+            is_head: false,
+            is_remote: false,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            tip_oid: None,
+        }
+    }
+
+    #[test]
+    fn test_filter_branches_empty_filter_returns_all() {
+        let branches = vec![
+            make_branch("main"),
+            make_branch("feature/login"),
+            make_branch("feature/logout"),
+            make_branch("bugfix/123"),
+        ];
+        let result = filter_local_branch_indices(&branches, "");
+        assert_eq!(result, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_filter_branches_case_insensitive() {
+        let branches = vec![
+            make_branch("main"),
+            make_branch("feature/login"),
+            make_branch("Feature/Logout"),
+            make_branch("FEATURE/DASHBOARD"),
+        ];
+        let result = filter_local_branch_indices(&branches, "feature");
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_filter_branches_substring_match() {
+        let branches = vec![
+            make_branch("main"),
+            make_branch("feature/login"),
+            make_branch("hotfix/urgent"),
+            make_branch("release/1.0"),
+        ];
+        // "log" matches feature/login
+        let result = filter_local_branch_indices(&branches, "log");
+        assert_eq!(result, vec![1]);
+    }
+
+    #[test]
+    fn test_filter_branches_no_match_returns_empty() {
+        let branches = vec![make_branch("main"), make_branch("feature/login")];
+        let result = filter_local_branch_indices(&branches, "xyz");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_branches_empty_branches() {
+        let branches: Vec<BranchInfo> = vec![];
+        let result = filter_local_branch_indices(&branches, "main");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_branches_single_match() {
+        let branches = vec![
+            make_branch("main"),
+            make_branch("develop"),
+            make_branch("feature/xyz"),
+        ];
+        let result = filter_local_branch_indices(&branches, "develop");
+        assert_eq!(result, vec![1]);
+    }
+
+    #[test]
+    fn test_filter_branches_matches_prefix_and_suffix() {
+        let branches = vec![
+            make_branch("main"),
+            make_branch("feature/main-auth"),
+            make_branch("release/main-v2"),
+        ];
+        // "main" appears in all three
+        let result = filter_local_branch_indices(&branches, "main");
+        assert_eq!(result, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_filter_branches_special_chars() {
+        let branches = vec![
+            make_branch("feature/login"),
+            make_branch("feature/logout"),
+            make_branch("release/v1"),
+        ];
+        // "/" and digits should work as normal filter characters
+        let result = filter_local_branch_indices(&branches, "release/v1");
+        assert_eq!(result, vec![2]);
+    }
+
+    #[test]
+    fn test_filter_branches_exact_match() {
+        let branches = vec![
+            make_branch("main"),
+            make_branch("release/1.0"),
+            make_branch("release/1.1"),
+        ];
+        let result = filter_local_branch_indices(&branches, "release/1.0");
+        assert_eq!(result, vec![1]);
     }
 
     // --- Helper ---
