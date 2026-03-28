@@ -26,6 +26,8 @@ pub enum GraphViewEvent {
     CheckoutCommit(git2::Oid),
     CopyCommitSha(String),
     CopyCommitMessage(String),
+    CopyAuthorName(String),
+    CopyDate(String),
     CreateTagAtCommit(git2::Oid),
     ResetToCommit(git2::Oid, String),
     /// Request to load more commits beyond the current set.
@@ -1460,10 +1462,10 @@ impl Render for GraphView {
                     view_dismiss
                         .update(cx, |this: &mut GraphView, cx| {
                             // Only dismiss if click is outside the context menu bounds.
-                            // Menu dimensions: 200px wide, 220px tall, anchored at clamped_x/clamped_y.
+                            // Menu dimensions: 200px wide, 280px tall (12 items), anchored at clamped_x/clamped_y.
                             let click_inside_menu = this.context_menu.as_ref().is_some_and(|cm| {
                                 let menu_w: Pixels = px(200.);
-                                let menu_h: Pixels = px(220.);
+                                let menu_h: Pixels = px(280.);
                                 let x = event.position.x;
                                 let y = event.position.y;
                                 x >= cm.position.x
@@ -1634,6 +1636,8 @@ impl Render for GraphView {
                 let oid = commit.oid;
                 let sha = format!("{}", oid);
                 let msg_clone = commit.message.clone();
+                let author_name_clone = commit.author.name.clone();
+                let date_clone = commit.time.format("%Y-%m-%d %H:%M:%S").to_string();
                 let pos = menu_state.position;
                 let weak = cx.weak_entity();
                 let sha_clone = sha.clone();
@@ -1654,12 +1658,14 @@ impl Render for GraphView {
                     ("Reset to here", IconName::Trash),
                     ("Copy SHA", IconName::Copy),
                     ("Copy commit message", IconName::Edit),
+                    ("Copy author name", IconName::User),
+                    ("Copy date", IconName::Clock),
                 ];
 
                 // Clamp menu position to stay within window bounds.
-                // Approximate menu dimensions: 200px wide, 220px tall.
+                // Approximate menu dimensions: 200px wide, 280px tall (12 items).
                 let menu_w = px(200.);
-                let menu_h = px(260.);
+                let menu_h = px(280.);
                 let win_bounds = window.bounds();
                 let max_x = win_bounds.size.width - menu_w;
                 let max_y = win_bounds.size.height - menu_h;
@@ -1699,7 +1705,7 @@ impl Render for GraphView {
                     let icon = *icon_name;
 
                     // Add separator before bisect options, before destructive "Reset", and before clipboard ops
-                    if idx == 5 || idx == 7 || idx == 9 {
+                    if idx == 5 || idx == 7 || idx == 9 || idx == 11 {
                         menu = menu.child(
                             div()
                                 .w_full()
@@ -1855,6 +1861,36 @@ impl Render for GraphView {
                                     w.update(cx, |this: &mut GraphView, cx| {
                                         this.context_menu = None;
                                         cx.emit(GraphViewEvent::CopyCommitMessage(msg_val));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        10 => {
+                            let w = weak.clone();
+                            let author_for_click = author_name_clone.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    let author_val = author_for_click.clone();
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::CopyAuthorName(author_val));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        11 => {
+                            let w = weak.clone();
+                            let date_for_click = date_clone.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    let date_val = date_for_click.clone();
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::CopyDate(date_val));
                                         cx.notify();
                                     })
                                     .ok();

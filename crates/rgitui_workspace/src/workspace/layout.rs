@@ -1502,54 +1502,52 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                 const DETACHED_PROCESS: u32 = 0x00000008;
                 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
-                let _ = std::process::Command::new("wt.exe")
+                let result = std::process::Command::new("wt.exe")
                     .arg("-d")
                     .arg(&path)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-                    .spawn()
-                    .or_else(|_| {
-                        std::process::Command::new("cmd.exe")
-                            .arg("/K")
-                            .arg("cd")
-                            .arg("/d")
-                            .arg(&path)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-                            .spawn()
-                    });
+                    .spawn();
+
+                if let Err(e) = result {
+                    log::error!(
+                        "Failed to open Windows Terminal in '{}': {}",
+                        path.display(),
+                        e
+                    );
+                }
             }
             #[cfg(target_os = "macos")]
             {
-                let _ = std::process::Command::new("open")
+                if let Err(e) = std::process::Command::new("open")
                     .arg("-a")
                     .arg("Terminal")
                     .arg(&path)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
-                    .spawn();
+                    .spawn()
+                {
+                    log::error!("Failed to open Terminal.app in '{}': {}", path.display(), e);
+                }
             }
             #[cfg(target_os = "linux")]
             {
-                let _ = std::process::Command::new("x-terminal-emulator")
+                if let Err(e) = std::process::Command::new("x-terminal-emulator")
                     .current_dir(&path)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn()
-                    .or_else(|_| {
-                        std::process::Command::new("xterm")
-                            .current_dir(&path)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn()
-                    });
+                {
+                    log::error!(
+                        "Failed to open terminal emulator in '{}': {}",
+                        path.display(),
+                        e
+                    );
+                }
             }
         }
     });
@@ -1575,20 +1573,30 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
             {
                 let parts: Vec<&str> = custom_command.split_whitespace().collect();
                 if let Some((program, args)) = parts.split_first() {
-                    let _ = std::process::Command::new(program)
+                    if let Err(e) = std::process::Command::new(program)
                         .args(args)
                         .current_dir(&path)
-                        .spawn();
+                        .spawn()
+                    {
+                        log::error!(
+                            "Failed to open editor '{}' in '{}': {}",
+                            program,
+                            path.display(),
+                            e
+                        );
+                    }
                 }
             }
         } else {
             #[cfg(target_os = "windows")]
             {
-                let _ = std::process::Command::new("code").arg(&path).spawn();
+                if let Err(e) = std::process::Command::new("code").arg(&path).spawn() {
+                    log::error!("Failed to open VS Code in '{}': {}", path.display(), e);
+                }
             }
             #[cfg(target_os = "macos")]
             {
-                let _ = std::process::Command::new("code")
+                if let Err(e) = std::process::Command::new("code")
                     .arg(&path)
                     .spawn()
                     .or_else(|_| {
@@ -1597,14 +1605,20 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                             .arg("TextEdit")
                             .arg(&path)
                             .spawn()
-                    });
+                    })
+                {
+                    log::error!("Failed to open editor in '{}': {}", path.display(), e);
+                }
             }
             #[cfg(target_os = "linux")]
             {
-                let _ = std::process::Command::new("code")
+                if let Err(e) = std::process::Command::new("code")
                     .arg(&path)
                     .spawn()
-                    .or_else(|_| std::process::Command::new("xdg-open").arg(&path).spawn());
+                    .or_else(|_| std::process::Command::new("xdg-open").arg(&path).spawn())
+                {
+                    log::error!("Failed to open editor in '{}': {}", path.display(), e);
+                }
             }
         }
     });

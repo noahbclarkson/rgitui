@@ -1052,6 +1052,14 @@ pub(super) fn subscribe_graph(
                         cx,
                     );
                 }
+                GraphViewEvent::CopyAuthorName(name) => {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
+                    this.show_toast(format!("Copied author: {}", name), ToastKind::Success, cx);
+                }
+                GraphViewEvent::CopyDate(date) => {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(date.clone()));
+                    this.show_toast(format!("Copied date: {}", date), ToastKind::Success, cx);
+                }
                 GraphViewEvent::CreateTagAtCommit(oid) => {
                     let oid = *oid;
                     this.dialogs.tag_dialog.update(cx, |td, cx| {

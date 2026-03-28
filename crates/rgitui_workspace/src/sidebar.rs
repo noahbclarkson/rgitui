@@ -305,7 +305,7 @@ impl Sidebar {
             }
             SidebarItem::RemoteBranch(i) => {
                 if let Some(branch) = self.remote_branches.get(i) {
-                    cx.emit(SidebarEvent::BranchSelected(branch.name.clone()));
+                    cx.emit(SidebarEvent::BranchCheckout(branch.name.clone()));
                 }
             }
             SidebarItem::Tag(i) => {
@@ -351,10 +351,6 @@ impl Sidebar {
         let key = event.keystroke.key.as_str();
         let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
 
-        if ctrl {
-            return;
-        }
-
         if self.cached_nav_items.is_empty() {
             return;
         }
@@ -367,6 +363,17 @@ impl Sidebar {
             });
             cx.notify();
             cx.stop_propagation();
+            return;
+        }
+
+        // Block Ctrl+F (graph search) when branch filter is active
+        // so Ctrl+F re-focuses the filter input instead.
+        if ctrl && self.branch_filter_active {
+            cx.stop_propagation();
+            return;
+        }
+
+        if ctrl {
             return;
         }
 
@@ -1736,9 +1743,20 @@ impl Render for Sidebar {
                         })
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .active(|s| s.bg(colors.ghost_element_active))
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(SidebarEvent::BranchSelected(remote_branch_name.to_string()));
-                        }))
+                        .on_click({
+                            let remote_branch_name = remote_branch_name.clone();
+                            cx.listener(move |_this, event: &ClickEvent, _, cx| {
+                                if event.click_count() >= 2 {
+                                    cx.emit(SidebarEvent::BranchCheckout(
+                                        remote_branch_name.to_string(),
+                                    ));
+                                } else {
+                                    cx.emit(SidebarEvent::BranchSelected(
+                                        remote_branch_name.to_string(),
+                                    ));
+                                }
+                            })
+                        })
                         .child(
                             div()
                                 .w(px(14.))

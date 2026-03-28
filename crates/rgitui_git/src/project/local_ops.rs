@@ -441,6 +441,8 @@ impl GitProject {
     }
 
     /// Checkout a branch by name.
+    /// Handles both local branches and remote tracking branches (e.g. `origin/main`).
+    /// For remote branches, creates a local tracking branch first.
     pub fn checkout_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
         let name = name.to_string();
         let task_name = name.clone();
@@ -459,16 +461,85 @@ impl GitProject {
                     let repo = Repository::open(&repo_path)?;
                     ensure_clean_worktree(&repo, "Checkout")?;
                     let current_branch = head_branch_name(&repo).ok();
-                    if current_branch.as_deref() == Some(task_name.as_str()) {
-                        anyhow::bail!("'{}' is already checked out.", task_name);
+
+                    // Determine whether this is a local or remote branch, and the
+                    // object + local branch name to use.
+                    let (obj, local_branch_name, is_tracking) =
+                        match repo.revparse_single(&format!("refs/heads/{}", task_name)) {
+                            Ok(o) => (o, task_name.clone(), false),
+                            Err(_) => {
+                                // Not a local branch — check if it's a remote tracking branch
+                                // (e.g. "origin/main" → refs/remotes/origin/main).
+                                let remote_ref = format!("refs/remotes/{}", task_name);
+                                if let Ok(remote_obj) = repo.revparse_single(&remote_ref) {
+                                    let Some((_remote, short)) = task_name.split_once('/') else {
+                                        anyhow::bail!(
+                                            "Invalid remote branch name '{}'. \
+                                            Expected 'remote/branch' format.",
+                                            task_name
+                                        );
+                                    };
+                                    let local_branch_name = short;
+
+                                    // Refuse to overwrite an existing local branch.
+                                    if repo
+                                        .find_branch(local_branch_name, git2::BranchType::Local)
+                                        .is_ok()
+                                    {
+                                        anyhow::bail!(
+                                            "A local branch named '{}' already exists. \
+                                            Please delete or rename it first.",
+                                            local_branch_name
+                                        );
+                                    }
+
+                                    // Create the local tracking branch at the remote's commit.
+                                    let commit = remote_obj.peel_to_commit()?;
+                                    repo.branch(local_branch_name, &commit, false)?;
+
+                                    // Set upstream to track the remote branch.
+                                    if let Ok(mut branch) =
+                                        repo.find_branch(local_branch_name, git2::BranchType::Local)
+                                    {
+                                        let _ = branch.set_upstream(Some(&task_name));
+                                    }
+
+                                    (remote_obj, local_branch_name.to_string(), true)
+                                } else {
+                                    anyhow::bail!(
+                                        "Branch '{}' not found as a local or remote branch. \
+                                        Try fetching to update remote refs.",
+                                        task_name
+                                    );
+                                }
+                            }
+                        };
+
+                    // Bail if already on the target branch (use local name for tracking).
+                    if current_branch.as_deref() == Some(local_branch_name.as_str()) {
+                        anyhow::bail!("Already on branch '{}'.", local_branch_name);
                     }
-                    let obj = repo.revparse_single(&format!("refs/heads/{}", task_name))?;
+
+                    let head_ref = if is_tracking {
+                        format!("refs/heads/{}", local_branch_name)
+                    } else {
+                        format!("refs/heads/{}", task_name)
+                    };
+
                     let mut checkout_opts = git2::build::CheckoutBuilder::new();
                     checkout_opts.safe();
                     repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
-                    repo.set_head(&format!("refs/heads/{}", task_name))?;
+                    repo.set_head(&head_ref)?;
                     let data = gather_refresh_data(&repo_path)?;
-                    Ok((format!("Switched to '{}'", task_name), data))
+                    let msg = if is_tracking {
+                        format!(
+                            "Switched to new branch '{}' tracking '{}'",
+                            local_branch_name, task_name
+                        )
+                    } else {
+                        format!("Switched to '{}'", task_name)
+                    };
+                    Ok((msg, data))
                 })
                 .await;
 

@@ -186,13 +186,9 @@ impl Workspace {
             return;
         }
 
-        // ? to toggle shortcuts help (without modifiers)
-        if !any_overlay_active
-            && key == "?"
-            && !modifiers.control
-            && !modifiers.platform
-            && !modifiers.alt
-        {
+        // ? to toggle shortcuts help (without modifiers) — works even when
+        // command palette is open, since the palette shows '?' as a hint.
+        if key == "?" && !modifiers.control && !modifiers.platform && !modifiers.alt {
             self.save_focus(window, cx);
             self.overlays.shortcuts_help.update(cx, |sh, cx| {
                 sh.toggle(window, cx);

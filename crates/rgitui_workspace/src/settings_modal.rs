@@ -2168,6 +2168,40 @@ impl SettingsModal {
             section = section.child(device_card);
         }
 
+        if let DeviceFlowStatus::Error(ref err) = self.device_flow_status {
+            let err_text = err.to_string();
+            let mut err_card = Self::setting_card(cx);
+            err_card = err_card.child(
+                div()
+                    .v_flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(32.))
+                    .py(px(24.))
+                    .child(
+                        Icon::new(IconName::AlertTriangle)
+                            .size(IconSize::Large)
+                            .color(Color::Error),
+                    )
+                    .child(
+                        Label::new(err_text.clone())
+                            .size(LabelSize::Small)
+                            .color(Color::Error),
+                    )
+                    .child(
+                        Button::new("retry-gh-login", "Retry")
+                            .icon(IconName::Refresh)
+                            .size(ButtonSize::Default)
+                            .style(ButtonStyle::Filled)
+                            .color(Color::Accent)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.start_github_device_flow(cx);
+                            })),
+                    ),
+            );
+            section = section.child(err_card);
+        }
+
         let mut profiles_card = Self::setting_card(cx);
         profiles_card = profiles_card.child(Self::setting_label(
             "Profiles",
