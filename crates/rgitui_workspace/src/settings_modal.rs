@@ -60,23 +60,47 @@ struct DetectedApp {
 
 fn is_command_available(cmd: &str) -> bool {
     #[cfg(target_os = "windows")]
-    let check = {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        std::process::Command::new("where")
+    {
+        is_command_available_windows(cmd)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("which")
             .arg(cmd)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
             .status()
-    };
-    #[cfg(not(target_os = "windows"))]
-    let check = std::process::Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_command_available_windows(cmd: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let output = std::process::Command::new("cmd")
+        .args(["/c", "where", cmd])
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .status();
-    check.map(|s| s.success()).unwrap_or(false)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match output {
+        Ok(out) => {
+            let path_str = String::from_utf8_lossy(&out.stdout);
+            for line in path_str.lines() {
+                let line = line.trim();
+                if !line.is_empty()
+                    && !line.to_lowercase().ends_with(".bat")
+                    && !line.to_lowercase().ends_with(".cmd")
+                {
+                    return true;
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
 }
 
 fn detect_available_terminals() -> Vec<DetectedApp> {

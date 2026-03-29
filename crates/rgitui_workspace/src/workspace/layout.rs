@@ -1465,8 +1465,8 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                     .spawn();
 
                 if let Err(e) = spawn_result {
-                    log::error!(
-                        "Failed to open terminal '{}' with args {:?} in '{}': {}",
+                    eprintln!(
+                        "[rgitui] Failed to open terminal '{}' with args {:?} in '{}': {}",
                         program,
                         args,
                         path.display(),
@@ -1486,8 +1486,8 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                         .stderr(std::process::Stdio::null())
                         .spawn()
                     {
-                        log::error!(
-                            "Failed to open terminal '{}' in '{}': {}",
+                        eprintln!(
+                            "[rgitui] Failed to open terminal '{}' in '{}': {}",
                             program,
                             path.display(),
                             e
@@ -1502,6 +1502,7 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                 const DETACHED_PROCESS: u32 = 0x00000008;
                 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
+                // Try Windows Terminal first, then fall back to cmd.exe
                 let result = std::process::Command::new("wt.exe")
                     .arg("-d")
                     .arg(&path)
@@ -1511,12 +1512,28 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                     .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                     .spawn();
 
-                if let Err(e) = result {
-                    log::error!(
-                        "Failed to open Windows Terminal in '{}': {}",
+                if let Err(wt_err) = result {
+                    eprintln!(
+                        "[rgitui] Failed to open Windows Terminal in '{}': {} — trying cmd.exe",
                         path.display(),
-                        e
+                        wt_err
                     );
+                    // Fall back to cmd.exe
+                    let fallback = std::process::Command::new("cmd.exe")
+                        .args(["/K", "cd", "/d", &path.to_string_lossy()])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+                        .spawn();
+
+                    if let Err(cmd_err) = fallback {
+                        eprintln!(
+                            "[rgitui] Failed to open cmd.exe in '{}': {}",
+                            path.display(),
+                            cmd_err
+                        );
+                    }
                 }
             }
             #[cfg(target_os = "macos")]
@@ -1530,7 +1547,7 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                     .stderr(std::process::Stdio::null())
                     .spawn()
                 {
-                    log::error!("Failed to open Terminal.app in '{}': {}", path.display(), e);
+                    eprintln!("[rgitui] Failed to open Terminal.app in '{}': {}", path.display(), e);
                 }
             }
             #[cfg(target_os = "linux")]
@@ -1542,8 +1559,8 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                     .stderr(std::process::Stdio::null())
                     .spawn()
                 {
-                    log::error!(
-                        "Failed to open terminal emulator in '{}': {}",
+                    eprintln!(
+                        "[rgitui] Failed to open terminal emulator in '{}': {}",
                         path.display(),
                         e
                     );
@@ -1568,8 +1585,8 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                     cmd.arg(&path);
                 }
                 if let Err(e) = cmd.spawn() {
-                    log::error!(
-                        "Failed to open editor '{}' for '{}': {}",
+                    eprintln!(
+                        "[rgitui] Failed to open editor '{}' for '{}': {}",
                         program,
                         path.display(),
                         e
@@ -1586,8 +1603,8 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                         .current_dir(cwd)
                         .spawn()
                     {
-                        log::error!(
-                            "Failed to open editor '{}' in '{}': {}",
+                        eprintln!(
+                            "[rgitui] Failed to open editor '{}' in '{}': {}",
                             program,
                             cwd.display(),
                             e
@@ -1599,7 +1616,7 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
             #[cfg(target_os = "windows")]
             {
                 if let Err(e) = std::process::Command::new("code").arg(&path).spawn() {
-                    log::error!("Failed to open VS Code in '{}': {}", path.display(), e);
+                    eprintln!("[rgitui] Failed to open VS Code in '{}': {}", path.display(), e);
                 }
             }
             #[cfg(target_os = "macos")]
@@ -1615,7 +1632,7 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                             .spawn()
                     })
                 {
-                    log::error!("Failed to open editor in '{}': {}", path.display(), e);
+                    eprintln!("[rgitui] Failed to open editor in '{}': {}", path.display(), e);
                 }
             }
             #[cfg(target_os = "linux")]
@@ -1625,7 +1642,7 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                     .spawn()
                     .or_else(|_| std::process::Command::new("xdg-open").arg(&path).spawn())
                 {
-                    log::error!("Failed to open editor in '{}': {}", path.display(), e);
+                    eprintln!("[rgitui] Failed to open editor in '{}': {}", path.display(), e);
                 }
             }
         }
