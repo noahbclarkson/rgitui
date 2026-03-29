@@ -1558,7 +1558,11 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                     .stderr(std::process::Stdio::null())
                     .spawn()
                 {
-                    eprintln!("[rgitui] Failed to open Terminal.app in '{}': {}", path.display(), e);
+                    eprintln!(
+                        "[rgitui] Failed to open Terminal.app in '{}': {}",
+                        path.display(),
+                        e
+                    );
                 }
             }
             #[cfg(target_os = "linux")]
@@ -1627,7 +1631,11 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
             #[cfg(target_os = "windows")]
             {
                 if let Err(e) = std::process::Command::new("code").arg(&path).spawn() {
-                    eprintln!("[rgitui] Failed to open VS Code in '{}': {}", path.display(), e);
+                    eprintln!(
+                        "[rgitui] Failed to open VS Code in '{}': {}",
+                        path.display(),
+                        e
+                    );
                 }
             }
             #[cfg(target_os = "macos")]
@@ -1643,7 +1651,11 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                             .spawn()
                     })
                 {
-                    eprintln!("[rgitui] Failed to open editor in '{}': {}", path.display(), e);
+                    eprintln!(
+                        "[rgitui] Failed to open editor in '{}': {}",
+                        path.display(),
+                        e
+                    );
                 }
             }
             #[cfg(target_os = "linux")]
@@ -1653,7 +1665,11 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                     .spawn()
                     .or_else(|_| std::process::Command::new("xdg-open").arg(&path).spawn())
                 {
-                    eprintln!("[rgitui] Failed to open editor in '{}': {}", path.display(), e);
+                    eprintln!(
+                        "[rgitui] Failed to open editor in '{}': {}",
+                        path.display(),
+                        e
+                    );
                 }
             }
         }
