@@ -998,8 +998,12 @@ impl DiffViewer {
                     DiffLine::Addition(text) => {
                         let add_styled = Self::highlight_text(text, &mut highlighter);
                         if let Some((del_line, del_text, mut del_styled)) = pending_dels.pop() {
-                            // Pair deletion + addition → compute word-level highlights
-                            let (del_spans, add_spans) = Self::compute_word_diff(&del_text, text);
+                            // IMPORTANT: trim the raw git diff text before computing word diff.
+                            // highlight_text() calls trim_end() on the text before storing it in
+                            // StyledLine.text, so compute_word_diff must use the trimmed versions
+                            // so spans are relative to the trimmed text.
+                            let (del_spans, add_spans) =
+                                Self::compute_word_diff(&del_text.trim_end(), &text.trim_end());
                             del_styled.apply_word_highlights(
                                 del_spans,
                                 Vec::new(),
