@@ -13,7 +13,7 @@ use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow,
 use rgitui_settings::{GraphStyle, SettingsState};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    AvatarCache, Badge, CheckState, Checkbox, Icon, IconName, IconSize, Label, LabelSize,
+    AvatarCache, Badge, CheckState, Checkbox, Icon, IconName, IconSize, Label, LabelSize, Tooltip,
 };
 
 /// Events emitted by the graph view.
@@ -1448,12 +1448,18 @@ impl Render for GraphView {
                         // Author column (conditional)
                         if show_author_column {
                             row = row.child(
-                                div().w(px(120.)).flex_shrink_0().px(px(4.)).child(
-                                    Label::new(author)
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted)
-                                        .truncate(),
-                                ),
+                                div()
+                                    .id(ElementId::NamedInteger("graph-author".into(), i as u64))
+                                    .w(px(120.))
+                                    .flex_shrink_0()
+                                    .px(px(4.))
+                                    .tooltip(Tooltip::text(author.clone()))
+                                    .child(
+                                        Label::new(author)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .truncate(),
+                                    ),
                             );
                         }
 
