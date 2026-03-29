@@ -46,6 +46,9 @@ impl CommandContext {
     }
 }
 
+/// Maximum number of recent commands to remember.
+const MAX_RECENT_COMMANDS: usize = 5;
+
 /// A no-op predicate that always shows the command.
 const fn always_show(_: CommandContext) -> bool {
     true
@@ -343,6 +346,12 @@ pub struct CommandPalette {
     focus_handle: FocusHandle,
     /// Pre-computed git context for context-sensitive command filtering.
     context: CommandContext,
+    /// Recently executed commands (most recent first), for the "Recent" section.
+    recent_commands: Vec<CommandId>,
+    /// Command indices that are recent commands (subset of filtered_indices, sorted ascending).
+    recent_filter_indices: Vec<usize>,
+    /// True when the current filtered view is showing the recent-commands section.
+    showing_recent_section: bool,
 }
 
 impl EventEmitter<CommandPaletteEvent> for CommandPalette {}
@@ -576,6 +585,9 @@ impl CommandPalette {
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             context: CommandContext::none(),
+            recent_commands: Vec::new(),
+            recent_filter_indices: Vec::new(),
+            showing_recent_section: false,
         }
     }
 
@@ -653,8 +665,43 @@ impl CommandPalette {
             .collect();
 
         if query.is_empty() {
-            self.filtered_indices = valid_indices.into_iter().map(|i| (i, 0)).collect();
+            // Build recent_indices: command indices that are recent AND valid
+            let recent_filter: Vec<usize> = self
+                .recent_commands
+                .iter()
+                .filter_map(|rc| {
+                    let cmd_idx = self.commands.iter().position(|c| c.id == *rc)?;
+                    if valid_indices.contains(&cmd_idx) {
+                        Some(cmd_idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !recent_filter.is_empty() {
+                // Show recent commands first, then all others
+                self.showing_recent_section = true;
+                self.recent_filter_indices = recent_filter.clone();
+                let other_indices: Vec<(usize, usize)> = valid_indices
+                    .iter()
+                    .filter(|&&i| !recent_filter.contains(&i))
+                    .map(|&i| (i, 0))
+                    .collect();
+                let recent_as_filtered: Vec<(usize, usize)> =
+                    recent_filter.into_iter().map(|i| (i, 0)).collect();
+                self.filtered_indices = recent_as_filtered
+                    .into_iter()
+                    .chain(other_indices)
+                    .collect();
+            } else {
+                self.showing_recent_section = false;
+                self.recent_filter_indices = Vec::new();
+                self.filtered_indices = valid_indices.into_iter().map(|i| (i, 0)).collect();
+            }
         } else {
+            self.showing_recent_section = false;
+            self.recent_filter_indices = Vec::new();
             let mut scored: Vec<(usize, usize)> = valid_indices
                 .iter()
                 .filter_map(|&i| {
@@ -681,6 +728,14 @@ impl CommandPalette {
     fn select_current(&mut self, cx: &mut Context<Self>) {
         if let Some(&(idx, _)) = self.filtered_indices.get(self.selected_index) {
             let cmd_id = self.commands[idx].id;
+
+            // Track in recent commands (move to front, trim to MAX_RECENT)
+            self.recent_commands.retain(|c| *c != cmd_id);
+            self.recent_commands.insert(0, cmd_id);
+            if self.recent_commands.len() > MAX_RECENT_COMMANDS {
+                self.recent_commands.truncate(MAX_RECENT_COMMANDS);
+            }
+
             self.visible = false;
             cx.emit(CommandPaletteEvent::CommandSelected(cmd_id));
             cx.notify();
@@ -894,7 +949,51 @@ impl Render for CommandPalette {
             .max_h(px(360.))
             .track_scroll(&self.scroll_handle);
 
-            modal = modal.child(div().py(px(4.)).child(list));
+            let list_container: gpui::AnyElement = if self.showing_recent_section {
+                // Recent section: header + separator + command list
+                let recent_count = self.recent_filter_indices.len();
+                let recent_header = div()
+                    .h_flex()
+                    .w_full()
+                    .h(px(28.))
+                    .px(px(14.))
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Clock)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new("Recent Commands")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .weight(FontWeight::SEMIBOLD),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Label::new(format!(
+                            "{} command{}",
+                            recent_count,
+                            if recent_count == 1 { "" } else { "s" }
+                        ))
+                        .size(LabelSize::XSmall)
+                        .color(Color::Placeholder),
+                    );
+
+                let separator = div().h(px(1.)).mx(px(14.)).bg(colors.border_variant);
+
+                div()
+                    .v_flex()
+                    .child(recent_header)
+                    .child(separator)
+                    .child(list)
+                    .into_any_element()
+            } else {
+                div().py(px(4.)).child(list).into_any_element()
+            };
+
+            modal = modal.child(list_container);
         } else {
             modal = modal.child(
                 div()
