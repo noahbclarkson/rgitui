@@ -842,7 +842,11 @@ impl DiffViewer {
         let mut text_style = window.text_style();
         text_style.color = default_color;
 
-        if text.highlights.is_empty() {
+        // Guard: if text is empty but highlights exist, GPUI panics on
+        // StyledText::with_default_highlights (Text: '', run: len: N).
+        // This can happen with word-level diff on whitespace-only lines.
+        // Skip word highlights when text is empty.
+        if text.text.is_empty() || text.highlights.is_empty() {
             div()
                 .child(StyledText::new(text.text.clone()))
                 .into_any_element()
