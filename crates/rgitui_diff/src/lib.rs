@@ -3,8 +3,6 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use similar::{capture_diff_slices, Algorithm};
-
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
@@ -1039,83 +1037,20 @@ impl DiffViewer {
         rows
     }
 
-    /// Compute word-level diff highlights between `old_text` and `new_text`.
-    /// Returns `(deletion_spans, addition_spans)` as byte-index ranges into
-    /// each respective string.
-    ///
-    /// Uses `Algorithm::Lcs` (Longest Common Subsequence) — the only `similar`
-    /// algorithm that is fully iterative with no recursive `DiffHook` callbacks.
-    ///
-    /// **Why not Myers or Patience?** Both Myers and Patience call `diff_deadline`
-    /// recursively through the `DiffHook` interface. Patience's `equal()` callback
-    /// invokes `myers::diff_deadline` for each sub-problem between unique elements,
-    /// creating O(U) nested Myers calls where U is the number of unique elements.
-    /// With many unique words (code with distinct identifiers), this exceeds the
-    /// 512 KB stack limit on Windows background threads → STATUS_STACK_BUFFER_OVERRUN.
-    ///
-    /// LCS is O(NM) time/space and entirely iterative — it fills an LCS table
-    /// with no recursion whatsoever.
-    ///
-    /// Word-level highlighting is skipped when either text exceeds 100 words,
-    /// bounding the O(NM) cost (100×100 = 10,000 entries ≈ 80 KB heap).
+    /// DISABLED: word-level diff causes invalid text run panics in GPUI on Windows.
+    /// The root cause is not yet fully identified — the bounds clipping in
+    /// apply_word_highlights does not catch all cases.
+    /// Returns empty spans until a reliable fix is implemented.
+    #[allow(dead_code)]
     pub(crate) fn compute_word_diff(
-        old_text: &str,
-        new_text: &str,
+        _old_text: &str,
+        _new_text: &str,
     ) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-        let old_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(old_text);
-        let new_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(new_text);
-
-        if old_word_ranges.is_empty() && new_word_ranges.is_empty() {
-            return (Vec::new(), Vec::new());
-        }
-
-        // Cap at 100 words per line: LCS is O(NM) in space. 100×100 = 10,000
-        // entries × ~8 bytes ≈ 80 KB heap — well within limits and bounds both
-        // CPU and memory for any single line.
-        if old_word_ranges.len() > 100 || new_word_ranges.len() > 100 {
-            return (Vec::new(), Vec::new());
-        }
-
-        let old_wv: Vec<&str> = old_word_ranges
-            .iter()
-            .map(|r| &old_text[r.clone()])
-            .collect();
-        let new_wv: Vec<&str> = new_word_ranges
-            .iter()
-            .map(|r| &new_text[r.clone()])
-            .collect();
-
-        let ops = capture_diff_slices(Algorithm::Lcs, &old_wv, &new_wv);
-
-        let mut del_spans: Vec<Range<usize>> = Vec::new();
-        let mut add_spans: Vec<Range<usize>> = Vec::new();
-
-        for op in ops {
-            for change in op.iter_changes(&old_wv, &new_wv) {
-                match change.tag() {
-                    similar::ChangeTag::Delete => {
-                        if let Some(idx) = change.old_index() {
-                            if idx < old_word_ranges.len() {
-                                del_spans.push(old_word_ranges[idx].clone());
-                            }
-                        }
-                    }
-                    similar::ChangeTag::Insert => {
-                        if let Some(idx) = change.new_index() {
-                            if idx < new_word_ranges.len() {
-                                add_spans.push(new_word_ranges[idx].clone());
-                            }
-                        }
-                    }
-                    similar::ChangeTag::Equal => {}
-                }
-            }
-        }
-
-        (del_spans, add_spans)
+        (Vec::new(), Vec::new())
     }
 
     /// Split `text` into words, returning each word's byte-offset range.
+    #[allow(dead_code)]
     pub(crate) fn split_word_ranges(text: &str) -> Vec<Range<usize>> {
         let mut result = Vec::new();
         let mut word_start: Option<usize> = None;
@@ -2196,33 +2131,12 @@ mod tests {
         assert!(add_spans.is_empty());
     }
 
-    #[test]
-    fn compute_word_diff_simple_word_change() {
-        // "foo" → "bar": both single words, should produce one del + one add
-        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo", "bar");
-        assert_eq!(del_spans.len(), 1);
-        assert_eq!(del_spans[0].clone(), 0..3); // "foo"
-        assert_eq!(add_spans.len(), 1);
-        assert_eq!(add_spans[0].clone(), 0..3); // "bar"
-    }
-
-    #[test]
-    fn compute_word_diff_addition_only() {
-        // New text has "bar" added
-        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo", "foo bar");
-        assert!(del_spans.is_empty());
-        assert_eq!(add_spans.len(), 1);
-        assert_eq!(add_spans[0].clone(), 4..7); // "bar"
-    }
-
-    #[test]
-    fn compute_word_diff_deletion_only() {
-        // "bar" deleted from old text
-        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo bar", "foo");
-        assert_eq!(del_spans.len(), 1);
-        assert_eq!(del_spans[0].clone(), 4..7); // "bar"
-        assert!(add_spans.is_empty());
-    }
+    // #[test] // DISABLED — word-level diff disabled
+    // fn compute_word_diff_simple_word_change() { ... }
+    // #[test] // DISABLED — word-level diff disabled
+    // fn compute_word_diff_addition_only() { ... }
+    // #[test] // DISABLED — word-level diff disabled
+    // fn compute_word_diff_deletion_only() { ... }
 
     #[test]
     fn compute_word_diff_both_empty() {
@@ -2231,30 +2145,10 @@ mod tests {
         assert!(add_spans.is_empty());
     }
 
-    #[test]
-    fn compute_word_diff_word_replaced_in_sentence() {
-        // "The quick brown fox" → "The slow brown fox"
-        let (del_spans, add_spans) =
-            DiffViewer::compute_word_diff("The quick brown fox", "The slow brown fox");
-        assert_eq!(del_spans.len(), 1);
-        assert_eq!(del_spans[0].clone(), 4..9); // "quick"
-        assert_eq!(add_spans.len(), 1);
-        assert_eq!(add_spans[0].clone(), 4..8); // "slow"
-    }
-
-    #[test]
-    fn compute_word_diff_empty_old_new_has_content() {
-        // Pure addition (new file)
-        let (del_spans, add_spans) = DiffViewer::compute_word_diff("", "hello world");
-        assert!(del_spans.is_empty());
-        assert_eq!(add_spans.len(), 2); // "hello" and "world"
-    }
-
-    #[test]
-    fn compute_word_diff_old_has_content_new_empty() {
-        // Pure deletion (deleted file)
-        let (del_spans, add_spans) = DiffViewer::compute_word_diff("hello world", "");
-        assert_eq!(del_spans.len(), 2); // "hello" and "world"
-        assert!(add_spans.is_empty());
-    }
+    // #[test] // DISABLED — word-level diff disabled
+    // fn compute_word_diff_word_replaced_in_sentence() { ... }
+    // #[test] // DISABLED — word-level diff disabled
+    // fn compute_word_diff_empty_old_new_has_content() { ... }
+    // #[test] // DISABLED — word-level diff disabled
+    // fn compute_word_diff_old_has_content_new_empty() { ... }
 }
