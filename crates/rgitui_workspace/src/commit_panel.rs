@@ -1,12 +1,26 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, SharedString, Window,
+    div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, Render,
+    SharedString, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, IconName, Label, LabelSize, TextInput,
     TextInputEvent,
 };
+
+/// A co-author entry for the `Co-Authored-By:` trailer.
+#[derive(Debug, Clone)]
+struct CoAuthor {
+    name: String,
+    email: String,
+}
+
+impl CoAuthor {
+    fn trailer(&self) -> String {
+        format!("Co-Authored-By: {} <{}>", self.name, self.email)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum CommitPanelEvent {
@@ -21,6 +35,10 @@ pub struct CommitPanel {
     staged_count: usize,
     is_ai_generating: bool,
     focus_handle: FocusHandle,
+    co_authors: Vec<CoAuthor>,
+    adding_co_author: bool,
+    new_author_name: Entity<TextInput>,
+    new_author_email: Entity<TextInput>,
 }
 
 impl EventEmitter<CommitPanelEvent> for CommitPanel {}
@@ -36,6 +54,16 @@ impl CommitPanel {
             let mut ti = TextInput::new(cx).multiline();
             ti.set_placeholder("Optional extended description...");
             ti.set_font_size(px(12.0));
+            ti
+        });
+        let new_author_name = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Co-author name...");
+            ti
+        });
+        let new_author_email = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Co-author email...");
             ti
         });
 
@@ -55,6 +83,8 @@ impl CommitPanel {
                         this.description_editor
                             .update(cx, |e: &mut TextInput, cx| e.clear(cx));
                         this.amend = false;
+                        this.co_authors.clear();
+                        this.adding_co_author = false;
                         cx.notify();
                     }
                 }
@@ -75,6 +105,10 @@ impl CommitPanel {
             staged_count: 0,
             is_ai_generating: false,
             focus_handle: cx.focus_handle(),
+            co_authors: Vec::new(),
+            adding_co_author: false,
+            new_author_name,
+            new_author_email,
         }
     }
 
@@ -90,17 +124,24 @@ impl CommitPanel {
             .update(cx, |e: &mut TextInput, cx| e.set_text(summary, cx));
         self.description_editor
             .update(cx, |e: &mut TextInput, cx| e.set_text(description, cx));
+        self.co_authors.clear();
+        self.adding_co_author = false;
         cx.notify();
     }
 
     pub fn message(&self, cx: &Context<Self>) -> String {
         let summary = self.summary_editor.read(cx).text().to_string();
         let description = self.description_editor.read(cx).text().to_string();
-        if description.is_empty() {
+        let mut msg = if description.is_empty() {
             summary
         } else {
             format!("{}\n\n{}", summary, description)
+        };
+        for co_author in &self.co_authors {
+            msg.push_str("\n\n");
+            msg.push_str(&co_author.trailer());
         }
+        msg
     }
 
     pub fn set_staged_count(&mut self, count: usize, cx: &mut Context<Self>) {
@@ -131,6 +172,37 @@ impl CommitPanel {
             "Amend Commit"
         } else {
             "Commit"
+        }
+    }
+
+    fn start_adding_co_author(&mut self, cx: &mut Context<Self>) {
+        self.adding_co_author = true;
+        self.new_author_name
+            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
+        self.new_author_email
+            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
+        cx.notify();
+    }
+
+    fn cancel_adding_co_author(&mut self, cx: &mut Context<Self>) {
+        self.adding_co_author = false;
+        cx.notify();
+    }
+
+    fn confirm_add_co_author(&mut self, cx: &mut Context<Self>) {
+        let name = self.new_author_name.read(cx).text().trim().to_string();
+        let email = self.new_author_email.read(cx).text().trim().to_string();
+        if !name.is_empty() && !email.is_empty() {
+            self.co_authors.push(CoAuthor { name, email });
+            self.adding_co_author = false;
+            cx.notify();
+        }
+    }
+
+    fn remove_co_author(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.co_authors.len() {
+            self.co_authors.remove(index);
+            cx.notify();
         }
     }
 }
@@ -345,6 +417,123 @@ impl Render for CommitPanel {
                             )
                             .child(self.description_editor.clone()),
                     )
+                    // Co-authors section
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap(px(4.))
+                            .w_full()
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .items_center()
+                                    .child(
+                                        Label::new("Co-Authors")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .weight(gpui::FontWeight::MEDIUM),
+                                    )
+                                    .child(div().flex_1())
+                                    .when(!self.adding_co_author, |el| {
+                                        el.child(
+                                            Button::new("add-co-author-btn", "Add")
+                                                .icon(IconName::Plus)
+                                                .size(ButtonSize::Compact)
+                                                .style(ButtonStyle::Subtle)
+                                                .color(Color::Accent)
+                                                .on_click(cx.listener(
+                                                    |this, _: &ClickEvent, _, cx| {
+                                                        this.start_adding_co_author(cx);
+                                                    },
+                                                )),
+                                        )
+                                    }),
+                            )
+                            .when(!self.co_authors.is_empty(), |el| {
+                                el.child(div().v_flex().gap(px(2.)).children(
+                                    self.co_authors.iter().enumerate().map(|(i, ca)| {
+                                        let idx = i;
+                                        div()
+                                            .h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                rgitui_ui::Icon::new(IconName::User)
+                                                    .size(rgitui_ui::IconSize::XSmall)
+                                                    .color(Color::Muted),
+                                            )
+                                            .child(
+                                                Label::new(format!("{} <{}>", ca.name, ca.email))
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Default),
+                                            )
+                                            .child(
+                                                Button::new(
+                                                    ElementId::NamedInteger(
+                                                        "remove-co-author".into(),
+                                                        idx as u64,
+                                                    ),
+                                                    "",
+                                                )
+                                                .icon(IconName::X)
+                                                .size(ButtonSize::Compact)
+                                                .style(ButtonStyle::Subtle)
+                                                .color(Color::Muted)
+                                                .on_click(cx.listener(
+                                                    move |this, _: &ClickEvent, _, cx| {
+                                                        this.remove_co_author(idx, cx);
+                                                    },
+                                                )),
+                                            )
+                                    }),
+                                ))
+                            })
+                            .when(self.adding_co_author, |el| {
+                                el.child(
+                                    div()
+                                        .v_flex()
+                                        .gap(px(4.))
+                                        .p(px(6.))
+                                        .bg(colors.ghost_element_hover)
+                                        .rounded(px(4.))
+                                        .child(div().h_flex().gap_2().w_full().children([
+                                            self.new_author_name.clone(),
+                                            self.new_author_email.clone(),
+                                        ]))
+                                        .child(
+                                            div()
+                                                .h_flex()
+                                                .gap_2()
+                                                .child(
+                                                    Button::new(
+                                                        "confirm-co-author-btn",
+                                                        "Add Co-Author",
+                                                    )
+                                                    .size(ButtonSize::Compact)
+                                                    .style(ButtonStyle::Filled)
+                                                    .color(Color::Accent)
+                                                    .on_click(cx.listener(
+                                                        |this, _: &ClickEvent, _, cx| {
+                                                            this.confirm_add_co_author(cx);
+                                                        },
+                                                    )),
+                                                )
+                                                .child(
+                                                    Button::new("cancel-co-author-btn", "Cancel")
+                                                        .size(ButtonSize::Compact)
+                                                        .style(ButtonStyle::Subtle)
+                                                        .color(Color::Muted)
+                                                        .on_click(cx.listener(
+                                                            |this, _: &ClickEvent, _, cx| {
+                                                                this.cancel_adding_co_author(cx);
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
+                                )
+                            }),
+                    )
                     .child(
                         div()
                             .h_flex()
@@ -399,6 +588,7 @@ impl Render for CommitPanel {
                                                         .update(cx, |e: &mut TextInput, cx| {
                                                             e.clear(cx)
                                                         });
+                                                    this.co_authors.clear();
                                                     cx.notify();
                                                 },
                                             )),
@@ -441,10 +631,41 @@ impl Render for CommitPanel {
                                         this.description_editor
                                             .update(cx, |e: &mut TextInput, cx| e.clear(cx));
                                         this.amend = false;
+                                        this.co_authors.clear();
+                                        this.adding_co_author = false;
                                         cx.notify();
                                     })),
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_co_author_trailer() {
+        let ca = CoAuthor {
+            name: "Alice Smith".into(),
+            email: "alice@example.com".into(),
+        };
+        assert_eq!(
+            ca.trailer(),
+            "Co-Authored-By: Alice Smith <alice@example.com>"
+        );
+    }
+
+    #[test]
+    fn test_co_author_trailer_special_chars() {
+        let ca = CoAuthor {
+            name: "Bob Jr.".into(),
+            email: "bob+tag@example.com".into(),
+        };
+        assert_eq!(
+            ca.trailer(),
+            "Co-Authored-By: Bob Jr. <bob+tag@example.com>"
+        );
     }
 }
