@@ -337,17 +337,12 @@ pub struct CommandPalette {
     query_editor: Entity<TextInput>,
     commands: Vec<PaletteCommand>,
     /// Each entry is `(command_index, fuzzy_score)`, sorted by score descending.
-    /// When the query is empty, recent commands are prepended with score 1000.
     filtered_indices: Vec<(usize, usize)>,
-    /// Number of recent commands prepended to filtered_indices (query == empty only).
-    recent_count: usize,
     selected_index: usize,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     /// Pre-computed git context for context-sensitive command filtering.
     context: CommandContext,
-    /// Recently invoked command IDs (most recent first, max 8).
-    recent_commands: Vec<CommandId>,
 }
 
 impl EventEmitter<CommandPaletteEvent> for CommandPalette {}
@@ -577,12 +572,10 @@ impl CommandPalette {
             query_editor,
             commands,
             filtered_indices,
-            recent_count: 0,
             selected_index: 0,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             context: CommandContext::none(),
-            recent_commands: Vec::new(),
         }
     }
 
@@ -615,19 +608,6 @@ impl CommandPalette {
     /// Called by the workspace whenever the project state changes.
     pub fn set_context(&mut self, context: CommandContext) {
         self.context = context;
-    }
-
-    /// Record that a command was invoked so it appears in the Recent list.
-    /// Called by the workspace after executing any command.
-    pub fn record_invocation(&mut self, cmd: CommandId) {
-        // Remove if already present (will be re-added at front)
-        self.recent_commands.retain(|id| *id != cmd);
-        // Prepend as most recent
-        self.recent_commands.insert(0, cmd);
-        // Cap at 8 entries
-        if self.recent_commands.len() > 8 {
-            self.recent_commands.truncate(8);
-        }
     }
 
     /// Fuzzy subsequence match. Returns a score (higher = better) or None if
@@ -673,39 +653,8 @@ impl CommandPalette {
             .collect();
 
         if query.is_empty() {
-            let valid_set: std::collections::HashSet<usize> =
-                valid_indices.iter().copied().collect();
-
-            // Build recent command indices (only those whose predicates still pass)
-            let recent_idx: Vec<usize> = self
-                .recent_commands
-                .iter()
-                .filter_map(|cmd_id| self.commands.iter().position(|cmd| cmd.id == *cmd_id))
-                .filter(|&i| valid_set.contains(&i))
-                .collect();
-
-            // Build non-recent indices in original order
-            let recent_idx_set: std::collections::HashSet<usize> =
-                recent_idx.iter().copied().collect();
-            let non_recent: Vec<usize> = valid_indices
-                .into_iter()
-                .filter(|i| !recent_idx_set.contains(i))
-                .collect();
-
-            self.recent_count = recent_idx.len();
-
-            // Recent commands get score 1000 (highest), non-recent get 0
-            let recent_entries: Vec<(usize, usize)> =
-                recent_idx.into_iter().map(|i| (i, 1000)).collect();
-            let non_recent_entries: Vec<(usize, usize)> =
-                non_recent.into_iter().map(|i| (i, 0)).collect();
-
-            self.filtered_indices = recent_entries
-                .into_iter()
-                .chain(non_recent_entries.into_iter())
-                .collect();
+            self.filtered_indices = valid_indices.into_iter().map(|i| (i, 0)).collect();
         } else {
-            self.recent_count = 0;
             let mut scored: Vec<(usize, usize)> = valid_indices
                 .iter()
                 .filter_map(|&i| {
@@ -725,9 +674,7 @@ impl CommandPalette {
             scored.sort_by(|a, b| b.1.cmp(&a.1));
             self.filtered_indices = scored;
         }
-        // Clamp selected_index to valid range
-        let max_idx = self.filtered_indices.len().saturating_sub(1);
-        self.selected_index = self.selected_index.min(max_idx);
+        self.selected_index = 0;
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
     }
 
@@ -849,7 +796,6 @@ impl Render for CommandPalette {
         );
 
         if filtered_count > 0 {
-            let recent_count = self.recent_count;
             let selected_index = self.selected_index;
             let selected_bg = colors.element_selected;
             let hover_bg = colors.ghost_element_hover;
@@ -871,37 +817,13 @@ impl Render for CommandPalette {
                             let (cmd_idx, _score) = filtered[display_idx];
                             let cmd = &commands[cmd_idx];
                             let is_selected = display_idx == selected_index;
-                            let is_recent = display_idx < recent_count;
-                            let is_post_recent_separator =
-                                recent_count > 0 && display_idx == recent_count;
 
                             let label: SharedString = cmd.label.into();
                             let cmd_id = cmd.id;
-                            // Use clock icon for recent items, category icon for others
-                            let icon = if is_recent {
-                                IconName::Clock
-                            } else {
-                                CommandPalette::category_icon(cmd.category)
-                            };
+                            let icon = CommandPalette::category_icon(cmd.category);
                             let shortcut = cmd.shortcut;
 
                             let view_click = view.clone();
-
-                            // Separator between recent and all commands
-                            if is_post_recent_separator {
-                                return div()
-                                    .id(ElementId::NamedInteger(
-                                        "palette-sep".into(),
-                                        display_idx as u64,
-                                    ))
-                                    .h_flex()
-                                    .w_full()
-                                    .h(px(1.))
-                                    .mx(px(14.))
-                                    .mb(px(2.))
-                                    .bg(colors.border_variant)
-                                    .into_any_element();
-                            }
 
                             let mut row = div()
                                 .id(ElementId::NamedInteger(
@@ -971,29 +893,6 @@ impl Render for CommandPalette {
             .h(px(list_height))
             .max_h(px(360.))
             .track_scroll(&self.scroll_handle);
-
-            // "Recent Commands" header shown when query is empty and recents exist
-            if query_is_empty && recent_count > 0 {
-                modal = modal.child(
-                    div()
-                        .id("palette-recent-header")
-                        .h_flex()
-                        .w_full()
-                        .h(px(24.))
-                        .px(px(14.))
-                        .items_center()
-                        .child(
-                            Icon::new(IconName::Clock)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                        .child(
-                            Label::new("Recent")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
-                        ),
-                );
-            }
 
             modal = modal.child(div().py(px(4.)).child(list));
         } else {

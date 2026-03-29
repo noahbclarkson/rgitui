@@ -6,10 +6,6 @@ use super::{BottomPanelMode, ProjectTab, Workspace};
 
 impl Workspace {
     pub(super) fn execute_command(&mut self, cmd: CommandId, cx: &mut Context<Self>) {
-        // Record command invocation for recent-commands list in the palette.
-        self.overlays.command_palette.update(cx, |cp, _cx| {
-            cp.record_invocation(cmd);
-        });
         match cmd {
             CommandId::Settings => {
                 self.overlays.settings_modal.update(cx, |sm, cx| {
