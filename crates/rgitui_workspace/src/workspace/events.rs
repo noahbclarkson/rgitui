@@ -982,6 +982,11 @@ impl CommitDiffCache {
         }
     }
 
+    /// Returns true if the cache contains an entry for this OID (without LRU update).
+    fn contains(&self, oid: &git2::Oid) -> bool {
+        self.map.contains_key(oid)
+    }
+
     /// Insert with LRU eviction. Drops oldest entry when at capacity.
     fn insert(&mut self, oid: git2::Oid, diff: Arc<rgitui_git::CommitDiff>) {
         if self.map.len() >= self.cap {
@@ -1015,12 +1020,56 @@ pub(super) fn subscribe_graph(
                 GraphViewEvent::CommitSelected(oid) => {
                     let commit_oid = *oid;
                     let proj = project.read(cx);
-                    let commit_info = proj
-                        .recent_commits()
-                        .iter()
-                        .find(|c| c.oid == commit_oid)
-                        .cloned();
+                    let commits = proj.recent_commits();
+                    let commit_info = commits.iter().find(|c| c.oid == commit_oid).cloned();
                     let repo_path = proj.repo_path().to_path_buf();
+
+                    // Prefetch diffs for adjacent commits in the background.
+                    // Users often navigate sequentially — having neighbors pre-cached
+                    // makes scrolling through history feel instant.
+                    if let Some(idx) = commits.iter().position(|c| c.oid == commit_oid) {
+                        let mut prefetch_oids = Vec::new();
+                        if let Some(prev) = idx.checked_sub(1) {
+                            if let Some(c) = commits.get(prev) {
+                                prefetch_oids.push(c.oid);
+                            }
+                        }
+                        if let Some(next) = idx.checked_add(1) {
+                            if let Some(c) = commits.get(next) {
+                                prefetch_oids.push(c.oid);
+                            }
+                        }
+                        if !prefetch_oids.is_empty() {
+                            let prefetch_repo_path = repo_path.clone();
+                            let prefetch_cache = diff_cache.clone();
+                            cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                                for prefetch_oid in prefetch_oids {
+                                    // Skip if already cached.
+                                    {
+                                        let cached = prefetch_cache.lock().unwrap();
+                                        if cached.contains(&prefetch_oid) {
+                                            continue;
+                                        }
+                                    }
+                                    let repo_path = prefetch_repo_path.clone();
+                                    let result = cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            rgitui_git::compute_commit_diff(
+                                                &repo_path,
+                                                prefetch_oid,
+                                            )
+                                        })
+                                        .await;
+                                    if let Ok(commit_diff) = result {
+                                        let diff_arc = Arc::new(commit_diff);
+                                        prefetch_cache.lock().unwrap().insert(prefetch_oid, diff_arc);
+                                    }
+                                }
+                            })
+                            .detach();
+                        }
+                    }
 
                     // Check cache synchronously — instant display on cache hit.
                     let cached = diff_cache.lock().unwrap().get(&commit_oid);
