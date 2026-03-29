@@ -1028,6 +1028,13 @@ impl DiffViewer {
     ///
     /// Uses `similar::capture_diff_slices` (word-tokenized) to identify changed
     /// word spans. Deleted words get red highlights; inserted words get green.
+    ///
+    /// Uses `Algorithm::Patience` instead of Myers — Patience tends to produce
+    /// shorter edit scripts with better unique-element matching, reducing the
+    /// chance of pathological behavior on very different texts. Word-level
+    /// highlighting is also skipped when either text exceeds 500 words to bound
+    /// stack usage and prevent STATUS_STACK_BUFFER_OVERRUN on the background
+    /// thread's limited stack (512 KB on Windows).
     pub(crate) fn compute_word_diff(
         old_text: &str,
         new_text: &str,
@@ -1036,6 +1043,12 @@ impl DiffViewer {
         let new_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(new_text);
 
         if old_word_ranges.is_empty() && new_word_ranges.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        // Cap at 500 words per line to prevent stack overflow in the diff
+        // algorithm on the background thread's limited stack (512 KB).
+        if old_word_ranges.len() > 500 || new_word_ranges.len() > 500 {
             return (Vec::new(), Vec::new());
         }
 
@@ -1048,7 +1061,7 @@ impl DiffViewer {
             .map(|r| &new_text[r.clone()])
             .collect();
 
-        let ops = capture_diff_slices(similar::Algorithm::Myers, &old_wv, &new_wv);
+        let ops = capture_diff_slices(similar::Algorithm::Patience, &old_wv, &new_wv);
 
         let mut del_spans: Vec<Range<usize>> = Vec::new();
         let mut add_spans: Vec<Range<usize>> = Vec::new();
