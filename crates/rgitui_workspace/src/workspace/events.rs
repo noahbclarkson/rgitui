@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use gpui::{Context, Entity, SharedString};
@@ -963,6 +966,9 @@ pub(super) fn subscribe_graph(
     let project = project.clone();
     let diff_viewer = diff_viewer.clone();
     let detail_panel_ref = detail_panel.clone();
+    // Arc<Mutex<HashMap>> is Send so it can be captured in the async block.
+    let diff_cache: Arc<Mutex<HashMap<git2::Oid, Arc<rgitui_git::CommitDiff>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     cx.subscribe(graph, {
         move |this, _graph, event: &GraphViewEvent, cx| {
@@ -976,8 +982,30 @@ pub(super) fn subscribe_graph(
                         .find(|c| c.oid == commit_oid)
                         .cloned();
                     let repo_path = proj.repo_path().to_path_buf();
+
+                    // Check cache synchronously — instant display on cache hit.
+                    if let Some(cached) = diff_cache.lock().unwrap().get(&commit_oid) {
+                        let dv = diff_viewer.clone();
+                        let dp = detail_panel_ref.clone();
+                        let cached = cached.clone();
+                        if let Some(info) = &commit_info {
+                            dp.update(cx, |dp, cx| {
+                                dp.set_commit(info.clone(), (*cached).clone(), cx)
+                            });
+                        }
+                        if let Some(first_file) = cached.files.first() {
+                            let path = first_file.path.display().to_string();
+                            dv.update(cx, |dv, cx| {
+                                dv.set_diff(first_file.clone(), path, false, cx)
+                            });
+                        }
+                        return;
+                    }
+
                     let dv = diff_viewer.clone();
                     let dp = detail_panel_ref.clone();
+                    let cache = diff_cache.clone();
+
                     cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                         let result = cx
                             .background_executor()
@@ -985,8 +1013,13 @@ pub(super) fn subscribe_graph(
                                 rgitui_git::compute_commit_diff(&repo_path, commit_oid)
                             })
                             .await;
+
                         cx.update(|cx| match result {
                             Ok(commit_diff) => {
+                                let diff_arc = Arc::new(commit_diff.clone());
+                                // Cache the computed diff for future instant loads.
+                                cache.lock().unwrap().insert(commit_oid, diff_arc.clone());
+
                                 if let Some(info) = commit_info {
                                     dp.update(cx, |dp, cx| {
                                         dp.set_commit(info, commit_diff.clone(), cx)
