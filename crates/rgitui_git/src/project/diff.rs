@@ -134,46 +134,58 @@ pub(crate) fn generate_hunk_patch_for_repo(
     Ok(patch_text)
 }
 
+/// Parse a git2::Diff into a CommitDiff using structured Patch iteration.
+/// This is equivalent to the print-callback approach but uses git2::Patch
+/// for cleaner per-file access, enabling future parallelization.
 pub(crate) fn parse_multi_file_diff(diff: &git2::Diff) -> Result<CommitDiff> {
     let stats = diff.stats()?;
-    let mut files: Vec<FileDiff> = Vec::new();
-    let mut current_hunks: Vec<DiffHunk> = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_additions: usize = 0;
-    let mut current_deletions: usize = 0;
-    let mut current_kind = FileChangeKind::Modified;
+    let num_patches = diff.deltas().len();
 
-    diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-        let delta_path = delta
-            .new_file()
-            .path()
-            .unwrap_or(Path::new(""))
-            .to_path_buf();
+    let mut files: Vec<FileDiff> = Vec::with_capacity(num_patches);
 
-        if current_path.as_ref() != Some(&delta_path) {
-            if let Some(prev_path) = current_path.take() {
-                files.push(FileDiff {
-                    path: prev_path,
-                    hunks: std::mem::take(&mut current_hunks),
-                    additions: current_additions,
-                    deletions: current_deletions,
-                    kind: current_kind,
-                });
-            }
-            current_path = Some(delta_path);
-            current_additions = 0;
-            current_deletions = 0;
-            current_kind = delta_to_file_change_kind(delta.status());
+    for i in 0..num_patches {
+        if let Some(mut patch) = git2::Patch::from_diff(diff, i)? {
+            let file_diff = parse_single_patch(&mut patch)?;
+            files.push(file_diff);
         }
+    }
 
-        if let Some(hunk) = hunk {
+    Ok(CommitDiff {
+        total_additions: stats.insertions(),
+        total_deletions: stats.deletions(),
+        files,
+    })
+}
+
+/// Parse a single git2::Patch into a FileDiff.
+/// Uses the patch's print callback to extract hunk/line content.
+fn parse_single_patch(patch: &mut git2::Patch) -> Result<FileDiff> {
+    let path = patch
+        .delta()
+        .new_file()
+        .path()
+        .unwrap_or(Path::new(""))
+        .to_path_buf();
+    let kind = delta_to_file_change_kind(patch.delta().status());
+    let (_, additions, deletions) = patch.line_stats().unwrap_or((0, 0, 0));
+
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current_hunk: Option<DiffHunk> = None;
+
+    // Use the patch's embedded print callback to extract hunk/line content.
+    // patch.print() processes THIS PATCH ONLY (not the full diff), giving us
+    // per-file isolation without needing a separate diff per file.
+    patch.print(&mut |_delta, hunk_range, line| {
+        if let Some(hunk) = hunk_range {
             let header = String::from_utf8_lossy(hunk.header()).to_string();
-            let expected_start = hunk.new_start();
-            let needs_new = current_hunks
-                .last()
-                .is_none_or(|h| h.new_start != expected_start || h.header != header);
+            let needs_new = current_hunk
+                .as_ref()
+                .is_none_or(|h| h.new_start != hunk.new_start() || h.header != header);
             if needs_new {
-                current_hunks.push(DiffHunk {
+                if let Some(prev) = current_hunk.take() {
+                    hunks.push(prev);
+                }
+                current_hunk = Some(DiffHunk {
                     old_start: hunk.old_start(),
                     old_lines: hunk.old_lines(),
                     new_start: hunk.new_start(),
@@ -184,45 +196,30 @@ pub(crate) fn parse_multi_file_diff(diff: &git2::Diff) -> Result<CommitDiff> {
             }
         }
 
-        let content = String::from_utf8_lossy(line.content()).to_string();
-        match line.origin() {
-            '+' => {
-                if let Some(h) = current_hunks.last_mut() {
-                    h.lines.push(DiffLine::Addition(content));
-                }
-                current_additions += 1;
+        if let Some(ref mut hunk) = current_hunk {
+            // delta is the same for all lines in a patch-level print
+            let content = String::from_utf8_lossy(line.content()).to_string();
+            match line.origin() {
+                '+' => hunk.lines.push(DiffLine::Addition(content)),
+                '-' => hunk.lines.push(DiffLine::Deletion(content)),
+                ' ' => hunk.lines.push(DiffLine::Context(content)),
+                _ => {}
             }
-            '-' => {
-                if let Some(h) = current_hunks.last_mut() {
-                    h.lines.push(DiffLine::Deletion(content));
-                }
-                current_deletions += 1;
-            }
-            ' ' => {
-                if let Some(h) = current_hunks.last_mut() {
-                    h.lines.push(DiffLine::Context(content));
-                }
-            }
-            _ => {}
         }
 
         true
     })?;
 
-    if let Some(path) = current_path {
-        files.push(FileDiff {
-            path,
-            hunks: current_hunks,
-            additions: current_additions,
-            deletions: current_deletions,
-            kind: current_kind,
-        });
+    if let Some(hunk) = current_hunk {
+        hunks.push(hunk);
     }
 
-    Ok(CommitDiff {
-        total_additions: stats.insertions(),
-        total_deletions: stats.deletions(),
-        files,
+    Ok(FileDiff {
+        path,
+        hunks,
+        additions,
+        deletions,
+        kind,
     })
 }
 
