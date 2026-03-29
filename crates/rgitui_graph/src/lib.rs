@@ -84,6 +84,8 @@ pub struct GraphView {
     show_author_column: bool,
     show_date_column: bool,
     show_avatars: bool,
+    show_graph_lanes: bool,
+    show_ref_badges: bool,
     /// Cached bounds of the graph container div, used to convert window-relative
     /// click positions to container-relative coordinates for context menu placement.
     container_bounds: Bounds<Pixels>,
@@ -143,6 +145,8 @@ impl GraphView {
             show_author_column: true,
             show_date_column: true,
             show_avatars: true,
+            show_graph_lanes: true,
+            show_ref_badges: true,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
         }
     }
@@ -721,6 +725,8 @@ impl Render for GraphView {
         let show_date_column = self.show_date_column;
         let show_full_hash = self.show_full_hash;
         let show_avatars = self.show_avatars;
+        let show_graph_lanes = self.show_graph_lanes;
+        let show_ref_badges = self.show_ref_badges;
 
         // Header row (not virtualized — always visible)
         let view_settings_toggle = cx.weak_entity();
@@ -735,26 +741,28 @@ impl Render for GraphView {
             .bg(colors.toolbar_background)
             .border_b_1()
             .border_color(border_color)
-            .child(
-                div()
-                    .w(px(graph_col_width))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .h_flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(
-                        Icon::new(IconName::GitCommit)
-                            .size(IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        Label::new("Graph")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted)
-                            .weight(gpui::FontWeight::SEMIBOLD),
-                    ),
-            )
+            .when(show_graph_lanes, |el| {
+                el.child(
+                    div()
+                        .w(px(graph_col_width))
+                        .flex_shrink_0()
+                        .overflow_hidden()
+                        .h_flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            Icon::new(IconName::GitCommit)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Graph")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted)
+                                .weight(gpui::FontWeight::SEMIBOLD),
+                        ),
+                )
+            })
             .child(
                 div().w(px(80.)).flex_shrink_0().child(
                     Label::new("Hash")
@@ -881,6 +889,7 @@ impl Render for GraphView {
                                 view: view.clone(),
                                 show_author_column,
                                 show_date_column,
+                                show_graph_lanes,
                                 compact_mul,
                             });
                         }
@@ -1021,6 +1030,7 @@ impl Render for GraphView {
                             .child(div().w(px(5.)).flex_shrink_0());
 
                         // Graph column with canvas + avatar overlay
+                        if show_graph_lanes {
                         row = row.child(
                             div()
                                 .relative()
@@ -1393,6 +1403,7 @@ impl Render for GraphView {
                                     avatar_container
                                 })),
                         );
+                        }
 
                         row = row.child(
                             div().w(px(80.)).flex_shrink_0().child(
@@ -1413,10 +1424,12 @@ impl Render for GraphView {
                                 .gap(px(4.))
                                 .overflow_x_hidden();
 
-                            for badge in ref_badges {
-                                message_col = message_col.child(
-                                    div().flex_shrink_0().child(badge),
-                                );
+                            if show_ref_badges {
+                                for badge in ref_badges {
+                                    message_col = message_col.child(
+                                        div().flex_shrink_0().child(badge),
+                                    );
+                                }
                             }
 
                             let summary_label = if is_head_row {
@@ -1985,6 +1998,8 @@ impl Render for GraphView {
             let view_author = cx.weak_entity();
             let view_date = cx.weak_entity();
             let view_avatars = cx.weak_entity();
+            let view_graph_lanes = cx.weak_entity();
+            let view_ref_badges = cx.weak_entity();
 
             let full_hash_state = if self.show_full_hash {
                 CheckState::Checked
@@ -2002,6 +2017,16 @@ impl Render for GraphView {
                 CheckState::Unchecked
             };
             let avatars_state = if self.show_avatars {
+                CheckState::Checked
+            } else {
+                CheckState::Unchecked
+            };
+            let graph_lanes_state = if self.show_graph_lanes {
+                CheckState::Checked
+            } else {
+                CheckState::Unchecked
+            };
+            let ref_badges_state = if self.show_ref_badges {
                 CheckState::Checked
             } else {
                 CheckState::Unchecked
@@ -2132,6 +2157,59 @@ impl Render for GraphView {
                         })
                         .child(Checkbox::new("cb-avatars", avatars_state))
                         .child(Label::new("Show avatars").size(LabelSize::XSmall)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(1.))
+                        .my(px(2.))
+                        .bg(colors.border_variant),
+                )
+                .child(
+                    div()
+                        .id("toggle-graph-lanes")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_graph_lanes
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_graph_lanes = !this.show_graph_lanes;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-graph-lanes", graph_lanes_state))
+                        .child(Label::new("Show graph lanes").size(LabelSize::XSmall)),
+                )
+                .child(
+                    div()
+                        .id("toggle-ref-badges")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_ref_badges
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_ref_badges = !this.show_ref_badges;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-ref-badges", ref_badges_state))
+                        .child(Label::new("Show branch/tag badges").size(LabelSize::XSmall)),
                 );
 
             container = container.child(popover);
@@ -2164,6 +2242,7 @@ struct WorkingTreeRowParams {
     view: WeakEntity<GraphView>,
     show_author_column: bool,
     show_date_column: bool,
+    show_graph_lanes: bool,
     compact_mul: f32,
 }
 
@@ -2190,6 +2269,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         view,
         show_author_column,
         show_date_column,
+        show_graph_lanes,
         compact_mul,
     } = params;
     let bg = if selected {
@@ -2276,96 +2356,104 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         .child(div().w(px(3.)).h_full().flex_shrink_0().bg(left_tab_color))
         .child(div().w(px(5.)).flex_shrink_0())
         // Graph column with canvas (hollow circle node + connecting line down)
-        .child(
-            div()
-                .relative()
-                .w(px(graph_width))
-                .flex_shrink_0()
-                .overflow_x_hidden()
-                .h_full()
-                .child(
-                    canvas(
-                        |_bounds: Bounds<Pixels>, _window: &mut Window, _cx: &mut App| {},
-                        move |bounds: Bounds<Pixels>, _: (), window: &mut Window, _cx: &mut App| {
-                            let origin = bounds.origin;
-                            let h = bounds.size.height;
-                            let mid_y = px(row_height / 2.0);
-                            let node_x_px = px(node_x);
-                            let cx_x = origin.x + node_x_px;
-                            let cy_y = origin.y + mid_y;
+        .when(show_graph_lanes, |el| {
+            el.child(
+                div()
+                    .relative()
+                    .w(px(graph_width))
+                    .flex_shrink_0()
+                    .overflow_x_hidden()
+                    .h_full()
+                    .child(
+                        canvas(
+                            |_bounds: Bounds<Pixels>, _window: &mut Window, _cx: &mut App| {},
+                            move |bounds: Bounds<Pixels>,
+                                  _: (),
+                                  window: &mut Window,
+                                  _cx: &mut App| {
+                                let origin = bounds.origin;
+                                let h = bounds.size.height;
+                                let mid_y = px(row_height / 2.0);
+                                let node_x_px = px(node_x);
+                                let cx_x = origin.x + node_x_px;
+                                let cy_y = origin.y + mid_y;
 
-                            // Vertical line from node center to bottom (connects to HEAD row below)
-                            let mut line_down = PathBuilder::stroke(px(2.0));
-                            line_down.move_to(point(cx_x, cy_y));
-                            line_down.line_to(point(cx_x, origin.y + h + px(2.0)));
-                            if let Ok(built) = line_down.build() {
-                                window.paint_path(built, node_color);
-                            }
-
-                            // Background ring to occlude lines behind the dot
-                            let ring_r = 13.0_f32 * compact_mul;
-                            let steps = 32_usize;
-                            let mut ring = PathBuilder::fill();
-                            for s in 0..steps {
-                                let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
-                                let x = cx_x + px(ring_r * angle.cos());
-                                let y = cy_y + px(ring_r * angle.sin());
-                                if s == 0 {
-                                    ring.move_to(point(x, y));
-                                } else {
-                                    ring.line_to(point(x, y));
+                                // Vertical line from node center to bottom (connects to HEAD row below)
+                                let mut line_down = PathBuilder::stroke(px(2.0));
+                                line_down.move_to(point(cx_x, cy_y));
+                                line_down.line_to(point(cx_x, origin.y + h + px(2.0)));
+                                if let Ok(built) = line_down.build() {
+                                    window.paint_path(built, node_color);
                                 }
-                            }
-                            ring.close();
-                            if let Ok(built_ring) = ring.build() {
-                                window.paint_path(built_ring, panel_bg);
-                            }
 
-                            // Hollow circle (stroke only, no fill) to distinguish from commits
-                            let dot_radius = 5.0_f32 * compact_mul;
-                            let mut circle = PathBuilder::stroke(px(2.0));
-                            for s in 0..=steps {
-                                let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
-                                let x = cx_x + px(dot_radius * angle.cos());
-                                let y = cy_y + px(dot_radius * angle.sin());
-                                if s == 0 {
-                                    circle.move_to(point(x, y));
-                                } else {
-                                    circle.line_to(point(x, y));
+                                // Background ring to occlude lines behind the dot
+                                let ring_r = 13.0_f32 * compact_mul;
+                                let steps = 32_usize;
+                                let mut ring = PathBuilder::fill();
+                                for s in 0..steps {
+                                    let angle =
+                                        (s as f32) * std::f32::consts::TAU / (steps as f32);
+                                    let x = cx_x + px(ring_r * angle.cos());
+                                    let y = cy_y + px(ring_r * angle.sin());
+                                    if s == 0 {
+                                        ring.move_to(point(x, y));
+                                    } else {
+                                        ring.line_to(point(x, y));
+                                    }
                                 }
-                            }
-                            if let Ok(built_circle) = circle.build() {
-                                window.paint_path(built_circle, node_color);
-                            }
+                                ring.close();
+                                if let Ok(built_ring) = ring.build() {
+                                    window.paint_path(built_ring, panel_bg);
+                                }
 
-                            // Dashed outer ring to further distinguish
-                            let outer_r = dot_radius + 3.0 * compact_mul;
-                            let dash_count = 8_usize;
-                            let arc_per_dash = std::f32::consts::TAU / (dash_count as f32 * 2.0);
-                            for d in 0..dash_count {
-                                let start_angle =
-                                    d as f32 * std::f32::consts::TAU / dash_count as f32;
-                                let end_angle = start_angle + arc_per_dash;
-                                let mut dash = PathBuilder::stroke(px(1.5));
-                                let sx = cx_x + px(outer_r * start_angle.cos());
-                                let sy = cy_y + px(outer_r * start_angle.sin());
-                                dash.move_to(point(sx, sy));
-                                let ex = cx_x + px(outer_r * end_angle.cos());
-                                let ey = cy_y + px(outer_r * end_angle.sin());
-                                dash.line_to(point(ex, ey));
-                                if let Ok(built_dash) = dash.build() {
-                                    let dash_color = gpui::Hsla {
-                                        a: 0.6,
-                                        ..node_color
-                                    };
-                                    window.paint_path(built_dash, dash_color);
+                                // Hollow circle (stroke only, no fill) to distinguish from commits
+                                let dot_radius = 5.0_f32 * compact_mul;
+                                let mut circle = PathBuilder::stroke(px(2.0));
+                                for s in 0..=steps {
+                                    let angle =
+                                        (s as f32) * std::f32::consts::TAU / (steps as f32);
+                                    let x = cx_x + px(dot_radius * angle.cos());
+                                    let y = cy_y + px(dot_radius * angle.sin());
+                                    if s == 0 {
+                                        circle.move_to(point(x, y));
+                                    } else {
+                                        circle.line_to(point(x, y));
+                                    }
                                 }
-                            }
-                        },
-                    )
-                    .size_full(),
-                ),
-        )
+                                if let Ok(built_circle) = circle.build() {
+                                    window.paint_path(built_circle, node_color);
+                                }
+
+                                // Dashed outer ring to further distinguish
+                                let outer_r = dot_radius + 3.0 * compact_mul;
+                                let dash_count = 8_usize;
+                                let arc_per_dash =
+                                    std::f32::consts::TAU / (dash_count as f32 * 2.0);
+                                for d in 0..dash_count {
+                                    let start_angle =
+                                        d as f32 * std::f32::consts::TAU / dash_count as f32;
+                                    let end_angle = start_angle + arc_per_dash;
+                                    let mut dash = PathBuilder::stroke(px(1.5));
+                                    let sx = cx_x + px(outer_r * start_angle.cos());
+                                    let sy = cy_y + px(outer_r * start_angle.sin());
+                                    dash.move_to(point(sx, sy));
+                                    let ex = cx_x + px(outer_r * end_angle.cos());
+                                    let ey = cy_y + px(outer_r * end_angle.sin());
+                                    dash.line_to(point(ex, ey));
+                                    if let Ok(built_dash) = dash.build() {
+                                        let dash_color = gpui::Hsla {
+                                            a: 0.6,
+                                            ..node_color
+                                        };
+                                        window.paint_path(built_dash, dash_color);
+                                    }
+                                }
+                            },
+                        )
+                        .size_full(),
+                    ),
+            )
+        })
         .child(
             div()
                 .w(px(80.))

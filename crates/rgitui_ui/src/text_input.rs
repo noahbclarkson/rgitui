@@ -496,24 +496,6 @@ impl Render for TextInput {
             }
         }
 
-        // Compute the layout from UNMASKED text for correct cursor positioning.
-        // When masked, bullets are visually narrower than real chars, so we must
-        // use the unmasked layout to get correct click→cursor mapping.
-        let unmasked_display: SharedString = if is_empty {
-            self.placeholder.clone()
-        } else {
-            self.text.clone().into()
-        };
-        let unmasked_element = if highlights.is_empty() {
-            StyledText::new(unmasked_display)
-        } else {
-            StyledText::new(unmasked_display)
-                .with_default_highlights(&text_style, highlights.clone())
-        };
-        self.text_layout = unmasked_element.layout().clone();
-        let layout_ref = self.text_layout.clone();
-
-        // Render the appropriate visual text: bullets when masked, real text otherwise.
         let display_text: SharedString = if is_empty {
             self.placeholder.clone()
         } else if self.masked {
@@ -526,6 +508,8 @@ impl Render for TextInput {
         } else {
             StyledText::new(display_text).with_default_highlights(&text_style, highlights.clone())
         };
+        self.text_layout = text_element.layout().clone();
+        let layout_ref = self.text_layout.clone();
 
         let cursor_overlay = canvas(
             move |_, _, _| Size::<Pixels>::default(),

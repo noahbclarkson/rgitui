@@ -360,180 +360,223 @@ impl Render for CommitPanel {
                     .key_context("CommitPanel")
                     .v_flex()
                     .flex_1()
-                    .px(px(10.))
-                    .py(px(10.))
-                    .gap(px(8.))
-                    .min_h(px(150.))
+                    .min_h(px(120.))
+                    .overflow_hidden()
                     .child(
                         div()
+                            .id("commit-scroll-area")
                             .v_flex()
-                            .gap(px(4.))
-                            .flex_shrink_0()
-                            .child(
-                                div()
-                                    .h_flex()
-                                    .items_center()
-                                    .child(
-                                        Label::new("Summary")
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted)
-                                            .weight(gpui::FontWeight::MEDIUM),
-                                    )
-                                    .child(div().flex_1())
-                                    .when(!summary_empty, |el| {
-                                        el.child(
-                                            Label::new(char_count_label)
-                                                .size(LabelSize::XSmall)
-                                                .color(char_count_color),
-                                        )
-                                    }),
-                            )
-                            .child(self.summary_editor.clone()),
-                    )
-                    .child(
-                        div()
-                            .v_flex()
-                            .gap(px(4.))
                             .flex_1()
-                            .min_h(px(50.))
+                            .px(px(12.))
+                            .pt(px(10.))
+                            .pb(px(6.))
+                            .gap(px(8.))
+                            .overflow_y_scroll()
                             .child(
                                 div()
-                                    .h_flex()
-                                    .items_center()
+                                    .v_flex()
+                                    .gap(px(4.))
+                                    .flex_shrink_0()
                                     .child(
-                                        Label::new("Description")
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted)
-                                            .weight(gpui::FontWeight::MEDIUM),
-                                    )
-                                    .child(div().flex_1())
-                                    .when(description_len > 0, |el| {
-                                        el.child(
-                                            Label::new(desc_count_label)
-                                                .size(LabelSize::XSmall)
-                                                .color(Color::Muted),
-                                        )
-                                    }),
-                            )
-                            .child(self.description_editor.clone()),
-                    )
-                    // Co-authors section
-                    .child(
-                        div()
-                            .v_flex()
-                            .gap(px(4.))
-                            .w_full()
-                            .flex_shrink_0()
-                            .child(
-                                div()
-                                    .h_flex()
-                                    .items_center()
-                                    .child(
-                                        Label::new("Co-Authors")
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted)
-                                            .weight(gpui::FontWeight::MEDIUM),
-                                    )
-                                    .child(div().flex_1())
-                                    .when(!self.adding_co_author, |el| {
-                                        el.child(
-                                            Button::new("add-co-author-btn", "Add")
-                                                .icon(IconName::Plus)
-                                                .size(ButtonSize::Compact)
-                                                .style(ButtonStyle::Subtle)
-                                                .color(Color::Accent)
-                                                .on_click(cx.listener(
-                                                    |this, _: &ClickEvent, _, cx| {
-                                                        this.start_adding_co_author(cx);
-                                                    },
-                                                )),
-                                        )
-                                    }),
-                            )
-                            .when(!self.co_authors.is_empty(), |el| {
-                                el.child(div().v_flex().gap(px(2.)).children(
-                                    self.co_authors.iter().enumerate().map(|(i, ca)| {
-                                        let idx = i;
                                         div()
                                             .h_flex()
                                             .items_center()
-                                            .gap_2()
                                             .child(
-                                                rgitui_ui::Icon::new(IconName::User)
-                                                    .size(rgitui_ui::IconSize::XSmall)
-                                                    .color(Color::Muted),
-                                            )
-                                            .child(
-                                                Label::new(format!("{} <{}>", ca.name, ca.email))
+                                                Label::new("Summary")
                                                     .size(LabelSize::XSmall)
-                                                    .color(Color::Default),
+                                                    .color(Color::Muted)
+                                                    .weight(gpui::FontWeight::MEDIUM),
                                             )
+                                            .child(div().flex_1())
+                                            .when(!summary_empty, |el| {
+                                                el.child(
+                                                    Label::new(char_count_label)
+                                                        .size(LabelSize::XSmall)
+                                                        .color(char_count_color),
+                                                )
+                                            }),
+                                    )
+                                    .child(self.summary_editor.clone()),
+                            )
+                            .child(
+                                div()
+                                    .v_flex()
+                                    .gap(px(4.))
+                                    .flex_1()
+                                    .min_h(px(50.))
+                                    .child(
+                                        div()
+                                            .h_flex()
+                                            .items_center()
+                                            .child(
+                                                Label::new("Description")
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Muted)
+                                                    .weight(gpui::FontWeight::MEDIUM),
+                                            )
+                                            .child(div().flex_1())
+                                            .when(description_len > 0, |el| {
+                                                el.child(
+                                                    Label::new(desc_count_label)
+                                                        .size(LabelSize::XSmall)
+                                                        .color(Color::Muted),
+                                                )
+                                            }),
+                                    )
+                                    .child(self.description_editor.clone()),
+                            )
+                            // Co-authors section
+                            .child(
+                                div()
+                                    .v_flex()
+                                    .gap(px(4.))
+                                    .w_full()
+                                    .flex_shrink_0()
+                                    .pt(px(4.))
+                                    .pl(px(12.))
+                                    .child(
+                                        div()
+                                            .h_flex()
+                                            .w_full()
+                                            .items_center()
+                                            .child(
+                                                Label::new("Co-Authors")
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Muted)
+                                                    .weight(gpui::FontWeight::MEDIUM),
+                                            )
+                                            .child(div().flex_1())
                                             .child(
                                                 Button::new(
-                                                    ElementId::NamedInteger(
-                                                        "remove-co-author".into(),
-                                                        idx as u64,
-                                                    ),
-                                                    "",
+                                                    "add-co-author-btn",
+                                                    if self.adding_co_author {
+                                                        "Close"
+                                                    } else {
+                                                        "Add"
+                                                    },
                                                 )
-                                                .icon(IconName::X)
+                                                .icon(if self.adding_co_author {
+                                                    IconName::X
+                                                } else {
+                                                    IconName::Plus
+                                                })
                                                 .size(ButtonSize::Compact)
                                                 .style(ButtonStyle::Subtle)
-                                                .color(Color::Muted)
+                                                .color(if self.adding_co_author {
+                                                    Color::Muted
+                                                } else {
+                                                    Color::Accent
+                                                })
                                                 .on_click(cx.listener(
-                                                    move |this, _: &ClickEvent, _, cx| {
-                                                        this.remove_co_author(idx, cx);
+                                                    |this, _: &ClickEvent, _, cx| {
+                                                        if this.adding_co_author {
+                                                            this.cancel_adding_co_author(cx);
+                                                        } else {
+                                                            this.start_adding_co_author(cx);
+                                                        }
                                                     },
                                                 )),
-                                            )
-                                    }),
-                                ))
-                            })
-                            .when(self.adding_co_author, |el| {
-                                el.child(
-                                    div()
-                                        .v_flex()
-                                        .gap(px(4.))
-                                        .p(px(6.))
-                                        .bg(colors.ghost_element_hover)
-                                        .rounded(px(4.))
-                                        .child(div().h_flex().gap_2().w_full().children([
-                                            self.new_author_name.clone(),
-                                            self.new_author_email.clone(),
-                                        ]))
-                                        .child(
-                                            div()
-                                                .h_flex()
-                                                .gap_2()
-                                                .child(
-                                                    Button::new(
-                                                        "confirm-co-author-btn",
-                                                        "Add Co-Author",
+                                            ),
+                                    )
+                                    .when(!self.co_authors.is_empty(), |el| {
+                                        el.child(div().v_flex().gap(px(2.)).children(
+                                            self.co_authors.iter().enumerate().map(|(i, ca)| {
+                                                let idx = i;
+                                                div()
+                                                    .h_flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .px(px(4.))
+                                                    .child(
+                                                        rgitui_ui::Icon::new(IconName::User)
+                                                            .size(rgitui_ui::IconSize::XSmall)
+                                                            .color(Color::Muted),
                                                     )
-                                                    .size(ButtonSize::Compact)
-                                                    .style(ButtonStyle::Filled)
-                                                    .color(Color::Accent)
-                                                    .on_click(cx.listener(
-                                                        |this, _: &ClickEvent, _, cx| {
-                                                            this.confirm_add_co_author(cx);
-                                                        },
-                                                    )),
-                                                )
-                                                .child(
-                                                    Button::new("cancel-co-author-btn", "Cancel")
+                                                    .child(
+                                                        Label::new(format!(
+                                                            "{} <{}>",
+                                                            ca.name, ca.email
+                                                        ))
+                                                        .size(LabelSize::XSmall)
+                                                        .color(Color::Default),
+                                                    )
+                                                    .child(
+                                                        Button::new(
+                                                            ElementId::NamedInteger(
+                                                                "remove-co-author".into(),
+                                                                idx as u64,
+                                                            ),
+                                                            "",
+                                                        )
+                                                        .icon(IconName::X)
                                                         .size(ButtonSize::Compact)
                                                         .style(ButtonStyle::Subtle)
                                                         .color(Color::Muted)
                                                         .on_click(cx.listener(
-                                                            |this, _: &ClickEvent, _, cx| {
-                                                                this.cancel_adding_co_author(cx);
+                                                            move |this, _: &ClickEvent, _, cx| {
+                                                                this.remove_co_author(idx, cx);
                                                             },
                                                         )),
+                                                    )
+                                            }),
+                                        ))
+                                    })
+                                    .when(self.adding_co_author, |el| {
+                                        el.child(
+                                            div()
+                                                .v_flex()
+                                                .gap(px(4.))
+                                                .p(px(8.))
+                                                .bg(colors.ghost_element_hover)
+                                                .rounded(px(4.))
+                                                .child(
+                                                    div()
+                                                        .v_flex()
+                                                        .gap(px(4.))
+                                                        .w_full()
+                                                        .child(self.new_author_name.clone())
+                                                        .child(self.new_author_email.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .h_flex()
+                                                        .gap_2()
+                                                        .child(
+                                                            Button::new(
+                                                                "confirm-co-author-btn",
+                                                                "Add Co-Author",
+                                                            )
+                                                            .size(ButtonSize::Compact)
+                                                            .style(ButtonStyle::Filled)
+                                                            .color(Color::Accent)
+                                                            .on_click(cx.listener(
+                                                                |this, _: &ClickEvent, _, cx| {
+                                                                    this.confirm_add_co_author(cx);
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new(
+                                                                "cancel-co-author-btn",
+                                                                "Cancel",
+                                                            )
+                                                            .size(ButtonSize::Compact)
+                                                            .style(ButtonStyle::Subtle)
+                                                            .color(Color::Muted)
+                                                            .on_click(cx.listener(
+                                                                |this, _: &ClickEvent, _, cx| {
+                                                                    this.cancel_adding_co_author(
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                        ),
                                                 ),
-                                        ),
-                                )
-                            }),
+                                        )
+                                    }),
+                            ),
                     )
+                    // Action row pinned at bottom (never scrolls away)
                     .child(
                         div()
                             .h_flex()
@@ -541,7 +584,10 @@ impl Render for CommitPanel {
                             .gap(px(8.))
                             .items_center()
                             .flex_shrink_0()
-                            .pt(px(4.))
+                            .px(px(12.))
+                            .py(px(6.))
+                            .border_t_1()
+                            .border_color(colors.border_variant)
                             .child(
                                 div()
                                     .id("amend-toggle")

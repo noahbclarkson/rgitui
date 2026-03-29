@@ -122,19 +122,25 @@ impl RenderOnce for ContextMenu {
             let label = item.label.clone();
             let disabled = item.disabled;
 
+            let hover_bg = colors.ghost_element_hover;
+            let active_bg = colors.ghost_element_active;
+            let accent = colors.text_accent;
+
             let mut row = div()
                 .id(gpui::ElementId::NamedInteger("ctx-item".into(), i as u64))
                 .h_flex()
                 .w_full()
                 .h(px(28.))
-                .px_3()
+                .mx(px(4.))
+                .px(px(8.))
                 .gap_2()
-                .items_center();
+                .items_center()
+                .rounded(px(4.));
 
             if !disabled {
                 row = row
-                    .hover(|s| s.bg(colors.ghost_element_hover))
-                    .active(|s| s.bg(colors.ghost_element_active))
+                    .hover(move |s| s.bg(hover_bg).border_l_2().border_color(accent))
+                    .active(move |s| s.bg(active_bg))
                     .cursor_pointer();
             }
 

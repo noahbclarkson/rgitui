@@ -1443,6 +1443,17 @@ pub(crate) fn build_editor_args(
     }
 }
 
+/// Console-based terminals need `CREATE_NEW_CONSOLE` so Windows allocates a
+/// visible console window.  GUI terminal emulators (wt, alacritty, …) create
+/// their own windows and should be spawned with `DETACHED_PROCESS` instead.
+#[cfg(target_os = "windows")]
+fn is_console_terminal(program: &str) -> bool {
+    matches!(
+        program.to_ascii_lowercase().as_str(),
+        "cmd" | "cmd.exe" | "command.com" | "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+    )
+}
+
 pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
     let path = path.to_path_buf();
     let custom_command = custom_command.to_string();
@@ -1452,19 +1463,23 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
             {
                 use std::os::windows::process::CommandExt;
                 const DETACHED_PROCESS: u32 = 0x00000008;
+                const CREATE_NEW_CONSOLE: u32 = 0x00000010;
                 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
                 let (program, args) = build_terminal_args(&custom_command, &path);
-                let spawn_result = std::process::Command::new(&program)
-                    .args(&args)
-                    .current_dir(&path)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-                    .spawn();
+                let mut cmd = std::process::Command::new(&program);
+                cmd.args(&args).current_dir(&path);
 
-                if let Err(e) = spawn_result {
+                if is_console_terminal(&program) {
+                    cmd.creation_flags(CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP);
+                } else {
+                    cmd.stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+                }
+
+                if let Err(e) = cmd.spawn() {
                     eprintln!(
                         "[rgitui] Failed to open terminal '{}' with args {:?} in '{}': {}",
                         program,
@@ -1500,9 +1515,9 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
             {
                 use std::os::windows::process::CommandExt;
                 const DETACHED_PROCESS: u32 = 0x00000008;
+                const CREATE_NEW_CONSOLE: u32 = 0x00000010;
                 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
-                // Try Windows Terminal first, then fall back to cmd.exe
                 let result = std::process::Command::new("wt.exe")
                     .arg("-d")
                     .arg(&path)
@@ -1518,13 +1533,9 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
                         path.display(),
                         wt_err
                     );
-                    // Fall back to cmd.exe
                     let fallback = std::process::Command::new("cmd.exe")
                         .args(["/K", "cd", "/d", &path.to_string_lossy()])
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+                        .creation_flags(CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP)
                         .spawn();
 
                     if let Err(cmd_err) = fallback {

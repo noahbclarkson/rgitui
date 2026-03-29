@@ -256,7 +256,7 @@ fn default_detail_panel_width() -> f32 {
     320.0
 }
 fn default_diff_viewer_height() -> f32 {
-    300.0
+    345.0
 }
 fn default_commit_input_height() -> f32 {
     260.0
