@@ -2391,8 +2391,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                 let steps = 32_usize;
                                 let mut ring = PathBuilder::fill();
                                 for s in 0..steps {
-                                    let angle =
-                                        (s as f32) * std::f32::consts::TAU / (steps as f32);
+                                    let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
                                     let x = cx_x + px(ring_r * angle.cos());
                                     let y = cy_y + px(ring_r * angle.sin());
                                     if s == 0 {
@@ -2410,8 +2409,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                 let dot_radius = 5.0_f32 * compact_mul;
                                 let mut circle = PathBuilder::stroke(px(2.0));
                                 for s in 0..=steps {
-                                    let angle =
-                                        (s as f32) * std::f32::consts::TAU / (steps as f32);
+                                    let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
                                     let x = cx_x + px(dot_radius * angle.cos());
                                     let y = cy_y + px(dot_radius * angle.sin());
                                     if s == 0 {

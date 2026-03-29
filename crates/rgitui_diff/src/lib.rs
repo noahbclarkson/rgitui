@@ -3,6 +3,8 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use similar::{capture_diff_slices, Algorithm};
+
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
@@ -1037,20 +1039,96 @@ impl DiffViewer {
         rows
     }
 
-    /// DISABLED: word-level diff causes invalid text run panics in GPUI on Windows.
-    /// The root cause is not yet fully identified — the bounds clipping in
-    /// apply_word_highlights does not catch all cases.
-    /// Returns empty spans until a reliable fix is implemented.
-    #[allow(dead_code)]
+    /// Compute word-level diff highlights between `old_text` and `new_text`.
+    /// Returns `(deletion_spans, addition_spans)` as byte-index ranges into
+    /// each respective string.
+    ///
+    /// Uses `Algorithm::Lcs` (Longest Common Subsequence) — the only `similar`
+    /// algorithm that is fully iterative with no recursive `DiffHook` callbacks.
+    ///
+    /// **Why not Myers or Patience?** Both Myers and Patience call `diff_deadline`
+    /// recursively through the `DiffHook` interface. Patience's `equal()` callback
+    /// invokes `myers::diff_deadline` for each sub-problem between unique elements,
+    /// creating O(U) nested Myers calls where U is the number of unique elements.
+    /// With many unique words (code with distinct identifiers), this exceeds the
+    /// 512 KB stack limit on Windows background threads → STATUS_STACK_BUFFER_OVERRUN.
+    ///
+    /// **Why trim before diff?** `StyledLine` is built from `trim_end()`-stripped text
+    /// (trailing whitespace removed). Computing diff on raw text produces spans into
+    /// trailing whitespace that exceed `StyledLine` bounds → GPUI "invalid text run"
+    /// panic. Trimming both strings first ensures spans always land within the
+    /// `StyledLine` content.
+    ///
+    /// LCS is O(NM) time/space and entirely iterative — it fills an LCS table
+    /// with no recursion whatsoever.
+    ///
+    /// Word-level highlighting is skipped when either text exceeds 100 words,
+    /// bounding the O(NM) cost (100×100 = 10,000 entries ≈ 80 KB heap).
     pub(crate) fn compute_word_diff(
-        _old_text: &str,
-        _new_text: &str,
+        old_text: &str,
+        new_text: &str,
     ) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-        (Vec::new(), Vec::new())
+        // Trim trailing whitespace to match what StyledLine stores (trim_end).
+        // This is the key fix for the GPUI "invalid text run" panic on Windows:
+        // raw diff lines may have trailing spaces but StyledLine text doesn't,
+        // so spans into trailing whitespace exceeded StyledLine bounds.
+        let old_trimmed = old_text.trim_end();
+        let new_trimmed = new_text.trim_end();
+
+        let old_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(old_trimmed);
+        let new_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(new_trimmed);
+
+        if old_word_ranges.is_empty() && new_word_ranges.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        // Cap at 100 words per line: LCS is O(NM) in space. 100×100 = 10,000
+        // entries × ~8 bytes ≈ 80 KB heap — well within limits and bounds both
+        // CPU and memory for any single line.
+        if old_word_ranges.len() > 100 || new_word_ranges.len() > 100 {
+            return (Vec::new(), Vec::new());
+        }
+
+        let old_wv: Vec<&str> = old_word_ranges
+            .iter()
+            .map(|r| &old_trimmed[r.clone()])
+            .collect();
+        let new_wv: Vec<&str> = new_word_ranges
+            .iter()
+            .map(|r| &new_trimmed[r.clone()])
+            .collect();
+
+        let ops = capture_diff_slices(Algorithm::Lcs, &old_wv, &new_wv);
+
+        let mut del_spans: Vec<Range<usize>> = Vec::new();
+        let mut add_spans: Vec<Range<usize>> = Vec::new();
+
+        for op in ops {
+            for change in op.iter_changes(&old_wv, &new_wv) {
+                match change.tag() {
+                    similar::ChangeTag::Delete => {
+                        if let Some(idx) = change.old_index() {
+                            if idx < old_word_ranges.len() {
+                                del_spans.push(old_word_ranges[idx].clone());
+                            }
+                        }
+                    }
+                    similar::ChangeTag::Insert => {
+                        if let Some(idx) = change.new_index() {
+                            if idx < new_word_ranges.len() {
+                                add_spans.push(new_word_ranges[idx].clone());
+                            }
+                        }
+                    }
+                    similar::ChangeTag::Equal => {}
+                }
+            }
+        }
+
+        (del_spans, add_spans)
     }
 
     /// Split `text` into words, returning each word's byte-offset range.
-    #[allow(dead_code)]
     pub(crate) fn split_word_ranges(text: &str) -> Vec<Range<usize>> {
         let mut result = Vec::new();
         let mut word_start: Option<usize> = None;
