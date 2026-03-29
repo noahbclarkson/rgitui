@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-
+use similar::{capture_diff_slices, Algorithm};
 
 use gpui::prelude::*;
 use gpui::{
@@ -100,6 +100,11 @@ impl StyledLine {
     /// `addition_spans` are byte ranges of inserted words (highlighted green).
     /// Word-level spans are appended after syntax spans; GPUI renders later
     /// highlights on top of earlier ones, so word-level takes visual priority.
+    ///
+    /// Spans are clipped to `self.text.len()` to prevent GPUI panics when
+    /// spans reference positions beyond the actual text (can happen when
+    /// diff spans are computed from untrimmed text but applied to a
+    /// `StyledLine` built from trimmed text).
     fn apply_word_highlights(
         &mut self,
         deletion_spans: Vec<Range<usize>>,
@@ -107,11 +112,23 @@ impl StyledLine {
         deleted_word_bg: HighlightStyle,
         added_word_bg: HighlightStyle,
     ) {
+        let text_len = self.text.len();
+        if text_len == 0 {
+            return;
+        }
         for span in deletion_spans {
-            self.highlights.push((span, deleted_word_bg));
+            let start = span.start.min(text_len);
+            let end = span.end.min(text_len);
+            if start < end {
+                self.highlights.push((start..end, deleted_word_bg));
+            }
         }
         for span in addition_spans {
-            self.highlights.push((span, added_word_bg));
+            let start = span.start.min(text_len);
+            let end = span.end.min(text_len);
+            if start < end {
+                self.highlights.push((start..end, added_word_bg));
+            }
         }
     }
 }
@@ -1022,19 +1039,83 @@ impl DiffViewer {
         rows
     }
 
-    /// DISABLED: word-level diff is temporarily disabled while investigating
-    /// STATUS_STACK_BUFFER_OVERRUN on Windows (crash on commit click, all interactions).
-    /// Returns empty spans until the root cause is identified and fixed.
-    #[allow(dead_code)]
+    /// Compute word-level diff highlights between `old_text` and `new_text`.
+    /// Returns `(deletion_spans, addition_spans)` as byte-index ranges into
+    /// each respective string.
+    ///
+    /// Uses `Algorithm::Lcs` (Longest Common Subsequence) — the only `similar`
+    /// algorithm that is fully iterative with no recursive `DiffHook` callbacks.
+    ///
+    /// **Why not Myers or Patience?** Both Myers and Patience call `diff_deadline`
+    /// recursively through the `DiffHook` interface. Patience's `equal()` callback
+    /// invokes `myers::diff_deadline` for each sub-problem between unique elements,
+    /// creating O(U) nested Myers calls where U is the number of unique elements.
+    /// With many unique words (code with distinct identifiers), this exceeds the
+    /// 512 KB stack limit on Windows background threads → STATUS_STACK_BUFFER_OVERRUN.
+    ///
+    /// LCS is O(NM) time/space and entirely iterative — it fills an LCS table
+    /// with no recursion whatsoever.
+    ///
+    /// Word-level highlighting is skipped when either text exceeds 100 words,
+    /// bounding the O(NM) cost (100×100 = 10,000 entries ≈ 80 KB heap).
     pub(crate) fn compute_word_diff(
-        _old_text: &str,
-        _new_text: &str,
+        old_text: &str,
+        new_text: &str,
     ) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-        (Vec::new(), Vec::new())
+        let old_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(old_text);
+        let new_word_ranges: Vec<Range<usize>> = Self::split_word_ranges(new_text);
+
+        if old_word_ranges.is_empty() && new_word_ranges.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        // Cap at 100 words per line: LCS is O(NM) in space. 100×100 = 10,000
+        // entries × ~8 bytes ≈ 80 KB heap — well within limits and bounds both
+        // CPU and memory for any single line.
+        if old_word_ranges.len() > 100 || new_word_ranges.len() > 100 {
+            return (Vec::new(), Vec::new());
+        }
+
+        let old_wv: Vec<&str> = old_word_ranges
+            .iter()
+            .map(|r| &old_text[r.clone()])
+            .collect();
+        let new_wv: Vec<&str> = new_word_ranges
+            .iter()
+            .map(|r| &new_text[r.clone()])
+            .collect();
+
+        let ops = capture_diff_slices(Algorithm::Lcs, &old_wv, &new_wv);
+
+        let mut del_spans: Vec<Range<usize>> = Vec::new();
+        let mut add_spans: Vec<Range<usize>> = Vec::new();
+
+        for op in ops {
+            for change in op.iter_changes(&old_wv, &new_wv) {
+                match change.tag() {
+                    similar::ChangeTag::Delete => {
+                        if let Some(idx) = change.old_index() {
+                            if idx < old_word_ranges.len() {
+                                del_spans.push(old_word_ranges[idx].clone());
+                            }
+                        }
+                    }
+                    similar::ChangeTag::Insert => {
+                        if let Some(idx) = change.new_index() {
+                            if idx < new_word_ranges.len() {
+                                add_spans.push(new_word_ranges[idx].clone());
+                            }
+                        }
+                    }
+                    similar::ChangeTag::Equal => {}
+                }
+            }
+        }
+
+        (del_spans, add_spans)
     }
 
     /// Split `text` into words, returning each word's byte-offset range.
-    #[allow(dead_code)]
     pub(crate) fn split_word_ranges(text: &str) -> Vec<Range<usize>> {
         let mut result = Vec::new();
         let mut word_start: Option<usize> = None;
