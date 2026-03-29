@@ -2189,7 +2189,72 @@ mod tests {
         assert_eq!(words[1], 10..17); // " English" — space at 9, then 7 chars
     }
 
-    // #[test] // DISABLED — compute_word_diff is disabled while investigating
-    // fn compute_word_diff_unchanged() { ... }
-    // WORD-LEVEL DIFF TESTS DISABLED — see compute_word_diff stub above
+    #[test]
+    fn compute_word_diff_unchanged() {
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("hello world", "hello world");
+        assert!(del_spans.is_empty());
+        assert!(add_spans.is_empty());
+    }
+
+    #[test]
+    fn compute_word_diff_simple_word_change() {
+        // "foo" → "bar": both single words, should produce one del + one add
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo", "bar");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 0..3); // "foo"
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 0..3); // "bar"
+    }
+
+    #[test]
+    fn compute_word_diff_addition_only() {
+        // New text has "bar" added
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo", "foo bar");
+        assert!(del_spans.is_empty());
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 4..7); // "bar"
+    }
+
+    #[test]
+    fn compute_word_diff_deletion_only() {
+        // "bar" deleted from old text
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo bar", "foo");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 4..7); // "bar"
+        assert!(add_spans.is_empty());
+    }
+
+    #[test]
+    fn compute_word_diff_both_empty() {
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("", "");
+        assert!(del_spans.is_empty());
+        assert!(add_spans.is_empty());
+    }
+
+    #[test]
+    fn compute_word_diff_word_replaced_in_sentence() {
+        // "The quick brown fox" → "The slow brown fox"
+        let (del_spans, add_spans) =
+            DiffViewer::compute_word_diff("The quick brown fox", "The slow brown fox");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 4..9); // "quick"
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 4..8); // "slow"
+    }
+
+    #[test]
+    fn compute_word_diff_empty_old_new_has_content() {
+        // Pure addition (new file)
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("", "hello world");
+        assert!(del_spans.is_empty());
+        assert_eq!(add_spans.len(), 2); // "hello" and "world"
+    }
+
+    #[test]
+    fn compute_word_diff_old_has_content_new_empty() {
+        // Pure deletion (deleted file)
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("hello world", "");
+        assert_eq!(del_spans.len(), 2); // "hello" and "world"
+        assert!(add_spans.is_empty());
+    }
 }
