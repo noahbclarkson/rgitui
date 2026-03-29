@@ -1127,15 +1127,62 @@ pub(super) fn subscribe_graph(
                 }
                 GraphViewEvent::CherryPick(oid) => {
                     let oid = *oid;
+                    // Capture HEAD before cherry-pick for undo support
+                    let repo_path = project.read(cx).repo_path().to_path_buf();
+                    let previous_head_oid: Option<String> = match git2::Repository::open(&repo_path) {
+                        Ok(repo) => {
+                            let oid = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).map(|c| c.id().to_string());
+                            oid
+                        }
+                        Err(_) => None,
+                    };
+
                     project.update(cx, |proj, cx| {
                         proj.cherry_pick(oid, cx).detach();
                     });
+
+                    if let Some(oid_hex) = previous_head_oid {
+                        let label = format!(
+                            "Cherry-pick {}",
+                            &oid_hex[..7.min(oid_hex.len())]
+                        );
+                        this.push_undo(
+                            UndoEntry {
+                                label,
+                                action: UndoAction::ResetTo(oid_hex),
+                                created_at: Instant::now(),
+                            },
+                            cx,
+                        );
+                    }
                 }
                 GraphViewEvent::RevertCommit(oid) => {
                     let oid = *oid;
+                    // Capture HEAD before revert for undo support
+                    let repo_path = project.read(cx).repo_path().to_path_buf();
+                    let previous_head_oid: Option<String> = match git2::Repository::open(&repo_path) {
+                        Ok(repo) => {
+                            let oid = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).map(|c| c.id().to_string());
+                            oid
+                        }
+                        Err(_) => None,
+                    };
+
                     project.update(cx, |proj, cx| {
                         proj.revert_commit(oid, cx).detach();
                     });
+
+                    if let Some(oid_hex) = previous_head_oid {
+                        let label = format!("Revert {}", &oid_hex[..7.min(oid_hex.len())]);
+                        this.push_undo(
+                            UndoEntry {
+                                label,
+                                action: UndoAction::ResetTo(oid_hex),
+                                created_at: Instant::now(),
+                            },
+                            cx,
+                        );
+                    }
                 }
                 GraphViewEvent::CreateBranchAtCommit(oid) => {
                     let sha = oid.to_string();
@@ -1274,9 +1321,33 @@ pub(super) fn subscribe_detail_panel(
             DetailPanelEvent::CherryPick(sha) => {
                 if let Some(project) = this.active_project().cloned() {
                     if let Ok(oid) = git2::Oid::from_str(sha) {
+                        // Capture HEAD before cherry-pick for undo support
+                        let repo_path = project.read(cx).repo_path().to_path_buf();
+                        let previous_head_oid: Option<String> = match git2::Repository::open(&repo_path) {
+                            Ok(repo) => {
+                                repo.head().ok().and_then(|h| h.peel_to_commit().ok()).map(|c| c.id().to_string())
+                            }
+                            Err(_) => None,
+                        };
+
                         project.update(cx, |proj, cx| {
                             proj.cherry_pick(oid, cx).detach();
                         });
+
+                        if let Some(oid_hex) = previous_head_oid {
+                            let label = format!(
+                                "Cherry-pick {}",
+                                &oid_hex[..7.min(oid_hex.len())]
+                            );
+                            this.push_undo(
+                                UndoEntry {
+                                    label,
+                                    action: UndoAction::ResetTo(oid_hex),
+                                    created_at: Instant::now(),
+                                },
+                                cx,
+                            );
+                        }
                     }
                 }
             }
