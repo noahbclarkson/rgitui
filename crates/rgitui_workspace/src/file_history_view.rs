@@ -266,15 +266,8 @@ impl Render for FileHistoryView {
 
                         let sha_display: SharedString = commit.short_id.clone().into();
                         let summary_display: SharedString = commit.summary.clone().into();
-                        let author_display: SharedString = {
-                            let name = &commit.author.name;
-                            if name.len() > 16 {
-                                format!("{}...", &name[..14])
-                            } else {
-                                name.clone()
-                            }
-                        }
-                        .into();
+                        // Author column: no pre-truncation; CSS handles overflow with ellipsis via .overflow_x_hidden()
+                        let author_display: SharedString = commit.author.name.clone().into();
                         let time_display: SharedString =
                             super::time::format_relative_time_abbreviated(commit.time.timestamp())
                                 .into();
@@ -363,7 +356,7 @@ impl Render for FileHistoryView {
                             )
                             .child(
                                 div()
-                                    .w(px(110.))
+                                    .w(px(150.))
                                     .flex_shrink_0()
                                     .h_full()
                                     .flex()
@@ -372,7 +365,13 @@ impl Render for FileHistoryView {
                                     .text_xs()
                                     .text_color(text_muted)
                                     .overflow_x_hidden()
-                                    .child(author_display),
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_x_hidden()
+                                            .text_ellipsis()
+                                            .child(author_display),
+                                    ),
                             )
                             .child(
                                 div()

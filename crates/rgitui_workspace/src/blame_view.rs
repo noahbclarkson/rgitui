@@ -304,13 +304,8 @@ impl Render for BlameView {
                         let has_boundary = i > 0 && lines[i - 1].entry.oid != line.entry.oid;
 
                         let author_display: SharedString = if is_first_in_hunk {
-                            let name = &line.entry.author;
-                            let truncated = if name.len() > 16 {
-                                format!("{}...", &name[..14])
-                            } else {
-                                name.clone()
-                            };
-                            truncated.into()
+                            // No pre-truncation — CSS handles overflow with ellipsis via .text_ellipsis()
+                            line.entry.author.clone().into()
                         } else {
                             SharedString::default()
                         };
@@ -388,7 +383,7 @@ impl Render for BlameView {
                             )
                             .child(
                                 div()
-                                    .w(px(110.))
+                                    .w(px(150.))
                                     .flex_shrink_0()
                                     .h_full()
                                     .flex()
@@ -397,7 +392,13 @@ impl Render for BlameView {
                                     .text_color(text_muted)
                                     .pl(px(6.))
                                     .overflow_x_hidden()
-                                    .child(author_display),
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_x_hidden()
+                                            .text_ellipsis()
+                                            .child(author_display),
+                                    ),
                             )
                             .child(
                                 div()
