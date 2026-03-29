@@ -115,17 +115,18 @@ impl RenderOnce for TitleBar {
             .bg(branch_bg)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
-            .tooltip(Tooltip::text("Switch branch"))
+            .tooltip(Tooltip::text(self.branch_name.clone()))
             .child(
                 Icon::new(IconName::GitBranch)
                     .size(IconSize::Small)
                     .color(branch_color),
             )
             .child(
-                Label::new(self.branch_name)
+                Label::new(self.branch_name.clone())
                     .size(LabelSize::Small)
                     .color(branch_color)
-                    .weight(gpui::FontWeight::SEMIBOLD),
+                    .weight(gpui::FontWeight::SEMIBOLD)
+                    .truncate(),
             )
             .when(self.head_detached, |el| {
                 el.child(
