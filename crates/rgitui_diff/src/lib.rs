@@ -2163,4 +2163,67 @@ mod tests {
     // fn compute_word_diff_empty_old_new_has_content() { ... }
     // #[test] // DISABLED — word-level diff disabled
     // fn compute_word_diff_old_has_content_new_empty() { ... }
+
+    // --- apply_word_highlights tests ---
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn apply_word_highlights_skips_when_text_empty() {
+        let mut line = StyledLine::plain("");
+        let bg = HighlightStyle::default();
+        line.apply_word_highlights(vec![0..5], vec![], bg, bg);
+        assert!(line.highlights.is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn apply_word_highlights_clips_deletion_spans_to_text_length() {
+        let mut line = StyledLine::plain("hi"); // len = 2
+        let bg = HighlightStyle::default();
+        line.apply_word_highlights(vec![0..10], vec![], bg, bg);
+        assert_eq!(line.highlights.len(), 1);
+        assert_eq!(line.highlights[0].0.start, 0);
+        assert_eq!(line.highlights[0].0.end, 2);
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn apply_word_highlights_clips_addition_spans_to_text_length() {
+        let mut line = StyledLine::plain("hi"); // len = 2
+        let bg = HighlightStyle::default();
+        line.apply_word_highlights(vec![], vec![0..100], bg, bg);
+        assert_eq!(line.highlights.len(), 1);
+        assert_eq!(line.highlights[0].0.end, 2);
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn apply_word_highlights_drops_spans_clipped_to_empty() {
+        let mut line = StyledLine::plain("hi"); // len = 2
+        let bg = HighlightStyle::default();
+        line.apply_word_highlights(vec![5..6], vec![], bg, bg);
+        assert!(line.highlights.is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn apply_word_highlights_preserves_valid_spans() {
+        let mut line = StyledLine::plain("hello");
+        let bg = HighlightStyle::default();
+        line.apply_word_highlights(vec![0..2, 3..5], vec![], bg, bg);
+        assert_eq!(line.highlights.len(), 2);
+        assert_eq!(line.highlights[0].0, 0..2);
+        assert_eq!(line.highlights[1].0, 3..5);
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn apply_word_highlights_both_deletion_and_addition_spans() {
+        let mut line = StyledLine::plain("hello");
+        let bg = HighlightStyle::default();
+        line.apply_word_highlights(vec![0..1], vec![0..1], bg, bg);
+        assert_eq!(line.highlights.len(), 2);
+        assert_eq!(line.highlights[0].0, 0..1);
+        assert_eq!(line.highlights[1].0, 0..1);
+    }
 }
