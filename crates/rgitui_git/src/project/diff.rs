@@ -139,7 +139,12 @@ pub(crate) fn generate_hunk_patch_for_repo(
 fn serialize_diff_to_patch_bytes(diff: &git2::Diff) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
-        buf.push(line.origin() as u8);
+        match line.origin() {
+            // File header and hunk header: content already contains the full line
+            'F' | 'H' => {}
+            // Content lines (+/-/space): prepend the sigil character
+            c => buf.push(c as u8),
+        }
         buf.extend_from_slice(line.content());
         true
     })?;

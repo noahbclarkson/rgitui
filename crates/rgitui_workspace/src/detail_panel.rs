@@ -139,6 +139,7 @@ pub struct DetailPanel {
     file_search_active: bool,
     file_view_mode: FileViewMode,
     collapsed_dirs: HashSet<String>,
+    description_expanded: bool,
 }
 
 impl EventEmitter<DetailPanelEvent> for DetailPanel {}
@@ -156,6 +157,7 @@ impl DetailPanel {
             file_search_active: false,
             file_view_mode: FileViewMode::default(),
             collapsed_dirs: HashSet::new(),
+            description_expanded: false,
         }
     }
 
@@ -341,6 +343,7 @@ impl DetailPanel {
         self.file_search_query = None;
         self.file_search_active = false;
         self.collapsed_dirs.clear();
+        self.description_expanded = false;
         cx.notify();
     }
 
@@ -352,6 +355,7 @@ impl DetailPanel {
         self.file_search_query = None;
         self.file_search_active = false;
         self.collapsed_dirs.clear();
+        self.description_expanded = false;
         cx.notify();
     }
 
@@ -740,8 +744,6 @@ impl DetailPanel {
 impl Render for DetailPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
-        let compactness = cx.global::<SettingsState>().settings().compactness;
-        let row_h = compactness.spacing(26.0);
 
         let Some(commit) = &self.commit else {
             return div()
@@ -753,7 +755,7 @@ impl Render for DetailPanel {
                     div()
                         .h_flex()
                         .w_full()
-                        .h(px(row_h))
+                        .h(px(32.))
                         .px(px(10.))
                         .gap(px(4.))
                         .items_center()
@@ -767,9 +769,9 @@ impl Render for DetailPanel {
                         )
                         .child(
                             Label::new("Details")
-                                .size(LabelSize::XSmall)
+                                .size(LabelSize::Small)
                                 .weight(gpui::FontWeight::SEMIBOLD)
-                                .color(Color::Muted),
+                                .color(Color::Default),
                         ),
                 )
                 .child(
@@ -852,7 +854,7 @@ impl Render for DetailPanel {
             div()
                 .h_flex()
                 .w_full()
-                .h(px(28.))
+                .h(px(32.))
                 .px(px(10.))
                 .gap(px(4.))
                 .items_center()
@@ -866,9 +868,9 @@ impl Render for DetailPanel {
                 )
                 .child(
                     Label::new("Details")
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Muted),
+                        .color(Color::Default),
                 ),
         );
 
@@ -876,19 +878,19 @@ impl Render for DetailPanel {
             .id("detail-content")
             .v_flex()
             .flex_1()
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .p_3()
+            .gap_3();
 
         // -- Header Card: Author + SHA + Refs --
         let mut header_card = div()
             .v_flex()
             .w_full()
-            .mx_2()
-            .mt_2()
-            .px_3()
-            .py_3()
+            .px(px(16.))
+            .py(px(14.))
             .gap(px(10.))
             .bg(colors.elevated_surface_background)
-            .rounded(px(6.))
+            .rounded(px(8.))
             .border_1()
             .border_color(colors.border_variant);
 
@@ -901,6 +903,54 @@ impl Render for DetailPanel {
         let avatar_text_color = colors.background;
         let avatar_circle =
             self.render_avatar(avatar_url, initials, avatar_bg, avatar_text_color, px(24.));
+
+        // SHA copy button
+        let sha_copy_clone = sha_for_copy.clone();
+        let sha_copied = self.is_copied("sha");
+        let sha_icon = if sha_copied {
+            IconName::Check
+        } else {
+            IconName::Copy
+        };
+
+        let sha_button = div()
+            .h_flex()
+            .gap_1()
+            .items_center()
+            .px(px(6.))
+            .py(px(2.))
+            .bg(colors.surface_background)
+            .rounded(px(4.))
+            .border_1()
+            .border_color(colors.border_variant)
+            .child(
+                div()
+                    .font_family("monospace")
+                    .text_xs()
+                    .text_color(colors.text_accent)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(short_sha),
+            )
+            .child(
+                IconButton::new("copy-sha-btn", sha_icon)
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Transparent)
+                    .tooltip("Copy commit SHA")
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(
+                            sha_copy_clone.to_string(),
+                        ));
+                        cx.emit(DetailPanelEvent::CopySha(sha_copy_clone.to_string()));
+                        this.mark_copied("sha", cx);
+                    })),
+            )
+            .when(sha_copied, |el| {
+                el.child(
+                    Label::new("Copied!")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Success),
+                )
+            });
 
         header_card = header_card.child(
             div()
@@ -920,7 +970,8 @@ impl Render for DetailPanel {
                                     .weight(gpui::FontWeight::BOLD)
                                     .truncate(),
                             ),
-                        ),
+                        )
+                        .child(sha_button),
                 )
                 .child(
                     Label::new(author_email)
@@ -947,75 +998,6 @@ impl Render for DetailPanel {
                 ),
         );
 
-        // SHA row
-        let sha_copy_clone = sha_for_copy.clone();
-        let sha_copied = self.is_copied("sha");
-        let sha_icon = if sha_copied {
-            IconName::Check
-        } else {
-            IconName::Copy
-        };
-
-        header_card = header_card.child(
-            div()
-                .h_flex()
-                .gap(px(8.))
-                .items_center()
-                .child(
-                    Label::new("SHA")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted)
-                        .weight(gpui::FontWeight::SEMIBOLD),
-                )
-                .child(
-                    div()
-                        .h_flex()
-                        .gap_1()
-                        .items_center()
-                        .px(px(6.))
-                        .py(px(2.))
-                        .bg(colors.surface_background)
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(colors.border_variant)
-                        .child(
-                            div()
-                                .font_family("monospace")
-                                .text_xs()
-                                .text_color(colors.text_accent)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(short_sha),
-                        )
-                        .child(
-                            IconButton::new("copy-sha-btn", sha_icon)
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Transparent)
-                                .tooltip("Copy commit SHA")
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        sha_copy_clone.to_string(),
-                                    ));
-                                    cx.emit(DetailPanelEvent::CopySha(sha_copy_clone.to_string()));
-                                    this.mark_copied("sha", cx);
-                                })),
-                        )
-                        .when(sha_copied, |el| {
-                            el.child(
-                                Label::new("Copied!")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Success),
-                            )
-                        }),
-                )
-                .when(!sha_copied, |el| {
-                    el.child(
-                        Label::new(full_sha)
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                }),
-        );
-
         // GPG signed badge
         if commit.is_signed {
             header_card = header_card.child(
@@ -1034,41 +1016,6 @@ impl Render for DetailPanel {
                             .bold(),
                     ),
             );
-        }
-
-        // Parent commits as interactive badges
-        if !commit.parent_oids.is_empty() {
-            let mut parents_row = div().h_flex().gap(px(8.)).items_center().flex_wrap().child(
-                Label::new("Parents")
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted)
-                    .weight(gpui::FontWeight::SEMIBOLD),
-            );
-
-            for parent_oid in &commit.parent_oids {
-                let parent_short: SharedString = format!("{:.7}", parent_oid).into();
-                parents_row = parents_row.child(
-                    div()
-                        .h_flex()
-                        .gap(px(4.))
-                        .items_center()
-                        .px(px(6.))
-                        .py(px(2.))
-                        .bg(colors.surface_background)
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(colors.border_variant)
-                        .child(
-                            div()
-                                .font_family("monospace")
-                                .text_xs()
-                                .text_color(colors.text_accent)
-                                .child(parent_short),
-                        ),
-                );
-            }
-
-            header_card = header_card.child(parents_row);
         }
 
         // Ref badges: branches and tags
@@ -1116,13 +1063,11 @@ impl Render for DetailPanel {
         let mut message_card = div()
             .v_flex()
             .w_full()
-            .mx_2()
-            .mt_2()
-            .px_3()
-            .py_3()
+            .px(px(16.))
+            .py(px(14.))
             .gap(px(8.))
             .bg(colors.elevated_surface_background)
-            .rounded(px(6.))
+            .rounded(px(8.))
             .border_1()
             .border_color(colors.border_variant);
 
@@ -1177,13 +1122,49 @@ impl Render for DetailPanel {
                 ),
         );
 
-        // Description body
+        // Collapsible description body
         if !description.is_empty() {
             let desc_for_copy = description.clone();
             let desc_copied = self.is_copied("description");
+            let is_expanded = self.description_expanded;
+            let chevron_icon = if is_expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            };
+
+            // Toggle header row
             message_card = message_card
                 .child(div().w_full().h(px(1.)).bg(colors.border_variant))
                 .child(
+                    div()
+                        .id("description-toggle")
+                        .h_flex()
+                        .w_full()
+                        .gap(px(4.))
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.8))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                            this.description_expanded = !this.description_expanded;
+                            cx.notify();
+                        }))
+                        .child(
+                            Icon::new(chevron_icon)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Description")
+                                .size(LabelSize::XSmall)
+                                .weight(gpui::FontWeight::SEMIBOLD)
+                                .color(Color::Muted),
+                        ),
+                );
+
+            // Expanded content
+            if is_expanded {
+                message_card = message_card.child(
                     div()
                         .id("description-copy")
                         .v_flex()
@@ -1195,7 +1176,9 @@ impl Render for DetailPanel {
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.8))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(desc_for_copy.clone()));
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                desc_for_copy.clone(),
+                            ));
                             this.mark_copied("description", cx);
                         }))
                         .child(render_markdown(&description, window, cx))
@@ -1207,6 +1190,7 @@ impl Render for DetailPanel {
                             )
                         }),
                 );
+            }
         }
 
         content = content.child(message_card);
@@ -1309,7 +1293,6 @@ impl Render for DetailPanel {
                 .h_flex()
                 .w_full()
                 .h(px(28.))
-                .mt_2()
                 .px(px(10.))
                 .gap_2()
                 .items_center()
