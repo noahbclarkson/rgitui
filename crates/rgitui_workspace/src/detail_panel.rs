@@ -1176,9 +1176,7 @@ impl Render for DetailPanel {
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.8))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                desc_for_copy.clone(),
-                            ));
+                            cx.write_to_clipboard(ClipboardItem::new_string(desc_for_copy.clone()));
                             this.mark_copied("description", cx);
                         }))
                         .child(render_markdown(&description, window, cx))
