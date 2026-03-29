@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -956,6 +956,44 @@ pub(super) fn subscribe_sidebar(
     .detach();
 }
 
+/// LRU cache for computed CommitDiffs, bounded to prevent unbounded memory growth.
+struct CommitDiffCache {
+    map: HashMap<git2::Oid, Arc<rgitui_git::CommitDiff>>,
+    order: VecDeque<git2::Oid>,
+    cap: usize,
+}
+
+impl CommitDiffCache {
+    fn new(cap: usize) -> Self {
+        Self { map: HashMap::new(), order: VecDeque::new(), cap }
+    }
+
+    /// Synchronous cache lookup. Returns the cached diff and marks oid as most-recently-used.
+    fn get(&mut self, oid: &git2::Oid) -> Option<Arc<rgitui_git::CommitDiff>> {
+        if self.map.contains_key(oid) {
+            // Move to back (most recently used).
+            if let Some(pos) = self.order.iter().position(|o| *o == *oid) {
+                self.order.remove(pos);
+                self.order.push_back(*oid);
+            }
+            self.map.get(oid).cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Insert with LRU eviction. Drops oldest entry when at capacity.
+    fn insert(&mut self, oid: git2::Oid, diff: Arc<rgitui_git::CommitDiff>) {
+        if self.map.len() >= self.cap {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.order.push_back(oid);
+        self.map.insert(oid, diff);
+    }
+}
+
 pub(super) fn subscribe_graph(
     cx: &mut Context<Workspace>,
     project: &Entity<GitProject>,
@@ -966,9 +1004,10 @@ pub(super) fn subscribe_graph(
     let project = project.clone();
     let diff_viewer = diff_viewer.clone();
     let detail_panel_ref = detail_panel.clone();
-    // Arc<Mutex<HashMap>> is Send so it can be captured in the async block.
-    let diff_cache: Arc<Mutex<HashMap<git2::Oid, Arc<rgitui_git::CommitDiff>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    /// LRU cache: bounded to 100 entries to prevent unbounded memory growth.
+    const DIFF_CACHE_CAP: usize = 100;
+    let diff_cache: Arc<Mutex<CommitDiffCache>> =
+        Arc::new(Mutex::new(CommitDiffCache::new(DIFF_CACHE_CAP)));
 
     cx.subscribe(graph, {
         move |this, _graph, event: &GraphViewEvent, cx| {
@@ -984,7 +1023,8 @@ pub(super) fn subscribe_graph(
                     let repo_path = proj.repo_path().to_path_buf();
 
                     // Check cache synchronously — instant display on cache hit.
-                    if let Some(cached) = diff_cache.lock().unwrap().get(&commit_oid) {
+                    let cached = diff_cache.lock().unwrap().get(&commit_oid);
+                    if let Some(cached) = cached {
                         let dv = diff_viewer.clone();
                         let dp = detail_panel_ref.clone();
                         let cached = cached.clone();
@@ -1017,7 +1057,6 @@ pub(super) fn subscribe_graph(
                         cx.update(|cx| match result {
                             Ok(commit_diff) => {
                                 let diff_arc = Arc::new(commit_diff.clone());
-                                // Cache the computed diff for future instant loads.
                                 cache.lock().unwrap().insert(commit_oid, diff_arc.clone());
 
                                 if let Some(info) = commit_info {
