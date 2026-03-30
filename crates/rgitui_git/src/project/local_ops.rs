@@ -2954,7 +2954,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     #[ignore = "git2's stash_apply requires clean index+working-tree AND checks index state match; the stash index differs from post-reset index causing 'uncommitted changes' error. Test git2 semantics, not application behavior."]
     fn stash_apply_keeps_stash() {
         let (_dir, path, _oid) = make_test_repo();
@@ -3072,7 +3071,7 @@ mod tests {
     #[test]
     fn reset_hard_discards_changes() {
         let (_dir, path, _oid) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         fs::write(path.join("file.txt"), "modified").unwrap();
         repo.index()
@@ -3097,7 +3096,7 @@ mod tests {
         // It moves HEAD and resets the index to match the target commit. We re-stage
         // the file after reset to emulate the CLI behavior and verify it works.
         let (_dir, path, _oid) = make_test_repo_with_commits(2);
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         // Add a change on top of the current HEAD
         fs::write(path.join("file.txt"), "extra").unwrap();
@@ -3157,7 +3156,7 @@ mod tests {
     fn reset_mixed_unsets_index() {
         // Mixed reset: index is cleared, but working tree file stays.
         let (_dir, path, _oid) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         fs::write(path.join("file.txt"), "modified").unwrap();
         repo.index()
@@ -3180,7 +3179,7 @@ mod tests {
     #[test]
     fn reset_to_commit_moves_head() {
         let (_dir, path, _oid) = make_test_repo_with_commits(3);
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let commits = collect_commits(&repo);
         let first_oid = *commits.last().unwrap(); // oldest
@@ -3200,7 +3199,7 @@ mod tests {
     #[test]
     fn merge_branch_fast_forward() {
         let (_dir, path, _oid) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let sig = git2::Signature::now("Test", "test@test.com").unwrap();
         let head_oid = repo.head().unwrap().target().unwrap();
@@ -3239,7 +3238,7 @@ mod tests {
     #[ignore = "git2's merge does not create conflict markers for trivial content changes; libgit2 auto-merges non-overlapping modifications without conflict markers. Use GitProject::merge_branch integration tests instead."]
     fn merge_branch_with_conflict() {
         let (_dir, path, _oid) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let sig = git2::Signature::now("Test", "test@test.com").unwrap();
 
@@ -3318,7 +3317,7 @@ mod tests {
     #[ignore = "git2's merge does not produce conflict markers for non-overlapping content changes (unlike CLI git). Tests git2 merge semantics, not application behavior."]
     fn abort_operation_cleans_merge_state() {
         let (_dir, path, _oid) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let sig = git2::Signature::now("Test", "test@test.com").unwrap();
 
@@ -3401,7 +3400,7 @@ mod tests {
     #[test]
     fn cherry_pick_creates_new_commit() {
         let (_dir, path, _oid) = make_test_repo_with_commits(2);
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let commits = collect_commits(&repo);
         let oldest_oid = *commits.last().unwrap();
@@ -3416,7 +3415,7 @@ mod tests {
     #[test]
     fn revert_creates_undo_commit() {
         let (_dir, path, _oid) = make_test_repo_with_commits(2);
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let commits = collect_commits(&repo);
         let oldest_oid = *commits.last().unwrap();
@@ -3436,7 +3435,7 @@ mod tests {
     #[test]
     fn create_and_delete_tag() {
         let (_dir, path, head) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let obj = repo.find_object(head, None).unwrap();
         repo.tag_lightweight("v1.0.0", &obj, false).unwrap();
@@ -3451,7 +3450,7 @@ mod tests {
     #[test]
     fn create_multiple_tags() {
         let (_dir, path, head) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let obj = repo.find_object(head, None).unwrap();
         repo.tag_lightweight("v1.0.0", &obj, false).unwrap();
@@ -3459,7 +3458,7 @@ mod tests {
         repo.tag_lightweight("v2.0.0", &obj, false).unwrap();
 
         let tag_names = repo.tag_names(None).unwrap();
-        let tags: Vec<_> = tag_names.iter().filter_map(|t| t).collect();
+        let tags: Vec<_> = tag_names.iter().flatten().collect();
         assert!(tags.contains(&"v1.0.0"));
         assert!(tags.contains(&"v1.0.1"));
         assert!(tags.contains(&"v2.0.0"));
@@ -3472,7 +3471,7 @@ mod tests {
     #[test]
     fn create_and_delete_branch() {
         let (_dir, path, head) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let commit = repo.find_commit(head).unwrap();
         repo.branch("feature", &commit, false).unwrap();
@@ -3494,7 +3493,7 @@ mod tests {
     #[test]
     fn rename_branch() {
         let (_dir, path, head) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let commit = repo.find_commit(head).unwrap();
         repo.branch("old-name", &commit, false).unwrap();
@@ -3516,7 +3515,7 @@ mod tests {
     #[test]
     fn create_branch_at_specific_commit() {
         let (_dir, path, _oid) = make_test_repo_with_commits(3);
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let commits = collect_commits(&repo);
         let second_oid = *commits.get(1).unwrap(); // second commit from newest
@@ -3537,7 +3536,7 @@ mod tests {
     #[test]
     fn create_and_remove_worktree() {
         let (_dir, path, head) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let worktree_path = path.join("../worktree-dir");
 
@@ -3568,7 +3567,7 @@ mod tests {
     #[test]
     fn discard_changes_removes_staged_file() {
         let (_dir, path, _oid) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         fs::write(path.join("newfile.txt"), "content").unwrap();
         repo.index()
@@ -3638,7 +3637,7 @@ mod tests {
     #[test]
     fn checkout_branch_switches_head() {
         let (_dir, path, _oid) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let sig = git2::Signature::now("Test", "test@test.com").unwrap();
         let head_oid = repo.head().unwrap().target().unwrap();
@@ -3678,7 +3677,7 @@ mod tests {
     #[test]
     fn checkout_commit_detaches_head() {
         let (_dir, path, _oid) = make_test_repo_with_commits(3);
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let commits = collect_commits(&repo);
         let second_oid = commits[1];
@@ -3686,7 +3685,7 @@ mod tests {
         let commit = repo.find_commit(second_oid).unwrap();
         let mut checkout_opts = git2::build::CheckoutBuilder::new();
         checkout_opts.safe();
-        repo.checkout_tree(&commit.as_object(), Some(&mut checkout_opts))
+        repo.checkout_tree(commit.as_object(), Some(&mut checkout_opts))
             .unwrap();
         repo.set_head_detached(second_oid).unwrap();
 
@@ -3702,7 +3701,7 @@ mod tests {
     #[test]
     fn commit_creates_new_commit() {
         let (_dir, path, head) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         fs::write(path.join("file.txt"), "hello world").unwrap();
         repo.index()
@@ -3728,7 +3727,7 @@ mod tests {
     #[test]
     fn amend_commit_updates_message() {
         let (_dir, path, head) = make_test_repo();
-        let mut repo = git2::Repository::open(&path).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
 
         let sig = repo.signature().unwrap();
         let parent = repo.find_commit(head).unwrap();

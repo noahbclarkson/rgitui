@@ -72,9 +72,7 @@ impl GitProject {
         let dirty = Arc::new(AtomicBool::new(false));
 
         let git_dir = repo_path.join(".git");
-        let last_git_fingerprint = Arc::new(std::sync::Mutex::new(
-            git_state_fingerprint(&git_dir),
-        ));
+        let last_git_fingerprint = Arc::new(std::sync::Mutex::new(git_state_fingerprint(&git_dir)));
 
         let watcher = {
             let dirty_flag = dirty.clone();
