@@ -1453,6 +1453,7 @@ impl Render for GraphView {
                                     .w(px(120.))
                                     .flex_shrink_0()
                                     .px(px(4.))
+                                    .overflow_x_hidden()
                                     .tooltip(Tooltip::text(author.clone()))
                                     .child(
                                         Label::new(author)
@@ -1466,11 +1467,17 @@ impl Render for GraphView {
                         // Date column (conditional)
                         if show_date_column {
                             row = row.child(
-                                div().w(px(100.)).flex_shrink_0().pr(px(8.)).child(
-                                    Label::new(time_str)
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                ),
+                                div()
+                                    .w(px(100.))
+                                    .flex_shrink_0()
+                                    .pr(px(8.))
+                                    .overflow_x_hidden()
+                                    .child(
+                                        Label::new(time_str)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .truncate(),
+                                    ),
                             );
                         }
 

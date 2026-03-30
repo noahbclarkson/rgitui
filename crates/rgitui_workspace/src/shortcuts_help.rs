@@ -201,13 +201,15 @@ impl ShortcutsHelp {
                             .h(px(22.))
                             .px(px(8.))
                             .rounded(px(4.))
+                            .border_1()
+                            .border_color(border_variant)
                             .bg(hint_bg)
                             .items_center()
                             .child(
                                 Label::new(*key)
-                                    .size(LabelSize::XSmall)
-                                    .weight(FontWeight::MEDIUM)
-                                    .color(Color::Muted),
+                                    .size(LabelSize::Small)
+                                    .weight(FontWeight::SEMIBOLD)
+                                    .color(Color::Default),
                             ),
                     ),
             );
