@@ -23,6 +23,21 @@ pub struct SubmoduleInfo {
     pub is_initialized: bool,
 }
 
+impl SubmoduleInfo {
+    /// Returns a human-readable status string for this submodule.
+    pub fn status(&self) -> &'static str {
+        if !self.is_initialized {
+            return "not initialized";
+        }
+        match (&self.head_oid, &self.workdir_oid) {
+            (Some(head), Some(workdir)) if head == workdir => "up to date",
+            (Some(_), Some(_)) => "modified",
+            (Some(_), None) => "not checked out",
+            (None, _) => "no commit",
+        }
+    }
+}
+
 /// Compute the status of all submodules in the repository.
 pub fn compute_submodules(repo: &Repository) -> Result<Vec<SubmoduleInfo>> {
     let submodules = repo
@@ -217,5 +232,64 @@ impl GitProject {
                 })
                 .await
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SubmoduleInfo;
+
+    fn make_submodule(
+        is_initialized: bool,
+        head_oid: Option<&str>,
+        workdir_oid: Option<&str>,
+    ) -> SubmoduleInfo {
+        SubmoduleInfo {
+            name: "test-sub".to_string(),
+            path: std::path::PathBuf::from("libs/test-sub"),
+            url: "https://example.com/repo".to_string(),
+            branch: None,
+            head_oid: head_oid.map(String::from),
+            index_oid: None,
+            workdir_oid: workdir_oid.map(String::from),
+            is_initialized,
+        }
+    }
+
+    #[test]
+    fn status_not_initialized() {
+        let sub = make_submodule(false, Some("abc123"), Some("abc123"));
+        assert_eq!(sub.status(), "not initialized");
+    }
+
+    #[test]
+    fn status_up_to_date() {
+        let sub = make_submodule(true, Some("abc123"), Some("abc123"));
+        assert_eq!(sub.status(), "up to date");
+    }
+
+    #[test]
+    fn status_modified_head_differs_from_workdir() {
+        let sub = make_submodule(true, Some("abc123"), Some("def456"));
+        assert_eq!(sub.status(), "modified");
+    }
+
+    #[test]
+    fn status_not_checked_out_has_head_no_workdir() {
+        let sub = make_submodule(true, Some("abc123"), None);
+        assert_eq!(sub.status(), "not checked out");
+    }
+
+    #[test]
+    fn status_no_commit() {
+        let sub = make_submodule(true, None, None);
+        assert_eq!(sub.status(), "no commit");
+    }
+
+    #[test]
+    fn status_no_commit_with_workdir() {
+        // Even with a workdir OID, if there's no head OID, it's "no commit"
+        let sub = make_submodule(true, None, Some("def456"));
+        assert_eq!(sub.status(), "no commit");
     }
 }

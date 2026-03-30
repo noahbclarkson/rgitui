@@ -119,16 +119,7 @@ impl SubmoduleView {
     }
 
     fn format_status(sub: &SubmoduleInfo) -> String {
-        if !sub.is_initialized {
-            return "not initialized".to_string();
-        }
-
-        match (&sub.head_oid, &sub.workdir_oid) {
-            (Some(head), Some(workdir)) if head == workdir => "up to date".to_string(),
-            (Some(_), Some(_)) => "modified".to_string(),
-            (Some(_), None) => "not checked out".to_string(),
-            (None, _) => "no commit".to_string(),
-        }
+        sub.status().to_string()
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
