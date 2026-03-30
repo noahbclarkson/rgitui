@@ -3500,14 +3500,11 @@ impl SettingsModal {
                         .items_center()
                         .gap(px(8.))
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(
-                                    Label::new(SharedString::from(config_path_display))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                ),
+                            div().flex_1().min_w_0().child(
+                                Label::new(SharedString::from(config_path_display))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
                         )
                         .child(
                             Button::new("reveal-config-dir", "Reveal")

@@ -370,7 +370,11 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Push,
                                 msg,
-                                (details.or(Some("Remote refs refreshed after push.".into())), Some(remote_name.clone()), Some(remote_branch_name.clone())),
+                                (
+                                    details.or(Some("Remote refs refreshed after push.".into())),
+                                    Some(remote_name.clone()),
+                                    Some(remote_branch_name.clone()),
+                                ),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::RefsChanged);
@@ -382,7 +386,11 @@ impl GitProject {
                                 GitOperationKind::Push,
                                 format!("Push to '{}' failed", remote_name),
                                 e.to_string(),
-                                (Some(remote_name.clone()), Some(remote_branch_name.clone()), true),
+                                (
+                                    Some(remote_name.clone()),
+                                    Some(remote_branch_name.clone()),
+                                    true,
+                                ),
                                 cx,
                             );
                         }
