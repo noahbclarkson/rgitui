@@ -1017,19 +1017,23 @@ pub(super) fn subscribe_graph(
                     let commit_info = commits.iter().find(|c| c.oid == commit_oid).cloned();
                     let repo_path = proj.repo_path().to_path_buf();
 
-                    // Prefetch diffs for adjacent commits in the background.
-                    // Users often navigate sequentially — having neighbors pre-cached
-                    // makes scrolling through history feel instant.
+                    // Prefetch diffs for nearby commits in the background.
+                    // Users navigate in jumps (keyboard, scroll, page-up/down), not just ±1.
+                    // ±10 window covers most navigation patterns while staying well within
+                    // the 100-slot LRU cache capacity.
+                    const PREFETCH_WINDOW: usize = 10;
                     if let Some(idx) = commits.iter().position(|c| c.oid == commit_oid) {
                         let mut prefetch_oids = Vec::new();
-                        if let Some(prev) = idx.checked_sub(1) {
-                            if let Some(c) = commits.get(prev) {
-                                prefetch_oids.push(c.oid);
+                        for delta in 1..=PREFETCH_WINDOW {
+                            if let Some(prev_idx) = idx.checked_sub(delta) {
+                                if let Some(c) = commits.get(prev_idx) {
+                                    prefetch_oids.push(c.oid);
+                                }
                             }
-                        }
-                        if let Some(next) = idx.checked_add(1) {
-                            if let Some(c) = commits.get(next) {
-                                prefetch_oids.push(c.oid);
+                            if let Some(next_idx) = idx.checked_add(delta) {
+                                if let Some(c) = commits.get(next_idx) {
+                                    prefetch_oids.push(c.oid);
+                                }
                             }
                         }
                         if !prefetch_oids.is_empty() {
