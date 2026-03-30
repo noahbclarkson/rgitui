@@ -233,6 +233,8 @@ impl Render for CommitPanel {
 
         let char_count_label: SharedString = format!("{}/72", summary_len).into();
         let char_count_color = if summary_len > 72 {
+            Color::Error
+        } else if summary_len > 50 {
             Color::Warning
         } else {
             Color::Muted
