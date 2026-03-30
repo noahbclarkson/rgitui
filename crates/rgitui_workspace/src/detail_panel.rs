@@ -744,6 +744,16 @@ impl DetailPanel {
 impl Render for DetailPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let compact = &cx.global::<SettingsState>().settings().compactness;
+
+        // Compactness-scaled spacing values for header and message cards
+        let header_pad_h = px(compact.spacing(16.0));
+        let header_pad_v = px(compact.spacing(14.0));
+        let header_gap = px(compact.spacing(10.0));
+        let msg_pad_h = px(compact.spacing(12.0));
+        let msg_pad_v = px(compact.spacing(10.0));
+        let msg_gap = px(compact.spacing(6.0));
+        let avatar_size = px(compact.spacing(24.0));
 
         let Some(commit) = &self.commit else {
             return div()
@@ -886,9 +896,9 @@ impl Render for DetailPanel {
         let mut header_card = div()
             .v_flex()
             .w_full()
-            .px(px(16.))
-            .py(px(14.))
-            .gap(px(10.))
+            .px(header_pad_h)
+            .py(header_pad_v)
+            .gap(header_gap)
             .bg(colors.elevated_surface_background)
             .rounded(px(8.))
             .border_1()
@@ -901,8 +911,13 @@ impl Render for DetailPanel {
             .map(|s| s.to_string());
         let avatar_bg = colors.border_focused;
         let avatar_text_color = colors.background;
-        let avatar_circle =
-            self.render_avatar(avatar_url, initials, avatar_bg, avatar_text_color, px(24.));
+        let avatar_circle = self.render_avatar(
+            avatar_url,
+            initials,
+            avatar_bg,
+            avatar_text_color,
+            avatar_size,
+        );
 
         // SHA copy button
         let sha_copy_clone = sha_for_copy.clone();
@@ -1063,9 +1078,9 @@ impl Render for DetailPanel {
         let mut message_card = div()
             .v_flex()
             .w_full()
-            .px(px(16.))
-            .py(px(14.))
-            .gap(px(8.))
+            .px(msg_pad_h)
+            .py(msg_pad_v)
+            .gap(msg_gap)
             .bg(colors.elevated_surface_background)
             .rounded(px(8.))
             .border_1()
