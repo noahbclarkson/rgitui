@@ -4,9 +4,7 @@ use gpui::{AsyncApp, Context, Task, WeakEntity};
 
 use crate::types::*;
 
-use super::auth::{
-    make_fetch_options, make_push_options, remote_uses_ssh, run_git_network_command,
-};
+use super::auth::run_git_network_command;
 use super::refresh::gather_refresh_data;
 use super::{
     ensure_clean_worktree, head_branch_name, pull_target, push_target, GitProject, GitProjectEvent,
@@ -80,21 +78,10 @@ impl GitProject {
             let result: anyhow::Result<(Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let details = {
-                        let repo = Repository::open(&repo_path)?;
-                        if remote_uses_ssh(&repo, &task_remote_name)? {
-                            drop(repo);
-                            run_git_network_command(
-                                &repo_path,
-                                &["fetch", "--prune", &task_remote_name],
-                            )?
-                        } else {
-                            let mut remote = repo.find_remote(&task_remote_name)?;
-                            let mut fetch_opts = make_fetch_options();
-                            remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
-                            None
-                        }
-                    };
+                    let details = run_git_network_command(
+                        &repo_path,
+                        &["fetch", "--prune", &task_remote_name],
+                    )?;
                     let data = gather_refresh_data(&repo_path)?;
                     anyhow::Ok((details, data))
                 })
@@ -182,96 +169,47 @@ impl GitProject {
                     let (msg, details) = {
                         let repo = Repository::open(&repo_path)?;
                         ensure_clean_worktree(&repo, "Pull")?;
+                        drop(repo);
 
-                        if remote_uses_ssh(&repo, &task_remote_name)? {
-                            drop(repo);
-                            let details = run_git_network_command(
-                                &repo_path,
-                                &["pull", &task_remote_name, &task_branch_name],
-                            )?;
-                            let msg = if details
-                                .as_deref()
-                                .map(|text| text.contains("Already up to date."))
-                                .unwrap_or(false)
-                            {
-                                format!(
-                                    "'{}' is already up to date with '{}'",
-                                    task_branch_name, task_remote_name
-                                )
-                            } else {
-                                format!(
-                                    "Pulled '{}' from '{}' using system Git",
-                                    task_branch_name, task_remote_name
-                                )
-                            };
-                            (msg, details)
-                        } else {
-                            let mut remote = repo.find_remote(&task_remote_name)?;
-                            let mut fetch_opts = make_fetch_options();
-                            remote.fetch(&[] as &[&str], Some(&mut fetch_opts), None)?;
-                            drop(remote);
-
-                            let fetch_head = repo.find_reference("FETCH_HEAD")?;
-                            let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
-                            drop(fetch_head);
-
-                            let (analysis, _pref) = repo.merge_analysis(&[&fetch_commit])?;
-
-                            let msg = if analysis.is_up_to_date() {
-                                format!(
-                                    "'{}' is already up to date with '{}'",
-                                    task_branch_name, task_remote_name
-                                )
-                            } else if analysis.is_fast_forward() {
-                                let refname = format!("refs/heads/{}", task_branch_name);
-                                let mut reference = repo.find_reference(&refname)?;
-                                reference.set_target(fetch_commit.id(), "Fast-forward pull")?;
-                                repo.set_head(&refname)?;
-                                repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
-                                format!(
-                                    "Pulled '{}' from '{}' (fast-forward)",
-                                    task_branch_name, task_remote_name
-                                )
-                            } else if analysis.is_normal() {
-                                repo.merge(&[&fetch_commit], None, None)?;
-                                let has_conflicts = repo.index()?.has_conflicts();
-                                if !has_conflicts {
-                                    let sig = repo.signature()?;
-                                    let mut index = repo.index()?;
-                                    let tree_oid = index.write_tree()?;
-                                    let tree = repo.find_tree(tree_oid)?;
-                                    let head_commit = repo.head()?.peel_to_commit()?;
-                                    let fetch_commit_obj = repo.find_commit(fetch_commit.id())?;
-                                    repo.commit(
-                                        Some("HEAD"),
-                                        &sig,
-                                        &sig,
-                                        &format!(
-                                            "Merge remote-tracking branch '{}/{}'",
-                                            task_remote_name, task_branch_name
-                                        ),
-                                        &tree,
-                                        &[&head_commit, &fetch_commit_obj],
-                                    )?;
-                                    repo.cleanup_state()?;
+                        match run_git_network_command(
+                            &repo_path,
+                            &["pull", &task_remote_name, &task_branch_name],
+                        ) {
+                            Ok(details) => {
+                                let msg = if details
+                                    .as_deref()
+                                    .map(|text| text.contains("Already up to date."))
+                                    .unwrap_or(false)
+                                {
                                     format!(
-                                        "Pulled '{}' from '{}' with a merge commit",
+                                        "'{}' is already up to date with '{}'",
                                         task_branch_name, task_remote_name
                                     )
                                 } else {
-                                    let conflict_count = repo
-                                        .index()?
-                                        .conflicts()?
-                                        .count();
                                     format!(
+                                        "Pulled '{}' from '{}'",
+                                        task_branch_name, task_remote_name
+                                    )
+                                };
+                                (msg, details)
+                            }
+                            Err(e) => {
+                                let error_msg = e.to_string();
+                                if error_msg.contains("CONFLICT")
+                                    || error_msg.contains("Automatic merge failed")
+                                {
+                                    let repo = Repository::open(&repo_path)?;
+                                    let conflict_count =
+                                        repo.index()?.conflicts()?.count();
+                                    let msg = format!(
                                         "CONFLICT:{} conflict(s) during pull from '{}/{}'. Resolve and continue.",
                                         conflict_count, task_remote_name, task_branch_name
-                                    )
+                                    );
+                                    (msg, Some(error_msg))
+                                } else {
+                                    return Err(e);
                                 }
-                            } else {
-                                format!("Pulled '{}' from '{}'", task_branch_name, task_remote_name)
-                            };
-                            (msg, None)
+                            }
                         }
                     }; // repo dropped here
 
@@ -387,98 +325,36 @@ impl GitProject {
                     let (msg, details) = {
                         let repo = Repository::open(&repo_path)?;
                         let branch_name = head_branch_name(&repo)?;
+                        drop(repo);
 
-                        if remote_uses_ssh(&repo, &task_remote_name)? {
-                            drop(repo);
-                            let mut args = vec!["push"];
-                            if force {
-                                args.push("--force");
-                            }
-                            if set_upstream {
-                                args.push("--set-upstream");
-                            }
-                            args.push(task_remote_name.as_str());
-                            let refspec = format!("HEAD:{}", task_remote_branch_name);
-                            args.push(refspec.as_str());
-                            let details = run_git_network_command(&repo_path, &args)?;
-                            let msg = if force {
-                                format!(
-                                    "Force pushed '{}' to '{}/{}' using system Git",
-                                    branch_name, task_remote_name, task_remote_branch_name
-                                )
-                            } else if set_upstream {
-                                format!(
-                                    "Pushed '{}' to '{}/{}' and set upstream using system Git",
-                                    branch_name, task_remote_name, task_remote_branch_name
-                                )
-                            } else {
-                                format!(
-                                    "Pushed '{}' to '{}/{}' using system Git",
-                                    branch_name, task_remote_name, task_remote_branch_name
-                                )
-                            };
-                            (msg, details)
-                        } else {
-                            let mut remote = repo.find_remote(&task_remote_name)?;
-                            let refspec = if force {
-                                format!(
-                                    "+refs/heads/{}:refs/heads/{}",
-                                    branch_name, task_remote_branch_name
-                                )
-                            } else {
-                                format!(
-                                    "refs/heads/{}:refs/heads/{}",
-                                    branch_name, task_remote_branch_name
-                                )
-                            };
-                            let mut push_opts = make_push_options();
-                            remote.push(&[&refspec], Some(&mut push_opts))?;
-                            drop(remote);
-
-                            if let Ok(local_branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
-                                if let Some(tip) = local_branch.get().target() {
-                                    let remote_ref_name = format!(
-                                        "refs/remotes/{}/{}",
-                                        task_remote_name, task_remote_branch_name
-                                    );
-                                    if let Err(e) = repo.reference(
-                                        &remote_ref_name,
-                                        tip,
-                                        true,
-                                        &format!("push: update {} after push", remote_ref_name),
-                                    ) {
-                                        log::warn!("Failed to update remote tracking ref '{}' after push: {}", remote_ref_name, e);
-                                    }
-                                }
-                            }
-
-                            if set_upstream {
-                                let mut branch =
-                                    repo.find_branch(&branch_name, git2::BranchType::Local)?;
-                                branch.set_upstream(Some(&format!(
-                                    "{}/{}",
-                                    task_remote_name, task_remote_branch_name
-                                )))?;
-                            }
-
-                            let msg = if force {
-                                format!(
-                                    "Force pushed '{}' to '{}/{}'",
-                                    branch_name, task_remote_name, task_remote_branch_name
-                                )
-                            } else if set_upstream {
-                                format!(
-                                    "Pushed '{}' to '{}/{}' and set upstream",
-                                    branch_name, task_remote_name, task_remote_branch_name
-                                )
-                            } else {
-                                format!(
-                                    "Pushed '{}' to '{}/{}'",
-                                    branch_name, task_remote_name, task_remote_branch_name
-                                )
-                            };
-                            (msg, None)
+                        let mut args = vec!["push"];
+                        if force {
+                            args.push("--force");
                         }
+                        if set_upstream {
+                            args.push("--set-upstream");
+                        }
+                        args.push(task_remote_name.as_str());
+                        let refspec = format!("HEAD:{}", task_remote_branch_name);
+                        args.push(refspec.as_str());
+                        let details = run_git_network_command(&repo_path, &args)?;
+                        let msg = if force {
+                            format!(
+                                "Force pushed '{}' to '{}/{}'",
+                                branch_name, task_remote_name, task_remote_branch_name
+                            )
+                        } else if set_upstream {
+                            format!(
+                                "Pushed '{}' to '{}/{}' and set upstream",
+                                branch_name, task_remote_name, task_remote_branch_name
+                            )
+                        } else {
+                            format!(
+                                "Pushed '{}' to '{}/{}'",
+                                branch_name, task_remote_name, task_remote_branch_name
+                            )
+                        };
+                        (msg, details)
                     };
                     let data = gather_refresh_data(&repo_path)?;
                     Ok((msg, details, data))

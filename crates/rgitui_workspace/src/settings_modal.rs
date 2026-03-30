@@ -4,8 +4,8 @@ use gpui::{
     KeyDownEvent, Render, SharedString, Window,
 };
 use rgitui_settings::{
-    AiSettings, AutoFetchInterval, Compactness, DiffViewMode, GitProviderSettings, GraphStyle,
-    SettingsState,
+    config_dir, AiSettings, AutoFetchInterval, Compactness, DiffViewMode, GitProviderSettings,
+    GraphStyle, SettingsState,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
@@ -3479,6 +3479,65 @@ impl SettingsModal {
                 .child(self.render_shortcut_row("Settings", "Ctrl+,", cx)),
         );
         section = section.child(shortcuts_card);
+        section = section.child(Self::section_divider(cx));
+
+        let config_path = config_dir().join("settings.json");
+        let config_path_display = config_path.display().to_string();
+        let config_dir_path = config_dir();
+        let mut config_card = Self::setting_card(cx);
+        config_card = config_card.child(
+            div()
+                .v_flex()
+                .gap(px(8.))
+                .child(Self::setting_label(
+                    "Config File",
+                    "Location of the settings file on disk.",
+                ))
+                .child(
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    Label::new(SharedString::from(config_path_display))
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
+                        )
+                        .child(
+                            Button::new("reveal-config-dir", "Reveal")
+                                .style(ButtonStyle::Subtle)
+                                .size(ButtonSize::Compact)
+                                .icon(IconName::Folder)
+                                .on_click(move |_: &ClickEvent, _, _cx| {
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        let _ = std::process::Command::new("explorer")
+                                            .arg(&config_dir_path)
+                                            .spawn();
+                                    }
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        let _ = std::process::Command::new("open")
+                                            .arg(&config_dir_path)
+                                            .spawn();
+                                    }
+                                    #[cfg(target_os = "linux")]
+                                    {
+                                        let _ = std::process::Command::new("xdg-open")
+                                            .arg(&config_dir_path)
+                                            .spawn();
+                                    }
+                                }),
+                        ),
+                ),
+        );
+        section = section.child(config_card);
 
         section
     }
