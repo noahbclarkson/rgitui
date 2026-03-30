@@ -43,6 +43,40 @@ pub struct GraphEdge {
 /// - Primary parent edges continue in the same lane when possible
 /// - Merge parent edges route to the lane already expecting that parent, or allocate new
 /// - Lanes are compacted: when multiple lanes become free, later lanes shift inward
+///
+/// Check if `ancestor` is an ancestor of `descendant` using only the commit list.
+/// The commit list is in topological order (descendants before ancestors),
+/// so we walk `descendant`'s parent chain and check if `ancestor` appears.
+fn is_ancestor_of(
+    ancestor: git2::Oid,
+    descendant: git2::Oid,
+    commits: &[CommitInfo],
+    oid_to_idx: &std::collections::HashMap<git2::Oid, usize>,
+) -> bool {
+    if ancestor == descendant {
+        return true;
+    }
+    let mut queue = vec![descendant];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(current) = queue.pop() {
+        if visited.insert(current) {
+            if current == ancestor {
+                return true;
+            }
+            if let Some(&idx) = oid_to_idx.get(&current) {
+                for &parent_oid in &commits[idx].parent_oids {
+                    if parent_oid != ancestor {
+                        queue.push(parent_oid);
+                    } else {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// - Colors are assigned per-lane and stay consistent along a branch
 pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
     if commits.is_empty() {
@@ -55,39 +89,6 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         .enumerate()
         .map(|(i, c)| (c.oid, i))
         .collect();
-
-    /// Check if `ancestor` is an ancestor of `descendant` using only the commit list.
-    /// The commit list is in topological order (descendants before ancestors),
-    /// so we walk `descendant`'s parent chain and check if `ancestor` appears.
-    fn is_ancestor_of(
-        ancestor: git2::Oid,
-        descendant: git2::Oid,
-        commits: &[CommitInfo],
-        oid_to_idx: &std::collections::HashMap<git2::Oid, usize>,
-    ) -> bool {
-        if ancestor == descendant {
-            return true;
-        }
-        let mut queue = vec![descendant];
-        let mut visited = std::collections::HashSet::new();
-        while let Some(current) = queue.pop() {
-            if visited.insert(current) {
-                if current == ancestor {
-                    return true;
-                }
-                if let Some(&idx) = oid_to_idx.get(&current) {
-                    for &parent_oid in &commits[idx].parent_oids {
-                        if parent_oid != ancestor {
-                            queue.push(parent_oid);
-                        } else {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
 
     // Detect HEAD oid
     let head_oid = commits.first().and_then(|c| {
@@ -488,5 +489,193 @@ mod tests {
         assert!(!rows[1].has_incoming);
         // Row 2 (merge): expected by both previous commits, has incoming
         assert!(rows[2].has_incoming);
+    }
+
+    // ── is_ancestor_of tests ────────────────────────────────────────
+    // Note: is_ancestor_of is called in compute_graph as:
+    //   is_ancestor_of(candidate_oid, expected_parent_oid, ...)
+    // meaning: "is candidate_oid an ancestor of expected_parent_oid?"
+    // The commits list is in topological order (descendants before ancestors).
+
+    fn make_oid_to_idx(commits: &[CommitInfo]) -> std::collections::HashMap<git2::Oid, usize> {
+        commits
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.oid, i))
+            .collect()
+    }
+
+    #[test]
+    fn is_ancestor_of_direct_parent() {
+        // Commits in topological order: HEAD=oid1, parent=oid2
+        // is_ancestor_of(oid2, oid1) = true (oid2 is ancestor of oid1)
+        let commits = vec![
+            make_commit(1, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[], vec![]),
+        ];
+        let oid_to_idx = make_oid_to_idx(&commits);
+        // oid2 IS ancestor of oid1 (direct parent)
+        assert!(is_ancestor_of(
+            make_oid(2),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        // oid1 is NOT ancestor of oid2 (reverse direction)
+        assert!(!is_ancestor_of(
+            make_oid(1),
+            make_oid(2),
+            &commits,
+            &oid_to_idx
+        ));
+    }
+
+    #[test]
+    fn is_ancestor_of_grandparent() {
+        // Chain: oid1 → oid2 → oid3 → none  (topological: oid1, oid2, oid3)
+        // oid3 is ancestor of oid1 (grandparent), oid2 is direct parent
+        let commits = vec![
+            make_commit(1, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[3], vec![]),
+            make_commit(3, &[], vec![]),
+        ];
+        let oid_to_idx = make_oid_to_idx(&commits);
+        // oid3 is ancestor of oid1 (grandparent)
+        assert!(is_ancestor_of(
+            make_oid(3),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        // oid2 is ancestor of oid1 (direct parent)
+        assert!(is_ancestor_of(
+            make_oid(2),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        // oid1 is NOT ancestor of oid3 (reverse direction)
+        assert!(!is_ancestor_of(
+            make_oid(1),
+            make_oid(3),
+            &commits,
+            &oid_to_idx
+        ));
+    }
+
+    #[test]
+    fn is_ancestor_of_reflexive() {
+        // A commit is its own ancestor (reflexive property)
+        let commits = vec![make_commit(1, &[], vec![RefLabel::Head])];
+        let oid_to_idx = make_oid_to_idx(&commits);
+        assert!(is_ancestor_of(
+            make_oid(1),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+    }
+
+    #[test]
+    fn is_ancestor_of_unrelated_branches() {
+        // Two separate chains with no common ancestor
+        let commits = vec![
+            make_commit(1, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[], vec![]),
+            make_commit(10, &[20], vec![]),
+            make_commit(20, &[], vec![]),
+        ];
+        let oid_to_idx = make_oid_to_idx(&commits);
+        // No cross-branch ancestry
+        assert!(!is_ancestor_of(
+            make_oid(1),
+            make_oid(10),
+            &commits,
+            &oid_to_idx
+        ));
+        assert!(!is_ancestor_of(
+            make_oid(10),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        // Within each chain: parent is ancestor of child
+        assert!(is_ancestor_of(
+            make_oid(2),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        assert!(is_ancestor_of(
+            make_oid(20),
+            make_oid(10),
+            &commits,
+            &oid_to_idx
+        ));
+    }
+
+    #[test]
+    fn is_ancestor_of_merge_commit() {
+        // Merge: oid1 ← [oid2, oid20]; oid2 ← [oid3]; oid20 ← [oid3]
+        // Topological: [oid1, oid2, oid20, oid3]
+        // oid3 is common ancestor of oid1 (via oid2 AND oid20)
+        // oid2 is direct parent of oid1 (merge parent)
+        // oid20 is direct parent of oid1 (merge parent)
+        let commits = vec![
+            make_commit(1, &[2, 20], vec![RefLabel::Head]), // merge commit
+            make_commit(2, &[3], vec![]),                   // branch 1
+            make_commit(20, &[3], vec![]),                  // branch 2
+            make_commit(3, &[], vec![]),                    // common ancestor
+        ];
+        let oid_to_idx = make_oid_to_idx(&commits);
+        // oid3 is ancestor of oid1 (via either branch)
+        assert!(is_ancestor_of(
+            make_oid(3),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        // oid2 is ancestor of oid1 (direct merge parent)
+        assert!(is_ancestor_of(
+            make_oid(2),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        // oid20 is ancestor of oid1 (direct merge parent)
+        assert!(is_ancestor_of(
+            make_oid(20),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        // Reverse: oid1 is NOT ancestor of oid3
+        assert!(!is_ancestor_of(
+            make_oid(1),
+            make_oid(3),
+            &commits,
+            &oid_to_idx
+        ));
+    }
+
+    #[test]
+    fn is_ancestor_of_missing_oid_returns_false() {
+        // OID not in the commit list → not found in oid_to_idx → returns false (no panic)
+        let commits = vec![make_commit(1, &[], vec![RefLabel::Head])];
+        let oid_to_idx = make_oid_to_idx(&commits);
+        // Nonexistent OID is not ancestor of anything
+        assert!(!is_ancestor_of(
+            make_oid(99),
+            make_oid(1),
+            &commits,
+            &oid_to_idx
+        ));
+        // Nothing is ancestor of a nonexistent OID
+        assert!(!is_ancestor_of(
+            make_oid(1),
+            make_oid(99),
+            &commits,
+            &oid_to_idx
+        ));
     }
 }
