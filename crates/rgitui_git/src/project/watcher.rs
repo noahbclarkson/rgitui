@@ -1,11 +1,69 @@
 use gpui::{AsyncApp, Context};
 use notify::{RecursiveMode, Watcher};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use super::refresh::gather_refresh_data_lightweight;
 use super::{GitProject, GitProjectEvent};
+
+/// Compute the newest mtime across all critical `.git` sentinel files.
+///
+/// This covers:
+/// - `.git/HEAD` — branch switches, detached HEAD
+/// - `.git/index` — staging area changes (`git add`, `git reset`)
+/// - `.git/packed-refs` — packed ref updates
+/// - `.git/MERGE_HEAD`, `.git/REBASE_HEAD` — in-progress operations
+/// - Current branch ref file (parsed from HEAD) — commits on current branch
+/// - `.git/refs/heads/` — local branch changes from external operations
+/// - `.git/refs/remotes/` — push/fetch ref updates
+/// - `.git/refs/tags/` — tag creation/deletion
+fn git_state_fingerprint(git_dir: &Path) -> Option<SystemTime> {
+    let mut newest: Option<SystemTime> = None;
+    let mut check = |path: &Path| {
+        if let Ok(mtime) = path.metadata().and_then(|m| m.modified()) {
+            newest = Some(newest.map_or(mtime, |n| n.max(mtime)));
+        }
+    };
+
+    // Sentinel files
+    check(&git_dir.join("HEAD"));
+    check(&git_dir.join("index"));
+    check(&git_dir.join("packed-refs"));
+    check(&git_dir.join("MERGE_HEAD"));
+    check(&git_dir.join("REBASE_HEAD"));
+
+    // Current branch ref file (e.g. refs/heads/main from "ref: refs/heads/main\n")
+    if let Ok(head_content) = std::fs::read_to_string(git_dir.join("HEAD")) {
+        if let Some(ref_rel) = head_content.strip_prefix("ref: ") {
+            check(&git_dir.join(ref_rel.trim()));
+        }
+    }
+
+    // Scan refs directories (local branches, remotes, tags)
+    for subdir in &["refs/heads", "refs/remotes", "refs/tags"] {
+        scan_refs_mtimes(&git_dir.join(subdir), &mut newest);
+    }
+
+    newest
+}
+
+/// Recursively scan a directory for the newest file mtime.
+fn scan_refs_mtimes(dir: &Path, newest: &mut Option<SystemTime>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_refs_mtimes(&path, newest);
+        } else if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
+            *newest = Some(newest.map_or(mtime, |n| n.max(mtime)));
+        }
+    }
+}
 
 impl GitProject {
     /// Start watching the repository for filesystem changes.
@@ -13,11 +71,9 @@ impl GitProject {
         let repo_path = self.repo_path.clone();
         let dirty = Arc::new(AtomicBool::new(false));
 
-        // Track .git/index mtime to detect git index-only changes (e.g. `git add`,
-        // `git reset HEAD`) which do not produce working-directory filesystem events.
-        let index_path = repo_path.join(".git/index");
-        let last_index_mtime = Arc::new(std::sync::Mutex::new(
-            index_path.metadata().ok().and_then(|m| m.modified().ok()),
+        let git_dir = repo_path.join(".git");
+        let last_git_fingerprint = Arc::new(std::sync::Mutex::new(
+            git_state_fingerprint(&git_dir),
         ));
 
         let watcher = {
@@ -54,19 +110,19 @@ impl GitProject {
 
             let watcher_repo_path = repo_path.clone();
             let dirty_flag = dirty.clone();
-            let index_path = index_path.clone();
-            let index_mtime = last_index_mtime.clone();
+            let git_fingerprint = last_git_fingerprint.clone();
             cx.spawn(async move |weak, cx: &mut AsyncApp| loop {
                 smol::Timer::after(Duration::from_millis(300)).await;
 
-                // Detect git index-only changes that don't produce working-directory events.
-                let index_changed = index_mtime
+                // Detect git internal state changes (commits, pushes, branch ops,
+                // staging changes, etc.) that don't produce working-directory events.
+                let git_dir = watcher_repo_path.join(".git");
+                let fingerprint_changed = git_fingerprint
                     .lock()
                     .ok()
                     .and_then(|guard| {
-                        let current = index_path.metadata().ok()?.modified().ok();
-                        let changed = current.is_some() && current != *guard;
-                        if changed {
+                        let current = git_state_fingerprint(&git_dir);
+                        if current.is_some() && current != *guard {
                             Some(current)
                         } else {
                             None
@@ -74,9 +130,9 @@ impl GitProject {
                     })
                     .flatten();
 
-                if let Some(new_mtime) = index_changed {
-                    if let Ok(mut guard) = index_mtime.lock() {
-                        *guard = Some(new_mtime);
+                if let Some(new_fp) = fingerprint_changed {
+                    if let Ok(mut guard) = git_fingerprint.lock() {
+                        *guard = Some(new_fp);
                     }
                     dirty_flag.store(true, Ordering::Relaxed);
                 }
