@@ -73,26 +73,51 @@ impl AvatarCache {
     }
 
     /// Save a resolved email→url mapping to the disk cache.
-    /// Reads the existing file, merges the new entry, writes back.
+    /// Reads the existing file, merges the new entry, writes to a temp file,
+    /// then atomically renames it over the target — safe against concurrent calls.
     /// Silently does nothing if the file cannot be read or written.
     pub fn save_entry_to_disk(email: &str, url: &str) {
         let path = Self::disk_cache_path();
-        // Read existing entries to avoid overwriting concurrent writes from other tasks
-        let existing_content = fs::read_to_string(&path).unwrap_or_default();
-        let mut entries = Self::parse_entries(&existing_content);
         // Create parent dir if needed
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        // Merge + write
+        // Read existing entries (may be empty or absent)
+        let existing_content = fs::read_to_string(&path).unwrap_or_default();
+        let mut entries = Self::parse_entries(&existing_content);
         entries.insert(email.to_string(), url.to_string());
+
+        // Build new content
         let content: String = entries
             .iter()
             .map(|(e, u)| format!("{e}={u}"))
             .collect::<Vec<_>>()
             .join("\n");
-        if let Err(e) = fs::write(&path, content) {
-            eprintln!("rgitui: failed to write avatar disk cache: {e}");
+
+        // Write to a temp file in the same directory, then rename atomically.
+        // This avoids concurrent writes interleaving and corrupting the cache.
+        // rename() is atomic on POSIX; the temporary file is on the same
+        // filesystem so the rename is guaranteed atomic even on Windows.
+        let tmp_path = path.with_extension("tmp");
+        if let Err(e) = fs::write(&tmp_path, &content) {
+            eprintln!("rgitui: failed to write avatar disk cache temp file: {e}");
+            return;
+        }
+        match fs::rename(&tmp_path, &path) {
+            Ok(()) => {}
+            Err(e) => {
+                // rename failed (e.g. cross-filesystem on some platforms).
+                // Fall back to direct write — accept potential partial corruption
+                // only in this edge case.
+                eprintln!(
+                    "rgitui: avatar disk cache rename failed ({e}), falling back to direct write"
+                );
+                if let Err(e2) = fs::write(&path, &content) {
+                    eprintln!("rgitui: failed to write avatar disk cache: {e2}");
+                }
+                // Clean up the temp file if rename partially succeeded
+                let _ = fs::remove_file(&tmp_path);
+            }
         }
     }
 
