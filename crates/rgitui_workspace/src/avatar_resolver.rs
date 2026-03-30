@@ -48,9 +48,19 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
             cx.update(|cx: &mut App| {
                 if cx.has_global::<AvatarCache>() {
                     let cache = cx.global_mut::<AvatarCache>();
-                    match result {
-                        Some(url) => cache.set_resolved(email, url),
-                        None => cache.set_not_found(email),
+                    match &result {
+                        Some(url) => {
+                            cache.set_resolved(email.clone(), url.clone());
+                            // Persist to disk in the background (blocking I/O, fire-and-forget)
+                            let email_clone = email.clone();
+                            let url_clone = url.clone();
+                            std::thread::spawn(move || {
+                                AvatarCache::save_entry_to_disk(&email_clone, &url_clone);
+                            });
+                        }
+                        None => {
+                            cache.set_not_found(email);
+                        }
                     }
                 }
             });

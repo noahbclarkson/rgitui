@@ -46,7 +46,14 @@ fn main() {
         // Initialize subsystems
         rgitui_theme::init(cx);
         rgitui_settings::init(cx);
-        cx.set_global(rgitui_ui::AvatarCache::new());
+
+        // Load avatar disk cache and pre-populate the in-memory cache
+        let loaded = rgitui_ui::AvatarCache::load_from_disk();
+        let mut cache = rgitui_ui::AvatarCache::new();
+        for (email, url) in loaded {
+            cache.set_resolved(email, url);
+        }
+        cx.set_global(cache);
 
         // Apply saved theme from settings
         let saved_theme = cx
