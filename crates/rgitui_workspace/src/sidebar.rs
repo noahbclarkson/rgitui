@@ -36,6 +36,7 @@ pub enum SidebarEvent {
     StashSelected(usize),
     StashApply(usize),
     StashDrop(usize),
+    StashBranch(usize),
     WorktreeSelected(usize),
     WorktreeCreate,
     WorktreeRemove(usize),
@@ -2079,6 +2080,19 @@ impl Render for Sidebar {
                                     .on_click(cx.listener(
                                         move |_this, _: &ClickEvent, _, cx| {
                                             cx.emit(SidebarEvent::StashApply(stash_index));
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    IconButton::new(
+                                        ElementId::NamedInteger("branch-stash".into(), i as u64),
+                                        IconName::GitBranch,
+                                    )
+                                    .size(ButtonSize::Compact)
+                                    .tooltip("Create branch from stash")
+                                    .on_click(cx.listener(
+                                        move |_this, _: &ClickEvent, _, cx| {
+                                            cx.emit(SidebarEvent::StashBranch(stash_index));
                                         },
                                     )),
                                 )

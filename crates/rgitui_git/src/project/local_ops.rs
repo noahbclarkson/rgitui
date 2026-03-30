@@ -1251,6 +1251,96 @@ impl GitProject {
         })
     }
 
+    /// Create a branch from a stash entry and apply the stash to it.
+    /// Equivalent to `git stash branch <branchname>`.
+    pub fn stash_branch(
+        &mut self,
+        branch_name: &str,
+        stash_index: usize,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name_owned = branch_name.to_string();
+        let current_branch = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stash,
+            format!(
+                "Creating branch '{}' from stash #{}...",
+                branch_name_owned, stash_index
+            ),
+            None,
+            current_branch.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Clone for cx.update closures (see below)
+            let branch_name_for_update = branch_name_owned.clone();
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut repo = Repository::open(&repo_path)?;
+
+                    // Collect stash OIDs to find the one at stash_index.
+                    let mut stash_oids: Vec<git2::Oid> = Vec::new();
+                    repo.stash_foreach(|_idx, _msg, oid| {
+                        stash_oids.push(*oid);
+                        true
+                    })?;
+
+                    let stash_oid = *stash_oids.get(stash_index).ok_or_else(|| {
+                        anyhow::anyhow!("Stash index {} out of range", stash_index)
+                    })?;
+
+                    // Create a new branch at the stash's commit.
+                    // We must drop `commit` before calling `stash_apply` since the
+                    // former borrows `repo` immutably and the latter needs a mutable borrow.
+                    {
+                        let commit = repo.find_commit(stash_oid)?;
+                        repo.branch(&branch_name_owned, &commit, false)?;
+                    }
+
+                    // Apply the stash to the new branch.
+                    repo.stash_apply(stash_index, None)?;
+
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                format!(
+                                    "Created branch '{}' from stash #{}",
+                                    branch_name_for_update, stash_index
+                                ),
+                                (None, None, Some(branch_name_for_update.clone())),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Stash,
+                                format!("Create branch from stash #{} failed", stash_index),
+                                e.to_string(),
+                                (None, current_branch, false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Discard changes in specific files (restore to HEAD).
     pub fn discard_changes(
         &mut self,

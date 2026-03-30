@@ -60,6 +60,15 @@ impl Workspace {
             return;
         }
 
+        // Dismiss stash branch dialog on Escape
+        if key == "escape" && self.dialogs.stash_branch_dialog.read(cx).is_visible() {
+            self.dialogs.stash_branch_dialog.update(cx, |d, cx| {
+                d.dismiss(cx);
+            });
+            self.restore_focus(window, cx);
+            return;
+        }
+
         // Dismiss worktree dialog on Escape
         if key == "escape" && self.dialogs.worktree_dialog.read(cx).is_visible() {
             self.dialogs.worktree_dialog.update(cx, |wd, cx| {
@@ -107,6 +116,7 @@ impl Workspace {
             || self.dialogs.rename_dialog.read(cx).is_visible()
             || self.overlays.repo_opener.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()
+            || self.dialogs.stash_branch_dialog.read(cx).is_visible()
             || self.overlays.shortcuts_help.read(cx).is_visible();
 
         // Ctrl+Shift+F to fetch

@@ -67,7 +67,8 @@ impl RenderOnce for Badge {
         let mut label = Label::new(self.text)
             .size(LabelSize::XSmall)
             .weight(weight)
-            .color(self.color);
+            .color(self.color)
+            .truncate();
 
         if self.italic {
             label = label.italic();
@@ -83,7 +84,8 @@ impl RenderOnce for Badge {
             .rounded(px(10.))
             .bg(bg)
             .border_1()
-            .border_color(border);
+            .border_color(border)
+            .overflow_x_hidden();
 
         if let Some(prefix_text) = self.prefix {
             container = container.child(

@@ -17,9 +17,9 @@ use crate::{
     ConfirmDialogEvent, DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent,
     InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent, RenameDialog,
     RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
-    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, SubmoduleView, SubmoduleViewEvent,
-    TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent, WorktreeDialog,
-    WorktreeDialogEvent,
+    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog,
+    StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent,
+    ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -216,6 +216,34 @@ pub(super) fn subscribe_tag_dialog(cx: &mut Context<Workspace>, tag_dialog: &Ent
                 }
             }
             TagDialogEvent::Dismissed => {}
+        },
+    )
+    .detach();
+}
+
+pub(super) fn subscribe_stash_branch_dialog(
+    cx: &mut Context<Workspace>,
+    stash_branch_dialog: &Entity<StashBranchDialog>,
+) {
+    cx.subscribe(
+        stash_branch_dialog,
+        |this, _d, event: &StashBranchDialogEvent, cx| match event {
+            StashBranchDialogEvent::CreateBranch { name, stash_index } => {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    let project = tab.project.clone();
+                    let name = name.clone();
+                    let idx = *stash_index;
+                    project.update(cx, |proj, cx| {
+                        proj.stash_branch(&name, idx, cx).detach();
+                    });
+                }
+                this.show_toast(
+                    format!("Creating branch '{}' from stash #{}", name, stash_index),
+                    ToastKind::Info,
+                    cx,
+                );
+            }
+            StashBranchDialogEvent::Dismissed => {}
         },
     )
     .detach();
@@ -948,6 +976,12 @@ pub(super) fn subscribe_sidebar(
                         ConfirmAction::StashDrop(index),
                         cx,
                     );
+                });
+            }
+            SidebarEvent::StashBranch(index) => {
+                let index = *index;
+                this.dialogs.stash_branch_dialog.update(cx, |d, cx| {
+                    d.show_visible(index, cx);
                 });
             }
         }
