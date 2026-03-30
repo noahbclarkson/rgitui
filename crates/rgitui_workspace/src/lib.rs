@@ -1,6 +1,7 @@
 pub(crate) mod avatar_resolver;
 mod blame_view;
 mod branch_dialog;
+mod cache;
 mod command_palette;
 mod commit_panel;
 mod confirm_dialog;

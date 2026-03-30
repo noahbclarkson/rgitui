@@ -1,4 +1,3 @@
-use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -13,7 +12,7 @@ use rgitui_git::{
 use rgitui_graph::{GraphView, GraphViewEvent};
 
 use crate::{
-    BlameView, BlameViewEvent, BranchDialog, BranchDialogEvent, CommandPalette,
+    cache::LruCache, BlameView, BlameViewEvent, BranchDialog, BranchDialogEvent, CommandPalette,
     CommandPaletteEvent, CommitPanel, CommitPanelEvent, ConfirmAction, ConfirmDialog,
     ConfirmDialogEvent, DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent,
     InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent, RenameDialog,
@@ -957,51 +956,7 @@ pub(super) fn subscribe_sidebar(
 }
 
 /// LRU cache for computed CommitDiffs, bounded to prevent unbounded memory growth.
-struct CommitDiffCache {
-    map: HashMap<git2::Oid, Arc<rgitui_git::CommitDiff>>,
-    order: VecDeque<git2::Oid>,
-    cap: usize,
-}
-
-impl CommitDiffCache {
-    fn new(cap: usize) -> Self {
-        Self {
-            map: HashMap::new(),
-            order: VecDeque::new(),
-            cap,
-        }
-    }
-
-    /// Synchronous cache lookup. Returns the cached diff and marks oid as most-recently-used.
-    fn get(&mut self, oid: &git2::Oid) -> Option<Arc<rgitui_git::CommitDiff>> {
-        if self.map.contains_key(oid) {
-            // Move to back (most recently used).
-            if let Some(pos) = self.order.iter().position(|o| *o == *oid) {
-                self.order.remove(pos);
-                self.order.push_back(*oid);
-            }
-            self.map.get(oid).cloned()
-        } else {
-            None
-        }
-    }
-
-    /// Returns true if the cache contains an entry for this OID (without LRU update).
-    fn contains(&self, oid: &git2::Oid) -> bool {
-        self.map.contains_key(oid)
-    }
-
-    /// Insert with LRU eviction. Drops oldest entry when at capacity.
-    fn insert(&mut self, oid: git2::Oid, diff: Arc<rgitui_git::CommitDiff>) {
-        if self.map.len() >= self.cap {
-            if let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
-            }
-        }
-        self.order.push_back(oid);
-        self.map.insert(oid, diff);
-    }
-}
+type CommitDiffCache = LruCache<git2::Oid, Arc<rgitui_git::CommitDiff>>;
 
 pub(super) fn subscribe_graph(
     cx: &mut Context<Workspace>,
