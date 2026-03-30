@@ -2263,7 +2263,23 @@ impl Render for Sidebar {
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted)
                                 .truncate(),
-                        ),
+                        )
+                        .when(!worktree.is_current, |el| {
+                            el.child(
+                                IconButton::new(
+                                    ElementId::NamedInteger("remove-worktree".into(), i as u64),
+                                    IconName::Trash,
+                                )
+                                .size(ButtonSize::Compact)
+                                .color(Color::Deleted)
+                                .tooltip("Remove worktree")
+                                .on_click(cx.listener(
+                                    move |_this, _: &ClickEvent, _, cx| {
+                                        cx.emit(SidebarEvent::WorktreeRemove(worktree_index));
+                                    },
+                                )),
+                            )
+                        }),
                 );
             }
         }
