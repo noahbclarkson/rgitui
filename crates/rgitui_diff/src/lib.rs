@@ -98,13 +98,15 @@ impl StyledLine {
     /// Merge word-level highlight spans into the existing highlights list.
     /// `deletion_spans` are byte ranges of deleted words (highlighted red).
     /// `addition_spans` are byte ranges of inserted words (highlighted green).
-    /// Word-level spans are appended after syntax spans; GPUI renders later
-    /// highlights on top of earlier ones, so word-level takes visual priority.
     ///
-    /// Spans are clipped to `self.text.len()` to prevent GPUI panics when
-    /// spans reference positions beyond the actual text (can happen when
-    /// diff spans are computed from untrimmed text but applied to a
-    /// `StyledLine` built from trimmed text).
+    /// Spans are clipped to `self.text.len()` and then merged into the
+    /// existing (sorted, non-overlapping) syntect highlights.  GPUI's
+    /// `compute_runs` requires the final list to be sorted by position and
+    /// non-overlapping; simply appending would violate that invariant when
+    /// syntect already covers the full text, causing a panic.
+    ///
+    /// For overlapping regions the syntect foreground colour is preserved
+    /// alongside the word-level background colour.
     fn apply_word_highlights(
         &mut self,
         deletion_spans: Vec<Range<usize>>,
@@ -116,20 +118,82 @@ impl StyledLine {
         if text_len == 0 {
             return;
         }
+
+        // Collect all word spans with their styles, clipped to text bounds.
+        let mut word_spans: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
         for span in deletion_spans {
             let start = span.start.min(text_len);
             let end = span.end.min(text_len);
             if start < end {
-                self.highlights.push((start..end, deleted_word_bg));
+                word_spans.push((start..end, deleted_word_bg));
             }
         }
         for span in addition_spans {
             let start = span.start.min(text_len);
             let end = span.end.min(text_len);
             if start < end {
-                self.highlights.push((start..end, added_word_bg));
+                word_spans.push((start..end, added_word_bg));
             }
         }
+
+        if word_spans.is_empty() {
+            return;
+        }
+
+        word_spans.sort_by_key(|s| s.0.start);
+
+        if self.highlights.is_empty() {
+            // No existing syntax highlights — use word spans directly.
+            self.highlights = word_spans;
+            return;
+        }
+
+        // Merge word spans into existing syntect highlights by splitting
+        // syntect spans at word-span boundaries and combining styles for
+        // overlapping regions.
+        let existing = std::mem::take(&mut self.highlights);
+        let mut merged: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+        let mut wi = 0;
+
+        for (syn_range, syn_style) in &existing {
+            let mut pos = syn_range.start;
+
+            while pos < syn_range.end {
+                // Advance past word spans already fully consumed.
+                while wi < word_spans.len() && word_spans[wi].0.end <= pos {
+                    wi += 1;
+                }
+
+                if wi >= word_spans.len() || word_spans[wi].0.start >= syn_range.end {
+                    // No more word spans overlap this remainder.
+                    merged.push((pos..syn_range.end, *syn_style));
+                    break;
+                }
+
+                let (ref w_range, w_style) = word_spans[wi];
+
+                if w_range.start > pos {
+                    // Syntect-only gap before the word span.
+                    let gap_end = w_range.start.min(syn_range.end);
+                    merged.push((pos..gap_end, *syn_style));
+                    pos = gap_end;
+                } else {
+                    // Overlap: combine syntect style with word background.
+                    let overlap_end = w_range.end.min(syn_range.end);
+                    let mut combined = *syn_style;
+                    if w_style.background_color.is_some() {
+                        combined.background_color = w_style.background_color;
+                    }
+                    if w_style.color.is_some() {
+                        combined.color = w_style.color;
+                    }
+                    merged.push((pos..overlap_end, combined));
+                    pos = overlap_end;
+                }
+            }
+        }
+
+        self.highlights = merged;
     }
 }
 
@@ -1202,10 +1266,22 @@ impl DiffViewer {
             }
         }
 
+        // Merge nearby spans into contiguous blocks so the highlights look
+        // clean rather than a scattershot of individually-lit tokens.
+        // A gap of 3 bytes covers typical code separators (`.`, `::`, `(`, `, `).
+        let del_spans = Self::merge_nearby_spans(del_spans, 3);
+        let add_spans = Self::merge_nearby_spans(add_spans, 3);
+
         (del_spans, add_spans)
     }
 
-    /// Split `text` into words, returning each word's byte-offset range.
+    /// Split `text` into tokens for word-level diffing.
+    ///
+    /// Tokens are runs of alphanumeric/underscore characters OR individual
+    /// punctuation characters. Whitespace is a separator and not emitted.
+    /// This gives much finer granularity than splitting on whitespace alone:
+    /// `foo.bar(x)` → `["foo", ".", "bar", "(", "x", ")"]` instead of one
+    /// big token.
     #[allow(dead_code)]
     pub(crate) fn split_word_ranges(text: &str) -> Vec<Range<usize>> {
         let mut result = Vec::new();
@@ -1216,14 +1292,44 @@ impl DiffViewer {
                 if let Some(start) = word_start.take() {
                     result.push(start..i);
                 }
-            } else if word_start.is_none() {
-                word_start = Some(i);
+            } else if ch.is_alphanumeric() || ch == '_' {
+                if word_start.is_none() {
+                    word_start = Some(i);
+                }
+            } else {
+                // Punctuation: flush current word, emit punct as own token.
+                if let Some(start) = word_start.take() {
+                    result.push(start..i);
+                }
+                result.push(i..i + ch.len_utf8());
             }
         }
         if let Some(start) = word_start {
             result.push(start..text.len());
         }
         result
+    }
+
+    /// Merge spans that are close together into contiguous blocks.
+    ///
+    /// Without this, fine-grained tokenisation produces many small separate
+    /// highlights (e.g. `compute`, `x`, `y` each individually highlighted).
+    /// Merging with a small gap tolerance produces cleaner visual blocks
+    /// (e.g. one highlight covering `compute(x, y)`).
+    fn merge_nearby_spans(spans: Vec<Range<usize>>, max_gap: usize) -> Vec<Range<usize>> {
+        if spans.is_empty() {
+            return spans;
+        }
+        let mut merged = vec![spans[0].clone()];
+        for span in &spans[1..] {
+            let last = merged.last_mut().unwrap();
+            if span.start <= last.end + max_gap {
+                last.end = span.end;
+            } else {
+                merged.push(span.clone());
+            }
+        }
+        merged
     }
 }
 
@@ -2287,6 +2393,56 @@ mod tests {
     }
 
     #[test]
+    fn split_word_ranges_punctuation_splits_tokens() {
+        // Punctuation should produce separate tokens, not stick to adjacent words.
+        let words = DiffViewer::split_word_ranges("foo.bar(x, y)");
+        // "foo" "." "bar" "(" "x" "," "y" ")"
+        assert_eq!(words.len(), 8);
+        assert_eq!(words[0], 0..3); // "foo"
+        assert_eq!(words[1], 3..4); // "."
+        assert_eq!(words[2], 4..7); // "bar"
+        assert_eq!(words[3], 7..8); // "("
+        assert_eq!(words[4], 8..9); // "x"
+        assert_eq!(words[5], 9..10); // ","
+        assert_eq!(words[6], 11..12); // "y"
+        assert_eq!(words[7], 12..13); // ")"
+    }
+
+    #[test]
+    fn split_word_ranges_rust_code() {
+        let words = DiffViewer::split_word_ranges("let x = foo::bar();");
+        // "let" "x" "=" "foo" ":" ":" "bar" "(" ")" ";"
+        assert_eq!(words.len(), 10);
+        assert_eq!(words[0], 0..3); // "let"
+        assert_eq!(words[3], 8..11); // "foo"
+        assert_eq!(words[6], 13..16); // "bar"
+    }
+
+    #[test]
+    fn compute_word_diff_function_arg_change() {
+        // Only the argument should be highlighted, not the whole expression.
+        let (del_spans, add_spans) =
+            DiffViewer::compute_word_diff("compute(x, y)", "compute(a, b)");
+        // Changed tokens: "x" → "a" and "y" → "b".
+        // With gap merging (gaps ≤3), "x", "y" merge into one block covering "x, y".
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0], 8..12); // "x, y"
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0], 8..12); // "a, b"
+    }
+
+    #[test]
+    fn compute_word_diff_method_name_change() {
+        // Changing just the method name in a chain.
+        let (del_spans, add_spans) =
+            DiffViewer::compute_word_diff("foo.bar()", "foo.baz()");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0], 4..7); // "bar"
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0], 4..7); // "baz"
+    }
+
+    #[test]
     fn compute_word_diff_unchanged() {
         let (del_spans, add_spans) = DiffViewer::compute_word_diff("hello world", "hello world");
         assert!(del_spans.is_empty());
@@ -2341,17 +2497,19 @@ mod tests {
 
     #[test]
     fn compute_word_diff_empty_old_new_has_content() {
-        // Pure addition (new file)
+        // Pure addition — all tokens differ, nearby spans merge into one block.
         let (del_spans, add_spans) = DiffViewer::compute_word_diff("", "hello world");
         assert!(del_spans.is_empty());
-        assert_eq!(add_spans.len(), 2); // "hello" and "world"
+        assert_eq!(add_spans.len(), 1); // merged into single block
+        assert_eq!(add_spans[0], 0..11);
     }
 
     #[test]
     fn compute_word_diff_old_has_content_new_empty() {
-        // Pure deletion (deleted file)
+        // Pure deletion — all tokens differ, nearby spans merge into one block.
         let (del_spans, add_spans) = DiffViewer::compute_word_diff("hello world", "");
-        assert_eq!(del_spans.len(), 2); // "hello" and "world"
+        assert_eq!(del_spans.len(), 1); // merged into single block
+        assert_eq!(del_spans[0], 0..11);
         assert!(add_spans.is_empty());
     }
 
@@ -2413,8 +2571,114 @@ mod tests {
         let mut line = StyledLine::plain("hello");
         let bg = HighlightStyle::default();
         line.apply_word_highlights(vec![0..1], vec![0..1], bg, bg);
+        // Both del and add produce word spans at 0..1 (sorted stably).
         assert_eq!(line.highlights.len(), 2);
         assert_eq!(line.highlights[0].0, 0..1);
         assert_eq!(line.highlights[1].0, 0..1);
+    }
+
+    #[test]
+    fn apply_word_highlights_merges_with_syntect_spans() {
+        // Simulate syntect covering the full text with two spans.
+        let syn_style_a = HighlightStyle {
+            color: Some(gpui::hsla(0.0, 1.0, 0.5, 1.0)),
+            ..Default::default()
+        };
+        let syn_style_b = HighlightStyle {
+            color: Some(gpui::hsla(0.5, 1.0, 0.5, 1.0)),
+            ..Default::default()
+        };
+        let word_bg = HighlightStyle {
+            background_color: Some(gpui::hsla(0.0, 0.5, 0.5, 0.25)),
+            ..Default::default()
+        };
+
+        // Text: "hello world" (11 bytes)
+        // Syntect: [0..5, syn_a], [5..11, syn_b]
+        // Word del: [0..5] ("hello" changed)
+        let mut line = StyledLine {
+            text: "hello world".into(),
+            highlights: vec![(0..5, syn_style_a), (5..11, syn_style_b)],
+        };
+        line.apply_word_highlights(vec![0..5], vec![], word_bg, word_bg);
+
+        // Should produce 3 spans: [0..5 combined], [5..11 syntect-only]
+        // The combined span has syntect colour + word background.
+        assert_eq!(line.highlights.len(), 2);
+        assert_eq!(line.highlights[0].0, 0..5);
+        assert_eq!(line.highlights[0].1.color, syn_style_a.color);
+        assert_eq!(line.highlights[0].1.background_color, word_bg.background_color);
+        assert_eq!(line.highlights[1].0, 5..11);
+        assert_eq!(line.highlights[1].1.color, syn_style_b.color);
+        assert_eq!(line.highlights[1].1.background_color, None);
+    }
+
+    #[test]
+    fn apply_word_highlights_splits_syntect_span_at_word_boundaries() {
+        let syn = HighlightStyle {
+            color: Some(gpui::hsla(0.0, 1.0, 0.5, 1.0)),
+            ..Default::default()
+        };
+        let word_bg = HighlightStyle {
+            background_color: Some(gpui::hsla(0.0, 0.5, 0.5, 0.25)),
+            ..Default::default()
+        };
+
+        // Text: "hello world!" (12 bytes)
+        // Syntect: single span covering everything [0..12]
+        // Word highlight: [6..11] ("world")
+        let mut line = StyledLine {
+            text: "hello world!".into(),
+            highlights: vec![(0..12, syn)],
+        };
+        line.apply_word_highlights(vec![6..11], vec![], word_bg, word_bg);
+
+        // Should split into: [0..6 syn], [6..11 syn+word], [11..12 syn]
+        assert_eq!(line.highlights.len(), 3);
+        assert_eq!(line.highlights[0].0, 0..6);
+        assert_eq!(line.highlights[0].1.background_color, None);
+        assert_eq!(line.highlights[1].0, 6..11);
+        assert_eq!(line.highlights[1].1.background_color, word_bg.background_color);
+        assert_eq!(line.highlights[1].1.color, syn.color);
+        assert_eq!(line.highlights[2].0, 11..12);
+        assert_eq!(line.highlights[2].1.background_color, None);
+    }
+
+    #[test]
+    fn apply_word_highlights_word_span_crosses_syntect_boundary() {
+        let syn_a = HighlightStyle {
+            color: Some(gpui::hsla(0.0, 1.0, 0.5, 1.0)),
+            ..Default::default()
+        };
+        let syn_b = HighlightStyle {
+            color: Some(gpui::hsla(0.5, 1.0, 0.5, 1.0)),
+            ..Default::default()
+        };
+        let word_bg = HighlightStyle {
+            background_color: Some(gpui::hsla(0.0, 0.5, 0.5, 0.25)),
+            ..Default::default()
+        };
+
+        // Text: "hello world!" (12 bytes)
+        // Syntect: [0..5, syn_a], [5..12, syn_b]
+        // Word: [3..7] — crosses the syn_a/syn_b boundary
+        let mut line = StyledLine {
+            text: "hello world!".into(),
+            highlights: vec![(0..5, syn_a), (5..12, syn_b)],
+        };
+        line.apply_word_highlights(vec![3..7], vec![], word_bg, word_bg);
+
+        // Expected: [0..3 syn_a], [3..5 syn_a+word], [5..7 syn_b+word], [7..12 syn_b]
+        assert_eq!(line.highlights.len(), 4);
+        assert_eq!(line.highlights[0].0, 0..3);
+        assert_eq!(line.highlights[0].1.background_color, None);
+        assert_eq!(line.highlights[1].0, 3..5);
+        assert_eq!(line.highlights[1].1.color, syn_a.color);
+        assert_eq!(line.highlights[1].1.background_color, word_bg.background_color);
+        assert_eq!(line.highlights[2].0, 5..7);
+        assert_eq!(line.highlights[2].1.color, syn_b.color);
+        assert_eq!(line.highlights[2].1.background_color, word_bg.background_color);
+        assert_eq!(line.highlights[3].0, 7..12);
+        assert_eq!(line.highlights[3].1.background_color, None);
     }
 }
