@@ -3,6 +3,8 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use similar::{capture_diff_slices, Algorithm};
+
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
@@ -809,6 +811,7 @@ impl DiffViewer {
                     return StyledLine::plain(trimmed.to_string());
                 };
 
+                let text_len = trimmed.len();
                 let mut highlights = Vec::new();
                 let mut cursor = 0usize;
                 for (style, segment) in ranges.into_iter() {
@@ -817,10 +820,14 @@ impl DiffViewer {
                     if len == 0 {
                         continue;
                     }
-                    highlights.push((
-                        cursor..cursor + len,
-                        Self::syntect_style_to_highlight(style),
-                    ));
+                    // Clip to text bounds. GPUI panics if StyledText runs exceed
+                    // text length — syntect can return spans extending into
+                    // trailing whitespace that trim_end() removed.
+                    let start = cursor.min(text_len);
+                    let end = (cursor + len).min(text_len);
+                    if start < end {
+                        highlights.push((start..end, Self::syntect_style_to_highlight(style)));
+                    }
                     cursor += len;
                 }
 
@@ -1045,20 +1052,77 @@ impl DiffViewer {
         rows
     }
 
-    /// DISABLED: word-level diff causes GPUI "invalid text run" panics on Windows.
-    /// Returns empty spans until the root cause is properly fixed.
+    /// Compute word-level diff highlights between `old_text` and `new_text`.
+    /// Returns `(deletion_spans, addition_spans)` as byte-index ranges into
+    /// each respective string.
+    ///
+    /// Uses `Algorithm::Lcs` (Longest Common Subsequence) — the only `similar`
+    /// algorithm that is fully iterative with no recursive `DiffHook` callbacks.
+    ///
+    /// **Why trim before diff?** `highlight_text` stores text with `trim_end()`
+    /// (trailing whitespace removed). Computing diff on raw text produces spans
+    /// into trailing whitespace that exceed `StyledLine` bounds → GPUI panic.
+    /// Trimming both strings first ensures spans always land within the
+    /// `StyledLine` content.
+    ///
+    /// LCS is O(NM) time/space and entirely iterative. Word-level highlighting
+    /// is skipped when either text exceeds 100 words (10,000 entries ≈ 80 KB).
     pub(crate) fn compute_word_diff(
-        _old_text: &str,
-        _new_text: &str,
+        old_text: &str,
+        new_text: &str,
     ) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-        // DISABLED: word-level diff causes GPUI "invalid text run" panics on
-        // Windows that we have been unable to root-cause. The panic occurs when
-        // StyledText is created with highlights whose byte ranges exceed the text
-        // length — even after multiple attempts at fixing span bounds in
-        // apply_word_highlights and trim-before-diff. The root cause appears to
-        // be in the syntect highlight_line span computation, not in our code.
-        // Re-enable once the GPUI/syntect interaction is properly understood.
-        (Vec::new(), Vec::new())
+        let old_trimmed = old_text.trim_end();
+        let new_trimmed = new_text.trim_end();
+
+        let old_word_ranges = Self::split_word_ranges(old_trimmed);
+        let new_word_ranges = Self::split_word_ranges(new_trimmed);
+
+        if old_word_ranges.is_empty() && new_word_ranges.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        // Cap at 100 words per line: LCS is O(NM) in space.
+        if old_word_ranges.len() > 100 || new_word_ranges.len() > 100 {
+            return (Vec::new(), Vec::new());
+        }
+
+        let old_wv: Vec<&str> = old_word_ranges
+            .iter()
+            .map(|r| &old_trimmed[r.clone()])
+            .collect();
+        let new_wv: Vec<&str> = new_word_ranges
+            .iter()
+            .map(|r| &new_trimmed[r.clone()])
+            .collect();
+
+        let ops = capture_diff_slices(Algorithm::Lcs, &old_wv, &new_wv);
+
+        let mut del_spans: Vec<Range<usize>> = Vec::new();
+        let mut add_spans: Vec<Range<usize>> = Vec::new();
+
+        for op in ops {
+            for change in op.iter_changes(&old_wv, &new_wv) {
+                match change.tag() {
+                    similar::ChangeTag::Delete => {
+                        if let Some(idx) = change.old_index() {
+                            if idx < old_word_ranges.len() {
+                                del_spans.push(old_word_ranges[idx].clone());
+                            }
+                        }
+                    }
+                    similar::ChangeTag::Insert => {
+                        if let Some(idx) = change.new_index() {
+                            if idx < new_word_ranges.len() {
+                                add_spans.push(new_word_ranges[idx].clone());
+                            }
+                        }
+                    }
+                    similar::ChangeTag::Equal => {}
+                }
+            }
+        }
+
+        (del_spans, add_spans)
     }
 
     /// Split `text` into words, returning each word's byte-offset range.
@@ -2143,12 +2207,33 @@ mod tests {
         assert!(add_spans.is_empty());
     }
 
-    // #[test] // DISABLED — word-level diff disabled
-    // fn compute_word_diff_simple_word_change() { ... }
-    // #[test] // DISABLED — word-level diff disabled
-    // fn compute_word_diff_addition_only() { ... }
-    // #[test] // DISABLED — word-level diff disabled
-    // fn compute_word_diff_deletion_only() { ... }
+    #[test]
+    fn compute_word_diff_simple_word_change() {
+        // "foo" → "bar": both single words, should produce one del + one add
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo", "bar");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 0..3); // "foo"
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 0..3); // "bar"
+    }
+
+    #[test]
+    fn compute_word_diff_addition_only() {
+        // New text has "bar" added
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo", "foo bar");
+        assert!(del_spans.is_empty());
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 4..7); // "bar"
+    }
+
+    #[test]
+    fn compute_word_diff_deletion_only() {
+        // "bar" deleted from old text
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo bar", "foo");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 4..7); // "bar"
+        assert!(add_spans.is_empty());
+    }
 
     #[test]
     fn compute_word_diff_both_empty() {
@@ -2157,12 +2242,32 @@ mod tests {
         assert!(add_spans.is_empty());
     }
 
-    // #[test] // DISABLED — word-level diff disabled
-    // fn compute_word_diff_word_replaced_in_sentence() { ... }
-    // #[test] // DISABLED — word-level diff disabled
-    // fn compute_word_diff_empty_old_new_has_content() { ... }
-    // #[test] // DISABLED — word-level diff disabled
-    // fn compute_word_diff_old_has_content_new_empty() { ... }
+    #[test]
+    fn compute_word_diff_word_replaced_in_sentence() {
+        // "The quick brown fox" → "The slow brown fox"
+        let (del_spans, add_spans) =
+            DiffViewer::compute_word_diff("The quick brown fox", "The slow brown fox");
+        assert_eq!(del_spans.len(), 1);
+        assert_eq!(del_spans[0].clone(), 4..9); // "quick"
+        assert_eq!(add_spans.len(), 1);
+        assert_eq!(add_spans[0].clone(), 4..8); // "slow"
+    }
+
+    #[test]
+    fn compute_word_diff_empty_old_new_has_content() {
+        // Pure addition (new file)
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("", "hello world");
+        assert!(del_spans.is_empty());
+        assert_eq!(add_spans.len(), 2); // "hello" and "world"
+    }
+
+    #[test]
+    fn compute_word_diff_old_has_content_new_empty() {
+        // Pure deletion (deleted file)
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("hello world", "");
+        assert_eq!(del_spans.len(), 2); // "hello" and "world"
+        assert!(add_spans.is_empty());
+    }
 
     // --- apply_word_highlights tests ---
 
