@@ -289,6 +289,38 @@ impl InteractiveRebase {
         }
     }
 
+    /// Apply a drag reorder: move the entry at `drag_idx` to `hover_idx`,
+    /// shifting intermediate entries. `editing_index` tracks an optional
+    /// active edit (e.g., reword) and is adjusted to follow the moved entry.
+    pub(crate) fn apply_drag_reorder(
+        entries: &mut Vec<RebaseEntry>,
+        drag_idx: usize,
+        hover_idx: usize,
+        editing_index: &mut Option<usize>,
+    ) {
+        if drag_idx == hover_idx || drag_idx >= entries.len() || hover_idx >= entries.len() {
+            return;
+        }
+        let entry = entries.remove(drag_idx);
+        entries.insert(hover_idx, entry);
+
+        if let Some(ref mut edit_idx) = *editing_index {
+            if *edit_idx == drag_idx {
+                *edit_idx = hover_idx;
+            } else if drag_idx < hover_idx {
+                // Dragged downward: entries between shift left → editing index may decrease
+                if *edit_idx > drag_idx && *edit_idx <= hover_idx {
+                    *edit_idx -= 1;
+                }
+            } else {
+                // drag_idx > hover_idx: dragged upward, entries between shift right
+                if *edit_idx >= hover_idx && *edit_idx < drag_idx {
+                    *edit_idx += 1;
+                }
+            }
+        }
+    }
+
     /// Complete the drag operation (called on mouseup).
     fn end_drag(&mut self, cx: &mut Context<Self>) {
         let Some(drag_idx) = self.dragging_index else {
@@ -302,24 +334,13 @@ impl InteractiveRebase {
         };
 
         if drag_idx != hover_idx {
-            // Move dragged entry to hover position.
-            // Entries between drag_idx and hover_idx shift by one in the opposite direction.
-            let entry = self.entries.remove(drag_idx);
-            self.entries.insert(hover_idx, entry);
-
-            // Update editing index if it was affected
-            if let Some((ref mut edit_idx, _, _)) = self.editing_reword {
-                if *edit_idx == drag_idx {
-                    *edit_idx = hover_idx;
-                } else if drag_idx < hover_idx {
-                    if *edit_idx > drag_idx && *edit_idx <= hover_idx {
-                        *edit_idx -= 1;
-                    }
-                } else if *edit_idx >= hover_idx && *edit_idx < drag_idx {
-                    *edit_idx += 1;
+            let mut edit_idx: Option<usize> = self.editing_reword.as_ref().map(|(i, _, _)| *i);
+            Self::apply_drag_reorder(&mut self.entries, drag_idx, hover_idx, &mut edit_idx);
+            if let Some(ref mut editing) = self.editing_reword {
+                if let Some(idx) = edit_idx {
+                    editing.0 = idx;
                 }
             }
-
             // Keep selection on the moved entry
             self.selected_index = hover_idx;
         }
@@ -1061,5 +1082,151 @@ mod tests {
         } else {
             panic!("expected Reword");
         }
+    }
+
+    // ── Drag-to-reorder ─────────────────────────────────────────────
+
+    fn make_entries_abcde() -> Vec<RebaseEntry> {
+        vec![
+            RebaseEntry {
+                oid: "aaa".into(),
+                original_message: "commit A".into(),
+                author: "A".into(),
+                action: RebaseAction::Pick,
+            },
+            RebaseEntry {
+                oid: "bbb".into(),
+                original_message: "commit B".into(),
+                author: "B".into(),
+                action: RebaseAction::Pick,
+            },
+            RebaseEntry {
+                oid: "ccc".into(),
+                original_message: "commit C".into(),
+                author: "C".into(),
+                action: RebaseAction::Pick,
+            },
+            RebaseEntry {
+                oid: "ddd".into(),
+                original_message: "commit D".into(),
+                author: "D".into(),
+                action: RebaseAction::Pick,
+            },
+            RebaseEntry {
+                oid: "eee".into(),
+                original_message: "commit E".into(),
+                author: "E".into(),
+                action: RebaseAction::Pick,
+            },
+        ]
+    }
+
+    #[test]
+    fn drag_reorder_moves_entry_downward() {
+        // Drag entry at index 1 (B) to index 3 → [A, C, D, B, E]
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 1, 3, &mut editing);
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[0].oid.as_str(), "aaa");
+        assert_eq!(entries[1].oid.as_str(), "ccc"); // shifted left
+        assert_eq!(entries[2].oid.as_str(), "ddd"); // shifted left
+        assert_eq!(entries[3].oid.as_str(), "bbb"); // dropped here
+        assert_eq!(entries[4].oid.as_str(), "eee");
+    }
+
+    #[test]
+    fn drag_reorder_moves_entry_upward() {
+        // Drag entry at index 3 (D) to index 1 → [A, D, B, C, E]
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 3, 1, &mut editing);
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[0].oid.as_str(), "aaa");
+        assert_eq!(entries[1].oid.as_str(), "ddd"); // dropped here
+        assert_eq!(entries[2].oid.as_str(), "bbb"); // shifted right
+        assert_eq!(entries[3].oid.as_str(), "ccc"); // shifted right
+        assert_eq!(entries[4].oid.as_str(), "eee");
+    }
+
+    #[test]
+    fn drag_reorder_same_position_is_noop() {
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 2, 2, &mut editing);
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[2].oid.as_str(), "ccc"); // unchanged
+    }
+
+    #[test]
+    fn drag_reorder_drag_out_of_bounds_is_noop() {
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 99, 1, &mut editing);
+        assert_eq!(entries[0].oid.as_str(), "aaa"); // all unchanged
+    }
+
+    #[test]
+    fn drag_reorder_hover_out_of_bounds_is_noop() {
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 1, 99, &mut editing);
+        assert_eq!(entries[1].oid.as_str(), "bbb"); // all unchanged
+    }
+
+    #[test]
+    fn drag_reorder_editing_index_follows_moved_entry_downward() {
+        // Drag B (idx 1) to idx 3.
+        // After remove(B): [A,C,D,E]. D at intermediate idx 2.
+        // After insert(B@3): E (intermediate idx 3) is pushed to 4.
+        // D stays at 2. The hover position (3 in original space) holds the inserted B.
+        // D (original idx 3, i.e. between 1<3<=3) is decremented to 2.
+        let mut entries = make_entries_abcde();
+        let mut editing = Some(3); // D
+        InteractiveRebase::apply_drag_reorder(&mut entries, 1, 3, &mut editing);
+        assert_eq!(editing, Some(2));
+    }
+
+    #[test]
+    fn drag_reorder_editing_index_follows_moved_entry_upward() {
+        // Drag D (idx 3) to idx 1.
+        // After remove(D): [A,B,C,E] — C is at idx 2 in intermediate.
+        // After insert(D@1): [A,D,B,C,E] — C ends at idx 3.
+        let mut entries = make_entries_abcde();
+        let mut editing = Some(2); // C
+        InteractiveRebase::apply_drag_reorder(&mut entries, 3, 1, &mut editing);
+        // C (at original idx 2, which is between 1 and 3 in original array) shifts to 3
+        assert_eq!(editing, Some(3));
+    }
+
+    #[test]
+    fn drag_reorder_editing_index_follows_itself_when_moved() {
+        // Drag B (idx 1) to idx 3; editing B itself
+        let mut entries = make_entries_abcde();
+        let mut editing = Some(1);
+        InteractiveRebase::apply_drag_reorder(&mut entries, 1, 3, &mut editing);
+        assert_eq!(editing, Some(3)); // B now at position 3
+    }
+
+    #[test]
+    fn drag_reorder_editing_index_unchanged_when_not_involved() {
+        // Drag B (idx 1) to idx 4; editing E (idx 4).
+        // After remove(B): [A,C,D,E] — E at intermediate idx 3.
+        // After insert(B@4): E at final idx 4 (pushed right by B). Entry at idx 4 (B) occupies that slot.
+        // Condition (edit_idx > 1 && edit_idx <= 4): E at 4 satisfies (4>1 && 4<=4) → shift to 3.
+        let mut entries = make_entries_abcde();
+        let mut editing = Some(4); // E
+        InteractiveRebase::apply_drag_reorder(&mut entries, 1, 4, &mut editing);
+        assert_eq!(editing, Some(3)); // E shifted left by one (intermediate 3)
+        assert_eq!(entries[3].oid.as_str(), "eee"); // E is now at 3, B at 4
+    }
+
+    #[test]
+    fn drag_reorder_editing_index_none_is_handled() {
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 0, 4, &mut editing);
+        assert_eq!(editing, None); // no edit in progress
+        assert_eq!(entries[4].oid.as_str(), "aaa"); // A is now last
     }
 }
