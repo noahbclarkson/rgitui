@@ -1375,7 +1375,12 @@ pub(crate) fn build_terminal_args(
                 let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
                 if is_console_terminal(program) && args.is_empty() {
                     // Use /K (keep running) with cd /d (change drive + dir)
-                    args.extend(["/K".to_string(), "cd".to_string(), "/d".to_string(), path_str]);
+                    args.extend([
+                        "/K".to_string(),
+                        "cd".to_string(),
+                        "/d".to_string(),
+                        path_str,
+                    ]);
                 } else {
                     args.push(path_str);
                 }

@@ -1,11 +1,11 @@
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, App, Bounds, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render, SharedString,
-    WeakEntity, Window,
+    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render,
+    SharedString, WeakEntity, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, Tooltip};
+use rgitui_ui::{Button, ButtonSize, ButtonStyle, Label, LabelSize, Tooltip};
 
 /// The action to perform on a commit during interactive rebase.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +70,7 @@ pub enum InteractiveRebaseEvent {
 
 /// Internal event carrying the entry index for a drag start.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct DragStartEvent(usize);
 
 /// Interactive rebase modal dialog.
@@ -271,7 +272,7 @@ impl InteractiveRebase {
 
     /// Update which slot the dragged entry is hovering over (called on mousemove).
     fn update_drag_hover(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
-        let Some(drag_idx) = self.dragging_index else {
+        let Some(_drag_idx) = self.dragging_index else {
             return;
         };
         let bounds = self.container_bounds;
@@ -521,11 +522,14 @@ impl Render for InteractiveRebase {
                     this.update_drag_hover(event.position.y, cx);
                 }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
-                if this.dragging_index.is_some() {
-                    this.end_drag(cx);
-                }
-            }));
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                    if this.dragging_index.is_some() {
+                        this.end_drag(cx);
+                    }
+                }),
+            );
 
         rows = rows.child(entries_bounds_tracker);
 
@@ -641,7 +645,10 @@ impl Render for InteractiveRebase {
             let entity_for_drag = entity.clone();
             row = row.child(
                 div()
-                    .id(ElementId::NamedInteger("rebase-drag-handle".into(), idx as u64))
+                    .id(ElementId::NamedInteger(
+                        "rebase-drag-handle".into(),
+                        idx as u64,
+                    ))
                     .w(px(16.))
                     .h_flex()
                     .items_center()
