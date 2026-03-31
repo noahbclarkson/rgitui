@@ -1,10 +1,11 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, FontWeight, KeyDownEvent,
-    Render, SharedString, Window,
+    canvas, div, px, App, Bounds, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
+    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render, SharedString,
+    WeakEntity, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonSize, ButtonStyle, Label, LabelSize};
+use rgitui_ui::{Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
 /// The action to perform on a commit during interactive rebase.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +68,10 @@ pub enum InteractiveRebaseEvent {
     Cancel,
 }
 
+/// Internal event carrying the entry index for a drag start.
+#[derive(Debug, Clone)]
+struct DragStartEvent(usize);
+
 /// Interactive rebase modal dialog.
 pub struct InteractiveRebase {
     visible: bool,
@@ -76,9 +81,24 @@ pub struct InteractiveRebase {
     /// When editing a reword message, this holds (entry index, message, cursor position).
     editing_reword: Option<(usize, String, usize)>,
     focus_handle: FocusHandle,
+
+    // Drag-to-reorder state
+    /// Index of the entry being dragged.
+    dragging_index: Option<usize>,
+    /// Index where the dragged entry would be inserted.
+    drag_hover_index: Option<usize>,
+    /// Bounds of the entries container div (for mouse-to-slot conversion).
+    container_bounds: Bounds<Pixels>,
+    /// Scroll offset of the entries container.
+    container_scroll_top: Pixels,
+    /// Weak reference to self, for use in mouse event handlers.
+    entity: WeakEntity<Self>,
 }
 
+const REBASE_ENTRY_HEIGHT: f32 = 36.0;
+
 impl EventEmitter<InteractiveRebaseEvent> for InteractiveRebase {}
+impl EventEmitter<DragStartEvent> for InteractiveRebase {}
 
 impl InteractiveRebase {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -89,6 +109,11 @@ impl InteractiveRebase {
             selected_index: 0,
             editing_reword: None,
             focus_handle: cx.focus_handle(),
+            dragging_index: None,
+            drag_hover_index: None,
+            container_bounds: Bounds::default(),
+            container_scroll_top: px(0.),
+            entity: cx.weak_entity(),
         }
     }
 
@@ -104,6 +129,8 @@ impl InteractiveRebase {
         self.target_ref = target_ref.into();
         self.selected_index = 0;
         self.editing_reword = None;
+        self.dragging_index = None;
+        self.drag_hover_index = None;
         self.visible = true;
         self.focus_handle.focus(window, cx);
         cx.notify();
@@ -120,6 +147,8 @@ impl InteractiveRebase {
         self.target_ref = target_ref.into();
         self.selected_index = 0;
         self.editing_reword = None;
+        self.dragging_index = None;
+        self.drag_hover_index = None;
         self.visible = true;
         cx.notify();
     }
@@ -132,6 +161,8 @@ impl InteractiveRebase {
         self.visible = false;
         self.entries.clear();
         self.editing_reword = None;
+        self.dragging_index = None;
+        self.drag_hover_index = None;
         cx.emit(InteractiveRebaseEvent::Cancel);
         cx.notify();
     }
@@ -144,6 +175,10 @@ impl InteractiveRebase {
             }
         }
         self.editing_reword = None;
+
+        // Cancel any in-progress drag
+        self.dragging_index = None;
+        self.drag_hover_index = None;
 
         let entries = self.entries.clone();
         self.visible = false;
@@ -225,6 +260,72 @@ impl InteractiveRebase {
             self.selected_index += 1;
             cx.notify();
         }
+    }
+
+    /// Start dragging an entry (called on mousedown of the drag handle).
+    fn start_drag(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.dragging_index = Some(index);
+        self.drag_hover_index = Some(index);
+        cx.notify();
+    }
+
+    /// Update which slot the dragged entry is hovering over (called on mousemove).
+    fn update_drag_hover(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
+        let Some(drag_idx) = self.dragging_index else {
+            return;
+        };
+        let bounds = self.container_bounds;
+        let scroll_top = self.container_scroll_top;
+
+        // Convert window Y to content-relative Y
+        let rel_y = mouse_y - bounds.origin.y + scroll_top;
+        let slot = (rel_y.as_f32() / REBASE_ENTRY_HEIGHT) as usize;
+        let slot = slot.min(self.entries.len().saturating_sub(1));
+
+        if self.drag_hover_index != Some(slot) {
+            self.drag_hover_index = Some(slot);
+            cx.notify();
+        }
+    }
+
+    /// Complete the drag operation (called on mouseup).
+    fn end_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(drag_idx) = self.dragging_index else {
+            return;
+        };
+        let Some(hover_idx) = self.drag_hover_index else {
+            self.dragging_index = None;
+            self.drag_hover_index = None;
+            cx.notify();
+            return;
+        };
+
+        if drag_idx != hover_idx {
+            // Move dragged entry to hover position.
+            // Entries between drag_idx and hover_idx shift by one in the opposite direction.
+            let entry = self.entries.remove(drag_idx);
+            self.entries.insert(hover_idx, entry);
+
+            // Update editing index if it was affected
+            if let Some((ref mut edit_idx, _, _)) = self.editing_reword {
+                if *edit_idx == drag_idx {
+                    *edit_idx = hover_idx;
+                } else if drag_idx < hover_idx {
+                    if *edit_idx > drag_idx && *edit_idx <= hover_idx {
+                        *edit_idx -= 1;
+                    }
+                } else if *edit_idx >= hover_idx && *edit_idx < drag_idx {
+                    *edit_idx += 1;
+                }
+            }
+
+            // Keep selection on the moved entry
+            self.selected_index = hover_idx;
+        }
+
+        self.dragging_index = None;
+        self.drag_hover_index = None;
+        cx.notify();
     }
 
     fn handle_key_down(
@@ -324,7 +425,14 @@ impl InteractiveRebase {
         // Normal mode key handling
         match key {
             "escape" => {
-                self.dismiss(cx);
+                // Cancel any in-progress drag, then dismiss
+                if self.dragging_index.is_some() {
+                    self.dragging_index = None;
+                    self.drag_hover_index = None;
+                    cx.notify();
+                } else {
+                    self.dismiss(cx);
+                }
             }
             "enter" => {
                 self.execute(cx);
@@ -380,16 +488,54 @@ impl Render for InteractiveRebase {
         let header_text: SharedString =
             format!("Rebasing {} commits onto {}", entry_count, self.target_ref).into();
 
-        // Build commit rows
+        // Bounds tracker for the entries container
+        let bounds_tracker = cx.weak_entity();
+        let entries_bounds_tracker = canvas(
+            {
+                let bounds_tracker = bounds_tracker.clone();
+                move |bounds: Bounds<Pixels>, _: &mut Window, cx: &mut App| {
+                    bounds_tracker
+                        .update(cx, |this: &mut InteractiveRebase, _| {
+                            this.container_bounds = bounds;
+                        })
+                        .ok();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+
+        // Capture entity for drag handle callbacks
+        let entity = self.entity.clone();
+
+        // Build commit rows with drag-to-reorder support
         let mut rows = div()
             .id("rebase-entries")
             .v_flex()
             .w_full()
             .overflow_y_scroll()
-            .max_h(px(400.));
+            .max_h(px(400.))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.dragging_index.is_some() {
+                    this.update_drag_hover(event.position.y, cx);
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                if this.dragging_index.is_some() {
+                    this.end_drag(cx);
+                }
+            }));
+
+        rows = rows.child(entries_bounds_tracker);
+
+        let dragging_index = self.dragging_index;
+        let drag_hover_index = self.drag_hover_index;
 
         for (idx, entry) in self.entries.iter().enumerate() {
             let is_selected = idx == self.selected_index;
+            let is_dragging = dragging_index == Some(idx);
+            let is_hover_target = drag_hover_index == Some(idx) && dragging_index != Some(idx);
             let oid_short: SharedString =
                 SharedString::from(entry.oid[..7.min(entry.oid.len())].to_string());
 
@@ -437,7 +583,17 @@ impl Render for InteractiveRebase {
                 Color::Default
             };
 
-            let row_bg = if is_selected {
+            // Row background: drag hover gets accent tint; dragging gets dimmed; selected normal
+            let row_bg = if is_hover_target {
+                colors.ghost_element_selected
+            } else if is_dragging {
+                gpui::Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: 0.0,
+                    a: 0.0,
+                }
+            } else if is_selected {
                 colors.ghost_element_selected
             } else {
                 gpui::Hsla {
@@ -453,6 +609,9 @@ impl Render for InteractiveRebase {
 
             let idx_for_click = idx;
 
+            // Drag opacity: dragged item is dimmed
+            let row_opacity = if is_dragging { 0.4 } else { 1.0 };
+
             let mut row = div()
                 .id(ElementId::NamedInteger("rebase-entry".into(), idx as u64))
                 .h_flex()
@@ -461,13 +620,45 @@ impl Render for InteractiveRebase {
                 .px_3()
                 .gap_2()
                 .items_center()
-                .cursor_pointer()
+                .opacity(row_opacity)
                 .bg(row_bg)
-                .hover(|s| s.bg(colors.ghost_element_hover))
+                .hover(|s| {
+                    if !is_dragging {
+                        s.bg(colors.ghost_element_hover)
+                    } else {
+                        s
+                    }
+                })
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.selected_index = idx_for_click;
-                    cx.notify();
+                    if this.dragging_index.is_none() {
+                        this.selected_index = idx_for_click;
+                        cx.notify();
+                    }
                 }));
+
+            // Drag handle (grip icon — start drag on mousedown)
+            let idx_for_drag = idx;
+            let entity_for_drag = entity.clone();
+            row = row.child(
+                div()
+                    .id(ElementId::NamedInteger("rebase-drag-handle".into(), idx as u64))
+                    .w(px(16.))
+                    .h_flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_grab()
+                    .tooltip(Tooltip::text("Drag to reorder"))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                            entity_for_drag
+                                .update(cx, |this, cx| {
+                                    this.start_drag(idx_for_drag, cx);
+                                })
+                                .ok();
+                        },
+                    ),
+            );
 
             // Action badge (clickable to cycle)
             let idx_for_action = idx;

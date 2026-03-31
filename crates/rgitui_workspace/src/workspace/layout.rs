@@ -1279,6 +1279,17 @@ pub(crate) fn open_file_explorer(path: &std::path::Path) {
     });
 }
 
+/// Console-based terminals need `CREATE_NEW_CONSOLE` so Windows allocates a
+/// visible console window.  GUI terminal emulators (wt, alacritty, …) create
+/// their own windows and should be spawned with `DETACHED_PROCESS` instead.
+#[cfg(target_os = "windows")]
+fn is_console_terminal(program: &str) -> bool {
+    matches!(
+        program.to_ascii_lowercase().as_str(),
+        "cmd" | "cmd.exe" | "command.com" | "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+    )
+}
+
 /// Builds the terminal command arguments from a custom command string and repo path.
 /// Returns `(program, args)` where `args` does NOT include the path — callers
 /// that need `current_dir` use it directly, callers that pass the path as an
@@ -1358,9 +1369,16 @@ pub(crate) fn build_terminal_args(
             }
             #[cfg(target_os = "windows")]
             _ => {
-                // Unknown command on Windows: split normally and append the path as a bare arg.
+                // Unknown command on Windows: for console programs, use cmd-style /K cd /d
+                // since current_dir() may not propagate correctly to console processes spawned
+                // from a GUI app. For GUI programs, current_dir() alone is sufficient.
                 let mut args = rest.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-                args.push(path_str);
+                if is_console_terminal(program) && args.is_empty() {
+                    // Use /K (keep running) with cd /d (change drive + dir)
+                    args.extend(["/K".to_string(), "cd".to_string(), "/d".to_string(), path_str]);
+                } else {
+                    args.push(path_str);
+                }
                 (program.to_string(), args)
             }
             #[cfg(not(target_os = "windows"))]
@@ -1442,17 +1460,6 @@ pub(crate) fn build_editor_args(
     } else {
         ("code".to_string(), vec![], true)
     }
-}
-
-/// Console-based terminals need `CREATE_NEW_CONSOLE` so Windows allocates a
-/// visible console window.  GUI terminal emulators (wt, alacritty, …) create
-/// their own windows and should be spawned with `DETACHED_PROCESS` instead.
-#[cfg(target_os = "windows")]
-fn is_console_terminal(program: &str) -> bool {
-    matches!(
-        program.to_ascii_lowercase().as_str(),
-        "cmd" | "cmd.exe" | "command.com" | "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
-    )
 }
 
 pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {

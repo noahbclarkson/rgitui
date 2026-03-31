@@ -73,6 +73,7 @@ pub enum IconName {
     MoreHorizontal,
     Maximize,
     Minimize,
+    GripVertical,
 }
 
 impl IconName {
@@ -133,6 +134,7 @@ impl IconName {
             IconName::MoreHorizontal => "icons/more-horizontal.svg",
             IconName::Maximize => "icons/maximize.svg",
             IconName::Minimize => "icons/minimize.svg",
+            IconName::GripVertical => "icons/grip-vertical.svg",
         }
     }
 }
