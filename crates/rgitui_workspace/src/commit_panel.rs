@@ -231,7 +231,9 @@ impl Render for CommitPanel {
             "No files staged".into()
         };
 
-        let char_count_label: SharedString = format!("{}/72", summary_len).into();
+        // Conventional commits: 50 chars is the recommended limit, 72 is the hard wrap limit.
+        // Color: muted (≤50), warning (>50…72), error (>72).
+        let char_count_label: SharedString = format!("{}/50", summary_len).into();
         let char_count_color = if summary_len > 72 {
             Color::Error
         } else if summary_len > 50 {
