@@ -14,7 +14,7 @@ use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, DiffStat, Disclosure, IconButton, IconName, Label,
-    LabelSize, TextInput, TextInputEvent,
+    LabelSize, TextInput, TextInputEvent, Tooltip,
 };
 
 /// Events from the sidebar.
@@ -46,6 +46,8 @@ pub enum SidebarEvent {
     StageAll,
     UnstageAll,
     DiscardFile(String),
+    AcceptConflictOurs(String),
+    AcceptConflictTheirs(String),
     OpenRepo,
 }
 
@@ -867,28 +869,100 @@ impl Sidebar {
         );
 
         if !staged {
-            let ghost_hover2 = colors.ghost_element_hover;
-            row = row.child(
-                div()
-                    .id(ElementId::NamedInteger("discard-action".into(), i as u64))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w(px(18.))
-                    .h(px(18.))
-                    .rounded(px(3.))
-                    .text_color(discard_color)
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .hover(move |s| s.bg(ghost_hover2))
-                    .cursor_pointer()
-                    .invisible()
-                    .group_hover("sidebar-file-row", |s| s.visible())
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                        cx.emit(SidebarEvent::DiscardFile(file_path.to_string()));
-                    }))
-                    .child("\u{00d7}"),
-            );
+            if file.kind == FileChangeKind::Conflicted {
+                // Show "Accept Ours" and "Accept Theirs" buttons for conflicted files
+                let ghost_hover_ours = colors.ghost_element_hover;
+                let ghost_hover_theirs = colors.ghost_element_hover;
+                let ours_color = Color::Modified.color(cx);
+                let theirs_color = Color::Added.color(cx);
+                row = row.child(
+                    div()
+                        .id(ElementId::NamedInteger("conflict-actions".into(), i as u64))
+                        .flex()
+                        .gap(px(2.))
+                        .invisible()
+                        .group_hover("sidebar-file-row", |s| s.visible())
+                        .child(
+                            div()
+                                .id(ElementId::NamedInteger(
+                                    "accept-ours-action".into(),
+                                    i as u64,
+                                ))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .w(px(18.))
+                                .h(px(18.))
+                                .rounded(px(3.))
+                                .text_color(ours_color)
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .hover(move |s| s.bg(ghost_hover_ours))
+                                .cursor_pointer()
+                                .tooltip(Tooltip::text("Accept ours (O)"))
+                                .on_click({
+                                    let file_path = file_path.clone();
+                                    cx.listener(move |_this: &mut Self, _: &ClickEvent, _, cx| {
+                                        cx.emit(SidebarEvent::AcceptConflictOurs(
+                                            file_path.to_string(),
+                                        ));
+                                    })
+                                })
+                                .child("O"),
+                        )
+                        .child(
+                            div()
+                                .id(ElementId::NamedInteger(
+                                    "accept-theirs-action".into(),
+                                    i as u64,
+                                ))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .w(px(18.))
+                                .h(px(18.))
+                                .rounded(px(3.))
+                                .text_color(theirs_color)
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .hover(move |s| s.bg(ghost_hover_theirs))
+                                .cursor_pointer()
+                                .tooltip(Tooltip::text("Accept theirs (T)"))
+                                .on_click({
+                                    let file_path = file_path.clone();
+                                    cx.listener(move |_this: &mut Self, _: &ClickEvent, _, cx| {
+                                        cx.emit(SidebarEvent::AcceptConflictTheirs(
+                                            file_path.to_string(),
+                                        ));
+                                    })
+                                })
+                                .child("T"),
+                        ),
+                );
+            } else {
+                let ghost_hover2 = colors.ghost_element_hover;
+                row = row.child(
+                    div()
+                        .id(ElementId::NamedInteger("discard-action".into(), i as u64))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(18.))
+                        .h(px(18.))
+                        .rounded(px(3.))
+                        .text_color(discard_color)
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .hover(move |s| s.bg(ghost_hover2))
+                        .cursor_pointer()
+                        .invisible()
+                        .group_hover("sidebar-file-row", |s| s.visible())
+                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                            cx.emit(SidebarEvent::DiscardFile(file_path.to_string()));
+                        }))
+                        .child("\u{00d7}"),
+                );
+            }
         }
 
         body.child(row)

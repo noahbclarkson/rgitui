@@ -2811,6 +2811,150 @@ impl GitProject {
             })?
         })
     }
+
+    /// Accept the "ours" version of a conflicted file, staging it as resolved.
+    pub fn accept_conflict_ours(
+        &mut self,
+        path: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.accept_conflict_side(path, ConflictSide::Ours, cx)
+    }
+
+    /// Accept the "theirs" version of a conflicted file, staging it as resolved.
+    pub fn accept_conflict_theirs(
+        &mut self,
+        path: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.accept_conflict_side(path, ConflictSide::Theirs, cx)
+    }
+
+    fn accept_conflict_side(
+        &mut self,
+        path: String,
+        side: ConflictSide,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let file_path = PathBuf::from(&path);
+        let file_name = file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        let branch_name = self.head_branch.clone();
+        let side_label = match side {
+            ConflictSide::Ours => "ours",
+            ConflictSide::Theirs => "theirs",
+        };
+        let operation_id = self.begin_operation(
+            GitOperationKind::ResolveConflict,
+            format!(
+                "Resolving conflict using '{}' for '{}'...",
+                side_label, file_name
+            ),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    // Find the conflict for this path in the index's conflict iterator
+                    let index = repo.index()?;
+                    let mut conflicts = index.conflicts()?;
+                    let entry_oid = loop {
+                        if let Some(Ok(conflict)) = conflicts.next() {
+                            // Compare path bytes from our/theirs/ancestor entries
+                            let conflict_path_bytes: Option<&[u8]> = conflict
+                                .our
+                                .as_ref()
+                                .map(|e| e.path.as_slice())
+                                .or_else(|| conflict.their.as_ref().map(|e| e.path.as_slice()))
+                                .or_else(|| conflict.ancestor.as_ref().map(|e| e.path.as_slice()));
+                            if conflict_path_bytes.is_some_and(|pb| pb == path.as_bytes()) {
+                                // Get the OID for the chosen side
+                                let chosen_entry: &Option<git2::IndexEntry> = match side {
+                                    ConflictSide::Ours => &conflict.our,
+                                    ConflictSide::Theirs => &conflict.their,
+                                };
+                                let entry = chosen_entry.as_ref().ok_or_else(|| {
+                                    anyhow::anyhow!("no '{}' version available", side_label)
+                                })?;
+                                break entry.id;
+                            }
+                        } else {
+                            anyhow::bail!("conflict not found for path '{}'", path);
+                        }
+                    };
+
+                    // Read the blob content for the chosen side
+                    let blob = repo.find_blob(entry_oid)?;
+                    let content = blob.content();
+
+                    // Write the chosen content to the workdir file
+                    let full_path = repo_path.join(&file_path);
+                    if let Some(parent) = full_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&full_path, content)?;
+
+                    // Stage the resolved file
+                    let mut index = repo.index()?;
+                    index.add_path(&file_path)?;
+                    index.write()?;
+
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::ResolveConflict,
+                                "Conflict resolved",
+                                (
+                                    Some(format!(
+                                        "Accepted '{}' version of '{}'.",
+                                        side_label, file_name
+                                    )),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::ResolveConflict,
+                                "Conflict resolution failed",
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+}
+
+enum ConflictSide {
+    Ours,
+    Theirs,
 }
 
 fn sign_with_gpg(content: &str, key_id: &str) -> Result<String> {

@@ -811,6 +811,18 @@ pub(super) fn subscribe_sidebar(
                     );
                 });
             }
+            SidebarEvent::AcceptConflictOurs(path) => {
+                let path = path.clone();
+                project.update(cx, |proj, cx| {
+                    proj.accept_conflict_ours(path, cx).detach();
+                });
+            }
+            SidebarEvent::AcceptConflictTheirs(path) => {
+                let path = path.clone();
+                project.update(cx, |proj, cx| {
+                    proj.accept_conflict_theirs(path, cx).detach();
+                });
+            }
             SidebarEvent::StashSelected(index) => {
                 let idx = *index;
                 let repo_path = project.read(cx).repo_path().to_path_buf();

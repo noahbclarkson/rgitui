@@ -281,6 +281,7 @@ pub enum GitOperationKind {
     Rebase,
     Bisect,
     Worktree,
+    ResolveConflict,
 }
 
 impl GitOperationKind {
@@ -305,6 +306,7 @@ impl GitOperationKind {
             GitOperationKind::Rebase => "Rebase",
             GitOperationKind::Bisect => "Bisect",
             GitOperationKind::Worktree => "Worktree",
+            GitOperationKind::ResolveConflict => "Resolve conflict",
         }
     }
 }
