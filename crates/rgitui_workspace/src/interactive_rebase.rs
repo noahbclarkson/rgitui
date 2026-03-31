@@ -89,9 +89,10 @@ pub struct InteractiveRebase {
     /// Index where the dragged entry would be inserted.
     drag_hover_index: Option<usize>,
     /// Bounds of the entries container div (for mouse-to-slot conversion).
+    /// These are the window-relative bounds of the visible viewport — they
+    /// already reflect the container's scroll position, so no separate scroll
+    /// offset tracking is needed for mouse-to-slot conversion.
     container_bounds: Bounds<Pixels>,
-    /// Scroll offset of the entries container.
-    container_scroll_top: Pixels,
     /// Weak reference to self, for use in mouse event handlers.
     entity: WeakEntity<Self>,
 }
@@ -113,7 +114,6 @@ impl InteractiveRebase {
             dragging_index: None,
             drag_hover_index: None,
             container_bounds: Bounds::default(),
-            container_scroll_top: px(0.),
             entity: cx.weak_entity(),
         }
     }
@@ -276,10 +276,12 @@ impl InteractiveRebase {
             return;
         };
         let bounds = self.container_bounds;
-        let scroll_top = self.container_scroll_top;
 
-        // Convert window Y to content-relative Y
-        let rel_y = mouse_y - bounds.origin.y + scroll_top;
+        // Convert window Y to container-relative Y.
+        // bounds.origin is the window-relative top-left of the visible viewport,
+        // so subtracting it gives the mouse position relative to the visible top —
+        // no separate scroll offset needed.
+        let rel_y = mouse_y - bounds.origin.y;
         let slot = (rel_y.as_f32() / REBASE_ENTRY_HEIGHT) as usize;
         let slot = slot.min(self.entries.len().saturating_sub(1));
 
