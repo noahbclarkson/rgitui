@@ -220,7 +220,13 @@ impl DiffViewer {
             added_word_bg,
             deleted_word_bg,
         ));
-        self.sbs_rows = Arc::new(Self::compute_sbs_rows(&diff, &path, appearance));
+        self.sbs_rows = Arc::new(Self::compute_sbs_rows(
+            &diff,
+            &path,
+            appearance,
+            added_word_bg,
+            deleted_word_bg,
+        ));
         self.diff = Some(diff);
         self.file_path = Some(path);
         self.is_staged = staged;
@@ -865,7 +871,13 @@ impl DiffViewer {
         }
     }
 
-    fn compute_sbs_rows(diff: &FileDiff, path: &str, appearance: Appearance) -> Vec<SideBySideRow> {
+    fn compute_sbs_rows(
+        diff: &FileDiff,
+        path: &str,
+        appearance: Appearance,
+        added_word_bg: HighlightStyle,
+        deleted_word_bg: HighlightStyle,
+    ) -> Vec<SideBySideRow> {
         let mut rows = Vec::new();
         for (i, hunk) in diff.hunks.iter().enumerate() {
             let header_str = hunk.header.trim().to_string();
@@ -878,26 +890,68 @@ impl DiffViewer {
             let mut new_line = hunk.new_start as usize;
             let mut highlighter = Self::syntax_line_highlighter(path, appearance);
 
-            let mut pending_dels: Vec<(usize, StyledLine)> = Vec::new();
-            let mut pending_adds: Vec<(usize, StyledLine)> = Vec::new();
+            // Track raw text alongside styled text so we can compute word diffs on flush.
+            let mut pending_dels: Vec<(usize, String, StyledLine)> = Vec::new();
+            let mut pending_adds: Vec<(usize, String, StyledLine)> = Vec::new();
 
             let flush = |rows: &mut Vec<SideBySideRow>,
-                         dels: &mut Vec<(usize, StyledLine)>,
-                         adds: &mut Vec<(usize, StyledLine)>| {
+                         dels: &mut Vec<(usize, String, StyledLine)>,
+                         adds: &mut Vec<(usize, String, StyledLine)>,
+                         added_word_bg: &HighlightStyle,
+                         deleted_word_bg: &HighlightStyle| {
                 let max_len = dels.len().max(adds.len());
                 for j in 0..max_len {
-                    let (left_num, left_styled, left_kind) =
-                        if let Some((num, styled)) = dels.get(j) {
-                            (Some(*num), styled.clone(), SideBySideLineKind::Deletion)
+                    let (left_num, left_text, mut left_styled, left_kind) =
+                        if let Some((num, text, styled)) = dels.get(j) {
+                            (
+                                Some(*num),
+                                text.clone(),
+                                styled.clone(),
+                                SideBySideLineKind::Deletion,
+                            )
                         } else {
-                            (None, StyledLine::plain(""), SideBySideLineKind::Empty)
+                            (
+                                None,
+                                String::new(),
+                                StyledLine::plain(""),
+                                SideBySideLineKind::Empty,
+                            )
                         };
-                    let (right_num, right_styled, right_kind) =
-                        if let Some((num, styled)) = adds.get(j) {
-                            (Some(*num), styled.clone(), SideBySideLineKind::Addition)
+                    let (right_num, right_text, mut right_styled, right_kind) =
+                        if let Some((num, text, styled)) = adds.get(j) {
+                            (
+                                Some(*num),
+                                text.clone(),
+                                styled.clone(),
+                                SideBySideLineKind::Addition,
+                            )
                         } else {
-                            (None, StyledLine::plain(""), SideBySideLineKind::Empty)
+                            (
+                                None,
+                                String::new(),
+                                StyledLine::plain(""),
+                                SideBySideLineKind::Empty,
+                            )
                         };
+
+                    // Word-level diff: only when both sides have content (paired change).
+                    if !left_text.is_empty() && !right_text.is_empty() {
+                        let (del_spans, add_spans) =
+                            Self::compute_word_diff(&left_text, &right_text);
+                        left_styled.apply_word_highlights(
+                            del_spans,
+                            Vec::new(),
+                            *deleted_word_bg,
+                            *added_word_bg,
+                        );
+                        right_styled.apply_word_highlights(
+                            Vec::new(),
+                            add_spans,
+                            *deleted_word_bg,
+                            *added_word_bg,
+                        );
+                    }
+
                     rows.push(SideBySideRow::Pair {
                         left_num,
                         left_styled,
@@ -914,7 +968,13 @@ impl DiffViewer {
             for line in &hunk.lines {
                 match line {
                     DiffLine::Context(text) => {
-                        flush(&mut rows, &mut pending_dels, &mut pending_adds);
+                        flush(
+                            &mut rows,
+                            &mut pending_dels,
+                            &mut pending_adds,
+                            &added_word_bg,
+                            &deleted_word_bg,
+                        );
                         let styled = Self::highlight_text(text, &mut highlighter);
                         rows.push(SideBySideRow::Pair {
                             left_num: Some(old_line),
@@ -929,18 +989,38 @@ impl DiffViewer {
                     }
                     DiffLine::Deletion(text) => {
                         if !pending_adds.is_empty() && pending_dels.is_empty() {
-                            flush(&mut rows, &mut pending_dels, &mut pending_adds);
+                            flush(
+                                &mut rows,
+                                &mut pending_dels,
+                                &mut pending_adds,
+                                &added_word_bg,
+                                &deleted_word_bg,
+                            );
                         }
-                        pending_dels.push((old_line, Self::highlight_text(text, &mut highlighter)));
+                        pending_dels.push((
+                            old_line,
+                            text.clone(),
+                            Self::highlight_text(text, &mut highlighter),
+                        ));
                         old_line += 1;
                     }
                     DiffLine::Addition(text) => {
-                        pending_adds.push((new_line, Self::highlight_text(text, &mut highlighter)));
+                        pending_adds.push((
+                            new_line,
+                            text.clone(),
+                            Self::highlight_text(text, &mut highlighter),
+                        ));
                         new_line += 1;
                     }
                 }
             }
-            flush(&mut rows, &mut pending_dels, &mut pending_adds);
+            flush(
+                &mut rows,
+                &mut pending_dels,
+                &mut pending_adds,
+                &added_word_bg,
+                &deleted_word_bg,
+            );
         }
         rows
     }
@@ -1181,7 +1261,13 @@ impl Render for DiffViewer {
                             added_word_bg,
                             deleted_word_bg,
                         ));
-                        self.sbs_rows = Arc::new(Self::compute_sbs_rows(diff, path, appearance));
+                        self.sbs_rows = Arc::new(Self::compute_sbs_rows(
+                            diff,
+                            path,
+                            appearance,
+                            added_word_bg,
+                            deleted_word_bg,
+                        ));
                     }
                 }
             }
