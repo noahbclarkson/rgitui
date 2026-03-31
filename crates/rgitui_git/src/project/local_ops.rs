@@ -2878,6 +2878,10 @@ mod tests {
             )
             .unwrap();
 
+        // Set HEAD explicitly so push_head() in collect_commits() works
+        // regardless of init.defaultBranch (Windows defaults to master)
+        repo.set_head("refs/heads/main").unwrap();
+
         (dir, path, oid)
     }
 
@@ -2915,6 +2919,10 @@ mod tests {
                 )
                 .unwrap();
         }
+
+        // Set HEAD explicitly so push_head() in collect_commits() works
+        // regardless of init.defaultBranch (Windows defaults to master)
+        repo.set_head("refs/heads/main").unwrap();
 
         (dir, path, last_oid)
     }
