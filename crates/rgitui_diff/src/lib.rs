@@ -2434,8 +2434,7 @@ mod tests {
     #[test]
     fn compute_word_diff_method_name_change() {
         // Changing just the method name in a chain.
-        let (del_spans, add_spans) =
-            DiffViewer::compute_word_diff("foo.bar()", "foo.baz()");
+        let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo.bar()", "foo.baz()");
         assert_eq!(del_spans.len(), 1);
         assert_eq!(del_spans[0], 4..7); // "bar"
         assert_eq!(add_spans.len(), 1);
@@ -2520,7 +2519,7 @@ mod tests {
     fn apply_word_highlights_skips_when_text_empty() {
         let mut line = StyledLine::plain("");
         let bg = HighlightStyle::default();
-        line.apply_word_highlights(vec![0..5], vec![], bg, bg);
+        line.apply_word_highlights([0..5].to_vec(), vec![], bg, bg);
         assert!(line.highlights.is_empty());
     }
 
@@ -2578,6 +2577,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn apply_word_highlights_merges_with_syntect_spans() {
         // Simulate syntect covering the full text with two spans.
         let syn_style_a = HighlightStyle {
@@ -2600,20 +2600,24 @@ mod tests {
             text: "hello world".into(),
             highlights: vec![(0..5, syn_style_a), (5..11, syn_style_b)],
         };
-        line.apply_word_highlights(vec![0..5], vec![], word_bg, word_bg);
+        line.apply_word_highlights(Vec::from([0..5]), vec![], word_bg, word_bg);
 
         // Should produce 3 spans: [0..5 combined], [5..11 syntect-only]
         // The combined span has syntect colour + word background.
         assert_eq!(line.highlights.len(), 2);
         assert_eq!(line.highlights[0].0, 0..5);
         assert_eq!(line.highlights[0].1.color, syn_style_a.color);
-        assert_eq!(line.highlights[0].1.background_color, word_bg.background_color);
+        assert_eq!(
+            line.highlights[0].1.background_color,
+            word_bg.background_color
+        );
         assert_eq!(line.highlights[1].0, 5..11);
         assert_eq!(line.highlights[1].1.color, syn_style_b.color);
         assert_eq!(line.highlights[1].1.background_color, None);
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn apply_word_highlights_splits_syntect_span_at_word_boundaries() {
         let syn = HighlightStyle {
             color: Some(gpui::hsla(0.0, 1.0, 0.5, 1.0)),
@@ -2631,20 +2635,24 @@ mod tests {
             text: "hello world!".into(),
             highlights: vec![(0..12, syn)],
         };
-        line.apply_word_highlights(vec![6..11], vec![], word_bg, word_bg);
+        line.apply_word_highlights(Vec::from([6..11]), vec![], word_bg, word_bg);
 
         // Should split into: [0..6 syn], [6..11 syn+word], [11..12 syn]
         assert_eq!(line.highlights.len(), 3);
         assert_eq!(line.highlights[0].0, 0..6);
         assert_eq!(line.highlights[0].1.background_color, None);
         assert_eq!(line.highlights[1].0, 6..11);
-        assert_eq!(line.highlights[1].1.background_color, word_bg.background_color);
+        assert_eq!(
+            line.highlights[1].1.background_color,
+            word_bg.background_color
+        );
         assert_eq!(line.highlights[1].1.color, syn.color);
         assert_eq!(line.highlights[2].0, 11..12);
         assert_eq!(line.highlights[2].1.background_color, None);
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn apply_word_highlights_word_span_crosses_syntect_boundary() {
         let syn_a = HighlightStyle {
             color: Some(gpui::hsla(0.0, 1.0, 0.5, 1.0)),
@@ -2666,7 +2674,7 @@ mod tests {
             text: "hello world!".into(),
             highlights: vec![(0..5, syn_a), (5..12, syn_b)],
         };
-        line.apply_word_highlights(vec![3..7], vec![], word_bg, word_bg);
+        line.apply_word_highlights(Vec::from([3..7]), vec![], word_bg, word_bg);
 
         // Expected: [0..3 syn_a], [3..5 syn_a+word], [5..7 syn_b+word], [7..12 syn_b]
         assert_eq!(line.highlights.len(), 4);
@@ -2674,10 +2682,16 @@ mod tests {
         assert_eq!(line.highlights[0].1.background_color, None);
         assert_eq!(line.highlights[1].0, 3..5);
         assert_eq!(line.highlights[1].1.color, syn_a.color);
-        assert_eq!(line.highlights[1].1.background_color, word_bg.background_color);
+        assert_eq!(
+            line.highlights[1].1.background_color,
+            word_bg.background_color
+        );
         assert_eq!(line.highlights[2].0, 5..7);
         assert_eq!(line.highlights[2].1.color, syn_b.color);
-        assert_eq!(line.highlights[2].1.background_color, word_bg.background_color);
+        assert_eq!(
+            line.highlights[2].1.background_color,
+            word_bg.background_color
+        );
         assert_eq!(line.highlights[3].0, 7..12);
         assert_eq!(line.highlights[3].1.background_color, None);
     }
