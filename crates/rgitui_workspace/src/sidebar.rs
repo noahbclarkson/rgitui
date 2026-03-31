@@ -13,8 +13,8 @@ use rgitui_git::{
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Button, ButtonSize, ButtonStyle, DiffStat, Disclosure, IconButton, IconName, Label, LabelSize,
-    TextInput, TextInputEvent,
+    Badge, Button, ButtonSize, ButtonStyle, DiffStat, Disclosure, IconButton, IconName, Label,
+    LabelSize, TextInput, TextInputEvent,
 };
 
 /// Events from the sidebar.
@@ -1339,46 +1339,19 @@ impl Render for Sidebar {
                             .h_flex()
                             .gap(px(4.))
                             .flex_shrink_0()
+                            .items_center()
                             .when(branch.ahead > 0, |el| {
                                 el.child(
-                                    div()
-                                        .h_flex()
-                                        .gap(px(1.))
-                                        .items_center()
-                                        .child(
-                                            rgitui_ui::Icon::new(IconName::ArrowUp)
-                                                .size(rgitui_ui::IconSize::XSmall)
-                                                .color(Color::Success),
-                                        )
-                                        .child(
-                                            Label::new(SharedString::from(format!(
-                                                "{}",
-                                                branch.ahead
-                                            )))
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Success),
-                                        ),
+                                    Badge::new(format!("{}", branch.ahead))
+                                        .color(Color::Success)
+                                        .prefix("↑"),
                                 )
                             })
                             .when(branch.behind > 0, |el| {
                                 el.child(
-                                    div()
-                                        .h_flex()
-                                        .gap(px(1.))
-                                        .items_center()
-                                        .child(
-                                            rgitui_ui::Icon::new(IconName::ArrowDown)
-                                                .size(rgitui_ui::IconSize::XSmall)
-                                                .color(Color::Warning),
-                                        )
-                                        .child(
-                                            Label::new(SharedString::from(format!(
-                                                "{}",
-                                                branch.behind
-                                            )))
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Warning),
-                                        ),
+                                    Badge::new(format!("{}", branch.behind))
+                                        .color(Color::Warning)
+                                        .prefix("↓"),
                                 )
                             }),
                     );
