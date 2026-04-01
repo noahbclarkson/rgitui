@@ -82,6 +82,7 @@ impl Render for Workspace {
                 .child(self.dialogs.stash_branch_dialog.clone())
                 .child(self.overlays.repo_opener.clone())
                 .child(self.overlays.shortcuts_help.clone())
+                .child(self.overlays.global_search.clone())
                 .into_any_element();
         }
 
@@ -113,7 +114,8 @@ impl Render for Workspace {
             || self.dialogs.rename_dialog.read(cx).is_visible()
             || self.overlays.repo_opener.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()
-            || self.overlays.shortcuts_help.read(cx).is_visible();
+            || self.overlays.shortcuts_help.read(cx).is_visible()
+            || self.overlays.global_search.read(cx).is_visible();
 
         // Detect which panel has keyboard focus for visual indicators
         let sidebar_focused = active_tab.sidebar.read(cx).is_focused(window);
@@ -923,6 +925,8 @@ impl Render for Workspace {
             .child(self.dialogs.confirm_dialog.clone())
             // Shortcuts help overlay
             .child(self.overlays.shortcuts_help.clone())
+            // Global search overlay
+            .child(self.overlays.global_search.clone())
             .into_any_element()
     }
 }

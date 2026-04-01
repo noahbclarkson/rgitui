@@ -47,8 +47,8 @@ impl Badge {
 }
 
 impl RenderOnce for Badge {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let text_color = self.color.color(cx);
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let text_color = self.color.color(_cx);
         let bg = Hsla {
             a: 0.15,
             ..text_color
@@ -74,7 +74,7 @@ impl RenderOnce for Badge {
             label = label.italic();
         }
 
-        let mut container = div()
+        let container = div()
             .h_flex()
             .gap(px(2.))
             .px(px(6.))
@@ -87,13 +87,15 @@ impl RenderOnce for Badge {
             .border_color(border)
             .overflow_x_hidden();
 
-        if let Some(prefix_text) = self.prefix {
-            container = container.child(
+        let container = if let Some(prefix_text) = self.prefix {
+            container.child(
                 Label::new(prefix_text)
                     .size(LabelSize::XSmall)
                     .color(self.color),
-            );
-        }
+            )
+        } else {
+            container
+        };
 
         container.child(label)
     }

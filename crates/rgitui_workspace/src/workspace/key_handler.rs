@@ -165,6 +165,15 @@ impl Workspace {
             return;
         }
 
+        // Ctrl+Shift+F to open global content search
+        if (modifiers.control || modifiers.platform) && modifiers.shift && key == "f" {
+            self.save_focus(window, cx);
+            self.overlays.global_search.update(cx, |gs, cx| {
+                gs.show(window, cx);
+            });
+            return;
+        }
+
         // Ctrl+Shift+P or Cmd+Shift+P to open command palette
         if (modifiers.control || modifiers.platform) && modifiers.shift && key == "p" {
             self.save_focus(window, cx);

@@ -15,11 +15,11 @@ use crate::{
     cache::LruCache, BlameView, BlameViewEvent, BranchDialog, BranchDialogEvent, CommandPalette,
     CommandPaletteEvent, CommitPanel, CommitPanelEvent, ConfirmAction, ConfirmDialog,
     ConfirmDialogEvent, DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent,
-    InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent, RenameDialog,
-    RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
-    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog,
-    StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent,
-    ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
+    GlobalSearchView, GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView,
+    ReflogViewEvent, RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal,
+    SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent,
+    StashBranchDialog, StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog,
+    TagDialogEvent, ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -511,6 +511,53 @@ pub(super) fn subscribe_shortcuts_help(
     cx.subscribe(
         shortcuts_help,
         |_this, _sh, _event: &ShortcutsHelpEvent, _cx| {},
+    )
+    .detach();
+}
+
+pub(super) fn subscribe_global_search(
+    cx: &mut Context<Workspace>,
+    global_search: &Entity<GlobalSearchView>,
+) {
+    // Clone once before subscribe so we can use the owned clone inside the async block.
+    let gs_for_async = global_search.clone();
+    cx.subscribe(
+        global_search,
+        move |this, gs, event: &GlobalSearchViewEvent, cx| match event {
+            GlobalSearchViewEvent::SearchSubmit(query) => {
+                let Some(project) = this.active_project().cloned() else {
+                    return;
+                };
+                gs.update(cx, |g, cx| g.set_loading(true, cx));
+                let gs_clone = gs_for_async.clone();
+                let task = project.update(cx, |proj, cx| proj.git_grep_async(query.clone(), cx));
+                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| match task.await {
+                    Ok(results) => {
+                        cx.update(|cx| {
+                            gs_clone.update(cx, |g, cx| g.set_results(results, cx));
+                        });
+                    }
+                    Err(e) => {
+                        cx.update(|cx| {
+                            gs_clone.update(cx, |g, cx| {
+                                g.set_error(format!("Search failed: {}", e), cx)
+                            });
+                        });
+                    }
+                })
+                .detach();
+            }
+            GlobalSearchViewEvent::ResultSelected { path, line_number } => {
+                // Dismiss search panel
+                gs.update(cx, |g, cx| g.hide(cx));
+                // Navigate to the file and line — show a toast for now
+                this.show_toast(format!("{}:{}", path, line_number), ToastKind::Info, cx);
+            }
+            GlobalSearchViewEvent::Dismissed => {
+                this.focus.pending_focus_restore = true;
+                cx.notify();
+            }
+        },
     )
     .detach();
 }

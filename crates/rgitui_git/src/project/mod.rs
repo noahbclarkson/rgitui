@@ -7,6 +7,7 @@ mod network;
 mod rebase;
 mod reflog;
 mod refresh;
+mod search;
 mod submodule;
 mod watcher;
 
@@ -27,6 +28,7 @@ pub use diff::{
 pub use reflog::{compute_reflog, ReflogEntryInfo};
 pub use refresh::gather_refresh_data;
 pub use refresh::gather_refresh_data_lightweight;
+pub use search::git_grep;
 pub use submodule::{
     compute_submodules, submodule_init, submodule_init_all, submodule_update, submodule_update_all,
     SubmoduleInfo,

@@ -150,6 +150,7 @@ impl Workspace {
         let command_palette = cx.new(crate::CommandPalette::new);
         let interactive_rebase = cx.new(crate::InteractiveRebase::new);
         let settings_modal = cx.new(crate::SettingsModal::new);
+        let global_search = cx.new(crate::GlobalSearchView::new);
         let toast_layer = cx.new(ToastLayer::new);
 
         let branch_dialog = cx.new(crate::BranchDialog::new);
@@ -174,6 +175,7 @@ impl Workspace {
         events::subscribe_stash_branch_dialog(cx, &stash_branch_dialog);
         events::subscribe_repo_opener(cx, &repo_opener);
         events::subscribe_shortcuts_help(cx, &shortcuts_help);
+        events::subscribe_global_search(cx, &global_search);
 
         // Restore layout dimensions from saved settings
         let layout_settings = if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>()
@@ -213,6 +215,7 @@ impl Workspace {
                 settings_modal,
                 repo_opener,
                 shortcuts_help,
+                global_search,
             },
             operations: OperationState {
                 active_git_operation: None,

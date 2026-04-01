@@ -2,6 +2,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// A single line from a global content search result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResult {
+    /// Absolute path to the file containing the match.
+    pub path: PathBuf,
+    /// 1-based line number within the file.
+    pub line_number: usize,
+    /// Full text of the matching line.
+    pub content: String,
+}
+
 /// Information about a Git signature (author or committer).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signature {
