@@ -570,7 +570,7 @@ pub(super) fn subscribe_global_search(
                 let dp = tab.detail_panel.clone();
                 let path_buf = std::path::PathBuf::from(&path);
                 let path_for_toast = path.clone();
-                let line_for_toast = line_number;
+                let line_for_toast = *line_number;
 
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let path_buf_owned = path_buf;
@@ -583,7 +583,12 @@ pub(super) fn subscribe_global_search(
                         .await;
                     cx.update(|cx| match result {
                         Ok(diff) => {
-                            dv.update(cx, |dv, cx| dv.set_diff(diff, path_str, false, cx));
+                            let path_str_owned = path_str.clone();
+                            let line_owned = line_for_toast;
+                            dv.update(cx, move |dv, cx| {
+                                dv.set_diff(diff, path_str_owned, false, cx);
+                                dv.scroll_to_line(line_owned);
+                            });
                             dp.update(cx, |dp, cx| dp.clear(cx));
                         }
                         Err(e) => {

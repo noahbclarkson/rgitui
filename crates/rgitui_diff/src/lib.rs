@@ -770,6 +770,31 @@ impl DiffViewer {
         self.is_staged
     }
 
+    /// Scroll to and highlight the given line number (1-indexed) in the new/right side
+    /// of the diff. Used by global search to navigate from grep results to the
+    /// corresponding location in the diff viewer. Returns true if the line was found.
+    pub fn scroll_to_line(&mut self, line_number: usize) -> bool {
+        let rows = &self.display_rows;
+        if rows.is_empty() {
+            return false;
+        }
+        let target = rows.iter().position(|row| {
+            matches!(
+                row,
+                DisplayRow::Line {
+                    new_num: Some(n),
+                    ..
+                } if *n == line_number
+            )
+        });
+        if let Some(idx) = target {
+            self.highlighted_row = Some(idx);
+            self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
+            return true;
+        }
+        false
+    }
+
     fn count_changes(rows: &[DisplayRow]) -> (usize, usize) {
         let mut additions = 0usize;
         let mut deletions = 0usize;
