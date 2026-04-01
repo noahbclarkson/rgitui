@@ -747,6 +747,139 @@ mod tests {
     }
 }
 
+// ── Three-way conflict diff ───────────────────────────────────
+
+/// Compute a 3-way conflict diff for a conflicted file.
+///
+/// Returns the ancestor (merge-base), ours, and theirs versions along with
+/// detected conflict regions.
+#[allow(dead_code)]
+pub fn compute_three_way_conflict_diff(
+    repo_path: &Path,
+    file_path: &Path,
+) -> Result<ThreeWayFileDiff> {
+    let repo = Repository::open(repo_path)?;
+    let index = repo.index()?;
+    let mut conflicts = index.conflicts()?;
+
+    let path_bytes = file_path.as_os_str().as_encoded_bytes();
+
+    let conflict_entry = loop {
+        if let Some(Ok(conflict)) = conflicts.next() {
+            let conflict_path_bytes: Option<&[u8]> = conflict
+                .our
+                .as_ref()
+                .map(|e| e.path.as_slice())
+                .or_else(|| conflict.their.as_ref().map(|e| e.path.as_slice()))
+                .or_else(|| conflict.ancestor.as_ref().map(|e| e.path.as_slice()));
+
+            if conflict_path_bytes.is_some_and(|pb| pb == path_bytes) {
+                break conflict;
+            }
+        } else {
+            anyhow::bail!("conflict not found for path '{}'", file_path.display());
+        }
+    };
+
+    fn read_blob_text(repo: &Repository, entry: &git2::IndexEntry) -> Result<Vec<String>> {
+        let blob = repo.find_blob(entry.id)?;
+        let content = blob.content();
+        let text = String::from_utf8_lossy(content);
+        Ok(text.lines().map(|l| l.to_string()).collect())
+    }
+
+    let ancestor_lines = if let Some(ref entry) = conflict_entry.ancestor {
+        read_blob_text(&repo, entry)?
+    } else {
+        Vec::new()
+    };
+
+    let ours_lines = if let Some(ref entry) = conflict_entry.our {
+        read_blob_text(&repo, entry)?
+    } else {
+        Vec::new()
+    };
+
+    let theirs_lines = if let Some(ref entry) = conflict_entry.their {
+        read_blob_text(&repo, entry)?
+    } else {
+        Vec::new()
+    };
+
+    // Detect conflict regions by comparing each version to the ancestor.
+    // A region is "conflicted" if both ours and theirs differ from ancestor.
+    // A region is "ours-only" if ours differs but theirs matches ancestor.
+    // A region is "theirs-only" if theirs differs but ours matches ancestor.
+    let regions = compute_conflict_regions(&ancestor_lines, &ours_lines, &theirs_lines);
+
+    Ok(ThreeWayFileDiff {
+        path: file_path.to_path_buf(),
+        ancestor_lines,
+        ours_lines,
+        theirs_lines,
+        regions,
+    })
+}
+
+/// Compute conflict/non-conflict regions between ancestor/ours/theirs.
+#[allow(dead_code)]
+fn compute_conflict_regions(
+    ancestor: &[String],
+    ours: &[String],
+    theirs: &[String],
+) -> Vec<ConflictRegion> {
+    let n = ancestor.len().max(ours.len()).max(theirs.len());
+    if n == 0 {
+        return Vec::new();
+    }
+
+    // For each line index, determine if ours/theirs differ from ancestor
+    let ours_diffs: Vec<bool> = (0..n)
+        .map(|i| {
+            let a = ancestor.get(i);
+            let o = ours.get(i);
+            // Differ if one is None and the other is Some, or both Some but different
+            match (a, o) {
+                (None, None) | (Some(_), None) | (None, Some(_)) => true,
+                (Some(a), Some(o)) => a != o,
+            }
+        })
+        .collect();
+
+    let theirs_diffs: Vec<bool> = (0..n)
+        .map(|i| {
+            let a = ancestor.get(i);
+            let t = theirs.get(i);
+            match (a, t) {
+                (None, None) | (Some(_), None) | (None, Some(_)) => true,
+                (Some(a), Some(t)) => a != t,
+            }
+        })
+        .collect();
+
+    // Merge consecutive runs into regions
+    let mut regions = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let ours_diff = ours_diffs[i];
+        let theirs_diff = theirs_diffs[i];
+        let start = i;
+        while i < n && ours_diffs[i] == ours_diff && theirs_diffs[i] == theirs_diff {
+            i += 1;
+        }
+        let is_conflict = ours_diff && theirs_diff;
+        // Only record regions that are non-empty and actually differ in at least one side
+        if ours_diff || theirs_diff {
+            regions.push(ConflictRegion {
+                start,
+                end: i,
+                is_conflict,
+            });
+        }
+    }
+    regions
+}
+
 // ── Integration-level diff tests ────────────────────────────────
 
 #[cfg(test)]
@@ -1005,7 +1138,6 @@ mod diff_integration_tests {
         // Working tree matches index → no unstaged changes
         assert!(stats.is_empty(), "no unstaged changes on clean repo");
     }
-
     // ── parse_multi_file_diff ─────────────────────────────────────
 
     #[test]

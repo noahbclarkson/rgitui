@@ -48,6 +48,7 @@ pub enum SidebarEvent {
     DiscardFile(String),
     AcceptConflictOurs(String),
     AcceptConflictTheirs(String),
+    ConflictFileSelected(String),
     OpenRepo,
 }
 
@@ -785,12 +786,18 @@ impl Sidebar {
             .cursor_pointer()
             .on_click({
                 let file_path = file_path.clone();
+                let file_kind = file.kind;
                 cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.selected_file = Some((file_path.to_string(), staged));
-                    cx.emit(SidebarEvent::FileSelected {
-                        path: file_path.to_string(),
-                        staged,
-                    });
+                    let event = if !staged && file_kind == FileChangeKind::Conflicted {
+                        SidebarEvent::ConflictFileSelected(file_path.to_string())
+                    } else {
+                        SidebarEvent::FileSelected {
+                            path: file_path.to_string(),
+                            staged,
+                        }
+                    };
+                    cx.emit(event);
                     cx.notify();
                 })
             })

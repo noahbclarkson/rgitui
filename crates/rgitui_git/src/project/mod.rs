@@ -22,6 +22,7 @@ use crate::types::*;
 pub use blame::{compute_blame, BlameEntry, BlameLine};
 pub use diff::{
     compute_commit_diff, compute_file_diff, compute_staged_diff_text, compute_stash_diff,
+    compute_three_way_conflict_diff,
 };
 pub use reflog::{compute_reflog, ReflogEntryInfo};
 pub use refresh::gather_refresh_data;

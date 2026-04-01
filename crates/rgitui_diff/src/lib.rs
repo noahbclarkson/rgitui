@@ -12,7 +12,7 @@ use gpui::{
     MouseButton, MouseDownEvent, Render, ScrollStrategy, SharedString, StyledText,
     UniformListScrollHandle, WeakEntity, Window,
 };
-use rgitui_git::{DiffLine, FileDiff};
+use rgitui_git::{DiffLine, FileDiff, ThreeWayFileDiff};
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
@@ -32,6 +32,7 @@ pub enum DiffDisplayMode {
     #[default]
     Unified,
     SideBySide,
+    ThreeWay,
 }
 
 #[derive(Clone)]
@@ -72,6 +73,32 @@ enum SideBySideLineKind {
     Addition,
     Deletion,
     Empty,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ThreeWayLineKind {
+    Modified,
+    Unchanged,
+    Conflict,
+}
+
+#[derive(Clone)]
+enum ThreeWayRow {
+    HunkHeader {
+        header: String,
+        context_name: String,
+    },
+    Triple {
+        left_num: Option<usize>,
+        left_styled: StyledLine,
+        left_kind: ThreeWayLineKind,
+        mid_num: Option<usize>,
+        mid_styled: StyledLine,
+        mid_kind: ThreeWayLineKind,
+        right_num: Option<usize>,
+        right_styled: StyledLine,
+        right_kind: ThreeWayLineKind,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -218,6 +245,8 @@ pub struct DiffViewer {
     is_staged: bool,
     display_rows: Arc<Vec<DisplayRow>>,
     sbs_rows: Arc<Vec<SideBySideRow>>,
+    three_way_rows: Arc<Vec<ThreeWayRow>>,
+    three_way_diff: Option<ThreeWayFileDiff>,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     highlighted_row: Option<usize>,
@@ -240,6 +269,8 @@ impl DiffViewer {
             is_staged: false,
             display_rows: Arc::new(Vec::new()),
             sbs_rows: Arc::new(Vec::new()),
+            three_way_rows: Arc::new(Vec::new()),
+            three_way_diff: None,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             highlighted_row: None,
@@ -305,6 +336,23 @@ impl DiffViewer {
         self.file_path = None;
         self.display_rows = Arc::new(Vec::new());
         self.sbs_rows = Arc::new(Vec::new());
+        self.three_way_rows = Arc::new(Vec::new());
+        self.three_way_diff = None;
+        self.highlighted_row = None;
+        self.selected_lines = None;
+        self.selection_anchor = None;
+        cx.notify();
+    }
+
+    /// Set a 3-way conflict diff to display.
+    pub fn set_three_way_diff(&mut self, diff: ThreeWayFileDiff, cx: &mut Context<Self>) {
+        let appearance = cx.theme().appearance;
+        self.current_appearance = appearance;
+        self.diff = None; // No standard FileDiff when showing 3-way
+        self.file_path = Some(diff.path.display().to_string());
+        self.is_staged = false;
+        self.three_way_diff = Some(diff.clone());
+        self.three_way_rows = Arc::new(Self::compute_three_way_rows(&diff));
         self.highlighted_row = None;
         self.selected_lines = None;
         self.selection_anchor = None;
@@ -387,6 +435,31 @@ impl DiffViewer {
                     }
                 }
             }
+            DiffDisplayMode::ThreeWay => {
+                for i in range {
+                    if i < self.three_way_rows.len() {
+                        match &self.three_way_rows[i] {
+                            ThreeWayRow::HunkHeader { header, .. } => {
+                                text.push_str(header);
+                                text.push('\n');
+                            }
+                            ThreeWayRow::Triple {
+                                left_styled,
+                                mid_styled,
+                                right_styled,
+                                ..
+                            } => {
+                                text.push_str(left_styled.text.as_ref());
+                                text.push('\n');
+                                text.push_str(mid_styled.text.as_ref());
+                                text.push('\n');
+                                text.push_str(right_styled.text.as_ref());
+                                text.push('\n');
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if !text.is_empty() {
@@ -398,6 +471,7 @@ impl DiffViewer {
         match self.display_mode {
             DiffDisplayMode::Unified => self.display_rows.len(),
             DiffDisplayMode::SideBySide => self.sbs_rows.len(),
+            DiffDisplayMode::ThreeWay => self.three_way_rows.len(),
         }
     }
 
@@ -456,6 +530,9 @@ impl DiffViewer {
                         .find(|&i| matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })),
                     DiffDisplayMode::SideBySide => (start..row_count)
                         .find(|&i| matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })),
+                    DiffDisplayMode::ThreeWay => (start..row_count).find(|&i| {
+                        matches!(self.three_way_rows[i], ThreeWayRow::HunkHeader { .. })
+                    }),
                 }
                 // Wrap around
                 .or_else(|| match self.display_mode {
@@ -463,6 +540,9 @@ impl DiffViewer {
                         .find(|&i| matches!(self.display_rows[i], DisplayRow::HunkHeader { .. })),
                     DiffDisplayMode::SideBySide => (0..start)
                         .find(|&i| matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })),
+                    DiffDisplayMode::ThreeWay => (0..start).find(|&i| {
+                        matches!(self.three_way_rows[i], ThreeWayRow::HunkHeader { .. })
+                    }),
                 });
                 if let Some(pos) = next {
                     self.highlighted_row = Some(pos);
@@ -481,6 +561,9 @@ impl DiffViewer {
                     DiffDisplayMode::SideBySide => (0..end)
                         .rev()
                         .find(|&i| matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })),
+                    DiffDisplayMode::ThreeWay => (0..end).rev().find(|&i| {
+                        matches!(self.three_way_rows[i], ThreeWayRow::HunkHeader { .. })
+                    }),
                 }
                 // Wrap around
                 .or_else(|| match self.display_mode {
@@ -490,6 +573,9 @@ impl DiffViewer {
                     DiffDisplayMode::SideBySide => (end..row_count)
                         .rev()
                         .find(|&i| matches!(self.sbs_rows[i], SideBySideRow::HunkHeader { .. })),
+                    DiffDisplayMode::ThreeWay => (end..row_count).rev().find(|&i| {
+                        matches!(self.three_way_rows[i], ThreeWayRow::HunkHeader { .. })
+                    }),
                 });
                 if let Some(pos) = prev {
                     self.highlighted_row = Some(pos);
@@ -595,6 +681,15 @@ impl DiffViewer {
                     }
                 })
             }
+            DiffDisplayMode::ThreeWay => {
+                // Check current position first
+                if let ThreeWayRow::HunkHeader { .. } = &self.three_way_rows[pos] {
+                    return Some(pos); // In 3-way mode, row index = hunk index
+                }
+                (0..pos)
+                    .rev()
+                    .find(|&i| matches!(self.three_way_rows[i], ThreeWayRow::HunkHeader { .. }))
+            }
         }
     }
 
@@ -634,6 +729,19 @@ impl DiffViewer {
                     }
                 }
             }
+            DiffDisplayMode::ThreeWay => {
+                let rows = &self.three_way_rows;
+                let mut current_hunk: Option<usize> = None;
+                for i in start..end {
+                    if let ThreeWayRow::HunkHeader { .. } = &rows[i] {
+                        current_hunk = Some(i);
+                    } else if let Some(h) = current_hunk {
+                        if seen.insert(h) {
+                            hunks.push(h);
+                        }
+                    }
+                }
+            }
         }
         hunks
     }
@@ -645,6 +753,7 @@ impl DiffViewer {
         self.display_mode = match self.display_mode {
             DiffDisplayMode::Unified => DiffDisplayMode::SideBySide,
             DiffDisplayMode::SideBySide => DiffDisplayMode::Unified,
+            DiffDisplayMode::ThreeWay => DiffDisplayMode::Unified,
         };
         cx.notify();
     }
@@ -1089,6 +1198,92 @@ impl DiffViewer {
         rows
     }
 
+    fn compute_three_way_rows(diff: &ThreeWayFileDiff) -> Vec<ThreeWayRow> {
+        let ancestor = &diff.ancestor_lines;
+        let ours = &diff.ours_lines;
+        let theirs = &diff.theirs_lines;
+        let regions = &diff.regions;
+
+        // Build a lookup: line index -> region index (or None)
+        let region_at: Vec<Option<usize>> = {
+            let n = ancestor.len().max(ours.len()).max(theirs.len());
+            let mut v = vec![None; n];
+            for (ri, region) in regions.iter().enumerate() {
+                #[allow(clippy::needless_range_loop)]
+                for j in region.start..region.end.min(n) {
+                    v[j] = Some(ri);
+                }
+            }
+            v
+        };
+
+        let n = ancestor.len().max(ours.len()).max(theirs.len());
+        let mut rows = Vec::new();
+        let mut in_hunk = false;
+
+        for i in 0..n {
+            let region_idx = region_at.get(i).copied().flatten();
+            let is_conflict = region_idx
+                .and_then(|ri| regions.get(ri))
+                .map(|r| r.is_conflict)
+                .unwrap_or(false);
+            let kind = if is_conflict {
+                ThreeWayLineKind::Conflict
+            } else {
+                let a = ancestor.get(i);
+                let o = ours.get(i);
+                let t = theirs.get(i);
+                match (a == o, a == t) {
+                    (true, true) => ThreeWayLineKind::Unchanged,
+                    _ => ThreeWayLineKind::Modified,
+                }
+            };
+
+            // Start a hunk header when we enter a changed region
+            if !in_hunk && kind != ThreeWayLineKind::Unchanged {
+                in_hunk = true;
+                rows.push(ThreeWayRow::HunkHeader {
+                    context_name: diff
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    header: format!(
+                        "@@ -{} +{} @@ (conflict view: ancestor | ours | theirs)",
+                        i.saturating_sub(3).max(1),
+                        i.saturating_sub(3).max(1)
+                    ),
+                });
+            }
+
+            let left_styled = Self::plain_styled(ancestor.get(i).map(|s| s.as_str()).unwrap_or(""));
+            let mid_styled = Self::plain_styled(ours.get(i).map(|s| s.as_str()).unwrap_or(""));
+            let right_styled = Self::plain_styled(theirs.get(i).map(|s| s.as_str()).unwrap_or(""));
+
+            rows.push(ThreeWayRow::Triple {
+                left_num: ancestor.get(i).is_some().then_some(i + 1),
+                left_styled,
+                left_kind: kind,
+                mid_num: ours.get(i).is_some().then_some(i + 1),
+                mid_styled,
+                mid_kind: kind,
+                right_num: theirs.get(i).is_some().then_some(i + 1),
+                right_styled,
+                right_kind: kind,
+            });
+        }
+
+        rows
+    }
+
+    /// Build a plain (no syntax highlighting) StyledLine from a string.
+    fn plain_styled(text: &str) -> StyledLine {
+        StyledLine {
+            text: text.to_string().into(),
+            highlights: Vec::new(),
+        }
+    }
+
     fn compute_display_rows(
         diff: &FileDiff,
         path: &str,
@@ -1440,6 +1635,7 @@ impl Render for DiffViewer {
 
         let display_rows = self.display_rows.clone();
         let sbs_rows = self.sbs_rows.clone();
+        let three_way_rows = self.three_way_rows.clone();
         let is_staged = self.is_staged;
         let display_mode = self.display_mode;
         let view: WeakEntity<DiffViewer> = cx.weak_entity();
@@ -2079,6 +2275,193 @@ impl Render for DiffViewer {
                 .flex_grow()
                 .track_scroll(&self.scroll_handle)
             }
+            DiffDisplayMode::ThreeWay => {
+                let _view = view.clone();
+                let tw_rows = three_way_rows.clone();
+                uniform_list(
+                    "diff-lines-tw",
+                    tw_rows.len(),
+                    move |range: Range<usize>, window: &mut Window, _cx: &mut App| {
+                        range
+                            .map(|i| {
+                                let row = &tw_rows[i];
+                                match row {
+                                    ThreeWayRow::HunkHeader { header, context_name } => {
+                                        div()
+                                            .id(ElementId::NamedInteger("tw-hunk-header".into(), i as u64))
+                                            .h_flex()
+                                            .h(px(hunk_header_height))
+                                            .w_full()
+                                            .px(px(8.))
+                                            .py(px(4.))
+                                            .items_center()
+                                            .gap(px(6.))
+                                            .bg(element_bg)
+                                            .border_t_1()
+                                            .border_b_1()
+                                            .border_color(border_variant)
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_family("monospace")
+                                                    .text_color(text_muted)
+                                                    .child(header.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_family("monospace")
+                                                    .text_color(text_muted)
+                                                    .ml(px(8.))
+                                                    .child(format!("[{}]", context_name)),
+                                            )
+                                            .into_any_element()
+                                    }
+                                    ThreeWayRow::Triple {
+                                        left_num,
+                                        left_styled,
+                                        left_kind,
+                                        mid_num,
+                                        mid_styled,
+                                        mid_kind,
+                                        right_num,
+                                        right_styled,
+                                        right_kind,
+                                    } => {
+                                        let conflict_bg = |kind: ThreeWayLineKind, base: gpui::Hsla| -> gpui::Hsla {
+                                            match kind {
+                                                ThreeWayLineKind::Conflict => gpui::Hsla { a: 0.2, ..base },
+                                                _ => base,
+                                            }
+                                        };
+                                        let left_bg = conflict_bg(*left_kind, editor_bg);
+                                        let mid_bg = conflict_bg(*mid_kind, editor_bg);
+                                        let right_bg = conflict_bg(*right_kind, editor_bg);
+                                        let conflict_text_color = gpui::Hsla { h: 0.0, s: 0.8, l: 0.65, a: 1.0 };
+                                        let left_text_col = match left_kind {
+                                            ThreeWayLineKind::Conflict => conflict_text_color,
+                                            _ => text_color,
+                                        };
+                                        let right_text_col = match right_kind {
+                                            ThreeWayLineKind::Conflict => conflict_text_color,
+                                            _ => text_color,
+                                        };
+                                        let left_num_str: SharedString = left_num.map(|n| n.to_string()).unwrap_or_default().into();
+                                        let mid_num_str: SharedString = mid_num.map(|n| n.to_string()).unwrap_or_default().into();
+                                        let right_num_str: SharedString = right_num.map(|n| n.to_string()).unwrap_or_default().into();
+
+                                        div()
+                                            .id(ElementId::NamedInteger("tw-row".into(), i as u64))
+                                            .h(px(row_height))
+                                            .w_full()
+                                            .flex()
+                                            .border_b_1()
+                                            .border_color(gpui::Hsla { a: 0.5, ..border_variant })
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .h_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .px(px(4.))
+                                                    .bg(left_bg)
+                                                    .border_r_1()
+                                                    .border_color(border_variant)
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .w(px(32.))
+                                                            .flex_shrink_0()
+                                                            .text_xs()
+                                                            .font_family("monospace")
+                                                            .text_color(text_muted)
+                                                            .justify_end()
+                                                            .child(left_num_str.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .text_xs()
+                                                            .font_family("monospace")
+                                                            .text_color(left_text_col)
+                                                            .overflow_x_hidden()
+                                                            .child(Self::render_styled_text(window, left_styled, left_text_col)),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .h_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .px(px(4.))
+                                                    .bg(mid_bg)
+                                                    .border_r_1()
+                                                    .border_color(border_variant)
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .w(px(32.))
+                                                            .flex_shrink_0()
+                                                            .text_xs()
+                                                            .font_family("monospace")
+                                                            .text_color(text_muted)
+                                                            .justify_end()
+                                                            .child(mid_num_str.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .text_xs()
+                                                            .font_family("monospace")
+                                                            .text_color(text_color)
+                                                            .overflow_x_hidden()
+                                                            .child(Self::render_styled_text(window, mid_styled, text_color)),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .h_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .px(px(4.))
+                                                    .bg(right_bg)
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .w(px(32.))
+                                                            .flex_shrink_0()
+                                                            .text_xs()
+                                                            .font_family("monospace")
+                                                            .text_color(text_muted)
+                                                            .justify_end()
+                                                            .child(right_num_str.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .text_xs()
+                                                            .font_family("monospace")
+                                                            .text_color(right_text_col)
+                                                            .overflow_x_hidden()
+                                                            .child(Self::render_styled_text(window, right_styled, right_text_col)),
+                                                    ),
+                                            )
+                                            .into_any_element()
+                                    }
+                                }
+                            })
+                            .collect()
+                    },
+                )
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .flex_grow()
+                .track_scroll(&self.scroll_handle)
+            }
         };
 
         let mut container = div()
@@ -2094,12 +2477,22 @@ impl Render for DiffViewer {
             .bg(editor_bg);
 
         if let Some(path) = &self.file_path {
-            let (additions, deletions) = Self::count_changes(&self.display_rows);
+            let (additions, deletions) = if self.display_mode == DiffDisplayMode::ThreeWay {
+                let conflict_count = self
+                    .three_way_diff
+                    .as_ref()
+                    .map(|d| d.regions.iter().filter(|r| r.is_conflict).count())
+                    .unwrap_or(0);
+                (conflict_count, 0)
+            } else {
+                Self::count_changes(&self.display_rows)
+            };
             let file_icon = Self::icon_for_path(path);
             let path_str: SharedString = path.clone().into();
             let mode_label = match self.display_mode {
                 DiffDisplayMode::Unified => "Split",
                 DiffDisplayMode::SideBySide => "Unified",
+                DiffDisplayMode::ThreeWay => "3-Way",
             };
 
             container = container.child(
@@ -2125,8 +2518,17 @@ impl Render for DiffViewer {
                             .truncate(),
                     )
                     .child(
-                        Badge::new(if is_staged { "Staged" } else { "Unstaged" }).color(
-                            if is_staged {
+                        Badge::new(if self.display_mode == DiffDisplayMode::ThreeWay {
+                            "Conflict"
+                        } else if is_staged {
+                            "Staged"
+                        } else {
+                            "Unstaged"
+                        })
+                        .color(
+                            if self.display_mode == DiffDisplayMode::ThreeWay {
+                                Color::Conflict
+                            } else if is_staged {
                                 Color::Added
                             } else {
                                 Color::Modified

@@ -740,6 +740,26 @@ pub(super) fn subscribe_sidebar(
                 })
                 .detach();
             }
+            SidebarEvent::ConflictFileSelected(path) => {
+                let path_buf = std::path::PathBuf::from(path);
+                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let dv = diff_viewer.clone();
+                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            rgitui_git::compute_three_way_conflict_diff(&repo_path, &path_buf)
+                        })
+                        .await;
+                    cx.update(|cx| match result {
+                        Ok(three_way_diff) => {
+                            dv.update(cx, |dv, cx| dv.set_three_way_diff(three_way_diff, cx));
+                        }
+                        Err(e) => log::error!("Failed to get 3-way conflict diff: {}", e),
+                    });
+                })
+                .detach();
+            }
             SidebarEvent::StageFile(path) => {
                 let path_buf = std::path::PathBuf::from(path);
                 project.update(cx, |proj, cx| {

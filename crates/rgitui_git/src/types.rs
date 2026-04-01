@@ -183,6 +183,31 @@ pub struct CommitDiff {
     pub total_deletions: usize,
 }
 
+/// A region within a 3-way conflict diff.
+#[derive(Debug, Clone)]
+pub struct ConflictRegion {
+    /// Line index (0-based) into the ancestor/ours/theirs lines where this region starts.
+    pub start: usize,
+    /// Line index (0-based, exclusive) where this region ends.
+    pub end: usize,
+    /// Whether this region is actually conflicted (differes in both ours and theirs).
+    pub is_conflict: bool,
+}
+
+/// A 3-way conflict diff for a single conflicted file.
+#[derive(Debug, Clone)]
+pub struct ThreeWayFileDiff {
+    pub path: PathBuf,
+    /// Ancestor (merge-base) version — one line per element.
+    pub ancestor_lines: Vec<String>,
+    /// Our version — same length as ancestor_lines.
+    pub ours_lines: Vec<String>,
+    /// Their version — same length as ancestor_lines.
+    pub theirs_lines: Vec<String>,
+    /// Detected conflict regions.
+    pub regions: Vec<ConflictRegion>,
+}
+
 /// The current state of the repository (normal, mid-merge, mid-rebase, etc).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoState {
