@@ -1461,6 +1461,8 @@ impl Render for GraphView {
                                     .w(px(120.))
                                     .flex_shrink_0()
                                     .px(px(4.))
+                                    .h_flex()
+                                    .items_center()
                                     .overflow_x_hidden()
                                     .tooltip(Tooltip::text(author.clone()))
                                     .child(
@@ -1478,7 +1480,10 @@ impl Render for GraphView {
                                 div()
                                     .w(px(100.))
                                     .flex_shrink_0()
-                                    .pr(px(8.))
+                                    .px(px(4.))
+                                    .pr(px(4.))
+                                    .h_flex()
+                                    .items_center()
                                     .overflow_x_hidden()
                                     .child(
                                         Label::new(time_str)
