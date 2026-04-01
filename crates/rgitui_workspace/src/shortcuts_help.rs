@@ -149,7 +149,6 @@ impl ShortcutsHelp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = cx.colors();
-        let hint_bg = colors.hint_background;
         let border_variant = colors.border_variant;
 
         let mut col = div().v_flex().w_full().gap(px(2.)).child(
