@@ -83,6 +83,7 @@ pub struct GraphView {
     show_full_hash: bool,
     show_author_column: bool,
     show_date_column: bool,
+    show_absolute_dates: bool,
     show_avatars: bool,
     show_graph_lanes: bool,
     show_ref_badges: bool,
@@ -144,6 +145,7 @@ impl GraphView {
             show_full_hash: false,
             show_author_column: true,
             show_date_column: true,
+            show_absolute_dates: false,
             show_avatars: true,
             show_graph_lanes: true,
             show_ref_badges: true,
@@ -723,6 +725,7 @@ impl Render for GraphView {
         // Column visibility settings
         let show_author_column = self.show_author_column;
         let show_date_column = self.show_date_column;
+        let show_absolute_dates = self.show_absolute_dates;
         let show_full_hash = self.show_full_hash;
         let show_avatars = self.show_avatars;
         let show_graph_lanes = self.show_graph_lanes;
@@ -889,6 +892,7 @@ impl Render for GraphView {
                                 view: view.clone(),
                                 show_author_column,
                                 show_date_column,
+                                show_absolute_dates,
                                 show_graph_lanes,
                                 compact_mul,
                             });
@@ -965,7 +969,11 @@ impl Render for GraphView {
                         let summary: SharedString = commit.summary.clone().into();
                         let author: SharedString = commit.author.name.clone().into();
                         let author_email = commit.author.email.clone();
-                        let time_str: SharedString = format_relative_time(&commit.time).into();
+                        let time_str: SharedString = if show_absolute_dates {
+                            commit.time.format("%b %d").to_string().into()
+                        } else {
+                            format_relative_time(&commit.time).into()
+                        };
 
                         // Clone only the edges vec for canvas closure (not the entire GraphRow)
                         let edges: Vec<GraphEdge> = graph_row.edges.clone();
@@ -2010,6 +2018,7 @@ impl Render for GraphView {
             let view_full_hash = cx.weak_entity();
             let view_author = cx.weak_entity();
             let view_date = cx.weak_entity();
+            let view_absolute_dates = cx.weak_entity();
             let view_avatars = cx.weak_entity();
             let view_graph_lanes = cx.weak_entity();
             let view_ref_badges = cx.weak_entity();
@@ -2025,6 +2034,11 @@ impl Render for GraphView {
                 CheckState::Unchecked
             };
             let date_state = if self.show_date_column {
+                CheckState::Checked
+            } else {
+                CheckState::Unchecked
+            };
+            let absolute_dates_state = if self.show_absolute_dates {
                 CheckState::Checked
             } else {
                 CheckState::Unchecked
@@ -2150,6 +2164,29 @@ impl Render for GraphView {
                 )
                 .child(
                     div()
+                        .id("toggle-absolute-dates")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_absolute_dates
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_absolute_dates = !this.show_absolute_dates;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-absolute-dates", absolute_dates_state))
+                        .child(Label::new("Absolute dates").size(LabelSize::XSmall)),
+                )
+                .child(
+                    div()
                         .id("toggle-avatars")
                         .h_flex()
                         .w_full()
@@ -2255,6 +2292,8 @@ struct WorkingTreeRowParams {
     view: WeakEntity<GraphView>,
     show_author_column: bool,
     show_date_column: bool,
+    #[allow(dead_code)]
+    show_absolute_dates: bool,
     show_graph_lanes: bool,
     compact_mul: f32,
 }
@@ -2282,6 +2321,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         view,
         show_author_column,
         show_date_column,
+        show_absolute_dates: _,
         show_graph_lanes,
         compact_mul,
     } = params;
