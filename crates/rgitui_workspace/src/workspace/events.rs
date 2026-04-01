@@ -550,8 +550,54 @@ pub(super) fn subscribe_global_search(
             GlobalSearchViewEvent::ResultSelected { path, line_number } => {
                 // Dismiss search panel
                 gs.update(cx, |g, cx| g.hide(cx));
-                // Navigate to the file and line — show a toast for now
-                this.show_toast(format!("{}:{}", path, line_number), ToastKind::Info, cx);
+
+                // Need an open tab to show the diff in
+                if this.tabs.is_empty() {
+                    return;
+                }
+
+                // Get repo_path before borrowing this mutably for the tab
+                let repo_path = match this.active_project() {
+                    Some(project) => project.read(cx).repo_path().to_path_buf(),
+                    None => return,
+                };
+
+                let tab = &mut this.tabs[this.active_tab];
+                tab.bottom_panel_mode = BottomPanelMode::Diff;
+                cx.notify();
+
+                let dv = tab.diff_viewer.clone();
+                let dp = tab.detail_panel.clone();
+                let path_buf = std::path::PathBuf::from(&path);
+                let path_for_toast = path.clone();
+                let line_for_toast = line_number;
+
+                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                    let path_buf_owned = path_buf;
+                    let path_str = path_buf_owned.to_string_lossy().to_string();
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            rgitui_git::compute_file_diff(&repo_path, &path_buf_owned, false)
+                        })
+                        .await;
+                    cx.update(|cx| match result {
+                        Ok(diff) => {
+                            dv.update(cx, |dv, cx| dv.set_diff(diff, path_str, false, cx));
+                            dp.update(cx, |dp, cx| dp.clear(cx));
+                        }
+                        Err(e) => {
+                            log::error!("Failed to get diff for search result: {}", e);
+                        }
+                    });
+                })
+                .detach();
+
+                this.show_toast(
+                    format!("{}:{}", path_for_toast, line_for_toast),
+                    ToastKind::Info,
+                    cx,
+                );
             }
             GlobalSearchViewEvent::Dismissed => {
                 this.focus.pending_focus_restore = true;
