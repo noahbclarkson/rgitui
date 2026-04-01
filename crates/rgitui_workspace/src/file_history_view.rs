@@ -370,6 +370,11 @@ impl Render for FileHistoryView {
                                             .min_w_0()
                                             .overflow_x_hidden()
                                             .text_ellipsis()
+                                            .id(ElementId::NamedInteger(
+                                                "file-history-author".into(),
+                                                i as u64,
+                                            ))
+                                            .tooltip(Tooltip::text(author_display.clone()))
                                             .child(author_display),
                                     ),
                             )
