@@ -170,7 +170,7 @@ impl ShortcutsHelp {
                         )
                         .child(
                             Label::new(category.description)
-                                .size(LabelSize::XSmall)
+                                .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
                 ),
@@ -182,11 +182,11 @@ impl ShortcutsHelp {
                 div()
                     .h_flex()
                     .w_full()
-                    .py(px(4.))
+                    .py(px(5.))
                     .px(px(4.))
                     .rounded(px(4.))
                     .items_center()
-                    .gap(px(12.))
+                    .gap(px(16.))
                     .hover(move |s| s.bg(hover_bg))
                     .child(
                         div().flex_1().child(
@@ -198,17 +198,18 @@ impl ShortcutsHelp {
                     .child(
                         div()
                             .h_flex()
-                            .h(px(22.))
-                            .px(px(8.))
-                            .rounded(px(4.))
+                            .h(px(24.))
+                            .px(px(10.))
+                            .gap_1()
+                            .rounded(px(5.))
                             .border_1()
-                            .border_color(border_variant)
-                            .bg(hint_bg)
+                            .border_color(colors.border)
+                            .bg(colors.hint_background)
                             .items_center()
                             .child(
                                 Label::new(*key)
                                     .size(LabelSize::Small)
-                                    .weight(FontWeight::SEMIBOLD)
+                                    .weight(FontWeight::BOLD)
                                     .color(Color::Default),
                             ),
                     ),
