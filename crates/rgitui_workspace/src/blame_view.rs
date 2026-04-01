@@ -5,8 +5,8 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent, Render,
-    ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
+    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render, ScrollStrategy,
+    SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::BlameLine;
 use rgitui_settings::SettingsState;
@@ -28,7 +28,6 @@ pub struct BlameView {
     focus_handle: FocusHandle,
     selected_line: Option<usize>,
     highlighted_row: Option<usize>,
-    hovered_oid: Option<String>,
     oid_color_indices: Arc<HashMap<String, usize>>,
 }
 
@@ -43,7 +42,6 @@ impl BlameView {
             focus_handle: cx.focus_handle(),
             selected_line: None,
             highlighted_row: None,
-            hovered_oid: None,
             oid_color_indices: Arc::new(HashMap::new()),
         }
     }
@@ -54,7 +52,6 @@ impl BlameView {
         self.file_path = Some(file_path);
         self.highlighted_row = None;
         self.selected_line = None;
-        self.hovered_oid = None;
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
@@ -64,7 +61,6 @@ impl BlameView {
         self.file_path = None;
         self.highlighted_row = None;
         self.selected_line = None;
-        self.hovered_oid = None;
         self.oid_color_indices = Arc::new(HashMap::new());
         cx.notify();
     }
@@ -254,7 +250,6 @@ impl Render for BlameView {
         let row_height = compactness.spacing(20.0);
         let highlighted_row = self.highlighted_row;
         let selected_line = self.selected_line;
-        let hovered_oid = self.hovered_oid.clone();
 
         let selected_bg = colors.ghost_element_selected;
         let highlight_bg = colors.ghost_element_active;
@@ -283,13 +278,10 @@ impl Render for BlameView {
 
                         let is_highlighted = highlighted_row == Some(i);
                         let is_selected = selected_line == Some(i);
-                        let is_oid_hovered = hovered_oid.as_deref() == Some(oid_str.as_str());
                         let effective_bg = if is_selected {
                             selected_bg
                         } else if is_highlighted {
                             highlight_bg
-                        } else if is_oid_hovered {
-                            ghost_hover
                         } else {
                             hunk_bg
                         };
@@ -341,9 +333,7 @@ impl Render for BlameView {
 
                         let view_click = view.clone();
                         let view_commit = view.clone();
-                        let view_hover = view.clone();
                         let commit_oid = oid_str.clone();
-                        let hover_oid = oid_str.clone();
 
                         div()
                             .id(ElementId::NamedInteger("blame-line".into(), i as u64))
@@ -355,20 +345,7 @@ impl Render for BlameView {
                                 el.border_t_1().border_color(border_variant)
                             })
                             .tooltip(Tooltip::text(tooltip_text))
-                            .on_mouse_move({
-                                let hover_oid = hover_oid.clone();
-                                move |_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
-                                    let oid = hover_oid.clone();
-                                    view_hover
-                                        .update(cx, |this, cx| {
-                                            if this.hovered_oid.as_deref() != Some(oid.as_str()) {
-                                                this.hovered_oid = Some(oid);
-                                                cx.notify();
-                                            }
-                                        })
-                                        .ok();
-                                }
-                            })
+                            .hover(|s| s.bg(ghost_hover))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 move |_: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
