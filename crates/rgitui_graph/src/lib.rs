@@ -87,6 +87,7 @@ pub struct GraphView {
     show_avatars: bool,
     show_graph_lanes: bool,
     show_ref_badges: bool,
+    show_subject_column: bool,
     /// Cached bounds of the graph container div, used to convert window-relative
     /// click positions to container-relative coordinates for context menu placement.
     container_bounds: Bounds<Pixels>,
@@ -149,6 +150,7 @@ impl GraphView {
             show_avatars: true,
             show_graph_lanes: true,
             show_ref_badges: true,
+            show_subject_column: true,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
         }
     }
@@ -730,6 +732,7 @@ impl Render for GraphView {
         let show_avatars = self.show_avatars;
         let show_graph_lanes = self.show_graph_lanes;
         let show_ref_badges = self.show_ref_badges;
+        let show_subject_column = self.show_subject_column;
 
         // Header row (not virtualized — always visible)
         let view_settings_toggle = cx.weak_entity();
@@ -774,14 +777,16 @@ impl Render for GraphView {
                         .weight(gpui::FontWeight::SEMIBOLD),
                 ),
             )
-            .child(
-                div().flex_1().child(
-                    Label::new("Message")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted)
-                        .weight(gpui::FontWeight::SEMIBOLD),
-                ),
-            );
+            .when(show_subject_column, |el| {
+                el.child(
+                    div().flex_1().child(
+                        Label::new("Message")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
+                )
+            });
 
         if show_author_column {
             header = header.child(
@@ -1423,7 +1428,7 @@ impl Render for GraphView {
                             ),
                         );
 
-                        {
+                        if show_subject_column {
                             let mut message_col = div()
                                 .flex_1()
                                 .min_w_0()
@@ -2021,6 +2026,7 @@ impl Render for GraphView {
             let popover_hover = colors.ghost_element_hover;
 
             let view_full_hash = cx.weak_entity();
+            let view_subject = cx.weak_entity();
             let view_author = cx.weak_entity();
             let view_date = cx.weak_entity();
             let view_absolute_dates = cx.weak_entity();
@@ -2029,6 +2035,11 @@ impl Render for GraphView {
             let view_ref_badges = cx.weak_entity();
 
             let full_hash_state = if self.show_full_hash {
+                CheckState::Checked
+            } else {
+                CheckState::Unchecked
+            };
+            let subject_state = if self.show_subject_column {
                 CheckState::Checked
             } else {
                 CheckState::Unchecked
@@ -2120,6 +2131,29 @@ impl Render for GraphView {
                         })
                         .child(Checkbox::new("cb-full-hash", full_hash_state))
                         .child(Label::new("Show full hash").size(LabelSize::XSmall)),
+                )
+                .child(
+                    div()
+                        .id("toggle-subject-col")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_subject
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_subject_column = !this.show_subject_column;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-subject-col", subject_state))
+                        .child(Label::new("Show subject column").size(LabelSize::XSmall)),
                 )
                 .child(
                     div()
