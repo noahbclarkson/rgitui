@@ -610,7 +610,7 @@ impl Render for InteractiveRebase {
                 Color::Default
             };
 
-            // Row background: drag hover gets accent tint; dragging gets dimmed; selected normal
+            // Row background: drag hover gets accent tint + drop line; dragging gets dimmed; selected normal
             let row_bg = if is_hover_target {
                 colors.ghost_element_selected
             } else if is_dragging {
@@ -631,6 +631,15 @@ impl Render for InteractiveRebase {
                 }
             };
 
+            // Drop indicator: 2px accent line at top of hovered row — shows where the
+            // dragged item will land. Rendered as a top border so it "floats" visually
+            // between the previous row and the hovered row.
+            let drop_indicator = if is_hover_target && self.dragging_index.is_some() {
+                Some(colors.text_accent)
+            } else {
+                None
+            };
+
             let action_bg = colors.element_background;
             let action_border = colors.border_variant;
 
@@ -649,6 +658,8 @@ impl Render for InteractiveRebase {
                 .items_center()
                 .opacity(row_opacity)
                 .bg(row_bg)
+                .border_t_2()
+                .border_color(drop_indicator.unwrap_or(colors.border_transparent))
                 .hover(|s| {
                     if !is_dragging {
                         s.bg(colors.ghost_element_hover)
