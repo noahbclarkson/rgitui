@@ -80,7 +80,8 @@ pub struct GraphView {
     unstaged_breakdown: HashMap<FileChangeKind, usize>,
     cached_merge_breakdown: HashMap<FileChangeKind, usize>,
     show_settings_popover: bool,
-    show_full_hash: bool,
+    /// SHA display length: 0 = default short (7), or specific length (7/8/10/12/40).
+    sha_display_length: u8,
     show_author_column: bool,
     show_date_column: bool,
     show_absolute_dates: bool,
@@ -88,6 +89,7 @@ pub struct GraphView {
     show_graph_lanes: bool,
     show_ref_badges: bool,
     show_subject_column: bool,
+    show_author_email: bool,
     /// Cached bounds of the graph container div, used to convert window-relative
     /// click positions to container-relative coordinates for context menu placement.
     container_bounds: Bounds<Pixels>,
@@ -143,7 +145,7 @@ impl GraphView {
             unstaged_breakdown: HashMap::new(),
             cached_merge_breakdown: HashMap::new(),
             show_settings_popover: false,
-            show_full_hash: false,
+            sha_display_length: 0,
             show_author_column: true,
             show_date_column: true,
             show_absolute_dates: false,
@@ -151,6 +153,7 @@ impl GraphView {
             show_graph_lanes: true,
             show_ref_badges: true,
             show_subject_column: true,
+            show_author_email: false,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
         }
     }
@@ -728,11 +731,12 @@ impl Render for GraphView {
         let show_author_column = self.show_author_column;
         let show_date_column = self.show_date_column;
         let show_absolute_dates = self.show_absolute_dates;
-        let show_full_hash = self.show_full_hash;
+        let sha_display_length = self.sha_display_length;
         let show_avatars = self.show_avatars;
         let show_graph_lanes = self.show_graph_lanes;
         let show_ref_badges = self.show_ref_badges;
         let show_subject_column = self.show_subject_column;
+        let show_author_email = self.show_author_email;
 
         // Header row (not virtualized — always visible)
         let view_settings_toggle = cx.weak_entity();
@@ -789,9 +793,10 @@ impl Render for GraphView {
             });
 
         if show_author_column {
+            let author_col_width = if self.show_author_email { 180.0 } else { 120.0 };
             header = header.child(
                 div()
-                    .w(px(120.))
+                    .w(px(author_col_width))
                     .flex_shrink_0()
                     .h_flex()
                     .items_center()
@@ -966,10 +971,13 @@ impl Render for GraphView {
                             ref_badges.push(badge);
                         }
 
-                        let hash_display: SharedString = if show_full_hash {
-                            format!("{}", commit.oid).into()
-                        } else {
-                            commit.short_id.clone().into()
+                        let hash_display: SharedString = match sha_display_length {
+                            0 => commit.short_id.clone().into(),
+                            40 => format!("{}", commit.oid).into(),
+                            n => {
+                                let full = format!("{}", commit.oid);
+                                full[..((n as usize).min(full.len()))].to_string().into()
+                            }
                         };
                         let summary: SharedString = commit.summary.clone().into();
                         let author: SharedString = commit.author.name.clone().into();
@@ -1460,18 +1468,24 @@ impl Render for GraphView {
 
                         // Author column (conditional)
                         if show_author_column {
+                            let author_display: SharedString = if show_author_email {
+                                format!("{} <{}>", author, author_email).into()
+                            } else {
+                                author.clone()
+                            };
+                            let author_tooltip: SharedString = format!("{} <{}>", author, author_email).into();
                             row = row.child(
                                 div()
                                     .id(ElementId::NamedInteger("graph-author".into(), i as u64))
-                                    .w(px(120.))
+                                    .w(px(if show_author_email { 180. } else { 120. }))
                                     .flex_shrink_0()
                                     .px(px(4.))
                                     .h_flex()
                                     .items_center()
                                     .overflow_x_hidden()
-                                    .tooltip(Tooltip::text(author.clone()))
+                                    .tooltip(Tooltip::text(author_tooltip))
                                     .child(
-                                        Label::new(author)
+                                        Label::new(author_display)
                                             .size(LabelSize::XSmall)
                                             .color(Color::Muted)
                                             .truncate(),
@@ -2025,19 +2039,20 @@ impl Render for GraphView {
             let popover_border = colors.border;
             let popover_hover = colors.ghost_element_hover;
 
-            let view_full_hash = cx.weak_entity();
+            let view_sha_length = cx.weak_entity();
             let view_subject = cx.weak_entity();
             let view_author = cx.weak_entity();
+            let view_author_email = cx.weak_entity();
             let view_date = cx.weak_entity();
             let view_absolute_dates = cx.weak_entity();
             let view_avatars = cx.weak_entity();
             let view_graph_lanes = cx.weak_entity();
             let view_ref_badges = cx.weak_entity();
 
-            let full_hash_state = if self.show_full_hash {
-                CheckState::Checked
-            } else {
-                CheckState::Unchecked
+            let sha_length_label: SharedString = match self.sha_display_length {
+                0 => "Short (7)".into(),
+                40 => "Full (40)".into(),
+                n => format!("{} chars", n).into(),
             };
             let subject_state = if self.show_subject_column {
                 CheckState::Checked
@@ -2045,6 +2060,11 @@ impl Render for GraphView {
                 CheckState::Unchecked
             };
             let author_state = if self.show_author_column {
+                CheckState::Checked
+            } else {
+                CheckState::Unchecked
+            };
+            let author_email_state = if self.show_author_email {
                 CheckState::Checked
             } else {
                 CheckState::Unchecked
@@ -2111,7 +2131,7 @@ impl Render for GraphView {
                 )
                 .child(
                     div()
-                        .id("toggle-full-hash")
+                        .id("toggle-sha-length")
                         .h_flex()
                         .w_full()
                         .h(px(28.))
@@ -2122,15 +2142,32 @@ impl Render for GraphView {
                         .rounded(px(3.))
                         .hover(move |s| s.bg(popover_hover))
                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                            view_full_hash
+                            view_sha_length
                                 .update(cx, |this: &mut GraphView, cx| {
-                                    this.show_full_hash = !this.show_full_hash;
+                                    // Cycle: 0(short/7) → 8 → 10 → 12 → 40(full) → 0
+                                    this.sha_display_length = match this.sha_display_length {
+                                        0 => 8,
+                                        8 => 10,
+                                        10 => 12,
+                                        12 => 40,
+                                        _ => 0,
+                                    };
                                     cx.notify();
                                 })
                                 .ok();
                         })
-                        .child(Checkbox::new("cb-full-hash", full_hash_state))
-                        .child(Label::new("Show full hash").size(LabelSize::XSmall)),
+                        .child(
+                            Icon::new(IconName::GitCommit)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(Label::new("SHA length:").size(LabelSize::XSmall))
+                        .child(
+                            Label::new(sha_length_label)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Accent)
+                                .weight(gpui::FontWeight::SEMIBOLD),
+                        ),
                 )
                 .child(
                     div()
@@ -2177,6 +2214,30 @@ impl Render for GraphView {
                         })
                         .child(Checkbox::new("cb-author-col", author_state))
                         .child(Label::new("Show author column").size(LabelSize::XSmall)),
+                )
+                .child(
+                    div()
+                        .id("toggle-author-email")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .pl(px(26.))
+                        .gap(px(8.))
+                        .items_center()
+                        .cursor(CursorStyle::PointingHand)
+                        .rounded(px(3.))
+                        .hover(move |s| s.bg(popover_hover))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view_author_email
+                                .update(cx, |this: &mut GraphView, cx| {
+                                    this.show_author_email = !this.show_author_email;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .child(Checkbox::new("cb-author-email", author_email_state))
+                        .child(Label::new("Show author email").size(LabelSize::XSmall)),
                 )
                 .child(
                     div()
