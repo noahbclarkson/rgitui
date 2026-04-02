@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, KeyDownEvent,
-    Render, SharedString, Window,
+    div, px, uniform_list, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle,
+    KeyDownEvent, Render, SharedString, WeakEntity, Window,
 };
 use rgitui_git::{
     BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
@@ -13,8 +15,8 @@ use rgitui_git::{
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Badge, Button, ButtonSize, ButtonStyle, DiffStat, Disclosure, IconButton, IconName, Label,
-    LabelSize, TextInput, TextInputEvent, Tooltip,
+    Badge, Button, ButtonSize, ButtonStyle, Disclosure, IconButton, IconName, Label, LabelSize,
+    TextInput, TextInputEvent, Tooltip,
 };
 
 /// Events from the sidebar.
@@ -50,6 +52,7 @@ pub enum SidebarEvent {
     AcceptConflictTheirs(String),
     ConflictFileSelected(String),
     OpenRepo,
+    ToggleDir(String), // dir_key: "staged:path" or "unstaged:path"
 }
 
 /// Sidebar sections.
@@ -110,13 +113,6 @@ enum SidebarItem {
     Worktree(usize),     // index into worktrees
     StagedFile(usize),   // index into staged files
     UnstagedFile(usize), // index into unstaged files
-}
-
-struct FileRowCtx<'a> {
-    staged: bool,
-    indent: gpui::Pixels,
-    file_idx: usize,
-    colors: &'a rgitui_theme::ThemeColors,
 }
 
 /// The left sidebar panel with branches, tags, stashes, and working tree status.
@@ -661,17 +657,41 @@ impl Sidebar {
         cx.notify();
     }
 
-    fn is_dir_collapsed(&self, prefix: &str, dir: &str) -> bool {
-        self.collapsed_dirs.contains(&format!("{}:{}", prefix, dir))
-    }
-
-    fn toggle_dir(&mut self, prefix: &str, dir: &str, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_dir(&mut self, prefix: &str, dir: &str, cx: &mut Context<Self>) {
         let key = format!("{}:{}", prefix, dir);
         if self.collapsed_dirs.contains(&key) {
             self.collapsed_dirs.remove(&key);
         } else {
             self.collapsed_dirs.insert(key);
         }
+
+        // Rebuild flattened lists to reflect the new collapse state.
+        // use take() to avoid &mut conflict with self.cached_* clone borrows.
+        let staged_tree = self.cached_staged_tree.clone();
+        let unstaged_tree = self.cached_unstaged_tree.clone();
+        let collapsed_dirs = self.collapsed_dirs.clone();
+        let mut new_staged = Vec::new();
+        let mut new_unstaged = Vec::new();
+        Self::flatten_tree(
+            &staged_tree,
+            "staged",
+            "",
+            0,
+            &mut new_staged,
+            &collapsed_dirs,
+        );
+        Self::flatten_tree(
+            &unstaged_tree,
+            "unstaged",
+            "",
+            0,
+            &mut new_unstaged,
+            &collapsed_dirs,
+        );
+        // Swap using take to avoid &mut conflict
+        self.flattened_staged = new_staged;
+        self.flattened_unstaged = new_unstaged;
+
         cx.notify();
     }
 
@@ -707,20 +727,6 @@ impl Sidebar {
             *counts.entry(file.kind).or_insert(0) += 1;
         }
         counts
-    }
-
-    /// Map a file change kind to an appropriate icon.
-    fn file_change_icon(kind: FileChangeKind) -> IconName {
-        match kind {
-            FileChangeKind::Added => IconName::FileAdded,
-            FileChangeKind::Modified => IconName::FileModified,
-            FileChangeKind::Deleted => IconName::FileDeleted,
-            FileChangeKind::Renamed => IconName::FileRenamed,
-            FileChangeKind::Copied => IconName::FileRenamed,
-            FileChangeKind::TypeChange => IconName::FileModified,
-            FileChangeKind::Untracked => IconName::FileAdded,
-            FileChangeKind::Conflicted => IconName::FileConflict,
-        }
     }
 
     fn build_file_tree(files: &[FileStatus]) -> FileTreeNode {
@@ -848,380 +854,6 @@ impl Sidebar {
                 .map(Self::file_tree_file_count)
                 .sum::<usize>()
     }
-
-    fn render_file_row(
-        &self,
-        body: gpui::Stateful<gpui::Div>,
-        file: &FileStatus,
-        ctx: &mut FileRowCtx<'_>,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let item_h = cx
-            .global::<SettingsState>()
-            .settings()
-            .compactness
-            .spacing(24.0);
-        let staged = ctx.staged;
-        let indent = ctx.indent;
-        let colors = ctx.colors;
-        let file_idx = &mut ctx.file_idx;
-        let i = *file_idx;
-        *file_idx += 1;
-
-        let file_name: SharedString = file
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string()
-            .into();
-        let kind_icon = Self::file_change_icon(file.kind);
-        let color = Self::file_change_color(file.kind);
-        let additions = file.additions;
-        let deletions = file.deletions;
-        let file_path: SharedString = file.path.display().to_string().into();
-        let is_selected = self
-            .selected_file
-            .as_ref()
-            .is_some_and(|(p, s)| p.as_str() == file_path.as_ref() && *s == staged);
-        let has_stats = additions > 0 || deletions > 0;
-
-        let mut row = div()
-            .id(ElementId::NamedInteger(
-                if staged {
-                    "staged-file".into()
-                } else {
-                    "unstaged-file".into()
-                },
-                i as u64,
-            ))
-            .group("sidebar-file-row")
-            .h_flex()
-            .w_full()
-            .h(px(item_h))
-            .flex_shrink_0()
-            .px_2()
-            .pl(indent)
-            .gap_1()
-            .items_center()
-            .when(is_selected, |el| el.bg(colors.ghost_element_selected))
-            .hover(|s| s.bg(colors.ghost_element_hover))
-            .active(|s| s.bg(colors.ghost_element_selected))
-            .cursor_pointer()
-            .on_click({
-                let file_path = file_path.clone();
-                let file_kind = file.kind;
-                cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.selected_file = Some((file_path.to_string(), staged));
-                    let event = if !staged && file_kind == FileChangeKind::Conflicted {
-                        SidebarEvent::ConflictFileSelected(file_path.to_string())
-                    } else {
-                        SidebarEvent::FileSelected {
-                            path: file_path.to_string(),
-                            staged,
-                        }
-                    };
-                    cx.emit(event);
-                    cx.notify();
-                })
-            })
-            .child(
-                rgitui_ui::Icon::new(kind_icon)
-                    .size(rgitui_ui::IconSize::XSmall)
-                    .color(color),
-            )
-            .child(
-                Label::new(file_name)
-                    .size(LabelSize::XSmall)
-                    .color(color)
-                    .truncate(),
-            )
-            .child(div().flex_1());
-
-        if has_stats {
-            row = row.child(DiffStat::new(additions, deletions));
-        }
-
-        let stage_color = if staged {
-            Color::Deleted.color(cx)
-        } else {
-            Color::Added.color(cx)
-        };
-        let discard_color = Color::Deleted.color(cx);
-        let ghost_hover = colors.ghost_element_hover;
-
-        row = row.child(
-            div()
-                .id(ElementId::NamedInteger(
-                    if staged {
-                        "unstage-btn".into()
-                    } else {
-                        "stage-discard-btn".into()
-                    },
-                    i as u64,
-                ))
-                .h_flex()
-                .gap(px(2.))
-                .invisible()
-                .group_hover("sidebar-file-row", |s| s.visible())
-                .child(
-                    div()
-                        .id(ElementId::NamedInteger(
-                            if staged {
-                                "unstage-action".into()
-                            } else {
-                                "stage-action".into()
-                            },
-                            i as u64,
-                        ))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(px(18.))
-                        .h(px(18.))
-                        .rounded(px(3.))
-                        .text_color(stage_color)
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .hover(move |s| s.bg(ghost_hover))
-                        .cursor_pointer()
-                        .on_click({
-                            let file_path = file_path.clone();
-                            cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                                cx.emit(if staged {
-                                    SidebarEvent::UnstageFile(file_path.to_string())
-                                } else {
-                                    SidebarEvent::StageFile(file_path.to_string())
-                                });
-                            })
-                        })
-                        .child(if staged { "\u{2212}" } else { "+" }),
-                ),
-        );
-
-        if !staged {
-            if file.kind == FileChangeKind::Conflicted {
-                // Show "Accept Ours" and "Accept Theirs" buttons for conflicted files
-                let ghost_hover_ours = colors.ghost_element_hover;
-                let ghost_hover_theirs = colors.ghost_element_hover;
-                let ours_color = Color::Modified.color(cx);
-                let theirs_color = Color::Added.color(cx);
-                row = row.child(
-                    div()
-                        .id(ElementId::NamedInteger("conflict-actions".into(), i as u64))
-                        .flex()
-                        .gap(px(2.))
-                        .invisible()
-                        .group_hover("sidebar-file-row", |s| s.visible())
-                        .child(
-                            div()
-                                .id(ElementId::NamedInteger(
-                                    "accept-ours-action".into(),
-                                    i as u64,
-                                ))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .w(px(18.))
-                                .h(px(18.))
-                                .rounded(px(3.))
-                                .text_color(ours_color)
-                                .text_xs()
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .hover(move |s| s.bg(ghost_hover_ours))
-                                .cursor_pointer()
-                                .tooltip(Tooltip::text("Accept ours (O)"))
-                                .on_click({
-                                    let file_path = file_path.clone();
-                                    cx.listener(move |_this: &mut Self, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::AcceptConflictOurs(
-                                            file_path.to_string(),
-                                        ));
-                                    })
-                                })
-                                .child("O"),
-                        )
-                        .child(
-                            div()
-                                .id(ElementId::NamedInteger(
-                                    "accept-theirs-action".into(),
-                                    i as u64,
-                                ))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .w(px(18.))
-                                .h(px(18.))
-                                .rounded(px(3.))
-                                .text_color(theirs_color)
-                                .text_xs()
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .hover(move |s| s.bg(ghost_hover_theirs))
-                                .cursor_pointer()
-                                .tooltip(Tooltip::text("Accept theirs (T)"))
-                                .on_click({
-                                    let file_path = file_path.clone();
-                                    cx.listener(move |_this: &mut Self, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::AcceptConflictTheirs(
-                                            file_path.to_string(),
-                                        ));
-                                    })
-                                })
-                                .child("T"),
-                        ),
-                );
-            } else {
-                let ghost_hover2 = colors.ghost_element_hover;
-                row = row.child(
-                    div()
-                        .id(ElementId::NamedInteger("discard-action".into(), i as u64))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(px(18.))
-                        .h(px(18.))
-                        .rounded(px(3.))
-                        .text_color(discard_color)
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .hover(move |s| s.bg(ghost_hover2))
-                        .cursor_pointer()
-                        .invisible()
-                        .group_hover("sidebar-file-row", |s| s.visible())
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(SidebarEvent::DiscardFile(file_path.to_string()));
-                        }))
-                        .child("\u{00d7}"),
-                );
-            }
-        }
-
-        body.child(row)
-    }
-
-    fn render_file_tree(
-        &self,
-        mut body: gpui::Stateful<gpui::Div>,
-        node: &FileTreeNode,
-        files: &[FileStatus],
-        tree_ctx: (&str, &str, usize),
-        ctx: &mut FileRowCtx<'_>,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let item_h = cx
-            .global::<SettingsState>()
-            .settings()
-            .compactness
-            .spacing(24.0);
-        let (prefix, parent_path, depth) = tree_ctx;
-        let file_indent = px(if depth == 0 {
-            16.0
-        } else {
-            16.0 + depth as f32 * 14.0
-        });
-
-        for &file_idx in &node.file_indices {
-            ctx.indent = file_indent;
-            body = self.render_file_row(body, &files[file_idx], ctx, cx);
-        }
-        let colors = ctx.colors;
-
-        for (dir_name, child) in &node.children {
-            let mut full_dir = if parent_path.is_empty() {
-                dir_name.clone()
-            } else {
-                format!("{}/{}", parent_path, dir_name)
-            };
-            let mut display_label = format!("{dir_name}/");
-            let mut display_node = child;
-
-            while display_node.file_indices.is_empty() && display_node.children.len() == 1 {
-                let Some((next_name, next_child)) = display_node.children.iter().next() else {
-                    break;
-                };
-                full_dir = format!("{full_dir}/{next_name}");
-                display_label = format!("{}{next_name}/", display_label);
-                display_node = next_child;
-            }
-
-            let dir_collapsed = self.is_dir_collapsed(prefix, &full_dir);
-            let dir_icon = if dir_collapsed {
-                IconName::ChevronRight
-            } else {
-                IconName::ChevronDown
-            };
-            let prefix_key = prefix.to_string();
-            let dir_clone = full_dir.clone();
-            let dir_indent = px(16.0 + depth as f32 * 14.0);
-            let file_count = display_node.file_count;
-
-            body = body.child(
-                div()
-                    .id(SharedString::from(format!("{prefix}-dir-{full_dir}")))
-                    .h_flex()
-                    .w_full()
-                    .h(px(item_h))
-                    .flex_shrink_0()
-                    .px_2()
-                    .pl(dir_indent)
-                    .gap_1()
-                    .items_center()
-                    .overflow_hidden()
-                    .hover(|s| s.bg(colors.ghost_element_hover))
-                    .active(|s| s.bg(colors.ghost_element_active))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.toggle_dir(&prefix_key, &dir_clone, cx);
-                    }))
-                    .child(
-                        rgitui_ui::Icon::new(dir_icon)
-                            .size(rgitui_ui::IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        rgitui_ui::Icon::new(IconName::Folder)
-                            .size(rgitui_ui::IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        Label::new(SharedString::from(display_label))
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted)
-                            .truncate(),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .h_flex()
-                            .h(px(16.))
-                            .min_w(px(20.))
-                            .px(px(6.))
-                            .rounded(px(8.))
-                            .bg(colors.ghost_element_hover)
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                Label::new(SharedString::from(format!("{file_count}")))
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
-                            ),
-                    ),
-            );
-
-            if !dir_collapsed {
-                body = self.render_file_tree(
-                    body,
-                    display_node,
-                    files,
-                    (prefix, &full_dir, depth + 1),
-                    ctx,
-                    cx,
-                );
-            }
-        }
-
-        body
-    }
 }
 
 impl Render for Sidebar {
@@ -1230,6 +862,7 @@ impl Render for Sidebar {
         let compactness = cx.global::<SettingsState>().settings().compactness;
         let item_h = compactness.spacing(24.0);
         let header_h = compactness.spacing(26.0);
+        let sidebar_weak: WeakEntity<Sidebar> = cx.weak_entity();
 
         // Compute navigable items for keyboard highlight matching
         let keyboard_index = self.keyboard_index;
@@ -2604,22 +2237,126 @@ impl Render for Sidebar {
                 );
             } else {
                 nav_idx += self.staged.len();
-                let tree = self.cached_staged_tree.clone();
-                let mut ctx = FileRowCtx {
-                    staged: true,
-                    indent: px(16.0),
-                    file_idx: 0,
-                    colors: &colors,
-                };
-                let staged_body = div().id("staged-body").v_flex().w_full().flex_shrink_0();
-                content = content.child(self.render_file_tree(
-                    staged_body,
-                    &tree,
-                    &self.staged,
-                    ("staged", "", 0),
-                    &mut ctx,
-                    cx,
-                ));
+                let flattened = self.flattened_staged.clone();
+                let files = self.staged.clone();
+                let w = Rc::new(sidebar_weak.clone());
+                let colors = colors.clone();
+                let list = uniform_list(
+                    "staged-file-list",
+                    flattened.len(),
+                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                        let w = w.clone();
+                        range.map(|i| {
+                            let item = &flattened[i];
+                            match item {
+                                FlatFileItem::File { file_idx, indent } => {
+                                    let file = &files[*file_idx];
+                                    let file_name: SharedString = file
+                                        .path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("")
+                                        .to_string()
+                                        .into();
+                                    let kind_color = Sidebar::file_change_color(file.kind);
+                                    let file_path_for_emit: String =
+                                        file.path.display().to_string();
+                                    let file_path_clone = file_path_for_emit.clone();
+                                    div()
+                                        .id(ElementId::NamedInteger("staged-file".into(), i as u64))
+                                        .group("sidebar-file-row")
+                                        .h_flex()
+                                        .w_full()
+                                        .h(px(item_h))
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .pl(*indent)
+                                        .gap_1()
+                                        .items_center()
+                                        .hover(|s| s.bg(colors.ghost_element_hover))
+                                        .active(|s| s.bg(colors.ghost_element_selected))
+                                        .cursor_pointer()
+                                        .on_click({
+                                            let w_click = w.clone();
+                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            if let Some(entity) = (*w_click).upgrade() {
+                                                entity.update(cx, |this, cx| {
+                                                    this.selected_file =
+                                                        Some((file_path_clone.clone(), true));
+                                                    cx.emit(SidebarEvent::FileSelected {
+                                                        path: file_path_clone.clone(),
+                                                        staged: true,
+                                                    });
+                                                });
+                                            }
+                                        }})
+                                        .child(
+                                            Label::new(Sidebar::file_change_symbol(file.kind))
+                                                .size(LabelSize::XSmall)
+                                                .color(kind_color),
+                                        )
+                                        .child(
+                                            Label::new(file_name)
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Default)
+                                                .truncate(),
+                                        )
+                                        .child(div().flex_1())
+                                        .into_any_element()
+                                }
+                                FlatFileItem::Dir { dir_key, label, file_count, collapsed, indent } => {
+                                    let dir_icon = if *collapsed {
+                                        IconName::ChevronRight
+                                    } else {
+                                        IconName::ChevronDown
+                                    };
+                                    let dk = dir_key.clone();
+                                    div()
+                                        .id(SharedString::from(format!("staged-dir-{}", dir_key)))
+                                        .h_flex()
+                                        .w_full()
+                                        .h(px(item_h))
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .pl(*indent)
+                                        .gap_1()
+                                        .items_center()
+                                        .overflow_hidden()
+                                        .hover(|s| s.bg(colors.ghost_element_hover))
+                                        .active(|s| s.bg(colors.ghost_element_active))
+                                        .cursor_pointer()
+                                        .on_click({
+                                            let w_dir = w.clone();
+                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            w_dir.clone().update(cx, |_, cx| {
+                                                cx.emit(SidebarEvent::ToggleDir(dk.clone()));
+                                            }).ok();
+                                        }})
+                                        .child(rgitui_ui::Icon::new(dir_icon).size(rgitui_ui::IconSize::XSmall).color(Color::Muted))
+                                        .child(rgitui_ui::Icon::new(IconName::Folder).size(rgitui_ui::IconSize::XSmall).color(Color::Muted))
+                                        .child(Label::new(label.clone()).size(LabelSize::XSmall).color(Color::Default).truncate())
+                                        .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .h_flex().h(px(16.)).min_w(px(20.)).px(px(6.))
+                                                .rounded(px(8.)).bg(colors.ghost_element_hover)
+                                                .items_center().justify_center()
+                                                .child(Label::new(SharedString::from(format!("{}", file_count))).size(LabelSize::XSmall).color(Color::Default)),
+                                        )
+                                        .into_any_element()
+                                }
+                            }
+                        }).collect::<Vec<_>>()
+                    },
+                );
+                content = content.child(
+                    div()
+                        .id("staged-body")
+                        .v_flex()
+                        .w_full()
+                        .flex_shrink_0()
+                        .child(list),
+                );
             }
         }
 
@@ -2746,22 +2483,152 @@ impl Render for Sidebar {
                         ),
                 );
             } else {
-                let tree = self.cached_unstaged_tree.clone();
-                let mut ctx = FileRowCtx {
-                    staged: false,
-                    indent: px(16.0),
-                    file_idx: 0,
-                    colors: &colors,
-                };
-                let unstaged_body = div().id("unstaged-body").v_flex().w_full().flex_shrink_0();
-                content = content.child(self.render_file_tree(
-                    unstaged_body,
-                    &tree,
-                    &self.unstaged,
-                    ("unstaged", "", 0),
-                    &mut ctx,
-                    cx,
-                ));
+                let flattened = self.flattened_unstaged.clone();
+                let files = self.unstaged.clone();
+                let w = sidebar_weak.clone();
+                let colors = colors.clone();
+                let list = uniform_list(
+                    "unstaged-file-list",
+                    flattened.len(),
+                    move |range: Range<usize>, _window: &mut Window, cx: &mut App| {
+                        let w = w.clone();
+                        range.map(|i| {
+                            let item = &flattened[i];
+                            match item {
+                                FlatFileItem::File { file_idx, indent } => {
+                                    let file = &files[*file_idx];
+                                    let file_name: SharedString = file
+                                        .path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("")
+                                        .to_string()
+                                        .into();
+                                    let kind_color = Sidebar::file_change_color(file.kind);
+                                    let file_path_for_emit: String =
+                                        file.path.display().to_string();
+                                    let file_path_clone = file_path_for_emit.clone();
+                                    div()
+                                        .id(ElementId::NamedInteger("unstaged-file".into(), i as u64))
+                                        .group("sidebar-file-row")
+                                        .h_flex()
+                                        .w_full()
+                                        .h(px(item_h))
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .pl(*indent)
+                                        .gap_1()
+                                        .items_center()
+                                        .hover(|s| s.bg(colors.ghost_element_hover))
+                                        .active(|s| s.bg(colors.ghost_element_selected))
+                                        .cursor_pointer()
+                                        .on_click({
+                                            let w_sel = w.clone();
+                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            w_sel.clone().update(cx, |this, cx| {
+                                                this.selected_file =
+                                                    Some((file_path_clone.clone(), false));
+                                                cx.emit(SidebarEvent::FileSelected {
+                                                    path: file_path_clone.clone(),
+                                                    staged: false,
+                                                });
+                                            }).ok();
+                                        }})
+                                        .child(
+                                            Label::new(Sidebar::file_change_symbol(file.kind))
+                                                .size(LabelSize::XSmall)
+                                                .color(kind_color),
+                                        )
+                                        .child(
+                                            Label::new(file_name)
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Default)
+                                                .truncate(),
+                                        )
+                                        .child(div().flex_1())
+                                        // Discard button for unstaged files
+                                        .child(
+                                            div()
+                                                .id(ElementId::NamedInteger("discard-action".into(), i as u64))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .w(px(18.))
+                                                .h(px(18.))
+                                                .rounded(px(3.))
+                                                .invisible()
+                                                .group_hover("sidebar-file-row", |s| s.visible())
+                                                .text_xs()
+                                                .text_color(Color::Deleted.color(cx))
+                                                .hover(|s| s.bg(colors.ghost_element_hover))
+                                                .cursor_pointer()
+                                                .tooltip(Tooltip::text("Discard changes (Ctrl+Z)"))
+                                                .on_click({
+                                                    let w_dis = w.clone();
+                                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                    w_dis.clone().update(cx, |_, cx| {
+                                                        cx.emit(SidebarEvent::DiscardFile(
+                                                            file_path_for_emit.clone(),
+                                                        ));
+                                                    }).ok();
+                                                }})
+                                                .child("×"),
+                                        )
+                                        .into_any_element()
+                                }
+                                FlatFileItem::Dir { dir_key, label, file_count, collapsed, indent } => {
+                                    let dir_icon = if *collapsed {
+                                        IconName::ChevronRight
+                                    } else {
+                                        IconName::ChevronDown
+                                    };
+                                    let dk = dir_key.clone();
+                                    div()
+                                        .id(SharedString::from(format!("unstaged-dir-{}", dir_key)))
+                                        .h_flex()
+                                        .w_full()
+                                        .h(px(item_h))
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .pl(*indent)
+                                        .gap_1()
+                                        .items_center()
+                                        .overflow_hidden()
+                                        .hover(|s| s.bg(colors.ghost_element_hover))
+                                        .active(|s| s.bg(colors.ghost_element_active))
+                                        .cursor_pointer()
+                                        .on_click({
+                                            let w_dir2 = w.clone();
+                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            w_dir2.clone().update(cx, |_, cx| {
+                                                cx.emit(SidebarEvent::ToggleDir(dk.clone()));
+                                            }).ok();
+                                        }})
+                                        .child(rgitui_ui::Icon::new(dir_icon).size(rgitui_ui::IconSize::XSmall).color(Color::Muted))
+                                        .child(rgitui_ui::Icon::new(IconName::Folder).size(rgitui_ui::IconSize::XSmall).color(Color::Muted))
+                                        .child(Label::new(label.clone()).size(LabelSize::XSmall).color(Color::Default).truncate())
+                                        .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .h_flex().h(px(16.)).min_w(px(20.)).px(px(6.))
+                                                .rounded(px(8.)).bg(colors.ghost_element_hover)
+                                                .items_center().justify_center()
+                                                .child(Label::new(SharedString::from(format!("{}", file_count))).size(LabelSize::XSmall).color(Color::Default)),
+                                        )
+                                        .into_any_element()
+                                }
+                            }
+                        }).collect::<Vec<_>>()
+                    },
+                );
+                content = content.child(
+                    div()
+                        .id("unstaged-body")
+                        .v_flex()
+                        .w_full()
+                        .flex_shrink_0()
+                        .child(list),
+                );
             }
         }
 

@@ -811,8 +811,11 @@ pub(super) fn subscribe_sidebar(
     let project = project.clone();
     let diff_viewer = diff_viewer.clone();
     let detail_panel_ref = detail_panel.clone();
+    let sidebar_owned = sidebar.clone();
+    // Shadow the original parameter so the `move` closure doesn't capture it
+    let sidebar = sidebar_owned;
 
-    cx.subscribe(sidebar, {
+    cx.subscribe(&sidebar, {
         move |this, _sidebar, event: &SidebarEvent, cx| match event {
             SidebarEvent::FileSelected { path, staged } => {
                 let path_buf = std::path::PathBuf::from(path);
@@ -1112,6 +1115,12 @@ pub(super) fn subscribe_sidebar(
                 let index = *index;
                 this.dialogs.stash_branch_dialog.update(cx, |d, cx| {
                     d.show_visible(index, cx);
+                });
+            }
+            SidebarEvent::ToggleDir(dir_key) => {
+                let (prefix, dir) = dir_key.split_once(':').unwrap_or(("", ""));
+                _sidebar.update(cx, |s, cx| {
+                    s.toggle_dir(prefix, dir, cx);
                 });
             }
         }
