@@ -74,6 +74,30 @@ struct FileTreeNode {
     file_count: usize,
 }
 
+/// A flattened file tree item for virtualized rendering via `uniform_list`.
+/// Avoids O(n) DOM construction every frame by only building visible rows.
+#[derive(Debug, Clone)]
+pub enum FlatFileItem {
+    File {
+        /// Index into the staged/unstaged `FileStatus` array.
+        file_idx: usize,
+        /// Indent in pixels (computed from tree depth).
+        indent: gpui::Pixels,
+    },
+    Dir {
+        /// Full key into `collapsed_dirs`, e.g. "staged:src" or "unstaged:src/lib".
+        dir_key: String,
+        /// Display label for the directory row (always ends with /).
+        label: SharedString,
+        /// Number of descendant files (for the badge).
+        file_count: usize,
+        /// Whether this directory is currently collapsed.
+        collapsed: bool,
+        /// Indent in pixels.
+        indent: gpui::Pixels,
+    },
+}
+
 /// Represents a navigable item in the sidebar's flat list.
 #[derive(Debug, Clone)]
 enum SidebarItem {
@@ -128,6 +152,10 @@ pub struct Sidebar {
     cached_staged_tree: FileTreeNode,
     /// Cached file tree for unstaged changes (rebuilt in update_status).
     cached_unstaged_tree: FileTreeNode,
+    /// Flattened staged file tree for virtualized `uniform_list` rendering.
+    flattened_staged: Vec<FlatFileItem>,
+    /// Flattened unstaged file tree for virtualized `uniform_list` rendering.
+    flattened_unstaged: Vec<FlatFileItem>,
     /// Cached flat list of navigable items for keyboard navigation.
     cached_nav_items: Vec<SidebarItem>,
     /// Current branch filter text (case-insensitive substring).
@@ -212,6 +240,8 @@ impl Sidebar {
             remote_branches: Vec::new(),
             cached_staged_tree: FileTreeNode::default(),
             cached_unstaged_tree: FileTreeNode::default(),
+            flattened_staged: Vec::new(),
+            flattened_unstaged: Vec::new(),
             cached_nav_items,
             branch_filter: String::new(),
             branch_filter_editor,
@@ -575,6 +605,31 @@ impl Sidebar {
         self.cached_unstaged_tree = Self::build_file_tree(&unstaged);
         self.staged = staged;
         self.unstaged = unstaged;
+
+        // Rebuild flattened lists for virtualized rendering.
+        // Clone tree roots to avoid chaining self borrows (E0502).
+        let staged_tree = self.cached_staged_tree.clone();
+        let unstaged_tree = self.cached_unstaged_tree.clone();
+        let collapsed_dirs = self.collapsed_dirs.clone();
+        self.flattened_staged.clear();
+        Self::flatten_tree(
+            &staged_tree,
+            "staged",
+            "",
+            0,
+            &mut self.flattened_staged,
+            &collapsed_dirs,
+        );
+        self.flattened_unstaged.clear();
+        Self::flatten_tree(
+            &unstaged_tree,
+            "unstaged",
+            "",
+            0,
+            &mut self.flattened_unstaged,
+            &collapsed_dirs,
+        );
+
         self.rebuild_nav_items();
         cx.notify();
     }
@@ -685,6 +740,75 @@ impl Sidebar {
         Self::sort_file_tree(&mut root, files);
         Self::compute_file_counts(&mut root);
         root
+    }
+
+    /// Flatten a file tree into a list, respecting the current collapsed state.
+    /// Directories whose keys are in `collapsed_dirs` have their children skipped.
+    /// File items store the original `file_idx`; directory items store the full
+    /// `collapsed_dirs` key and the number of descendant files.
+    fn flatten_tree(
+        node: &FileTreeNode,
+        prefix: &str,
+        parent_path: &str,
+        depth: usize,
+        items: &mut Vec<FlatFileItem>,
+        collapsed_dirs: &HashSet<String>,
+    ) {
+        let file_indent = px(16.0 + depth as f32 * 14.0);
+
+        // Emit file rows first.
+        for &file_idx in &node.file_indices {
+            items.push(FlatFileItem::File {
+                file_idx,
+                indent: file_indent,
+            });
+        }
+
+        // Then emit directories (pre-order: dir before its children).
+        for (dir_name, child) in &node.children {
+            let full_dir = if parent_path.is_empty() {
+                dir_name.clone()
+            } else {
+                format!("{}/{}", parent_path, dir_name)
+            };
+            let dir_key = format!("{}:{}", prefix, full_dir);
+            let _collapsed = collapsed_dirs.contains(&dir_key);
+
+            // Coalesce single-child directories for a cleaner tree.
+            let mut display_label = format!("{}/", dir_name);
+            let mut display_node = child;
+            let mut display_full_dir = full_dir;
+            while display_node.file_indices.is_empty() && display_node.children.len() == 1 {
+                let Some((next_name, next_child)) = display_node.children.iter().next() else {
+                    break;
+                };
+                display_full_dir = format!("{}/{}", display_full_dir, next_name);
+                display_label = format!("{}{}/", display_label.trim_end_matches("/"), next_name);
+                display_node = next_child;
+            }
+            let display_key = format!("{}:{}", prefix, display_full_dir);
+            let display_collapsed = collapsed_dirs.contains(&display_key);
+
+            items.push(FlatFileItem::Dir {
+                dir_key: display_key,
+                label: SharedString::from(display_label),
+                file_count: display_node.file_count,
+                collapsed: display_collapsed,
+                indent: px(16.0 + depth as f32 * 14.0),
+            });
+
+            // Recurse into children only if not collapsed.
+            if !display_collapsed {
+                Self::flatten_tree(
+                    display_node,
+                    prefix,
+                    &display_full_dir,
+                    depth + 1,
+                    items,
+                    collapsed_dirs,
+                );
+            }
+        }
     }
 
     /// Recursively compute `file_count` for each node (post-order).
