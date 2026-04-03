@@ -608,8 +608,6 @@ async fn create_github_pr(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn create_pr_dialog_has_visible_default() {
         // Visible defaults to false — dialog must be explicitly shown
