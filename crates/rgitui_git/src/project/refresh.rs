@@ -380,6 +380,7 @@ fn gather_refresh_data_internal(
                 status,
                 recent_commits: commits,
                 has_more_commits: false,
+                default_branch: None,
             });
         }
         revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
@@ -438,6 +439,7 @@ fn gather_refresh_data_internal(
         recent_commits,
         has_more_commits,
         worktrees,
+        default_branch: None,
     })
 }
 
