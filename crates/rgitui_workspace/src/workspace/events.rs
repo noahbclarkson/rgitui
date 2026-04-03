@@ -6,8 +6,8 @@ use gpui::{Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator};
 use rgitui_diff::{DiffViewer, DiffViewerEvent};
 use rgitui_git::{
-    GitOperationKind, GitOperationState, GitProject, GitProjectEvent, RebaseEntryAction,
-    RebasePlanEntry,
+    CommitInfo, GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
+    RebaseEntryAction, RebasePlanEntry, Signature,
 };
 use rgitui_graph::{GraphView, GraphViewEvent};
 
@@ -977,6 +977,12 @@ pub(super) fn subscribe_sidebar(
                 let repo_path = project.read(cx).repo_path().to_path_buf();
                 let dv = diff_viewer.clone();
                 let dp = detail_panel_ref.clone();
+                // Capture stash metadata before spawning so we can build a synthetic CommitInfo
+                let stash_info = project
+                    .read(cx)
+                    .stashes()
+                    .get(idx)
+                    .map(|s| (s.message.clone(), s.oid));
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let result = cx
                         .background_executor()
@@ -984,13 +990,38 @@ pub(super) fn subscribe_sidebar(
                         .await;
                     cx.update(|cx| match result {
                         Ok(commit_diff) => {
+                            // Show first file in diff viewer immediately
                             if let Some(first_file) = commit_diff.files.first() {
                                 let path = first_file.path.display().to_string();
                                 dv.update(cx, |dv, cx| {
                                     dv.set_diff(first_file.clone(), path, false, cx)
                                 });
                             }
-                            dp.update(cx, |dp, cx| dp.clear(cx));
+                            // Populate detail panel with the full stash file list so users
+                            // can click any file in the stash to view its diff.
+                            if let Some((msg, oid)) = stash_info {
+                                let unknown_sig = Signature {
+                                    name: String::from("stash"),
+                                    email: String::new(),
+                                };
+                                let summary = msg.lines().next().unwrap_or("Stash").to_string();
+                                let synthetic = CommitInfo {
+                                    oid,
+                                    short_id: format!("{:.7}", oid.to_string()),
+                                    summary,
+                                    message: msg,
+                                    author: unknown_sig.clone(),
+                                    committer: unknown_sig,
+                                    co_authors: vec![],
+                                    time: chrono::Utc::now(),
+                                    parent_oids: vec![],
+                                    refs: vec![],
+                                    is_signed: false,
+                                };
+                                dp.update(cx, |dp, cx| dp.set_commit(synthetic, commit_diff, cx));
+                            } else {
+                                dp.update(cx, |dp, cx| dp.clear(cx));
+                            }
                         }
                         Err(e) => log::error!("Failed to get stash diff: {}", e),
                     });
