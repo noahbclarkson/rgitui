@@ -27,6 +27,7 @@ pub enum SidebarEvent {
     BranchCreate,
     BranchDelete(String),
     BranchRename(String),
+    BranchCopyName(String),
     MergeBranch(String),
     RemoteFetch(String),
     RemotePull(String),
@@ -1219,21 +1220,40 @@ impl Render for Sidebar {
                             );
                         }
 
-                        // Non-HEAD branches get action buttons: Checkout, Merge, Rename, Delete
-                        if !is_head {
-                            let w_co = w.clone();
-                            let bn_co = name.clone();
-                            let w_mg = w.clone();
-                            let bn_mg = name.clone();
-                            let w_rn = w.clone();
-                            let bn_rn = name.clone();
-                            let w_dl = w.clone();
-                            let bn_dl = name.clone();
-                            item = item.child(
-                                div()
-                                    .ml_auto()
-                                    .h_flex()
-                                    .gap(px(2.))
+                        // All branches: Copy name button (HEAD + non-HEAD).
+                        // Non-HEAD branches also get: Checkout, Merge, Rename, Delete.
+                        {
+                            let w_cp = w.clone();
+                            let bn_cp = name.clone();
+                            let mut actions = div()
+                                .ml_auto()
+                                .h_flex()
+                                .gap(px(2.))
+                                .child(
+                                    IconButton::new(
+                                        ElementId::NamedInteger("copy-branch-name".into(), i as u64),
+                                        IconName::Copy,
+                                    )
+                                    .size(ButtonSize::Compact)
+                                    .color(Color::Muted)
+                                    .tooltip("Copy branch name")
+                                    .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                        let _ = w_cp.clone().update(cx, |_this, cx| {
+                                            cx.emit(SidebarEvent::BranchCopyName(bn_cp.to_string()));
+                                        });
+                                    }),
+                                );
+
+                            if !is_head {
+                                let w_co = w.clone();
+                                let bn_co = name.clone();
+                                let w_mg = w.clone();
+                                let bn_mg = name.clone();
+                                let w_rn = w.clone();
+                                let bn_rn = name.clone();
+                                let w_dl = w.clone();
+                                let bn_dl = name.clone();
+                                actions = actions
                                     .child(
                                         IconButton::new(
                                             ElementId::NamedInteger("checkout-branch".into(), i as u64),
@@ -1289,8 +1309,9 @@ impl Render for Sidebar {
                                                 cx.emit(SidebarEvent::BranchDelete(bn_dl.to_string()));
                                             });
                                         }),
-                                    ),
-                            );
+                                    );
+                            }
+                            item = item.child(actions);
                         }
 
                         item

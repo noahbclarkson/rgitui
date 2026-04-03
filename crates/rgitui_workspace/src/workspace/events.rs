@@ -1097,6 +1097,11 @@ pub(super) fn subscribe_sidebar(
                     log::warn!("Could not resolve branch '{}' to a commit", name);
                 }
             }
+            SidebarEvent::BranchCopyName(name) => {
+                let name = name.clone();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
+                this.show_toast(format!("Copied: {}", name), ToastKind::Info, cx);
+            }
             SidebarEvent::MergeBranch(name) => {
                 let name = name.clone();
                 project.update(cx, |proj, cx| {
