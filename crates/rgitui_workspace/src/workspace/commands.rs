@@ -251,6 +251,9 @@ impl Workspace {
                     wd.show_visible(branch, cx);
                 });
             }
+            CommandId::CreatePr => {
+                self.open_create_pr_dialog(cx);
+            }
             CommandId::ResetHard => {
                 self.dialogs.confirm_dialog.update(cx, |cd, cx| {
                     cd.show_visible(

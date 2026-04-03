@@ -21,6 +21,7 @@ impl Workspace {
             self.active_tab = idx;
             // Update command palette with the switched-to project's context.
             let proj = self.tabs[idx].project.read(cx);
+            let prs_panel = &self.tabs[idx].prs_panel;
             let ctx = CommandContext {
                 has_remotes: !proj.remotes().is_empty(),
                 has_changes: proj.has_changes(),
@@ -39,6 +40,7 @@ impl Workspace {
                         | rgitui_git::RepoState::Revert
                         | rgitui_git::RepoState::RevertSequence
                 ),
+                has_github_token: prs_panel.read(cx).github_token().is_some(),
             };
             self.overlays.command_palette.update(cx, |cp, _cx| {
                 cp.set_context(ctx);
@@ -203,6 +205,7 @@ impl Workspace {
                     | rgitui_git::RepoState::Revert
                     | rgitui_git::RepoState::RevertSequence
             ),
+            has_github_token: prs_panel.read(cx).github_token().is_some(),
         };
         self.tabs.push(ProjectTab {
             name,

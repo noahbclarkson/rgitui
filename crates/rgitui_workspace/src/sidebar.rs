@@ -152,6 +152,8 @@ pub struct Sidebar {
     flattened_staged: Vec<FlatFileItem>,
     /// Flattened unstaged file tree for virtualized `uniform_list` rendering.
     flattened_unstaged: Vec<FlatFileItem>,
+    /// Flattened local branches for virtualized `uniform_list` rendering.
+    flattened_local_branches: Vec<usize>, // indices into self.local_branches
     /// Cached flat list of navigable items for keyboard navigation.
     cached_nav_items: Vec<SidebarItem>,
     /// Current branch filter text (case-insensitive substring).
@@ -238,6 +240,7 @@ impl Sidebar {
             cached_unstaged_tree: FileTreeNode::default(),
             flattened_staged: Vec::new(),
             flattened_unstaged: Vec::new(),
+            flattened_local_branches: Vec::new(),
             cached_nav_items,
             branch_filter: String::new(),
             branch_filter_editor,
@@ -625,6 +628,11 @@ impl Sidebar {
             &mut self.flattened_unstaged,
             &collapsed_dirs,
         );
+
+        // Rebuild flattened local branches for virtualized rendering.
+        self.flattened_local_branches.clear();
+        let visible_branch_indices = self.filtered_local_indices();
+        self.flattened_local_branches.extend(visible_branch_indices);
 
         self.rebuild_nav_items();
         cx.notify();
@@ -1063,212 +1071,233 @@ impl Render for Sidebar {
                         ),
                 );
             }
-            for i in visible_branch_indices {
-                let branch = &self.local_branches[i];
-                let kb_active = keyboard_index == Some(nav_idx);
-                nav_idx += 1;
-                let name: SharedString = branch.name.clone().into();
-                let branch_name: SharedString = name.clone();
-                let is_head = branch.is_head;
 
-                let mut item = div()
-                    .id(ElementId::NamedInteger("local-branch".into(), i as u64))
-                    .h_flex()
-                    .w_full()
-                    .h(px(item_h))
-                    .px_2()
-                    .pl(px(16.))
-                    .gap(px(4.))
-                    .items_center()
-                    .when(kb_active, |el| {
-                        el.bg(colors.ghost_element_hover)
-                            .border_l_2()
-                            .border_color(kb_accent)
-                    })
-                    .hover(|s| s.bg(colors.ghost_element_hover))
-                    .active(|s| s.bg(colors.ghost_element_active))
-                    .cursor_pointer()
-                    .on_click({
-                        let branch_name = branch_name.clone();
-                        cx.listener(move |_this, event: &ClickEvent, _, cx| {
-                            if event.click_count() >= 2 {
-                                cx.emit(SidebarEvent::BranchCheckout(branch_name.to_string()));
-                            } else {
-                                cx.emit(SidebarEvent::BranchSelected(branch_name.to_string()));
-                            }
-                        })
-                    });
+            // Virtualized local branches list
+            nav_idx += self.flattened_local_branches.len();
+            let flattened = self.flattened_local_branches.clone();
+            let branches = self.local_branches.clone();
+            let w = Rc::new(sidebar_weak.clone());
+            let colors = colors.clone();
 
-                if is_head {
-                    item = item
-                        .bg(colors.ghost_element_selected)
-                        .child(
-                            div()
-                                .w(px(14.))
-                                .h(px(14.))
-                                .flex_shrink_0()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    rgitui_ui::Icon::new(IconName::Dot)
-                                        .size(rgitui_ui::IconSize::XSmall)
-                                        .color(Color::Accent),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .w(px(14.))
-                                .h(px(14.))
-                                .flex_shrink_0()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    rgitui_ui::Icon::new(IconName::GitBranch)
-                                        .size(rgitui_ui::IconSize::XSmall)
-                                        .color(Color::Accent),
-                                ),
-                        )
-                        .child(
-                            Label::new(name)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Accent)
-                                .weight(gpui::FontWeight::BOLD)
-                                .truncate(),
-                        );
-                } else {
-                    item = item
-                        .child(
-                            div()
-                                .w(px(14.))
-                                .h(px(14.))
-                                .flex_shrink_0()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    rgitui_ui::Icon::new(IconName::DotOutline)
-                                        .size(rgitui_ui::IconSize::XSmall)
-                                        .color(Color::Muted),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .w(px(14.))
-                                .h(px(14.))
-                                .flex_shrink_0()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    rgitui_ui::Icon::new(IconName::GitBranch)
-                                        .size(rgitui_ui::IconSize::XSmall)
-                                        .color(Color::Muted),
-                                ),
-                        )
-                        .child(
-                            Label::new(name)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .truncate(),
-                        );
-                }
+            let list = uniform_list(
+                "local-branches-list",
+                flattened.len(),
+                move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                    let w = w.clone();
+                    range.map(|i| {
+                        let branch_idx = flattened[i];
+                        let branch = &branches[branch_idx];
+                        let kb_active = keyboard_index == Some(i);
+                        let name: SharedString = branch.name.clone().into();
+                        let is_head = branch.is_head;
 
-                if branch.ahead > 0 || branch.behind > 0 {
-                    item = item.child(div().flex_1()).child(
-                        div()
+                        let w_click = w.clone();
+                        let branch_name_for_click = name.clone();
+
+                        let mut item = div()
+                            .id(ElementId::NamedInteger("local-branch".into(), i as u64))
                             .h_flex()
+                            .w_full()
+                            .h(px(item_h))
+                            .px_2()
+                            .pl(px(16.))
                             .gap(px(4.))
-                            .flex_shrink_0()
                             .items_center()
-                            .when(branch.ahead > 0, |el| {
-                                el.child(
-                                    Badge::new(format!("{}", branch.ahead))
-                                        .color(Color::Success)
-                                        .prefix("↑"),
-                                )
+                            .when(kb_active, |el| {
+                                el.bg(colors.ghost_element_hover)
+                                    .border_l_2()
+                                    .border_color(colors.border_focused)
                             })
-                            .when(branch.behind > 0, |el| {
-                                el.child(
-                                    Badge::new(format!("{}", branch.behind))
-                                        .color(Color::Warning)
-                                        .prefix("↓"),
-                                )
-                            }),
-                    );
-                }
+                            .hover(|s| s.bg(colors.ghost_element_hover))
+                            .active(|s| s.bg(colors.ghost_element_active))
+                            .cursor_pointer()
+                            .on_click(move |event: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                if event.click_count() >= 2 {
+                                    let _ = w_click.clone().update(cx, |_this, cx| {
+                                        cx.emit(SidebarEvent::BranchCheckout(branch_name_for_click.to_string()));
+                                    });
+                                } else {
+                                    let _ = w_click.clone().update(cx, |_this, cx| {
+                                        cx.emit(SidebarEvent::BranchSelected(branch_name_for_click.to_string()));
+                                    });
+                                }
+                            });
 
-                // Non-HEAD branches get action buttons: Checkout, Merge, Rename, Delete
-                if !is_head {
-                    let bn_checkout = branch_name.clone();
-                    let bn_merge = branch_name.clone();
-                    let bn_rename = branch_name.clone();
-                    let bn_delete = branch_name.clone();
-                    item = item.child(
-                        div()
-                            .ml_auto()
-                            .h_flex()
-                            .gap(px(2.))
-                            .child(
-                                IconButton::new(
-                                    ElementId::NamedInteger("checkout-branch".into(), i as u64),
-                                    IconName::Check,
+                        if is_head {
+                            item = item
+                                .bg(colors.ghost_element_selected)
+                                .child(
+                                    div()
+                                        .w(px(14.))
+                                        .h(px(14.))
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            rgitui_ui::Icon::new(IconName::Dot)
+                                                .size(rgitui_ui::IconSize::XSmall)
+                                                .color(Color::Accent),
+                                        ),
                                 )
-                                .size(ButtonSize::Compact)
-                                .color(Color::Success)
-                                .tooltip("Checkout branch")
-                                .on_click(cx.listener(
-                                    move |_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::BranchCheckout(
-                                            bn_checkout.to_string(),
-                                        ));
-                                    },
-                                )),
-                            )
-                            .child(
-                                IconButton::new(
-                                    ElementId::NamedInteger("merge-branch".into(), i as u64),
-                                    IconName::GitMerge,
+                                .child(
+                                    div()
+                                        .w(px(14.))
+                                        .h(px(14.))
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            rgitui_ui::Icon::new(IconName::GitBranch)
+                                                .size(rgitui_ui::IconSize::XSmall)
+                                                .color(Color::Accent),
+                                        ),
                                 )
-                                .size(ButtonSize::Compact)
-                                .color(Color::Muted)
-                                .tooltip("Merge into current branch")
-                                .on_click(cx.listener(
-                                    move |_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::MergeBranch(bn_merge.to_string()));
-                                    },
-                                )),
-                            )
-                            .child(
-                                IconButton::new(
-                                    ElementId::NamedInteger("rename-branch".into(), i as u64),
-                                    IconName::Edit,
+                                .child(
+                                    Label::new(name.clone())
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Accent)
+                                        .weight(gpui::FontWeight::BOLD)
+                                        .truncate(),
+                                );
+                        } else {
+                            item = item
+                                .child(
+                                    div()
+                                        .w(px(14.))
+                                        .h(px(14.))
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            rgitui_ui::Icon::new(IconName::DotOutline)
+                                                .size(rgitui_ui::IconSize::XSmall)
+                                                .color(Color::Muted),
+                                        ),
                                 )
-                                .size(ButtonSize::Compact)
-                                .color(Color::Muted)
-                                .tooltip("Rename branch")
-                                .on_click(cx.listener(
-                                    move |_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::BranchRename(bn_rename.to_string()));
-                                    },
-                                )),
-                            )
-                            .child(
-                                IconButton::new(
-                                    ElementId::NamedInteger("delete-branch".into(), i as u64),
-                                    IconName::Trash,
+                                .child(
+                                    div()
+                                        .w(px(14.))
+                                        .h(px(14.))
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            rgitui_ui::Icon::new(IconName::GitBranch)
+                                                .size(rgitui_ui::IconSize::XSmall)
+                                                .color(Color::Muted),
+                                        ),
                                 )
-                                .size(ButtonSize::Compact)
-                                .color(Color::Deleted)
-                                .tooltip("Delete branch")
-                                .on_click(cx.listener(
-                                    move |_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::BranchDelete(bn_delete.to_string()));
-                                    },
-                                )),
-                            ),
-                    );
-                }
+                                .child(
+                                    Label::new(name.clone())
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .truncate(),
+                                );
+                        }
 
-                content = content.child(item);
-            }
+                        if branch.ahead > 0 || branch.behind > 0 {
+                            item = item.child(div().flex_1()).child(
+                                div()
+                                    .h_flex()
+                                    .gap(px(4.))
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .when(branch.ahead > 0, |el| {
+                                        el.child(
+                                            Badge::new(format!("{}", branch.ahead))
+                                                .color(Color::Success)
+                                                .prefix("↑"),
+                                        )
+                                    })
+                                    .when(branch.behind > 0, |el| {
+                                        el.child(
+                                            Badge::new(format!("{}", branch.behind))
+                                                .color(Color::Warning)
+                                                .prefix("↓"),
+                                        )
+                                    }),
+                            );
+                        }
+
+                        // Non-HEAD branches get action buttons: Checkout, Merge, Rename, Delete
+                        if !is_head {
+                            let w_co = w.clone();
+                            let bn_co = name.clone();
+                            let w_mg = w.clone();
+                            let bn_mg = name.clone();
+                            let w_rn = w.clone();
+                            let bn_rn = name.clone();
+                            let w_dl = w.clone();
+                            let bn_dl = name.clone();
+                            item = item.child(
+                                div()
+                                    .ml_auto()
+                                    .h_flex()
+                                    .gap(px(2.))
+                                    .child(
+                                        IconButton::new(
+                                            ElementId::NamedInteger("checkout-branch".into(), i as u64),
+                                            IconName::Check,
+                                        )
+                                        .size(ButtonSize::Compact)
+                                        .color(Color::Success)
+                                        .tooltip("Checkout branch")
+                                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            let _ = w_co.clone().update(cx, |_this, cx| {
+                                                cx.emit(SidebarEvent::BranchCheckout(bn_co.to_string()));
+                                            });
+                                        }),
+                                    )
+                                    .child(
+                                        IconButton::new(
+                                            ElementId::NamedInteger("merge-branch".into(), i as u64),
+                                            IconName::GitMerge,
+                                        )
+                                        .size(ButtonSize::Compact)
+                                        .color(Color::Muted)
+                                        .tooltip("Merge into current branch")
+                                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            let _ = w_mg.clone().update(cx, |_this, cx| {
+                                                cx.emit(SidebarEvent::MergeBranch(bn_mg.to_string()));
+                                            });
+                                        }),
+                                    )
+                                    .child(
+                                        IconButton::new(
+                                            ElementId::NamedInteger("rename-branch".into(), i as u64),
+                                            IconName::Edit,
+                                        )
+                                        .size(ButtonSize::Compact)
+                                        .color(Color::Muted)
+                                        .tooltip("Rename branch")
+                                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            let _ = w_rn.clone().update(cx, |_this, cx| {
+                                                cx.emit(SidebarEvent::BranchRename(bn_rn.to_string()));
+                                            });
+                                        }),
+                                    )
+                                    .child(
+                                        IconButton::new(
+                                            ElementId::NamedInteger("delete-branch".into(), i as u64),
+                                            IconName::Trash,
+                                        )
+                                        .size(ButtonSize::Compact)
+                                        .color(Color::Deleted)
+                                        .tooltip("Delete branch")
+                                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            let _ = w_dl.clone().update(cx, |_this, cx| {
+                                                cx.emit(SidebarEvent::BranchDelete(bn_dl.to_string()));
+                                            });
+                                        }),
+                                    ),
+                            );
+                        }
+
+                        item
+                    }).collect()
+                },
+            );
+            content = content.child(list);
         }
 
         // -- Remotes --

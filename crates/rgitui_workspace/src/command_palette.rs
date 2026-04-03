@@ -28,6 +28,8 @@ pub struct CommandContext {
     pub has_staged: bool,
     /// True when a merge, rebase, cherry-pick, or revert is in progress.
     pub in_progress_operation: bool,
+    /// True when the user has a GitHub token configured.
+    pub has_github_token: bool,
 }
 
 impl CommandContext {
@@ -42,6 +44,7 @@ impl CommandContext {
             has_stashes: false,
             has_staged: false,
             in_progress_operation: false,
+            has_github_token: false,
         }
     }
 }
@@ -49,6 +52,11 @@ impl CommandContext {
 /// A no-op predicate that always shows the command.
 const fn always_show(_: CommandContext) -> bool {
     true
+}
+
+/// Show only when the user has a GitHub token configured (for PR creation).
+const fn has_github_token(ctx: CommandContext) -> bool {
+    ctx.has_github_token
 }
 
 /// Show only when the repository has at least one remote configured.
@@ -105,6 +113,7 @@ pub enum CommandId {
     MergeBranch,
     CreateTag,
     CreateWorktree,
+    CreatePr,
     CherryPick,
     RevertCommit,
     InteractiveRebase,
@@ -154,6 +163,7 @@ impl CommandId {
             Self::MergeBranch => "merge_branch",
             Self::CreateTag => "create_tag",
             Self::CreateWorktree => "create_worktree",
+            Self::CreatePr => "create_pr",
             Self::CherryPick => "cherry_pick",
             Self::RevertCommit => "revert_commit",
             Self::InteractiveRebase => "interactive_rebase",
@@ -203,6 +213,7 @@ impl CommandId {
             Self::MergeBranch => "merge branch",
             Self::CreateTag => "create tag",
             Self::CreateWorktree => "create worktree",
+            Self::CreatePr => "create pull request",
             Self::CherryPick => "cherry pick",
             Self::RevertCommit => "revert commit",
             Self::InteractiveRebase => "interactive rebase",
@@ -262,6 +273,7 @@ impl TryFrom<&str> for CommandId {
             "merge_branch" => Ok(Self::MergeBranch),
             "create_tag" => Ok(Self::CreateTag),
             "create_worktree" => Ok(Self::CreateWorktree),
+            "create_pr" => Ok(Self::CreatePr),
             "cherry_pick" => Ok(Self::CherryPick),
             "revert_commit" => Ok(Self::RevertCommit),
             "interactive_rebase" => Ok(Self::InteractiveRebase),
@@ -419,6 +431,8 @@ impl CommandPalette {
                 None,
                 "Git",
             ),
+            PaletteCommand::new(CommandId::CreatePr, "Git: Create Pull Request", None, "Git")
+                .with_predicate(has_github_token),
             PaletteCommand::new(
                 CommandId::CherryPick,
                 "Git: Cherry-pick Commit",

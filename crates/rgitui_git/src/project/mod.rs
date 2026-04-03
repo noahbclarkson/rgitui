@@ -165,6 +165,9 @@ pub struct RefreshData {
     pub recent_commits: Vec<CommitInfo>,
     /// Whether there are more commits beyond the loaded limit.
     pub has_more_commits: bool,
+    /// The remote default branch (e.g. "main", "master"), detected from
+    /// `refs/remotes/origin/HEAD` symbolic target. `None` if not set.
+    pub default_branch: Option<String>,
 }
 
 /// Events emitted by GitProject.
@@ -196,6 +199,8 @@ pub struct GitProject {
     /// Number of commits currently loaded (used by incremental load-more).
     commit_offset: usize,
     next_operation_id: u64,
+    /// Remote default branch (e.g. "main"), from `refs/remotes/origin/HEAD`.
+    default_branch: Option<String>,
 
     // Filesystem watcher (kept alive)
     _watcher: Option<RecommendedWatcher>,
@@ -223,6 +228,7 @@ impl GitProject {
             has_more_commits: false,
             commit_offset: 0,
             next_operation_id: 1,
+            default_branch: None,
             _watcher: None,
         }
     }
@@ -249,6 +255,7 @@ impl GitProject {
             has_more_commits: false,
             commit_offset: 0,
             next_operation_id: 1,
+            default_branch: None,
             _watcher: None,
         };
 
@@ -479,6 +486,7 @@ impl GitProject {
         self.status = Arc::new(data.status);
         self.recent_commits = Arc::new(data.recent_commits);
         self.has_more_commits = data.has_more_commits;
+        self.default_branch = data.default_branch;
         // Reset offset — the full refresh replaces all commits.
         self.commit_offset = self.recent_commits.len();
     }
@@ -486,6 +494,12 @@ impl GitProject {
     /// Whether there are more commits beyond the currently loaded set.
     pub fn has_more_commits(&self) -> bool {
         self.has_more_commits
+    }
+
+    /// The remote default branch (e.g. "main", "master") determined from
+    /// `refs/remotes/origin/HEAD` symbolic reference.
+    pub fn default_branch(&self) -> Option<&str> {
+        self.default_branch.as_deref()
     }
 
     /// How many commits are currently loaded.
