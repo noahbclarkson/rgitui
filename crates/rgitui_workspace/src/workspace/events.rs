@@ -14,12 +14,13 @@ use rgitui_graph::{GraphView, GraphViewEvent};
 use crate::{
     cache::LruCache, BlameView, BlameViewEvent, BranchDialog, BranchDialogEvent, CommandPalette,
     CommandPaletteEvent, CommitPanel, CommitPanelEvent, ConfirmAction, ConfirmDialog,
-    ConfirmDialogEvent, DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent,
-    GlobalSearchView, GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView,
-    ReflogViewEvent, RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal,
-    SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent,
-    StashBranchDialog, StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog,
-    TagDialogEvent, ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
+    ConfirmDialogEvent, CreatePrDialog, CreatePrDialogEvent, DetailPanel, DetailPanelEvent,
+    FileHistoryView, FileHistoryViewEvent, GlobalSearchView, GlobalSearchViewEvent,
+    InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent, RenameDialog,
+    RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
+    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog,
+    StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent,
+    ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -244,6 +245,33 @@ pub(super) fn subscribe_stash_branch_dialog(
                 );
             }
             StashBranchDialogEvent::Dismissed => {}
+        },
+    )
+    .detach();
+}
+
+pub(super) fn subscribe_create_pr_dialog(
+    cx: &mut Context<Workspace>,
+    create_pr_dialog: &Entity<CreatePrDialog>,
+) {
+    cx.subscribe(
+        create_pr_dialog,
+        |this, _d, event: &CreatePrDialogEvent, cx| match event {
+            CreatePrDialogEvent::PrCreated { number, url } => {
+                // Refresh the PR list to show the new PR
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    tab.prs_panel.update(cx, |panel, cx| {
+                        panel.fetch_prs(cx);
+                    });
+                }
+                this.show_toast(
+                    format!("Pull request #{} created", number),
+                    ToastKind::Success,
+                    cx,
+                );
+                log::info!("Created PR #{}: {}", number, url);
+            }
+            CreatePrDialogEvent::Dismissed => {}
         },
     )
     .detach();

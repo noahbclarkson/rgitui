@@ -159,6 +159,7 @@ impl Workspace {
         let rename_dialog = cx.new(crate::RenameDialog::new);
         let confirm_dialog = cx.new(crate::ConfirmDialog::new);
         let stash_branch_dialog = cx.new(crate::StashBranchDialog::new);
+        let create_pr_dialog = cx.new(crate::CreatePrDialog::new);
         let repo_opener = cx.new(crate::RepoOpener::new);
         let shortcuts_help = cx.new(crate::ShortcutsHelp::new);
 
@@ -173,6 +174,7 @@ impl Workspace {
         events::subscribe_rename_dialog(cx, &rename_dialog);
         events::subscribe_confirm_dialog(cx, &confirm_dialog);
         events::subscribe_stash_branch_dialog(cx, &stash_branch_dialog);
+        events::subscribe_create_pr_dialog(cx, &create_pr_dialog);
         events::subscribe_repo_opener(cx, &repo_opener);
         events::subscribe_shortcuts_help(cx, &shortcuts_help);
         events::subscribe_global_search(cx, &global_search);
@@ -208,6 +210,7 @@ impl Workspace {
                 confirm_dialog,
                 worktree_dialog,
                 stash_branch_dialog,
+                create_pr_dialog,
             },
             overlays: OverlayState {
                 command_palette,
@@ -284,6 +287,26 @@ impl Workspace {
 
     pub fn active_project(&self) -> Option<&Entity<GitProject>> {
         self.tabs.get(self.active_tab).map(|t| &t.project)
+    }
+
+    /// Open the GitHub PR creation dialog with the current branch as head
+    /// and "main" as the default base.
+    pub fn open_create_pr_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        let head_branch = self
+            .active_project()
+            .and_then(|p| p.read(cx).head_branch().map(String::from));
+        let Some(head) = head_branch else { return };
+        let token = tab.prs_panel.read(cx).github_token().map(String::from);
+        let owner = tab.prs_panel.read(cx).github_owner().to_string();
+        let repo = tab.prs_panel.read(cx).github_repo().to_string();
+        self.dialogs.create_pr_dialog.update(cx, |d, cx| {
+            d.configure(token, owner, repo, cx);
+            // Default base is "main" — user can edit in the dialog
+            d.show_visible(head, "main".to_string(), cx);
+        });
     }
 
     /// Detect which panel is currently focused and save it for later restoration.

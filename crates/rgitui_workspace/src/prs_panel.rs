@@ -4,11 +4,12 @@ use futures::AsyncReadExt;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, Render,
-    SharedString, UniformListScrollHandle, Window,
+    SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use http_client::HttpClient;
 
 use crate::github_api::{format_github_collection_error, format_github_detail_error};
+use crate::Workspace;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
@@ -102,10 +103,11 @@ pub struct PrsPanel {
     selected_pr: Option<PullRequest>,
     selected_comments: Vec<PrComment>,
     comments_loading: bool,
+    workspace: WeakEntity<Workspace>,
 }
 
 impl PrsPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>, workspace: WeakEntity<Workspace>) -> Self {
         Self {
             prs: Vec::new(),
             selected_index: None,
@@ -121,7 +123,18 @@ impl PrsPanel {
             selected_pr: None,
             selected_comments: Vec::new(),
             comments_loading: false,
+            workspace,
         }
+    }
+
+    /// Open the GitHub PR creation dialog via the workspace.
+    fn open_create_pr_dialog(&self, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace.upgrade() else {
+            return;
+        };
+        ws.update(cx, |ws, cx| {
+            ws.open_create_pr_dialog(cx);
+        });
     }
 
     pub fn has_prs_loaded(&self) -> bool {
@@ -130,6 +143,18 @@ impl PrsPanel {
 
     pub fn is_loading(&self) -> bool {
         self.is_loading
+    }
+
+    pub fn github_token(&self) -> Option<&str> {
+        self.github_token.as_deref()
+    }
+
+    pub fn github_owner(&self) -> &str {
+        &self.github_owner
+    }
+
+    pub fn github_repo(&self) -> &str {
+        &self.github_repo
     }
 
     pub fn configure(
@@ -357,6 +382,15 @@ impl PrsPanel {
                                 this.set_filter(PrFilter::All, cx);
                             })),
                     ),
+            )
+            .child(
+                Button::new("prs-new", "New pull request")
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Filled)
+                    .color(Color::Accent)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.open_create_pr_dialog(cx);
+                    })),
             )
             .child(
                 IconButton::new("prs-refresh", IconName::Refresh)

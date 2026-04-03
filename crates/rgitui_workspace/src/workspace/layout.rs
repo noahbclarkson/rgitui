@@ -80,6 +80,7 @@ impl Render for Workspace {
                 .child(self.dialogs.worktree_dialog.clone())
                 .child(self.dialogs.rename_dialog.clone())
                 .child(self.dialogs.stash_branch_dialog.clone())
+                .child(self.dialogs.create_pr_dialog.clone())
                 .child(self.overlays.repo_opener.clone())
                 .child(self.overlays.shortcuts_help.clone())
                 .child(self.overlays.global_search.clone())
@@ -114,6 +115,7 @@ impl Render for Workspace {
             || self.dialogs.rename_dialog.read(cx).is_visible()
             || self.overlays.repo_opener.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()
+            || self.dialogs.create_pr_dialog.read(cx).is_visible()
             || self.overlays.shortcuts_help.read(cx).is_visible()
             || self.overlays.global_search.read(cx).is_visible();
 
@@ -923,6 +925,8 @@ impl Render for Workspace {
             .child(self.overlays.repo_opener.clone())
             // Confirm dialog overlay
             .child(self.dialogs.confirm_dialog.clone())
+            // Create PR dialog overlay
+            .child(self.dialogs.create_pr_dialog.clone())
             // Shortcuts help overlay
             .child(self.overlays.shortcuts_help.clone())
             // Global search overlay

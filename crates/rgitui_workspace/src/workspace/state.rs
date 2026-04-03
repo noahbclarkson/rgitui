@@ -2,8 +2,9 @@ use gpui::{Bounds, Entity, Pixels};
 use rgitui_git::GitOperationUpdate;
 
 use crate::{
-    BranchDialog, CommandPalette, ConfirmDialog, GlobalSearchView, InteractiveRebase, RenameDialog,
-    RepoOpener, SettingsModal, ShortcutsHelp, StashBranchDialog, TagDialog, WorktreeDialog,
+    BranchDialog, CommandPalette, ConfirmDialog, CreatePrDialog, GlobalSearchView,
+    InteractiveRebase, RenameDialog, RepoOpener, SettingsModal, ShortcutsHelp, StashBranchDialog,
+    TagDialog, WorktreeDialog,
 };
 
 use super::{ActiveOperation, FocusedPanel, OperationOutput};
@@ -26,6 +27,7 @@ pub(crate) struct DialogState {
     pub confirm_dialog: Entity<ConfirmDialog>,
     pub worktree_dialog: Entity<WorktreeDialog>,
     pub stash_branch_dialog: Entity<StashBranchDialog>,
+    pub create_pr_dialog: Entity<CreatePrDialog>,
 }
 
 /// Overlay entities (command palette, settings, etc).

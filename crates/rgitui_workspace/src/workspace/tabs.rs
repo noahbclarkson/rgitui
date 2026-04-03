@@ -151,7 +151,8 @@ impl Workspace {
         }
 
         let issues_panel = cx.new(crate::IssuesPanel::new);
-        let prs_panel = cx.new(crate::PrsPanel::new);
+        let workspace_weak = cx.entity().downgrade();
+        let prs_panel = cx.new(|cx| crate::PrsPanel::new(cx, workspace_weak));
 
         // Configure issues and PRs panels with GitHub remote info and token
         {
