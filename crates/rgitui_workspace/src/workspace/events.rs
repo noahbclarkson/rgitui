@@ -1651,6 +1651,18 @@ pub(super) fn subscribe_diff_viewer(
                             proj.unstage_hunk(&path, idx, cx).detach();
                         });
                     }
+                    DiffViewerEvent::LineStageRequested(line_pairs) => {
+                        let pairs = line_pairs.clone();
+                        project.update(cx, |proj, cx| {
+                            proj.stage_lines(&path, &pairs, cx).detach();
+                        });
+                    }
+                    DiffViewerEvent::LineUnstageRequested(line_pairs) => {
+                        let pairs = line_pairs.clone();
+                        project.update(cx, |proj, cx| {
+                            proj.unstage_lines(&path, &pairs, cx).detach();
+                        });
+                    }
                 }
             }
         }

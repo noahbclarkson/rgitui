@@ -21,10 +21,19 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle as SyntectFontStyle, Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
+/// Line numbers for a single selected line: (old_file_line, new_file_line).
+/// old_file_line is None for additions (new lines), new_file_line is None for deletions.
+pub type LineSelection = Vec<(Option<usize>, Option<usize>)>;
+
 #[derive(Debug, Clone)]
 pub enum DiffViewerEvent {
     HunkStageRequested(usize),
     HunkUnstageRequested(usize),
+    /// Request to stage only the given lines within the current file's diff.
+    /// Args: (old_file_line_nums, new_file_line_nums) — one entry per selected line.
+    LineStageRequested(Vec<(Option<usize>, Option<usize>)>),
+    /// Request to unstage only the given lines within the current staged diff.
+    LineUnstageRequested(Vec<(Option<usize>, Option<usize>)>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -251,6 +260,8 @@ pub struct DiffViewer {
     focus_handle: FocusHandle,
     highlighted_row: Option<usize>,
     selected_lines: Option<Range<usize>>,
+    /// When true, selection tracks individual lines for partial hunk staging.
+    partial_mode: bool,
     selection_anchor: Option<usize>,
     /// Tracks the current theme appearance to drive syntax highlighting.
     current_appearance: Appearance,
@@ -275,6 +286,7 @@ impl DiffViewer {
             focus_handle: cx.focus_handle(),
             highlighted_row: None,
             selected_lines: None,
+            partial_mode: false,
             selection_anchor: None,
             current_appearance: Appearance::Dark,
             pending_scroll_top: None,
@@ -327,6 +339,7 @@ impl DiffViewer {
         self.is_staged = staged;
         self.highlighted_row = None;
         self.selected_lines = None;
+        self.partial_mode = false;
         self.selection_anchor = None;
         cx.notify();
     }
@@ -340,6 +353,7 @@ impl DiffViewer {
         self.three_way_diff = None;
         self.highlighted_row = None;
         self.selected_lines = None;
+        self.partial_mode = false;
         self.selection_anchor = None;
         cx.notify();
     }
@@ -355,6 +369,7 @@ impl DiffViewer {
         self.three_way_rows = Arc::new(Self::compute_three_way_rows(&diff));
         self.highlighted_row = None;
         self.selected_lines = None;
+        self.partial_mode = false;
         self.selection_anchor = None;
         cx.notify();
     }
@@ -595,18 +610,45 @@ impl DiffViewer {
                 self.selected_lines = Some(0..row_count);
                 cx.notify();
             }
+            "p" if !ctrl && !event.keystroke.modifiers.alt && !event.keystroke.modifiers.shift => {
+                // p: toggle partial line-selection mode
+                self.partial_mode = !self.partial_mode;
+                if !self.partial_mode {
+                    self.selected_lines = None;
+                    self.selection_anchor = None;
+                }
+                cx.notify();
+                cx.stop_propagation();
+            }
             "s" | "S" if !event.keystroke.modifiers.alt && !ctrl => {
                 // s: stage hunks under selection (or cursor hunk if no selection)
                 if !self.is_staged {
-                    let hunks = if let Some(sel) = &self.selected_lines {
-                        self.hunks_under_selection(sel.clone())
+                    if self.partial_mode {
+                        // Line-level staging: emit selected addition lines
+                        let line_pairs = if let Some(sel) = &self.selected_lines {
+                            let lines = self.lines_under_selection(sel.clone());
+                            // Filter to additions only (new_num is Some)
+                            lines
+                                .into_iter()
+                                .filter(|(_, new_num)| new_num.is_some())
+                                .collect()
+                        } else {
+                            self.current_hunk_additions()
+                        };
+                        if !line_pairs.is_empty() {
+                            cx.emit(DiffViewerEvent::LineStageRequested(line_pairs));
+                        }
                     } else {
-                        self.current_hunk_index()
-                            .map(|i| vec![i])
-                            .unwrap_or_default()
-                    };
-                    for idx in hunks {
-                        cx.emit(DiffViewerEvent::HunkStageRequested(idx));
+                        let hunks = if let Some(sel) = &self.selected_lines {
+                            self.hunks_under_selection(sel.clone())
+                        } else {
+                            self.current_hunk_index()
+                                .map(|i| vec![i])
+                                .unwrap_or_default()
+                        };
+                        for idx in hunks {
+                            cx.emit(DiffViewerEvent::HunkStageRequested(idx));
+                        }
                     }
                 }
                 cx.stop_propagation();
@@ -614,15 +656,31 @@ impl DiffViewer {
             "u" | "U" if !event.keystroke.modifiers.alt && !ctrl => {
                 // u: unstage hunks under selection (or cursor hunk if no selection)
                 if self.is_staged {
-                    let hunks = if let Some(sel) = &self.selected_lines {
-                        self.hunks_under_selection(sel.clone())
+                    if self.partial_mode {
+                        // Line-level unstaging: emit selected addition lines
+                        let line_pairs = if let Some(sel) = &self.selected_lines {
+                            let lines = self.lines_under_selection(sel.clone());
+                            lines
+                                .into_iter()
+                                .filter(|(_, new_num)| new_num.is_some())
+                                .collect()
+                        } else {
+                            self.current_hunk_additions()
+                        };
+                        if !line_pairs.is_empty() {
+                            cx.emit(DiffViewerEvent::LineUnstageRequested(line_pairs));
+                        }
                     } else {
-                        self.current_hunk_index()
-                            .map(|i| vec![i])
-                            .unwrap_or_default()
-                    };
-                    for idx in hunks {
-                        cx.emit(DiffViewerEvent::HunkUnstageRequested(idx));
+                        let hunks = if let Some(sel) = &self.selected_lines {
+                            self.hunks_under_selection(sel.clone())
+                        } else {
+                            self.current_hunk_index()
+                                .map(|i| vec![i])
+                                .unwrap_or_default()
+                        };
+                        for idx in hunks {
+                            cx.emit(DiffViewerEvent::HunkUnstageRequested(idx));
+                        }
                     }
                 }
                 cx.stop_propagation();
@@ -744,6 +802,70 @@ impl DiffViewer {
             }
         }
         hunks
+    }
+
+    /// Returns the (old_file_line, new_file_line) pairs for all rows in the given range.
+    /// Used for line-level partial staging.
+    fn lines_under_selection(&self, range: Range<usize>) -> Vec<(Option<usize>, Option<usize>)> {
+        let start = range.start;
+        let end = range.end.min(self.row_count());
+        let mut lines = Vec::new();
+
+        match &self.display_mode {
+            DiffDisplayMode::Unified => {
+                let rows = &self.display_rows;
+                for i in start..end {
+                    if let DisplayRow::Line { old_num, new_num, .. } = &rows[i] {
+                        lines.push((*old_num, *new_num));
+                    }
+                }
+            }
+            DiffDisplayMode::SideBySide => {
+                let rows = &self.sbs_rows;
+                for i in start..end {
+                    if let SideBySideRow::Pair { left_num, right_num, .. } = &rows[i] {
+                        // For side-by-side, use the non-None of left/right as the line reference
+                        lines.push((*left_num, *right_num));
+                    }
+                }
+            }
+            DiffDisplayMode::ThreeWay => {
+                // ThreeWay doesn't support partial line staging yet
+            }
+        }
+        lines
+    }
+
+    /// Returns addition lines in the current hunk: (old_num, new_num) pairs.
+    /// Filters to only lines where new_num is Some (actual additions).
+    fn current_hunk_additions(&self) -> Vec<(Option<usize>, Option<usize>)> {
+        let hunk_idx = match self.current_hunk_index() {
+            Some(i) => i,
+            None => return Vec::new(),
+        };
+
+        let mut lines = Vec::new();
+        if self.display_mode == DiffDisplayMode::Unified {
+            let rows: &Vec<DisplayRow> = &self.display_rows;
+            let mut in_hunk = false;
+            for row in rows.iter() {
+                match row {
+                    DisplayRow::HunkHeader { hunk_index, .. } => {
+                        if *hunk_index == hunk_idx {
+                            in_hunk = true;
+                        } else if in_hunk {
+                            break; // past our hunk
+                        }
+                    }
+                    DisplayRow::Line { old_num, new_num, .. } => {
+                        if in_hunk && new_num.is_some() {
+                            lines.push((*old_num, *new_num));
+                        }
+                    }
+                }
+            }
+        };
+        lines
     }
 
     pub fn toggle_display_mode(&mut self, cx: &mut Context<Self>) {

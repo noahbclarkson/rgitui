@@ -135,6 +135,185 @@ pub(crate) fn generate_hunk_patch_for_repo(
     Ok(patch_text)
 }
 
+/// Generate a patch containing only the specified line ranges from a file's diff.
+///
+/// `line_pairs` is `&[(Option<usize>, Option<usize>)]` — (old_lineno, new_lineno) from the diff viewer.
+/// For staging: lines are included if `new_lineno` is `Some` and falls in a range.
+/// For unstaging: same lines are included but signs are negated in the output patch.
+///
+/// `staged`: if true, diff is HEAD→index (staged diff); if false, diff is index→workdir.
+pub(crate) fn generate_line_patch_for_repo(
+    repo: &Repository,
+    file_path: &Path,
+    line_pairs: &[(Option<usize>, Option<usize>)],
+    staged: bool,
+) -> Result<String> {
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.pathspec(file_path);
+    diff_opts.include_untracked(true);
+    diff_opts.show_untracked_content(true);
+    diff_opts.recurse_untracked_dirs(true);
+
+    let diff = if staged {
+        let head_tree = repo.head()?.peel_to_tree().ok();
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))?
+    } else {
+        repo.diff_index_to_workdir(None, Some(&mut diff_opts))?
+    };
+
+    // Build a set of target line numbers for efficient lookup.
+    // For staging/unstaging, we target lines by their new_lineno (index/workdir line number).
+    let targets: std::collections::HashSet<usize> = line_pairs
+        .iter()
+        .filter_map(|(_old, new)| *new)
+        .collect();
+
+    // For staged diff, also include old_lineno lines (deletions in the staged view).
+    let target_deletions: std::collections::HashSet<usize> = if staged {
+        line_pairs
+            .iter()
+            .filter_map(|(old, _)| *old)
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    let mut patch_text = String::new();
+    let num_deltas = diff.deltas().len();
+
+    for i in 0..num_deltas {
+        let patch = match git2::Patch::from_diff(&diff, i) {
+            Ok(Some(p)) => p,
+            Ok(None) => continue,
+            Err(_) => continue,
+        };
+
+        let old_path = patch
+            .delta()
+            .old_file()
+            .path()
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let new_path = patch
+            .delta()
+            .new_file()
+            .path()
+            .map(PathBuf::from)
+            .unwrap_or_default();
+
+        // Skip patches for other files (pathspec should filter, but be safe).
+        if old_path != file_path && new_path != file_path {
+            continue;
+        }
+
+        let num_hunks = patch.num_hunks();
+        for hunk_idx in 0..num_hunks {
+            let (hunk, _hunk_start) = patch.hunk(hunk_idx)?;
+            let num_lines = patch.num_lines_in_hunk(hunk_idx)?;
+
+            // Collect indices of lines within this hunk that match our targets.
+            let mut matching_line_indices: Vec<usize> = Vec::new();
+            for line_idx in 0..num_lines {
+                let line = patch.line_in_hunk(hunk_idx, line_idx)?;
+                let new_num = line.new_lineno();
+                let old_num = line.old_lineno();
+                let origin = line.origin();
+
+                let is_target = new_num.map(|n| targets.contains(&(n as usize))).unwrap_or(false)
+                    || old_num.map(|n| target_deletions.contains(&(n as usize))).unwrap_or(false);
+
+                // Also include context lines (non-+/-).
+                let is_context = matches!(origin, ' ' | 'F' | 'H' | '=' | '<' | '>');
+
+                if is_target || is_context {
+                    matching_line_indices.push(line_idx);
+                }
+            }
+
+            if matching_line_indices.is_empty() {
+                continue;
+            }
+
+            // Build partial hunk from matching lines.
+            // Compute hunk line range for the header.
+            let first_match = matching_line_indices[0];
+            let last_match = matching_line_indices[matching_line_indices.len() - 1];
+
+            // Get the old/new lineno of first and last matching lines to build header.
+            let first_line = patch.line_in_hunk(hunk_idx, first_match)?;
+            let last_line = patch.line_in_hunk(hunk_idx, last_match)?;
+
+            let hunk_old_start = first_line.old_lineno().unwrap_or(0);
+            let hunk_old_count = last_line.old_lineno().unwrap_or(0) + 1 - hunk_old_start;
+            let hunk_new_start = first_line.new_lineno().unwrap_or(0);
+            let hunk_new_count = last_line.new_lineno().unwrap_or(0) + 1 - hunk_new_start;
+
+            // Write file header (if first hunk for this file).
+            if patch_text.is_empty() {
+                patch_text.push_str(&format!("--- a/{}\n", old_path.display()));
+                patch_text.push_str(&format!("+++ b/{}\n", new_path.display()));
+            }
+
+            // Write hunk header.
+            let hunk_header = String::from_utf8_lossy(hunk.header());
+            // Replace the hunk header's line counts with correct values.
+            patch_text.push_str(&format!(
+                "@@ -{},{} +{},{} @@\n",
+                hunk_old_start,
+                hunk_old_count,
+                hunk_new_start,
+                hunk_new_count
+            ));
+
+            // Write the matching lines.
+            for &line_idx in &matching_line_indices {
+                let line = patch.line_in_hunk(hunk_idx, line_idx)?;
+                let content = String::from_utf8_lossy(line.content());
+                let origin = line.origin();
+
+                match origin {
+                    '+' => {
+                        // For unstaging, negate additions (remove from index).
+                        if !staged {
+                            patch_text.push('-');
+                        } else {
+                            patch_text.push('+');
+                        }
+                        patch_text.push_str(&content);
+                    }
+                    '-' => {
+                        // For unstaging, negate deletions (restore to index).
+                        if !staged {
+                            patch_text.push('+');
+                        } else {
+                            patch_text.push('-');
+                        }
+                        patch_text.push_str(&content);
+                    }
+                    ' ' => {
+                        patch_text.push(' ');
+                        patch_text.push_str(&content);
+                    }
+                    _ => {
+                        // File header, hunk header, etc.
+                        patch_text.push_str(&hunk_header);
+                    }
+                }
+            }
+        }
+    }
+
+    if patch_text.is_empty() {
+        anyhow::bail!("Could not generate patch for selected lines");
+    }
+
+    if !patch_text.ends_with('\n') {
+        patch_text.push('\n');
+    }
+
+    Ok(patch_text)
+}
+
 /// Serialize a git2::Diff to a byte buffer using DiffFormat::Patch.
 fn serialize_diff_to_patch_bytes(diff: &git2::Diff) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
@@ -620,6 +799,168 @@ impl GitProject {
                                 operation_id,
                                 GitOperationKind::Unstage,
                                 "Unstage hunk failed",
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Stage specific lines within a file's diff.
+    /// `line_pairs` is `&[(Option<usize>, Option<usize>)]` from the diff viewer —
+    /// (old_lineno, new_lineno) for each selected line.
+    pub fn stage_lines(
+        &mut self,
+        file_path: &Path,
+        line_pairs: &[(Option<usize>, Option<usize>)],
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let file_path = file_path.to_path_buf();
+        let task_file_path = file_path.clone();
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let line_count = line_pairs.len();
+        let line_pairs_owned = line_pairs.to_vec();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Stage,
+            format!(
+                "Staging {} line{} in {}...",
+                line_count,
+                if line_count == 1 { "" } else { "s" },
+                file_path.display()
+            ),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    let patch_text = generate_line_patch_for_repo(
+                        &repo,
+                        &task_file_path,
+                        &line_pairs_owned,
+                        false, // staging from workdir to index
+                    )?;
+                    let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
+                    repo.apply(&diff, git2::ApplyLocation::Index, None)?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Stage,
+                                format!(
+                                    "Staged {} line{} in {}",
+                                    line_count,
+                                    if line_count == 1 { "" } else { "s" },
+                                    file_path.display()
+                                ),
+                                (None, None, branch_name.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Stage,
+                                "Stage lines failed",
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
+    /// Unstage specific lines from a staged file diff.
+    pub fn unstage_lines(
+        &mut self,
+        file_path: &Path,
+        line_pairs: &[(Option<usize>, Option<usize>)],
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let file_path = file_path.to_path_buf();
+        let task_file_path = file_path.clone();
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let line_count = line_pairs.len();
+        let line_pairs_owned = line_pairs.to_vec();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Unstage,
+            format!(
+                "Unstaging {} line{} in {}...",
+                line_count,
+                if line_count == 1 { "" } else { "s" },
+                file_path.display()
+            ),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = Repository::open(&repo_path)?;
+                    // staged=true: diff is HEAD→index; we negate signs to remove from index.
+                    let patch_text = generate_line_patch_for_repo(
+                        &repo,
+                        &task_file_path,
+                        &line_pairs_owned,
+                        true, // unstaging from staged (HEAD→index)
+                    )?;
+                    let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
+                    let mut opts = git2::ApplyOptions::new();
+                    repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut opts))?;
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Unstage,
+                                format!(
+                                    "Unstaged {} line{} in {}",
+                                    line_count,
+                                    if line_count == 1 { "" } else { "s" },
+                                    file_path.display()
+                                ),
+                                (None, None, branch_name.clone()),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Unstage,
+                                "Unstage lines failed",
                                 e.to_string(),
                                 (None, branch_name.clone(), false),
                                 cx,
