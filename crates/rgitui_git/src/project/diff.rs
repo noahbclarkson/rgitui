@@ -392,15 +392,17 @@ pub fn compute_commit_diff(repo_path: &Path, oid: git2::Oid) -> Result<CommitDif
 
 pub fn compute_stash_diff(repo_path: &Path, index: usize) -> Result<CommitDiff> {
     let mut repo = Repository::open(repo_path)?;
-    let mut stash_oids: Vec<git2::Oid> = Vec::new();
-    repo.stash_foreach(|_idx, _msg, oid| {
-        stash_oids.push(*oid);
-        true
+    let mut stash_oid: Option<git2::Oid> = None;
+    repo.stash_foreach(|idx, _msg, oid| {
+        if idx == index {
+            stash_oid = Some(*oid);
+            false // stop early — found the target stash
+        } else {
+            true
+        }
     })?;
-    let stash_oid = stash_oids
-        .get(index)
-        .copied()
-        .ok_or_else(|| anyhow::anyhow!("Stash index {} out of range", index))?;
+    let stash_oid =
+        stash_oid.ok_or_else(|| anyhow::anyhow!("Stash index {} out of range", index))?;
     compute_commit_diff(repo_path, stash_oid)
 }
 
