@@ -713,8 +713,13 @@ pub(super) fn subscribe_project(
 
                 commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
 
+                let has_github_token = if let Some(tab) = this.tabs.get(this.active_tab) {
+                    tab.prs_panel.read(cx).github_token().is_some()
+                } else {
+                    false
+                };
                 toolbar.update(cx, |tb, cx| {
-                    tb.set_state(true, true, has_stashes, has_changes, cx);
+                    tb.set_state(true, true, has_stashes, has_changes, has_github_token, cx);
                     tb.set_ahead_behind(ahead, behind, cx);
                 });
             }
@@ -1734,32 +1739,32 @@ pub(super) fn subscribe_toolbar(
     project: &Entity<GitProject>,
     toolbar: &Entity<Toolbar>,
 ) {
-    let project = project.clone();
+    let _project = project.clone();
 
     cx.subscribe(toolbar, {
         move |this, _toolbar, event: &ToolbarEvent, cx| match event {
             ToolbarEvent::Fetch => {
-                project.update(cx, |proj, cx| {
+                _project.update(cx, |proj, cx| {
                     proj.fetch_default(cx).detach();
                 });
             }
             ToolbarEvent::Pull => {
-                project.update(cx, |proj, cx| {
+                _project.update(cx, |proj, cx| {
                     proj.pull_default(cx).detach();
                 });
             }
             ToolbarEvent::Push => {
-                project.update(cx, |proj, cx| {
+                _project.update(cx, |proj, cx| {
                     proj.push_default(false, cx).detach();
                 });
             }
             ToolbarEvent::StashSave => {
-                project.update(cx, |proj, cx| {
+                _project.update(cx, |proj, cx| {
                     proj.stash_save(None, cx).detach();
                 });
             }
             ToolbarEvent::StashPop => {
-                project.update(cx, |proj, cx| {
+                _project.update(cx, |proj, cx| {
                     proj.stash_pop(0, cx).detach();
                 });
             }
@@ -1769,7 +1774,7 @@ pub(super) fn subscribe_toolbar(
                 });
             }
             ToolbarEvent::Refresh => {
-                project.update(cx, |proj, cx| {
+                _project.update(cx, |proj, cx| {
                     proj.refresh(cx).detach();
                 });
             }
@@ -1786,11 +1791,11 @@ pub(super) fn subscribe_toolbar(
                 }
             }
             ToolbarEvent::OpenFileExplorer => {
-                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let repo_path = _project.read(cx).repo_path().to_path_buf();
                 super::layout::open_file_explorer(&repo_path);
             }
             ToolbarEvent::OpenTerminal => {
-                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let repo_path = _project.read(cx).repo_path().to_path_buf();
                 let terminal_cmd = cx
                     .global::<rgitui_settings::SettingsState>()
                     .settings()
@@ -1799,13 +1804,16 @@ pub(super) fn subscribe_toolbar(
                 super::layout::open_terminal(&repo_path, &terminal_cmd);
             }
             ToolbarEvent::OpenEditor => {
-                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let repo_path = _project.read(cx).repo_path().to_path_buf();
                 let editor_cmd = cx
                     .global::<rgitui_settings::SettingsState>()
                     .settings()
                     .editor_command
                     .clone();
                 super::layout::open_editor(&repo_path, &editor_cmd);
+            }
+            ToolbarEvent::CreatePr => {
+                this.open_create_pr_dialog(cx);
             }
         }
     })

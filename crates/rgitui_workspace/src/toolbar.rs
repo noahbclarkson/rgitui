@@ -25,6 +25,7 @@ pub enum ToolbarEvent {
     Branch,
     StashSave,
     StashPop,
+    CreatePr,
     Refresh,
     Settings,
     Search,
@@ -42,6 +43,7 @@ pub struct Toolbar {
     is_fetching: bool,
     is_pulling: bool,
     is_pushing: bool,
+    has_github_token: bool,
     ahead: usize,
     behind: usize,
 }
@@ -64,6 +66,7 @@ impl Toolbar {
             is_fetching: false,
             is_pulling: false,
             is_pushing: false,
+            has_github_token: false,
             ahead: 0,
             behind: 0,
         }
@@ -75,12 +78,14 @@ impl Toolbar {
         can_pull: bool,
         has_stashes: bool,
         has_changes: bool,
+        has_github_token: bool,
         cx: &mut Context<Self>,
     ) {
         if self.can_push == can_push
             && self.can_pull == can_pull
             && self.has_stashes == has_stashes
             && self.has_changes == has_changes
+            && self.has_github_token == has_github_token
         {
             return;
         }
@@ -88,6 +93,7 @@ impl Toolbar {
         self.can_pull = can_pull;
         self.has_stashes = has_stashes;
         self.has_changes = has_changes;
+        self.has_github_token = has_github_token;
         cx.notify();
     }
 
@@ -378,6 +384,23 @@ impl Toolbar {
                             cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashPop)),
                         ),
                     ),
+            )
+            .child(VerticalDivider::new())
+            // PR creation group
+            .child(
+                self.icon_button(
+                    "tb-pr",
+                    IconName::GitPullRequest,
+                    "Create PR",
+                    ToolbarButtonState {
+                        disabled: !self.has_github_token,
+                        loading: false,
+                        tooltip_text: "Create GitHub pull request",
+                        shortcut: Some("Ctrl+G"),
+                    },
+                    cx,
+                )
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::CreatePr))),
             )
     }
 
