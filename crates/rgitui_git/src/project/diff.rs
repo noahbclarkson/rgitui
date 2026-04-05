@@ -163,17 +163,12 @@ pub(crate) fn generate_line_patch_for_repo(
 
     // Build a set of target line numbers for efficient lookup.
     // For staging/unstaging, we target lines by their new_lineno (index/workdir line number).
-    let targets: std::collections::HashSet<usize> = line_pairs
-        .iter()
-        .filter_map(|(_old, new)| *new)
-        .collect();
+    let targets: std::collections::HashSet<usize> =
+        line_pairs.iter().filter_map(|(_old, new)| *new).collect();
 
     // For staged diff, also include old_lineno lines (deletions in the staged view).
     let target_deletions: std::collections::HashSet<usize> = if staged {
-        line_pairs
-            .iter()
-            .filter_map(|(old, _)| *old)
-            .collect()
+        line_pairs.iter().filter_map(|(old, _)| *old).collect()
     } else {
         std::collections::HashSet::new()
     };
@@ -219,8 +214,12 @@ pub(crate) fn generate_line_patch_for_repo(
                 let old_num = line.old_lineno();
                 let origin = line.origin();
 
-                let is_target = new_num.map(|n| targets.contains(&(n as usize))).unwrap_or(false)
-                    || old_num.map(|n| target_deletions.contains(&(n as usize))).unwrap_or(false);
+                let is_target = new_num
+                    .map(|n| targets.contains(&(n as usize)))
+                    .unwrap_or(false)
+                    || old_num
+                        .map(|n| target_deletions.contains(&(n as usize)))
+                        .unwrap_or(false);
 
                 // Also include context lines (non-+/-).
                 let is_context = matches!(origin, ' ' | 'F' | 'H' | '=' | '<' | '>');
@@ -259,10 +258,7 @@ pub(crate) fn generate_line_patch_for_repo(
             // Replace the hunk header's line counts with correct values.
             patch_text.push_str(&format!(
                 "@@ -{},{} +{},{} @@\n",
-                hunk_old_start,
-                hunk_old_count,
-                hunk_new_start,
-                hunk_new_count
+                hunk_old_start, hunk_old_count, hunk_new_start, hunk_new_count
             ));
 
             // Write the matching lines.

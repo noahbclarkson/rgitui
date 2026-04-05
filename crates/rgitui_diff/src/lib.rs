@@ -815,7 +815,10 @@ impl DiffViewer {
             DiffDisplayMode::Unified => {
                 let rows = &self.display_rows;
                 for i in start..end {
-                    if let DisplayRow::Line { old_num, new_num, .. } = &rows[i] {
+                    if let DisplayRow::Line {
+                        old_num, new_num, ..
+                    } = &rows[i]
+                    {
                         lines.push((*old_num, *new_num));
                     }
                 }
@@ -823,7 +826,12 @@ impl DiffViewer {
             DiffDisplayMode::SideBySide => {
                 let rows = &self.sbs_rows;
                 for i in start..end {
-                    if let SideBySideRow::Pair { left_num, right_num, .. } = &rows[i] {
+                    if let SideBySideRow::Pair {
+                        left_num,
+                        right_num,
+                        ..
+                    } = &rows[i]
+                    {
                         // For side-by-side, use the non-None of left/right as the line reference
                         lines.push((*left_num, *right_num));
                     }
@@ -857,7 +865,9 @@ impl DiffViewer {
                             break; // past our hunk
                         }
                     }
-                    DisplayRow::Line { old_num, new_num, .. } => {
+                    DisplayRow::Line {
+                        old_num, new_num, ..
+                    } => {
                         if in_hunk && new_num.is_some() {
                             lines.push((*old_num, *new_num));
                         }
