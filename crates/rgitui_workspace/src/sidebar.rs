@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    KeyDownEvent, Render, SharedString, WeakEntity, Window,
+    KeyDownEvent, ListSizingBehavior, Render, SharedString, WeakEntity, Window,
 };
 use rgitui_git::{
     BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
@@ -15,7 +15,7 @@ use rgitui_git::{
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Badge, Button, ButtonSize, ButtonStyle, Disclosure, IconButton, IconName, Label, LabelSize,
+    Badge, Button, ButtonSize, ButtonStyle, IconButton, IconName, Label, LabelSize,
     TextInput, TextInputEvent, Tooltip,
 };
 
@@ -1358,7 +1358,8 @@ impl Render for Sidebar {
                         item
                     }).collect()
                 },
-            );
+            )
+            .with_sizing_behavior(ListSizingBehavior::Infer);
             content = content.child(list);
         }
 
@@ -1895,7 +1896,7 @@ impl Render for Sidebar {
                             })
                             .collect()
                     },
-                ));
+                ).with_sizing_behavior(ListSizingBehavior::Infer));
             }
         }
 
@@ -2123,7 +2124,7 @@ impl Render for Sidebar {
                             })
                             .collect()
                     },
-                ));
+                ).with_sizing_behavior(ListSizingBehavior::Infer));
             }
         }
 
@@ -2322,6 +2323,11 @@ impl Render for Sidebar {
         let kb_active = keyboard_index == Some(nav_idx);
         nav_idx += 1;
 
+        let staged_chevron = if staged_expanded {
+            IconName::ChevronDown
+        } else {
+            IconName::ChevronRight
+        };
         let mut staged_header = div()
             .id("section-staged")
             .h_flex()
@@ -2334,15 +2340,23 @@ impl Render for Sidebar {
             .border_b_1()
             .border_color(colors.border_variant)
             .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
+            .hover(|s| s.bg(colors.ghost_element_hover))
+            .active(|s| s.bg(colors.ghost_element_active))
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_section(SidebarSection::StagedChanges, cx);
             }))
-            .child(Disclosure::new(
-                "staged-disclosure",
-                "Staged",
-                staged_expanded,
-            ))
+            .child(
+                rgitui_ui::Icon::new(staged_chevron)
+                    .size(rgitui_ui::IconSize::XSmall)
+                    .color(Color::Muted),
+            )
+            .child(
+                Label::new("Staged")
+                    .size(LabelSize::XSmall)
+                    .weight(gpui::FontWeight::SEMIBOLD)
+                    .color(Color::Muted),
+            )
             .child(
                 rgitui_ui::Icon::new(IconName::Check)
                     .size(rgitui_ui::IconSize::XSmall)
@@ -2549,15 +2563,9 @@ impl Render for Sidebar {
                             }
                         }).collect::<Vec<_>>()
                     },
-                );
-                content = content.child(
-                    div()
-                        .id("staged-body")
-                        .v_flex()
-                        .w_full()
-                        .flex_shrink_0()
-                        .child(list),
-                );
+                )
+                .with_sizing_behavior(ListSizingBehavior::Infer);
+                content = content.child(list);
             }
         }
 
@@ -2569,6 +2577,11 @@ impl Render for Sidebar {
 
         let kb_active = keyboard_index == Some(nav_idx);
 
+        let unstaged_chevron = if unstaged_expanded {
+            IconName::ChevronDown
+        } else {
+            IconName::ChevronRight
+        };
         let mut unstaged_header = div()
             .id("section-unstaged")
             .h_flex()
@@ -2581,15 +2594,23 @@ impl Render for Sidebar {
             .border_b_1()
             .border_color(colors.border_variant)
             .when(kb_active, |el| el.border_l_2().border_color(kb_accent))
+            .hover(|s| s.bg(colors.ghost_element_hover))
+            .active(|s| s.bg(colors.ghost_element_active))
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_section(SidebarSection::UnstagedChanges, cx);
             }))
-            .child(Disclosure::new(
-                "unstaged-disclosure",
-                "Unstaged",
-                unstaged_expanded,
-            ))
+            .child(
+                rgitui_ui::Icon::new(unstaged_chevron)
+                    .size(rgitui_ui::IconSize::XSmall)
+                    .color(Color::Muted),
+            )
+            .child(
+                Label::new("Unstaged")
+                    .size(LabelSize::XSmall)
+                    .weight(gpui::FontWeight::SEMIBOLD)
+                    .color(Color::Muted),
+            )
             .child(
                 rgitui_ui::Icon::new(IconName::Edit)
                     .size(rgitui_ui::IconSize::XSmall)
@@ -2821,15 +2842,9 @@ impl Render for Sidebar {
                             }
                         }).collect::<Vec<_>>()
                     },
-                );
-                content = content.child(
-                    div()
-                        .id("unstaged-body")
-                        .v_flex()
-                        .w_full()
-                        .flex_shrink_0()
-                        .child(list),
-                );
+                )
+                .with_sizing_behavior(ListSizingBehavior::Infer);
+                content = content.child(list);
             }
         }
 
