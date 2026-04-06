@@ -102,7 +102,7 @@ impl Workspace {
         super::events::subscribe_toolbar(cx, &project, &toolbar);
         super::events::subscribe_blame_view(cx, &blame_view, &graph);
         super::events::subscribe_file_history_view(cx, &file_history_view, &graph);
-        super::events::subscribe_reflog_view(cx, &reflog_view, &graph);
+        super::events::subscribe_reflog_view(cx, &project, &reflog_view, &graph);
         super::events::subscribe_submodule_view(cx, &submodule_view, &project);
 
         // Initial sync

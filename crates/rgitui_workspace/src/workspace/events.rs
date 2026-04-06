@@ -1888,10 +1888,12 @@ pub(super) fn subscribe_file_history_view(
 
 pub(super) fn subscribe_reflog_view(
     cx: &mut Context<Workspace>,
+    project: &Entity<GitProject>,
     reflog_view: &Entity<ReflogView>,
     graph: &Entity<GraphView>,
 ) {
     let graph = graph.clone();
+    let project = project.clone();
 
     cx.subscribe(reflog_view, {
         move |this, _rv, event: &ReflogViewEvent, cx| match event {
@@ -1906,6 +1908,13 @@ pub(super) fn subscribe_reflog_view(
                 if let Some(tab) = this.tabs.get_mut(this.active_tab) {
                     tab.bottom_panel_mode = BottomPanelMode::Diff;
                     cx.notify();
+                }
+            }
+            ReflogViewEvent::CheckoutCommit(oid) => {
+                if let Ok(git_oid) = git2::Oid::from_str(oid) {
+                    project.update(cx, |proj, cx| {
+                        proj.checkout_commit(git_oid, cx).detach();
+                    });
                 }
             }
             ReflogViewEvent::CopyOID(oid) => {

@@ -21,6 +21,7 @@ pub enum ReflogViewEvent {
     CommitSelected(String),
     Dismissed,
     CopyOID(String),
+    CheckoutCommit(String),
     ResetHard(String),
     ResetSoft(String),
     ResetMixed(String),
@@ -498,7 +499,7 @@ impl ReflogView {
 
         // Clamp menu position to stay within window bounds.
         let menu_w = px(200.);
-        let menu_h = px(120.);
+        let menu_h = px(145.);
         let window_bounds = window.bounds();
         let max_x = window_bounds.size.width - menu_w;
         let max_y = window_bounds.size.height - menu_h;
@@ -511,6 +512,7 @@ impl ReflogView {
         let menu_active = colors.ghost_element_active;
 
         let menu_items: Vec<(&str, IconName)> = vec![
+            ("Checkout", IconName::GitBranch),
             ("Reset (hard)", IconName::Trash),
             ("Reset (soft)", IconName::Undo),
             ("Reset (mixed)", IconName::Refresh),
@@ -583,7 +585,7 @@ impl ReflogView {
                         w.update(cx, |this, cx| {
                             this.context_menu = None;
                             cx.notify();
-                            cx.emit(ReflogViewEvent::ResetHard(oid.clone()));
+                            cx.emit(ReflogViewEvent::CheckoutCommit(oid.clone()));
                         })
                         .ok();
                     });
@@ -595,7 +597,7 @@ impl ReflogView {
                         w.update(cx, |this, cx| {
                             this.context_menu = None;
                             cx.notify();
-                            cx.emit(ReflogViewEvent::ResetSoft(oid.clone()));
+                            cx.emit(ReflogViewEvent::ResetHard(oid.clone()));
                         })
                         .ok();
                     });
@@ -607,12 +609,24 @@ impl ReflogView {
                         w.update(cx, |this, cx| {
                             this.context_menu = None;
                             cx.notify();
-                            cx.emit(ReflogViewEvent::ResetMixed(oid.clone()));
+                            cx.emit(ReflogViewEvent::ResetSoft(oid.clone()));
                         })
                         .ok();
                     });
                 }
                 3 => {
+                    let w = weak.clone();
+                    let oid = oid.clone();
+                    item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        w.update(cx, |this, cx| {
+                            this.context_menu = None;
+                            cx.notify();
+                            cx.emit(ReflogViewEvent::ResetMixed(oid.clone()));
+                        })
+                        .ok();
+                    });
+                }
+                4 => {
                     let w = weak.clone();
                     let oid = oid.clone();
                     item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
