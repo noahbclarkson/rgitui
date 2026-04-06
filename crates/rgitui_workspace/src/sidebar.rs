@@ -1978,94 +1978,152 @@ impl Render for Sidebar {
                                 .color(Color::Placeholder),
                         ),
                 );
-            }
-            for (i, stash) in self.stashes.iter().enumerate() {
-                let kb_active = keyboard_index == Some(nav_idx);
-                nav_idx += 1;
-                let is_selected = self.selected_stash == Some(i);
-                let msg: SharedString = stash.message.clone().into();
-                let stash_index = stash.index;
-                content = content.child(
-                    div()
-                        .id(ElementId::NamedInteger("stash-item".into(), i as u64))
-                        .h_flex()
-                        .w_full()
-                        .h(px(item_h))
-                        .px_2()
-                        .pl(px(16.))
-                        .gap_1()
-                        .items_center()
-                        .overflow_hidden()
-                        .when(is_selected, |el| {
-                            el.bg(colors.ghost_element_selected)
-                                .border_l_2()
-                                .border_color(kb_accent)
-                        })
-                        .when(kb_active && !is_selected, |el| {
-                            el.bg(colors.ghost_element_hover)
-                                .border_l_2()
-                                .border_color(kb_accent)
-                        })
-                        .hover(|s| s.bg(colors.ghost_element_hover))
-                        .active(|s| s.bg(colors.ghost_element_active))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.selected_stash = Some(stash_index);
-                            cx.emit(SidebarEvent::StashSelected(stash_index));
-                        }))
-                        .child(
-                            rgitui_ui::Icon::new(IconName::Stash)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                        .child(Label::new(msg).size(LabelSize::XSmall).truncate())
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .h_flex()
-                                .gap(px(2.))
-                                .child(
-                                    IconButton::new(
-                                        ElementId::NamedInteger("apply-stash".into(), i as u64),
-                                        IconName::Check,
+            } else {
+                // Virtualized stash list
+                nav_idx += self.stashes.len();
+                let stashes = self.stashes.clone();
+                let selected_stash = self.selected_stash;
+                let colors = colors.clone();
+                let w = sidebar_weak.clone();
+
+                content = content.child(uniform_list(
+                    "stashes-list",
+                    stashes.len(),
+                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                        let w = w.clone();
+                        range
+                            .map(|i| {
+                                let stash = &stashes[i];
+                                let kb_active = keyboard_index == Some(i);
+                                let is_selected =
+                                    selected_stash.as_ref().is_some_and(|s| *s == stash.index);
+                                let msg: SharedString = stash.message.clone().into();
+                                let stash_index = stash.index;
+
+                                let mut item = div()
+                                    .id(ElementId::NamedInteger("stash-item".into(), i as u64))
+                                    .h_flex()
+                                    .w_full()
+                                    .h(px(item_h))
+                                    .px_2()
+                                    .pl(px(16.))
+                                    .gap_1()
+                                    .items_center()
+                                    .overflow_hidden()
+                                    .when(is_selected, |el| {
+                                        el.bg(colors.ghost_element_selected)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .when(kb_active && !is_selected, |el| {
+                                        el.bg(colors.ghost_element_hover)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .hover(|s| s.bg(colors.ghost_element_hover))
+                                    .active(|s| s.bg(colors.ghost_element_active));
+
+                                let w_sel = w.clone();
+                                item = item.on_click(
+                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                        let _ =
+                                            w_sel.clone().update(cx, |this: &mut Sidebar, cx| {
+                                                this.selected_stash = Some(stash_index);
+                                                cx.emit(SidebarEvent::StashSelected(stash_index));
+                                            });
+                                    },
+                                );
+
+                                item = item
+                                    .child(
+                                        rgitui_ui::Icon::new(IconName::Stash)
+                                            .size(rgitui_ui::IconSize::XSmall)
+                                            .color(Color::Muted),
                                     )
-                                    .size(ButtonSize::Compact)
-                                    .color(Color::Success)
-                                    .tooltip("Apply stash")
-                                    .on_click(cx.listener(
-                                        move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::StashApply(stash_index));
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    IconButton::new(
-                                        ElementId::NamedInteger("branch-stash".into(), i as u64),
-                                        IconName::GitBranch,
-                                    )
-                                    .size(ButtonSize::Compact)
-                                    .tooltip("Create branch from stash")
-                                    .on_click(cx.listener(
-                                        move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::StashBranch(stash_index));
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    IconButton::new(
-                                        ElementId::NamedInteger("drop-stash".into(), i as u64),
-                                        IconName::Trash,
-                                    )
-                                    .size(ButtonSize::Compact)
-                                    .color(Color::Deleted)
-                                    .tooltip("Drop stash")
-                                    .on_click(cx.listener(
-                                        move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::StashDrop(stash_index));
-                                        },
-                                    )),
-                                ),
-                        ),
-                );
+                                    .child(Label::new(msg).size(LabelSize::XSmall).truncate())
+                                    .child(div().flex_1())
+                                    .child(
+                                        div()
+                                            .h_flex()
+                                            .gap(px(2.))
+                                            .child({
+                                                let w_apply = w.clone();
+                                                IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "apply-stash".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::Check,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .color(Color::Success)
+                                            .tooltip("Apply stash")
+                                            .on_click(
+                                                move |_: &ClickEvent, _: &mut Window,
+                                                      cx: &mut App| {
+                                                    let _ = w_apply.clone()
+                                                        .update(cx, |_: &mut Sidebar, cx| {
+                                                        cx.emit(SidebarEvent::StashApply(
+                                                            stash_index,
+                                                        ));
+                                                    });
+                                                },
+                                            )
+                                            })
+                                            .child({
+                                                let w_branch = w.clone();
+                                                IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "branch-stash".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::GitBranch,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .tooltip("Create branch from stash")
+                                            .on_click(
+                                                move |_: &ClickEvent, _: &mut Window,
+                                                      cx: &mut App| {
+                                                    let _ = w_branch.clone()
+                                                        .update(cx, |_: &mut Sidebar, cx| {
+                                                        cx.emit(SidebarEvent::StashBranch(
+                                                            stash_index,
+                                                        ));
+                                                    });
+                                                },
+                                            )
+                                            })
+                                            .child({
+                                                let w_drop = w.clone();
+                                                IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "drop-stash".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::Trash,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .color(Color::Deleted)
+                                            .tooltip("Drop stash")
+                                            .on_click(
+                                                move |_: &ClickEvent, _: &mut Window,
+                                                      cx: &mut App| {
+                                                    let _ = w_drop.clone()
+                                                        .update(cx, |_: &mut Sidebar, cx| {
+                                                        cx.emit(SidebarEvent::StashDrop(
+                                                            stash_index,
+                                                        ));
+                                                    });
+                                                },
+                                            )
+                                            }),
+                                    );
+
+                                item
+                            })
+                            .collect()
+                    },
+                ));
             }
         }
 
