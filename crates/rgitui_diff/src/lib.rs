@@ -1473,7 +1473,10 @@ impl DiffViewer {
                 let max_len = dels.len().max(adds.len());
                 for j in 0..max_len {
                     match (dels.get_mut(j), adds.get_mut(j)) {
-                        (Some((del_line, del_text, del_styled)), Some((_add_line, add_text, add_styled))) => {
+                        (
+                            Some((del_line, del_text, del_styled)),
+                            Some((_add_line, add_text, add_styled)),
+                        ) => {
                             let (del_spans, add_spans) =
                                 Self::compute_word_diff(del_text.trim_end(), add_text.trim_end());
                             del_styled.apply_word_highlights(
@@ -1527,7 +1530,13 @@ impl DiffViewer {
             for line in &hunk.lines {
                 match line {
                     DiffLine::Context(text) => {
-                        flush(&mut rows, &mut pending_dels, &mut pending_adds, deleted_word_bg, added_word_bg);
+                        flush(
+                            &mut rows,
+                            &mut pending_dels,
+                            &mut pending_adds,
+                            deleted_word_bg,
+                            added_word_bg,
+                        );
                         rows.push(DisplayRow::Line {
                             old_num: Some(old_line),
                             new_num: Some(new_line),
@@ -1555,7 +1564,13 @@ impl DiffViewer {
                     }
                 }
             }
-            flush(&mut rows, &mut pending_dels, &mut pending_adds, deleted_word_bg, added_word_bg);
+            flush(
+                &mut rows,
+                &mut pending_dels,
+                &mut pending_adds,
+                deleted_word_bg,
+                added_word_bg,
+            );
         }
         rows
     }

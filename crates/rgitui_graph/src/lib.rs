@@ -171,7 +171,8 @@ impl GraphView {
 
     pub fn set_commits(&mut self, commits: Arc<Vec<CommitInfo>>, cx: &mut Context<Self>) {
         // Compute a simple hash to detect if commits actually changed
-        let new_hash = Self::compute_commits_hash(&commits);
+        let graph_style = cx.global::<SettingsState>().settings().graph_style;
+        let new_hash = Self::compute_commits_hash(&commits, &graph_style);
         if new_hash == self.cached_graph_hash && !self.commits.is_empty() {
             return;
         }
@@ -394,7 +395,10 @@ impl GraphView {
     }
 
     /// Compute a simple hash of the commit list for change detection.
-    fn compute_commits_hash(commits: &[CommitInfo]) -> u64 {
+    fn compute_commits_hash(
+        commits: &[CommitInfo],
+        graph_style: &rgitui_settings::GraphStyle,
+    ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         commits.len().hash(&mut hasher);
@@ -405,6 +409,7 @@ impl GraphView {
                 r.display_name().hash(&mut hasher);
             }
         }
+        graph_style.hash(&mut hasher);
         hasher.finish()
     }
 

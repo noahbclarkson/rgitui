@@ -50,7 +50,7 @@ impl FromStr for DiffViewMode {
 }
 
 /// The visual style used for the commit graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphStyle {
     Rails,
