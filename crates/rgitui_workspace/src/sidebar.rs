@@ -15,8 +15,8 @@ use rgitui_git::{
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Badge, Button, ButtonSize, ButtonStyle, IconButton, IconName, Label, LabelSize,
-    TextInput, TextInputEvent, Tooltip,
+    Badge, Button, ButtonSize, ButtonStyle, IconButton, IconName, Label, LabelSize, TextInput,
+    TextInputEvent, Tooltip,
 };
 
 /// Events from the sidebar.
@@ -1781,77 +1781,85 @@ impl Render for Sidebar {
                 let colors = colors.clone();
                 let w = Rc::new(sidebar_weak.clone());
 
-                content = content.child(uniform_list(
-                    "tags-list",
-                    flattened.len(),
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
-                        let w = w.clone();
-                        range
-                            .map(|i| {
-                                let tag_idx = flattened[i];
-                                let tag = &tags[tag_idx];
-                                let kb_active = keyboard_index == Some(i);
-                                let is_selected =
-                                    selected_tag.as_ref().is_some_and(|s| s == &tag.name);
-                                let name: SharedString = tag.name.clone().into();
-                                let tag_select = name.clone();
-                                let tag_delete = name.clone();
-                                let tag_checkout = name.clone();
+                content =
+                    content.child(
+                        uniform_list(
+                            "tags-list",
+                            flattened.len(),
+                            move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                                let w = w.clone();
+                                range
+                                    .map(|i| {
+                                        let tag_idx = flattened[i];
+                                        let tag = &tags[tag_idx];
+                                        let kb_active = keyboard_index == Some(i);
+                                        let is_selected =
+                                            selected_tag.as_ref().is_some_and(|s| s == &tag.name);
+                                        let name: SharedString = tag.name.clone().into();
+                                        let tag_select = name.clone();
+                                        let tag_delete = name.clone();
+                                        let tag_checkout = name.clone();
 
-                                let mut item = div()
-                                    .id(ElementId::NamedInteger("tag-item".into(), i as u64))
-                                    .h_flex()
-                                    .w_full()
-                                    .h(px(item_h))
-                                    .px_2()
-                                    .pl(px(16.))
-                                    .gap_1()
-                                    .items_center()
-                                    .overflow_hidden()
-                                    .when(is_selected, |el| {
-                                        el.bg(colors.ghost_element_selected)
-                                            .border_l_2()
-                                            .border_color(kb_accent)
-                                    })
-                                    .when(kb_active && !is_selected, |el| {
-                                        el.bg(colors.ghost_element_hover)
-                                            .border_l_2()
-                                            .border_color(kb_accent)
-                                    })
-                                    .hover(|s| s.bg(colors.ghost_element_hover))
-                                    .active(|s| s.bg(colors.ghost_element_active))
-                                    .cursor_pointer();
+                                        let mut item = div()
+                                            .id(ElementId::NamedInteger(
+                                                "tag-item".into(),
+                                                i as u64,
+                                            ))
+                                            .h_flex()
+                                            .w_full()
+                                            .h(px(item_h))
+                                            .px_2()
+                                            .pl(px(16.))
+                                            .gap_1()
+                                            .items_center()
+                                            .overflow_hidden()
+                                            .when(is_selected, |el| {
+                                                el.bg(colors.ghost_element_selected)
+                                                    .border_l_2()
+                                                    .border_color(kb_accent)
+                                            })
+                                            .when(kb_active && !is_selected, |el| {
+                                                el.bg(colors.ghost_element_hover)
+                                                    .border_l_2()
+                                                    .border_color(kb_accent)
+                                            })
+                                            .hover(|s| s.bg(colors.ghost_element_hover))
+                                            .active(|s| s.bg(colors.ghost_element_active))
+                                            .cursor_pointer();
 
-                                let w_sel = w.clone();
-                                item = item.on_click(
-                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                        let _ =
-                                            w_sel.clone().update(cx, |this: &mut Sidebar, cx| {
-                                                this.selected_tag = Some(tag_select.to_string());
-                                                cx.emit(SidebarEvent::TagSelected(
-                                                    tag_select.to_string(),
-                                                ));
-                                            });
-                                    },
-                                );
+                                        let w_sel = w.clone();
+                                        item = item.on_click(
+                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                let _ = w_sel.clone().update(
+                                                    cx,
+                                                    |this: &mut Sidebar, cx| {
+                                                        this.selected_tag =
+                                                            Some(tag_select.to_string());
+                                                        cx.emit(SidebarEvent::TagSelected(
+                                                            tag_select.to_string(),
+                                                        ));
+                                                    },
+                                                );
+                                            },
+                                        );
 
-                                item = item
-                                    .child(
-                                        rgitui_ui::Icon::new(IconName::Tag)
-                                            .size(rgitui_ui::IconSize::XSmall)
-                                            .color(Color::Warning),
-                                    )
-                                    .child(
-                                        Label::new(name)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Warning),
-                                    )
-                                    .child(div().flex_1());
+                                        item = item
+                                            .child(
+                                                rgitui_ui::Icon::new(IconName::Tag)
+                                                    .size(rgitui_ui::IconSize::XSmall)
+                                                    .color(Color::Warning),
+                                            )
+                                            .child(
+                                                Label::new(name)
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Warning),
+                                            )
+                                            .child(div().flex_1());
 
-                                // Checkout button
-                                let w_chk = w.clone();
-                                let tc = tag_checkout.clone();
-                                item = item.child(
+                                        // Checkout button
+                                        let w_chk = w.clone();
+                                        let tc = tag_checkout.clone();
+                                        item = item.child(
                                     IconButton::new(
                                         ElementId::NamedInteger("checkout-tag".into(), i as u64),
                                         IconName::ArrowDown,
@@ -1871,10 +1879,10 @@ impl Render for Sidebar {
                                     ),
                                 );
 
-                                // Delete button
-                                let w_del = w.clone();
-                                let td = tag_delete.clone();
-                                item.child(
+                                        // Delete button
+                                        let w_del = w.clone();
+                                        let td = tag_delete.clone();
+                                        item.child(
                                     IconButton::new(
                                         ElementId::NamedInteger("delete-tag".into(), i as u64),
                                         IconName::Trash,
@@ -1893,10 +1901,12 @@ impl Render for Sidebar {
                                         },
                                     ),
                                 )
-                            })
-                            .collect()
-                    },
-                ).with_sizing_behavior(ListSizingBehavior::Infer));
+                                    })
+                                    .collect()
+                            },
+                        )
+                        .with_sizing_behavior(ListSizingBehavior::Infer),
+                    );
             }
         }
 
@@ -1987,69 +1997,74 @@ impl Render for Sidebar {
                 let colors = colors.clone();
                 let w = sidebar_weak.clone();
 
-                content = content.child(uniform_list(
-                    "stashes-list",
-                    stashes.len(),
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
-                        let w = w.clone();
-                        range
-                            .map(|i| {
-                                let stash = &stashes[i];
-                                let kb_active = keyboard_index == Some(i);
-                                let is_selected =
-                                    selected_stash.as_ref().is_some_and(|s| *s == stash.index);
-                                let msg: SharedString = stash.message.clone().into();
-                                let stash_index = stash.index;
+                content = content.child(
+                    uniform_list(
+                        "stashes-list",
+                        stashes.len(),
+                        move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                            let w = w.clone();
+                            range
+                                .map(|i| {
+                                    let stash = &stashes[i];
+                                    let kb_active = keyboard_index == Some(i);
+                                    let is_selected =
+                                        selected_stash.as_ref().is_some_and(|s| *s == stash.index);
+                                    let msg: SharedString = stash.message.clone().into();
+                                    let stash_index = stash.index;
 
-                                let mut item = div()
-                                    .id(ElementId::NamedInteger("stash-item".into(), i as u64))
-                                    .h_flex()
-                                    .w_full()
-                                    .h(px(item_h))
-                                    .px_2()
-                                    .pl(px(16.))
-                                    .gap_1()
-                                    .items_center()
-                                    .overflow_hidden()
-                                    .when(is_selected, |el| {
-                                        el.bg(colors.ghost_element_selected)
-                                            .border_l_2()
-                                            .border_color(kb_accent)
-                                    })
-                                    .when(kb_active && !is_selected, |el| {
-                                        el.bg(colors.ghost_element_hover)
-                                            .border_l_2()
-                                            .border_color(kb_accent)
-                                    })
-                                    .hover(|s| s.bg(colors.ghost_element_hover))
-                                    .active(|s| s.bg(colors.ghost_element_active));
+                                    let mut item = div()
+                                        .id(ElementId::NamedInteger("stash-item".into(), i as u64))
+                                        .h_flex()
+                                        .w_full()
+                                        .h(px(item_h))
+                                        .px_2()
+                                        .pl(px(16.))
+                                        .gap_1()
+                                        .items_center()
+                                        .overflow_hidden()
+                                        .when(is_selected, |el| {
+                                            el.bg(colors.ghost_element_selected)
+                                                .border_l_2()
+                                                .border_color(kb_accent)
+                                        })
+                                        .when(kb_active && !is_selected, |el| {
+                                            el.bg(colors.ghost_element_hover)
+                                                .border_l_2()
+                                                .border_color(kb_accent)
+                                        })
+                                        .hover(|s| s.bg(colors.ghost_element_hover))
+                                        .active(|s| s.bg(colors.ghost_element_active));
 
-                                let w_sel = w.clone();
-                                item = item.on_click(
-                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                        let _ =
-                                            w_sel.clone().update(cx, |this: &mut Sidebar, cx| {
-                                                this.selected_stash = Some(stash_index);
-                                                cx.emit(SidebarEvent::StashSelected(stash_index));
-                                            });
-                                    },
-                                );
+                                    let w_sel = w.clone();
+                                    item = item.on_click(
+                                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            let _ = w_sel.clone().update(
+                                                cx,
+                                                |this: &mut Sidebar, cx| {
+                                                    this.selected_stash = Some(stash_index);
+                                                    cx.emit(SidebarEvent::StashSelected(
+                                                        stash_index,
+                                                    ));
+                                                },
+                                            );
+                                        },
+                                    );
 
-                                item = item
-                                    .child(
-                                        rgitui_ui::Icon::new(IconName::Stash)
-                                            .size(rgitui_ui::IconSize::XSmall)
-                                            .color(Color::Muted),
-                                    )
-                                    .child(Label::new(msg).size(LabelSize::XSmall).truncate())
-                                    .child(div().flex_1())
-                                    .child(
-                                        div()
-                                            .h_flex()
-                                            .gap(px(2.))
-                                            .child({
-                                                let w_apply = w.clone();
-                                                IconButton::new(
+                                    item = item
+                                        .child(
+                                            rgitui_ui::Icon::new(IconName::Stash)
+                                                .size(rgitui_ui::IconSize::XSmall)
+                                                .color(Color::Muted),
+                                        )
+                                        .child(Label::new(msg).size(LabelSize::XSmall).truncate())
+                                        .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .h_flex()
+                                                .gap(px(2.))
+                                                .child({
+                                                    let w_apply = w.clone();
+                                                    IconButton::new(
                                                 ElementId::NamedInteger(
                                                     "apply-stash".into(),
                                                     i as u64,
@@ -2070,10 +2085,10 @@ impl Render for Sidebar {
                                                     });
                                                 },
                                             )
-                                            })
-                                            .child({
-                                                let w_branch = w.clone();
-                                                IconButton::new(
+                                                })
+                                                .child({
+                                                    let w_branch = w.clone();
+                                                    IconButton::new(
                                                 ElementId::NamedInteger(
                                                     "branch-stash".into(),
                                                     i as u64,
@@ -2093,10 +2108,10 @@ impl Render for Sidebar {
                                                     });
                                                 },
                                             )
-                                            })
-                                            .child({
-                                                let w_drop = w.clone();
-                                                IconButton::new(
+                                                })
+                                                .child({
+                                                    let w_drop = w.clone();
+                                                    IconButton::new(
                                                 ElementId::NamedInteger(
                                                     "drop-stash".into(),
                                                     i as u64,
@@ -2117,14 +2132,16 @@ impl Render for Sidebar {
                                                     });
                                                 },
                                             )
-                                            }),
-                                    );
+                                                }),
+                                        );
 
-                                item
-                            })
-                            .collect()
-                    },
-                ).with_sizing_behavior(ListSizingBehavior::Infer));
+                                    item
+                                })
+                                .collect()
+                        },
+                    )
+                    .with_sizing_behavior(ListSizingBehavior::Infer),
+                );
             }
         }
 
