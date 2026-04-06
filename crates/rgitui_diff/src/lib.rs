@@ -1189,10 +1189,12 @@ impl DiffViewer {
         // Skip word highlights when text is empty.
         if text.text.is_empty() || text.highlights.is_empty() {
             div()
+                .overflow_hidden()
                 .child(StyledText::new(text.text.clone()))
                 .into_any_element()
         } else {
             div()
+                .overflow_hidden()
                 .child(
                     StyledText::new(text.text.clone())
                         .with_default_highlights(&text_style, text.highlights.clone()),
@@ -1460,25 +1462,72 @@ impl DiffViewer {
             let mut new_line = hunk.new_start as usize;
             let mut highlighter = Self::syntax_line_highlighter(path, appearance);
 
-            // Buffer for pending deletions: (old_line_num, text, styled_line)
             let mut pending_dels: Vec<(usize, String, StyledLine)> = Vec::new();
+            let mut pending_adds: Vec<(usize, String, StyledLine)> = Vec::new();
 
-            let flush_dels =
-                |rows: &mut Vec<DisplayRow>, dels: &mut Vec<(usize, String, StyledLine)>| {
-                    for (ln, _text, styled) in dels.drain(..) {
-                        rows.push(DisplayRow::Line {
-                            old_num: Some(ln),
-                            new_num: None,
-                            styled,
-                            kind: DisplayLineKind::Deletion,
-                        });
+            let flush = |rows: &mut Vec<DisplayRow>,
+                         dels: &mut Vec<(usize, String, StyledLine)>,
+                         adds: &mut Vec<(usize, String, StyledLine)>,
+                         deleted_word_bg: HighlightStyle,
+                         added_word_bg: HighlightStyle| {
+                let max_len = dels.len().max(adds.len());
+                for j in 0..max_len {
+                    match (dels.get_mut(j), adds.get_mut(j)) {
+                        (Some((del_line, del_text, del_styled)), Some((_add_line, add_text, add_styled))) => {
+                            let (del_spans, add_spans) =
+                                Self::compute_word_diff(del_text.trim_end(), add_text.trim_end());
+                            del_styled.apply_word_highlights(
+                                del_spans,
+                                Vec::new(),
+                                deleted_word_bg,
+                                added_word_bg,
+                            );
+                            add_styled.apply_word_highlights(
+                                Vec::new(),
+                                add_spans,
+                                deleted_word_bg,
+                                added_word_bg,
+                            );
+                            rows.push(DisplayRow::Line {
+                                old_num: Some(*del_line),
+                                new_num: None,
+                                styled: del_styled.clone(),
+                                kind: DisplayLineKind::Deletion,
+                            });
+                            rows.push(DisplayRow::Line {
+                                old_num: None,
+                                new_num: Some(*_add_line),
+                                styled: add_styled.clone(),
+                                kind: DisplayLineKind::Addition,
+                            });
+                        }
+                        (Some((del_line, _, del_styled)), None) => {
+                            rows.push(DisplayRow::Line {
+                                old_num: Some(*del_line),
+                                new_num: None,
+                                styled: del_styled.clone(),
+                                kind: DisplayLineKind::Deletion,
+                            });
+                        }
+                        (None, Some((add_line, _, add_styled))) => {
+                            rows.push(DisplayRow::Line {
+                                old_num: None,
+                                new_num: Some(*add_line),
+                                styled: add_styled.clone(),
+                                kind: DisplayLineKind::Addition,
+                            });
+                        }
+                        (None, None) => {}
                     }
-                };
+                }
+                dels.clear();
+                adds.clear();
+            };
 
             for line in &hunk.lines {
                 match line {
                     DiffLine::Context(text) => {
-                        flush_dels(&mut rows, &mut pending_dels);
+                        flush(&mut rows, &mut pending_dels, &mut pending_adds, deleted_word_bg, added_word_bg);
                         rows.push(DisplayRow::Line {
                             old_num: Some(old_line),
                             new_num: Some(new_line),
@@ -1497,53 +1546,16 @@ impl DiffViewer {
                         old_line += 1;
                     }
                     DiffLine::Addition(text) => {
-                        let add_styled = Self::highlight_text(text, &mut highlighter);
-                        if let Some((del_line, del_text, mut del_styled)) = pending_dels.pop() {
-                            // IMPORTANT: trim the raw git diff text before computing word diff.
-                            // highlight_text() calls trim_end() on the text before storing it in
-                            // StyledLine.text, so compute_word_diff must use the trimmed versions
-                            // so spans are relative to the trimmed text.
-                            let (del_spans, add_spans) =
-                                Self::compute_word_diff(del_text.trim_end(), text.trim_end());
-                            del_styled.apply_word_highlights(
-                                del_spans,
-                                Vec::new(),
-                                deleted_word_bg,
-                                added_word_bg,
-                            );
-                            let mut add_styled = add_styled;
-                            add_styled.apply_word_highlights(
-                                Vec::new(),
-                                add_spans,
-                                deleted_word_bg,
-                                added_word_bg,
-                            );
-                            rows.push(DisplayRow::Line {
-                                old_num: Some(del_line),
-                                new_num: None,
-                                styled: del_styled,
-                                kind: DisplayLineKind::Deletion,
-                            });
-                            rows.push(DisplayRow::Line {
-                                old_num: None,
-                                new_num: Some(new_line),
-                                styled: add_styled,
-                                kind: DisplayLineKind::Addition,
-                            });
-                        } else {
-                            // Unpaired addition
-                            rows.push(DisplayRow::Line {
-                                old_num: None,
-                                new_num: Some(new_line),
-                                styled: add_styled,
-                                kind: DisplayLineKind::Addition,
-                            });
-                        }
+                        pending_adds.push((
+                            new_line,
+                            text.clone(),
+                            Self::highlight_text(text, &mut highlighter),
+                        ));
                         new_line += 1;
                     }
                 }
             }
-            flush_dels(&mut rows, &mut pending_dels);
+            flush(&mut rows, &mut pending_dels, &mut pending_adds, deleted_word_bg, added_word_bg);
         }
         rows
     }
@@ -1618,11 +1630,8 @@ impl DiffViewer {
             }
         }
 
-        // Merge nearby spans into contiguous blocks so the highlights look
-        // clean rather than a scattershot of individually-lit tokens.
-        // A gap of 3 bytes covers typical code separators (`.`, `::`, `(`, `, `).
-        let del_spans = Self::merge_nearby_spans(del_spans, 3);
-        let add_spans = Self::merge_nearby_spans(add_spans, 3);
+        let del_spans = Self::merge_nearby_spans(del_spans, 1);
+        let add_spans = Self::merge_nearby_spans(add_spans, 1);
 
         (del_spans, add_spans)
     }
@@ -1634,7 +1643,6 @@ impl DiffViewer {
     /// This gives much finer granularity than splitting on whitespace alone:
     /// `foo.bar(x)` → `["foo", ".", "bar", "(", "x", ")"]` instead of one
     /// big token.
-    #[allow(dead_code)]
     pub(crate) fn split_word_ranges(text: &str) -> Vec<Range<usize>> {
         let mut result = Vec::new();
         let mut word_start: Option<usize> = None;
@@ -2979,15 +2987,15 @@ mod tests {
 
     #[test]
     fn compute_word_diff_function_arg_change() {
-        // Only the argument should be highlighted, not the whole expression.
         let (del_spans, add_spans) =
             DiffViewer::compute_word_diff("compute(x, y)", "compute(a, b)");
-        // Changed tokens: "x" → "a" and "y" → "b".
-        // With gap merging (gaps ≤3), "x", "y" merge into one block covering "x, y".
-        assert_eq!(del_spans.len(), 1);
-        assert_eq!(del_spans[0], 8..12); // "x, y"
-        assert_eq!(add_spans.len(), 1);
-        assert_eq!(add_spans[0], 8..12); // "a, b"
+        // Changed tokens: "x" → "a" and "y" → "b" reported as separate spans.
+        assert_eq!(del_spans.len(), 2);
+        assert_eq!(del_spans[0], 8..9); // "x"
+        assert_eq!(del_spans[1], 11..12); // "y"
+        assert_eq!(add_spans.len(), 2);
+        assert_eq!(add_spans[0], 8..9); // "a"
+        assert_eq!(add_spans[1], 11..12); // "b"
     }
 
     #[test]
