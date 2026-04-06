@@ -1442,130 +1442,170 @@ impl Render for Sidebar {
                                 .color(Color::Placeholder),
                         ),
                 );
-            }
-            for (i, remote) in self.remotes.iter().enumerate() {
-                let kb_active = keyboard_index == Some(nav_idx);
-                nav_idx += 1;
-                let remote_name: SharedString = remote.name.clone().into();
-                let display_name: SharedString = remote_name.clone();
-                let url_text = remote
-                    .url
-                    .as_deref()
-                    .or(remote.push_url.as_deref())
-                    .unwrap_or("No URL configured")
-                    .to_string();
-                let fetch_remote = remote_name.clone();
-                let pull_remote = remote_name.clone();
-                let push_remote = remote_name.clone();
-                let remove_remote = remote_name;
+            } else {
+                nav_idx += self.remotes.len();
+                let remotes_list = self.remotes.clone();
+                let colors = colors.clone();
+                let w = sidebar_weak.clone();
 
-                content = content.child(
-                    div()
-                        .id(ElementId::NamedInteger("remote-item".into(), i as u64))
-                        .v_flex()
-                        .w_full()
-                        .px_2()
-                        .py_1()
-                        .pl(px(16.))
-                        .gap_1()
-                        .when(kb_active, |el| {
-                            el.bg(colors.ghost_element_hover)
-                                .border_l_2()
-                                .border_color(kb_accent)
-                        })
-                        .hover(|s| s.bg(colors.ghost_element_hover))
-                        .active(|s| s.bg(colors.ghost_element_active))
-                        .child(
-                            div()
-                                .h_flex()
-                                .w_full()
-                                .gap_2()
-                                .items_center()
-                                .overflow_hidden()
-                                .child(
-                                    rgitui_ui::Icon::new(IconName::ExternalLink)
-                                        .size(rgitui_ui::IconSize::XSmall)
-                                        .color(Color::Info),
-                                )
-                                .child(
-                                    Label::new(display_name)
+                content = content.child(uniform_list(
+                    "remotes-list",
+                    remotes_list.len(),
+                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                        let w = w.clone();
+                        range
+                            .map(|i| {
+                                let remote = &remotes_list[i];
+                                let kb_active = keyboard_index == Some(i);
+                                let remote_name: SharedString = remote.name.clone().into();
+                                let url_text = remote
+                                    .url
+                                    .as_deref()
+                                    .or(remote.push_url.as_deref())
+                                    .unwrap_or("No URL configured")
+                                    .to_string();
+                                let fetch_remote = remote_name.clone();
+                                let pull_remote = remote_name.clone();
+                                let push_remote = remote_name.clone();
+                                let remove_remote = remote_name.clone();
+
+                                let mut item = div()
+                                    .id(ElementId::NamedInteger("remote-item".into(), i as u64))
+                                    .v_flex()
+                                    .w_full()
+                                    .px_2()
+                                    .py_1()
+                                    .pl(px(16.))
+                                    .gap_1()
+                                    .when(kb_active, |el| {
+                                        el.bg(colors.ghost_element_hover)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .hover(|s| s.bg(colors.ghost_element_hover))
+                                    .active(|s| s.bg(colors.ghost_element_active));
+
+                                // Icon buttons: fetch, pull, push, remove
+                                let w_fetch = w.clone();
+                                let w_pull = w.clone();
+                                let w_push = w.clone();
+                                let w_remove = w.clone();
+
+                                item = item.child(
+                                    div()
+                                        .h_flex()
+                                        .w_full()
+                                        .gap_2()
+                                        .items_center()
+                                        .overflow_hidden()
+                                        .child(
+                                            rgitui_ui::Icon::new(IconName::ExternalLink)
+                                                .size(rgitui_ui::IconSize::XSmall)
+                                                .color(Color::Info),
+                                        )
+                                        .child(
+                                            Label::new(remote_name.clone())
+                                                .size(LabelSize::XSmall)
+                                                .weight(gpui::FontWeight::SEMIBOLD)
+                                                .truncate(),
+                                        )
+                                        .child(div().flex_1())
+                                        .child(
+                                            IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "remote-fetch".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::Refresh,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .color(Color::Info)
+                                            .tooltip("Fetch from remote")
+                                            .on_click(
+                                                move |_: &ClickEvent, _, cx: &mut App| {
+                                                    let _ = w_fetch.clone().update(cx, |_, cx| {
+                                                        cx.emit(SidebarEvent::RemoteFetch(
+                                                            fetch_remote.to_string(),
+                                                        ));
+                                                    });
+                                                },
+                                            ),
+                                        )
+                                        .child(
+                                            IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "remote-pull".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::ArrowDown,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .color(Color::Warning)
+                                            .tooltip("Pull from remote")
+                                            .on_click(
+                                                move |_: &ClickEvent, _, cx: &mut App| {
+                                                    let _ = w_pull.clone().update(cx, |_, cx| {
+                                                        cx.emit(SidebarEvent::RemotePull(
+                                                            pull_remote.to_string(),
+                                                        ));
+                                                    });
+                                                },
+                                            ),
+                                        )
+                                        .child(
+                                            IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "remote-push".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::ArrowUp,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .color(Color::Success)
+                                            .tooltip("Push to remote")
+                                            .on_click(
+                                                move |_: &ClickEvent, _, cx: &mut App| {
+                                                    let _ = w_push.clone().update(cx, |_, cx| {
+                                                        cx.emit(SidebarEvent::RemotePush(
+                                                            push_remote.to_string(),
+                                                        ));
+                                                    });
+                                                },
+                                            ),
+                                        )
+                                        .child(
+                                            IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "remote-remove".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::Trash,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .color(Color::Deleted)
+                                            .tooltip("Remove remote")
+                                            .on_click(
+                                                move |_: &ClickEvent, _, cx: &mut App| {
+                                                    let _ = w_remove.clone().update(cx, |_, cx| {
+                                                        cx.emit(SidebarEvent::RemoteRemove(
+                                                            remove_remote.to_string(),
+                                                        ));
+                                                    });
+                                                },
+                                            ),
+                                        ),
+                                );
+                                item = item.child(
+                                    Label::new(SharedString::from(url_text))
                                         .size(LabelSize::XSmall)
-                                        .weight(gpui::FontWeight::SEMIBOLD)
+                                        .color(Color::Muted)
                                         .truncate(),
-                                )
-                                .child(div().flex_1())
-                                .child(
-                                    IconButton::new(
-                                        ElementId::NamedInteger("remote-fetch".into(), i as u64),
-                                        IconName::Refresh,
-                                    )
-                                    .size(ButtonSize::Compact)
-                                    .color(Color::Info)
-                                    .tooltip("Fetch from remote")
-                                    .on_click(cx.listener(
-                                        move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::RemoteFetch(
-                                                fetch_remote.to_string(),
-                                            ));
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    IconButton::new(
-                                        ElementId::NamedInteger("remote-pull".into(), i as u64),
-                                        IconName::ArrowDown,
-                                    )
-                                    .size(ButtonSize::Compact)
-                                    .color(Color::Warning)
-                                    .tooltip("Pull from remote")
-                                    .on_click(cx.listener(
-                                        move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::RemotePull(
-                                                pull_remote.to_string(),
-                                            ));
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    IconButton::new(
-                                        ElementId::NamedInteger("remote-push".into(), i as u64),
-                                        IconName::ArrowUp,
-                                    )
-                                    .size(ButtonSize::Compact)
-                                    .color(Color::Success)
-                                    .tooltip("Push to remote")
-                                    .on_click(cx.listener(
-                                        move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::RemotePush(
-                                                push_remote.to_string(),
-                                            ));
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    IconButton::new(
-                                        ElementId::NamedInteger("remote-remove".into(), i as u64),
-                                        IconName::Trash,
-                                    )
-                                    .size(ButtonSize::Compact)
-                                    .color(Color::Deleted)
-                                    .tooltip("Remove remote")
-                                    .on_click(cx.listener(
-                                        move |_this, _: &ClickEvent, _, cx| {
-                                            cx.emit(SidebarEvent::RemoteRemove(
-                                                remove_remote.to_string(),
-                                            ));
-                                        },
-                                    )),
-                                ),
-                        )
-                        .child(
-                            Label::new(SharedString::from(url_text))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .truncate(),
-                        ),
-                );
+                                );
+                                item
+                            })
+                            .collect()
+                    },
+                ));
             }
         }
 
