@@ -155,6 +155,16 @@ pub struct Sidebar {
     flattened_unstaged: Vec<FlatFileItem>,
     /// Flattened local branches for virtualized `uniform_list` rendering.
     flattened_local_branches: Vec<usize>, // indices into self.local_branches
+    /// Flattened remote branches for virtualized `uniform_list` rendering.
+    flattened_remote_branches: Vec<usize>, // indices into self.remote_branches
+    /// Flattened tags for virtualized `uniform_list` rendering.
+    flattened_tags: Vec<usize>, // indices into self.tags
+    /// Flattened stashes for virtualized `uniform_list` rendering.
+    flattened_stashes: Vec<usize>, // indices into self.stashes
+    /// Flattened worktrees for virtualized `uniform_list` rendering.
+    flattened_worktrees: Vec<usize>, // indices into self.worktrees
+    /// Flattened remotes for virtualized `uniform_list` rendering.
+    flattened_remotes: Vec<usize>, // indices into self.remotes
     /// Cached flat list of navigable items for keyboard navigation.
     cached_nav_items: Vec<SidebarItem>,
     /// Current branch filter text (case-insensitive substring).
@@ -242,6 +252,11 @@ impl Sidebar {
             flattened_staged: Vec::new(),
             flattened_unstaged: Vec::new(),
             flattened_local_branches: Vec::new(),
+            flattened_remote_branches: Vec::new(),
+            flattened_tags: Vec::new(),
+            flattened_stashes: Vec::new(),
+            flattened_worktrees: Vec::new(),
+            flattened_remotes: Vec::new(),
             cached_nav_items,
             branch_filter: String::new(),
             branch_filter_editor,
@@ -549,6 +564,12 @@ impl Sidebar {
         }
         self.local_branches = local;
         self.remote_branches = remote;
+
+        // Rebuild flattened remote branches for virtualized rendering.
+        self.flattened_remote_branches.clear();
+        self.flattened_remote_branches
+            .extend(0..self.remote_branches.len());
+
         self.rebuild_nav_items();
         cx.notify();
     }
@@ -560,6 +581,11 @@ impl Sidebar {
         }
         self.tags = tags;
         self.rebuild_nav_items();
+
+        // Rebuild flattened tags for virtualized rendering.
+        self.flattened_tags.clear();
+        self.flattened_tags.extend(0..self.tags.len());
+
         cx.notify();
     }
 
@@ -569,6 +595,11 @@ impl Sidebar {
         }
         self.remotes = remotes;
         self.rebuild_nav_items();
+
+        // Rebuild flattened remotes for virtualized rendering.
+        self.flattened_remotes.clear();
+        self.flattened_remotes.extend(0..self.remotes.len());
+
         cx.notify();
     }
 
@@ -579,6 +610,11 @@ impl Sidebar {
         self.stashes = stashes;
         self.selected_stash = None;
         self.rebuild_nav_items();
+
+        // Rebuild flattened stashes for virtualized rendering.
+        self.flattened_stashes.clear();
+        self.flattened_stashes.extend(0..self.stashes.len());
+
         cx.notify();
     }
 
@@ -589,6 +625,11 @@ impl Sidebar {
         self.worktrees = worktrees;
         self.selected_worktree = None;
         self.rebuild_nav_items();
+
+        // Rebuild flattened worktrees for virtualized rendering.
+        self.flattened_worktrees.clear();
+        self.flattened_worktrees.extend(0..self.worktrees.len());
+
         cx.notify();
     }
 
@@ -1728,81 +1769,133 @@ impl Render for Sidebar {
                         ),
                 );
             }
-            for (i, tag) in self.tags.iter().enumerate() {
-                let kb_active = keyboard_index == Some(nav_idx);
-                nav_idx += 1;
-                let is_selected = self.selected_tag.as_ref().is_some_and(|s| s == &tag.name);
-                let name: SharedString = tag.name.clone().into();
-                let tag_select = name.clone();
-                let tag_delete = name.clone();
-                let tag_checkout = name.clone();
-                content = content.child(
-                    div()
-                        .id(ElementId::NamedInteger("tag-item".into(), i as u64))
-                        .h_flex()
-                        .w_full()
-                        .h(px(item_h))
-                        .px_2()
-                        .pl(px(16.))
-                        .gap_1()
-                        .items_center()
-                        .overflow_hidden()
-                        .when(is_selected, |el| {
-                            el.bg(colors.ghost_element_selected)
-                                .border_l_2()
-                                .border_color(kb_accent)
-                        })
-                        .when(kb_active && !is_selected, |el| {
-                            el.bg(colors.ghost_element_hover)
-                                .border_l_2()
-                                .border_color(kb_accent)
-                        })
-                        .hover(|s| s.bg(colors.ghost_element_hover))
-                        .active(|s| s.bg(colors.ghost_element_active))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.selected_tag = Some(tag_select.to_string());
-                            cx.emit(SidebarEvent::TagSelected(tag_select.to_string()));
-                        }))
-                        .child(
-                            rgitui_ui::Icon::new(IconName::Tag)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(Color::Warning),
-                        )
-                        .child(
-                            Label::new(name)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Warning),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            IconButton::new(
-                                ElementId::NamedInteger("checkout-tag".into(), i as u64),
-                                IconName::ArrowDown,
-                            )
-                            .size(ButtonSize::Compact)
-                            .color(Color::Muted)
-                            .tooltip("Checkout tag")
-                            .on_click(cx.listener(
-                                move |_this, _: &ClickEvent, _, cx| {
-                                    cx.emit(SidebarEvent::TagCheckout(tag_checkout.to_string()));
-                                },
-                            )),
-                        )
-                        .child(
-                            IconButton::new(
-                                ElementId::NamedInteger("delete-tag".into(), i as u64),
-                                IconName::Trash,
-                            )
-                            .size(ButtonSize::Compact)
-                            .color(Color::Deleted)
-                            .tooltip("Delete tag")
-                            .on_click(cx.listener(
-                                move |_this, _: &ClickEvent, _, cx| {
-                                    cx.emit(SidebarEvent::TagDelete(tag_delete.to_string()));
-                                },
-                            )),
-                        ),
-                );
+            // Virtualized tags list
+            nav_idx += self.flattened_tags.len();
+            if self.flattened_tags.is_empty() {
+                // Empty state already rendered above
+            } else {
+                let flattened = self.flattened_tags.clone();
+                let tags = self.tags.clone();
+                let selected_tag = self.selected_tag.clone();
+                let colors = colors.clone();
+                let w = Rc::new(sidebar_weak.clone());
+
+                content = content.child(uniform_list(
+                    "tags-list",
+                    flattened.len(),
+                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                        let w = w.clone();
+                        range
+                            .map(|i| {
+                                let tag_idx = flattened[i];
+                                let tag = &tags[tag_idx];
+                                let kb_active = keyboard_index == Some(i);
+                                let is_selected =
+                                    selected_tag.as_ref().is_some_and(|s| s == &tag.name);
+                                let name: SharedString = tag.name.clone().into();
+                                let tag_select = name.clone();
+                                let tag_delete = name.clone();
+                                let tag_checkout = name.clone();
+
+                                let mut item = div()
+                                    .id(ElementId::NamedInteger("tag-item".into(), i as u64))
+                                    .h_flex()
+                                    .w_full()
+                                    .h(px(item_h))
+                                    .px_2()
+                                    .pl(px(16.))
+                                    .gap_1()
+                                    .items_center()
+                                    .overflow_hidden()
+                                    .when(is_selected, |el| {
+                                        el.bg(colors.ghost_element_selected)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .when(kb_active && !is_selected, |el| {
+                                        el.bg(colors.ghost_element_hover)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .hover(|s| s.bg(colors.ghost_element_hover))
+                                    .active(|s| s.bg(colors.ghost_element_active))
+                                    .cursor_pointer();
+
+                                let w_sel = w.clone();
+                                item = item.on_click(
+                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                        let _ =
+                                            w_sel.clone().update(cx, |this: &mut Sidebar, cx| {
+                                                this.selected_tag = Some(tag_select.to_string());
+                                                cx.emit(SidebarEvent::TagSelected(
+                                                    tag_select.to_string(),
+                                                ));
+                                            });
+                                    },
+                                );
+
+                                item = item
+                                    .child(
+                                        rgitui_ui::Icon::new(IconName::Tag)
+                                            .size(rgitui_ui::IconSize::XSmall)
+                                            .color(Color::Warning),
+                                    )
+                                    .child(
+                                        Label::new(name)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Warning),
+                                    )
+                                    .child(div().flex_1());
+
+                                // Checkout button
+                                let w_chk = w.clone();
+                                let tc = tag_checkout.clone();
+                                item = item.child(
+                                    IconButton::new(
+                                        ElementId::NamedInteger("checkout-tag".into(), i as u64),
+                                        IconName::ArrowDown,
+                                    )
+                                    .size(ButtonSize::Compact)
+                                    .color(Color::Muted)
+                                    .tooltip("Checkout tag")
+                                    .on_click(
+                                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            let _ =
+                                                w_chk.clone().update(cx, |_: &mut Sidebar, cx| {
+                                                    cx.emit(SidebarEvent::TagCheckout(
+                                                        tc.to_string(),
+                                                    ));
+                                                });
+                                        },
+                                    ),
+                                );
+
+                                // Delete button
+                                let w_del = w.clone();
+                                let td = tag_delete.clone();
+                                item.child(
+                                    IconButton::new(
+                                        ElementId::NamedInteger("delete-tag".into(), i as u64),
+                                        IconName::Trash,
+                                    )
+                                    .size(ButtonSize::Compact)
+                                    .color(Color::Deleted)
+                                    .tooltip("Delete tag")
+                                    .on_click(
+                                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            let _ =
+                                                w_del.clone().update(cx, |_: &mut Sidebar, cx| {
+                                                    cx.emit(SidebarEvent::TagDelete(
+                                                        td.to_string(),
+                                                    ));
+                                                });
+                                        },
+                                    ),
+                                )
+                            })
+                            .collect()
+                    },
+                ));
             }
         }
 
