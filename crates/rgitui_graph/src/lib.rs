@@ -88,7 +88,6 @@ pub struct GraphView {
     show_avatars: bool,
     show_graph_lanes: bool,
     show_ref_badges: bool,
-    show_subject_column: bool,
     show_author_email: bool,
     /// Cached bounds of the graph container div, used to convert window-relative
     /// click positions to container-relative coordinates for context menu placement.
@@ -152,7 +151,6 @@ impl GraphView {
             show_avatars: true,
             show_graph_lanes: true,
             show_ref_badges: true,
-            show_subject_column: true,
             show_author_email: false,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
         }
@@ -740,7 +738,7 @@ impl Render for GraphView {
         let show_avatars = self.show_avatars;
         let show_graph_lanes = self.show_graph_lanes;
         let show_ref_badges = self.show_ref_badges;
-        let show_subject_column = self.show_subject_column;
+        let show_subject_column = cx.global::<SettingsState>().settings().show_subject_column;
         let show_author_email = self.show_author_email;
 
         // Header row (not virtualized — always visible)
@@ -2059,7 +2057,7 @@ impl Render for GraphView {
                 40 => "Full (40)".into(),
                 n => format!("{} chars", n).into(),
             };
-            let subject_state = if self.show_subject_column {
+            let subject_state = if cx.global::<SettingsState>().settings().show_subject_column {
                 CheckState::Checked
             } else {
                 CheckState::Unchecked
@@ -2188,8 +2186,11 @@ impl Render for GraphView {
                         .hover(move |s| s.bg(popover_hover))
                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                             view_subject
-                                .update(cx, |this: &mut GraphView, cx| {
-                                    this.show_subject_column = !this.show_subject_column;
+                                .update(cx, |_this: &mut GraphView, cx| {
+                                    cx.update_global::<SettingsState, _>(|state, _cx| {
+                                        state.settings_mut().show_subject_column =
+                                            !state.settings().show_subject_column;
+                                    });
                                     cx.notify();
                                 })
                                 .ok();

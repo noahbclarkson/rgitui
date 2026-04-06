@@ -194,6 +194,8 @@ pub struct AppSettings {
     pub diff_view_mode: DiffViewMode,
     #[serde(default)]
     pub graph_style: GraphStyle,
+    #[serde(default = "default_show_subject_column")]
+    pub show_subject_column: bool,
     #[serde(default)]
     pub auto_fetch_interval: AutoFetchInterval,
     #[serde(default = "default_confirm_destructive")]
@@ -212,6 +214,10 @@ fn default_font_size() -> u32 {
 }
 
 fn default_show_line_numbers_in_diff() -> bool {
+    true
+}
+
+fn default_show_subject_column() -> bool {
     true
 }
 
@@ -432,6 +438,7 @@ impl Default for AppSettings {
             show_line_numbers_in_diff: default_show_line_numbers_in_diff(),
             diff_view_mode: DiffViewMode::default(),
             graph_style: GraphStyle::default(),
+            show_subject_column: default_show_subject_column(),
             auto_fetch_interval: AutoFetchInterval::default(),
             confirm_destructive_operations: default_confirm_destructive(),
         }

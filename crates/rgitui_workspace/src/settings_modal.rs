@@ -253,6 +253,7 @@ pub struct SettingsModal {
     show_line_numbers_in_diff: bool,
     diff_view_mode: DiffViewMode,
     graph_style: GraphStyle,
+    show_subject_column: bool,
     auto_fetch_interval: AutoFetchInterval,
     confirm_destructive_operations: bool,
     terminal_command_editor: Entity<TextInput>,
@@ -653,6 +654,7 @@ impl SettingsModal {
             show_line_numbers_in_diff: settings.show_line_numbers_in_diff,
             diff_view_mode: settings.diff_view_mode,
             graph_style: settings.graph_style,
+            show_subject_column: settings.show_subject_column,
             auto_fetch_interval: settings.auto_fetch_interval,
             confirm_destructive_operations: settings.confirm_destructive_operations,
             terminal_command_editor,
@@ -742,6 +744,7 @@ impl SettingsModal {
                 self.show_line_numbers_in_diff = s.show_line_numbers_in_diff;
                 self.diff_view_mode = s.diff_view_mode;
                 self.graph_style = s.graph_style;
+                self.show_subject_column = s.show_subject_column;
                 self.auto_fetch_interval = s.auto_fetch_interval;
                 self.confirm_destructive_operations = s.confirm_destructive_operations;
                 self.feedback_message = None;
@@ -844,6 +847,7 @@ impl SettingsModal {
             state.settings_mut().show_line_numbers_in_diff = self.show_line_numbers_in_diff;
             state.settings_mut().diff_view_mode = self.diff_view_mode;
             state.settings_mut().graph_style = self.graph_style;
+            state.settings_mut().show_subject_column = self.show_subject_column;
             state.settings_mut().auto_fetch_interval = self.auto_fetch_interval;
             state.settings_mut().confirm_destructive_operations =
                 self.confirm_destructive_operations;
@@ -3163,7 +3167,48 @@ impl SettingsModal {
                         this.save_settings(cx);
                     },
                     cx,
-                )),
+                ))
+                .child({
+                    let show_subject = self.show_subject_column;
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .v_flex()
+                                .flex_1()
+                                .gap(px(2.))
+                                .child(
+                                    Label::new("Show Subject Column")
+                                        .size(LabelSize::Small)
+                                        .weight(FontWeight::SEMIBOLD),
+                                )
+                                .child(
+                                    Label::new("Display commit subject in the graph.")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("show-subject-column-toggle")
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.show_subject_column = !this.show_subject_column;
+                                    this.save_settings(cx);
+                                }))
+                                .child(Checkbox::new(
+                                    "show-subject-column-cb",
+                                    if show_subject {
+                                        CheckState::Checked
+                                    } else {
+                                        CheckState::Unchecked
+                                    },
+                                )),
+                        )
+                }),
         );
         section = section.child(graph_card);
 
