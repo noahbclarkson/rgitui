@@ -162,16 +162,18 @@ pub(crate) fn generate_line_patch_for_repo(
     };
 
     // Build a set of target line numbers for efficient lookup.
-    // For staging/unstaging, we target lines by their new_lineno (index/workdir line number).
-    let targets: std::collections::HashSet<usize> =
-        line_pairs.iter().filter_map(|(_old, new)| *new).collect();
-
-    // For staged diff, also include old_lineno lines (deletions in the staged view).
-    let target_deletions: std::collections::HashSet<usize> = if staged {
+    // For unstaging (staged=true): additions in HEAD→index diff use old_lineno (index position)
+    // For staging (staged=false): additions in index→workdir diff use new_lineno (workdir position)
+    let targets: std::collections::HashSet<usize> = if staged {
         line_pairs.iter().filter_map(|(old, _)| *old).collect()
     } else {
-        std::collections::HashSet::new()
+        line_pairs.iter().filter_map(|(_old, new)| *new).collect()
     };
+
+    // Deletions in both diffs use old_lineno (index position in HEAD→index, workdir position
+    // in index→workdir). Always include old_lineno from line_pairs as deletion targets.
+    let target_deletions: std::collections::HashSet<usize> =
+        line_pairs.iter().filter_map(|(old, _)| *old).collect();
 
     let mut patch_text = String::new();
     let num_deltas = diff.deltas().len();
@@ -214,9 +216,16 @@ pub(crate) fn generate_line_patch_for_repo(
                 let old_num = line.old_lineno();
                 let origin = line.origin();
 
+                // is_target: line is part of a selected addition (new_num in targets) or
+                // deletion (old_num in targets, since deletions have new_num=0 and old_num
+                // is the index/workdir position). Also include deletions from staged diff
+                // (old_num in target_deletions).
                 let is_target = new_num
                     .map(|n| targets.contains(&(n as usize)))
                     .unwrap_or(false)
+                    || old_num
+                        .map(|n| targets.contains(&(n as usize)))
+                        .unwrap_or(false)
                     || old_num
                         .map(|n| target_deletions.contains(&(n as usize)))
                         .unwrap_or(false);
@@ -1494,5 +1503,55 @@ mod diff_integration_tests {
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.total_additions, 1);
         assert_eq!(result.total_deletions, 1);
+    }
+
+    // ── generate_line_patch_for_repo tests ───────────────────────────────────
+
+    /// Verify that generate_line_patch_for_repo correctly includes the deletion
+    /// from the staged diff when unstaging (staged=true).
+    ///
+    /// The staged diff for modifying "beta"→"beta_modified" has:
+    ///   Deletion: origin='-', old_lineno=2, new_lineno=0  ← targets = {2}
+    ///   Addition: origin='+', old_lineno=2, new_lineno=2
+    ///
+    /// For unstaking a modification, we target both entries via index position (old_lineno).
+    /// The bug: original targets used `new` from line_pairs, but `new` is always None for
+    /// deletions in the staged diff. Fix: targets uses `old` (index position) for staged=true.
+    #[test]
+    fn line_patch_staged_true_targets_deletion() {
+        let (_dir, path) = make_staged_change_repo();
+        let repo = git2::Repository::open(&path).unwrap();
+
+        // line_pairs for a deletion in the staged diff: (old_lineno, new_lineno=None)
+        // old_lineno = 2 (index position of "beta")
+        let line_pairs = vec![(Some(2usize), None)];
+        let patch_text =
+            generate_line_patch_for_repo(&repo, Path::new("data.txt"), &line_pairs, true).unwrap();
+
+        // The patch must contain the deletion entry for 'beta'.
+        assert!(
+            patch_text.contains("-beta\n"),
+            "patch should contain '-beta' deletion, got:\n{patch_text}"
+        );
+    }
+
+    /// Verify that generate_line_patch_for_repo correctly includes the addition
+    /// from the staged diff when unstaging (staged=true).
+    #[test]
+    fn line_patch_staged_true_targets_addition() {
+        let (_dir, path) = make_staged_change_repo();
+        let repo = git2::Repository::open(&path).unwrap();
+
+        // line_pairs for an addition in the staged diff: (old_lineno=index_pos, new_lineno=None)
+        // For "beta_modified" addition: old_lineno = 2 (index position)
+        let line_pairs = vec![(Some(2usize), None)];
+        let patch_text =
+            generate_line_patch_for_repo(&repo, Path::new("data.txt"), &line_pairs, true).unwrap();
+
+        // The patch must contain the addition entry for 'beta_modified'.
+        assert!(
+            patch_text.contains("+beta_modified\n"),
+            "patch should contain '+beta_modified' addition, got:\n{patch_text}"
+        );
     }
 }
