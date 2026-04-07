@@ -2,7 +2,7 @@ use gpui::Context;
 
 use crate::{CommandId, CommitPanelEvent, ConfirmAction, ToastKind};
 
-use super::{BottomPanelMode, ProjectTab, Workspace};
+use super::{BottomPanelMode, ProjectTab, ViewCaches, Workspace};
 
 impl Workspace {
     pub(super) fn execute_command(&mut self, cmd: CommandId, cx: &mut Context<Self>) {
@@ -389,10 +389,27 @@ impl Workspace {
             return;
         };
 
+        // Check cache first — instant switch if available.
+        if let Ok(mut cache) = tab.caches.blame.lock() {
+            if let Some(lines) = cache.get(&file_path) {
+                let display_path = file_path.clone();
+                tab.blame_view.update(cx, |bv, cx| {
+                    bv.set_blame(lines, display_path, cx);
+                });
+                if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+                    active_tab.bottom_panel_mode = BottomPanelMode::Blame;
+                }
+                cx.notify();
+                return;
+            }
+        }
+
         let project = tab.project.clone();
         let blame_view = tab.blame_view.clone();
+        let caches = tab.caches.clone();
         let path_for_blame = std::path::PathBuf::from(&file_path);
         let display_path = file_path.clone();
+        let cache_key = file_path.clone();
         let active_tab_index = self.active_tab;
 
         let task = project.update(cx, |proj, cx| {
@@ -402,6 +419,9 @@ impl Workspace {
         cx.spawn(
             async move |this, cx: &mut gpui::AsyncApp| match task.await {
                 Ok(lines) => {
+                    if let Ok(mut cache) = caches.blame.lock() {
+                        cache.insert(cache_key, lines.clone());
+                    }
                     cx.update(|cx| {
                         blame_view.update(cx, |bv, cx| {
                             bv.set_blame(lines, display_path, cx);
@@ -449,10 +469,27 @@ impl Workspace {
             return;
         };
 
+        // Check cache first.
+        if let Ok(mut cache) = tab.caches.history.lock() {
+            if let Some(commits) = cache.get(&file_path) {
+                let display_path = file_path.clone();
+                tab.file_history_view.update(cx, |fv, cx| {
+                    fv.set_history(commits, display_path, cx);
+                });
+                if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+                    active_tab.bottom_panel_mode = BottomPanelMode::FileHistory;
+                }
+                cx.notify();
+                return;
+            }
+        }
+
         let project = tab.project.clone();
         let file_history_view = tab.file_history_view.clone();
+        let caches = tab.caches.clone();
         let path_for_history = std::path::PathBuf::from(&file_path);
         let display_path = file_path.clone();
+        let cache_key = file_path.clone();
         let active_tab_index = self.active_tab;
 
         let task = project.update(cx, |proj, cx| {
@@ -462,6 +499,9 @@ impl Workspace {
         cx.spawn(
             async move |this, cx: &mut gpui::AsyncApp| match task.await {
                 Ok(commits) => {
+                    if let Ok(mut cache) = caches.history.lock() {
+                        cache.insert(cache_key, commits.clone());
+                    }
                     cx.update(|cx| {
                         file_history_view.update(cx, |fv, cx| {
                             fv.set_history(commits, display_path, cx);
@@ -579,6 +619,80 @@ impl Workspace {
                 }
             },
         )
+        .detach();
+    }
+
+    /// Prefetch blame and file history for a file in the background.
+    /// Called when a diff is opened so switching is near-instant.
+    pub(super) fn prefetch_blame_and_history(
+        repo_path: std::path::PathBuf,
+        file_path: String,
+        caches: ViewCaches,
+        cx: &mut Context<Self>,
+    ) {
+        let blame_cache = caches.blame.clone();
+        let history_cache = caches.history.clone();
+        let file_key = file_path.clone();
+        let blame_path = std::path::PathBuf::from(&file_path);
+        let history_path = blame_path.clone();
+        let repo1 = repo_path.clone();
+        let repo2 = repo_path;
+
+        // Skip if both are already cached.
+        let blame_cached = blame_cache
+            .lock()
+            .map(|c| c.contains(&file_key))
+            .unwrap_or(false);
+        let history_cached = history_cache
+            .lock()
+            .map(|c| c.contains(&file_key))
+            .unwrap_or(false);
+        if blame_cached && history_cached {
+            return;
+        }
+
+        cx.spawn(async move |_this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            // Run both in parallel on the background executor.
+            let blame_key = file_key.clone();
+            let history_key = file_key;
+
+            let blame_fut = cx.background_executor().spawn({
+                let cache = blame_cache.clone();
+                let cached = blame_cached;
+                async move {
+                    if cached {
+                        return;
+                    }
+                    if let Ok(lines) =
+                        rgitui_git::compute_blame(&repo1, &blame_path, None)
+                    {
+                        if let Ok(mut c) = cache.lock() {
+                            c.insert(blame_key, lines);
+                        }
+                    }
+                }
+            });
+
+            let history_fut = cx.background_executor().spawn({
+                let cache = history_cache.clone();
+                let cached = history_cached;
+                async move {
+                    if cached {
+                        return;
+                    }
+                    if let Ok(commits) =
+                        rgitui_git::compute_file_history(&repo2, &history_path, 50)
+                    {
+                        if let Ok(mut c) = cache.lock() {
+                            c.insert(history_key, commits);
+                        }
+                    }
+                }
+            });
+
+            blame_fut.await;
+            history_fut.await;
+        })
         .detach();
     }
 }

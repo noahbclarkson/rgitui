@@ -10,13 +10,15 @@ use gpui::{
 use rgitui_git::CommitInfo;
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 
 /// Events emitted by the file history view.
 #[derive(Debug, Clone)]
 pub enum FileHistoryViewEvent {
     CommitSelected(String),
     Dismissed,
+    SwitchToBlame,
+    SwitchToDiff,
 }
 
 /// A file history viewer panel that shows commits touching a specific file.
@@ -127,8 +129,12 @@ impl FileHistoryView {
                 }
                 cx.stop_propagation();
             }
-            "escape" => {
-                cx.emit(FileHistoryViewEvent::Dismissed);
+            "escape" | "d" => {
+                cx.emit(FileHistoryViewEvent::SwitchToDiff);
+                cx.stop_propagation();
+            }
+            "b" => {
+                cx.emit(FileHistoryViewEvent::SwitchToBlame);
                 cx.stop_propagation();
             }
             "g" => {
@@ -272,15 +278,6 @@ impl Render for FileHistoryView {
                             super::time::format_relative_time_abbreviated(commit.time.timestamp())
                                 .into();
 
-                        let tooltip_text: SharedString = format!(
-                            "{}\n{}\n{} <{}>",
-                            commit.short_id,
-                            commit.summary,
-                            commit.author.name,
-                            commit.author.email,
-                        )
-                        .into();
-
                         let view_click = view.clone();
                         let view_commit = view.clone();
                         let commit_oid = commit.oid.to_string();
@@ -296,7 +293,6 @@ impl Render for FileHistoryView {
                             .bg(effective_bg)
                             .border_b_1()
                             .border_color(border_variant)
-                            .tooltip(Tooltip::text(tooltip_text))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 move |_: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
@@ -374,7 +370,6 @@ impl Render for FileHistoryView {
                                                 "file-history-author".into(),
                                                 i as u64,
                                             ))
-                                            .tooltip(Tooltip::text(author_display.clone()))
                                             .child(author_display),
                                     ),
                             )

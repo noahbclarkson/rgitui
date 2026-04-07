@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, font, px, ClickEvent, Context, DragMoveEvent, ElementId, FontFallbacks,
-    MouseButton, MouseDownEvent, Render, SharedString, Window,
+    canvas, div, font, px, App, ClickEvent, Context, CursorStyle, DragMoveEvent, ElementId,
+    FontFallbacks, MouseButton, MouseDownEvent, Render, SharedString, Window,
 };
 use rgitui_git::GitOperationState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
@@ -491,7 +491,7 @@ impl Render for Workspace {
                             let new_h = f32::from(
                                 this.layout.right_panel_bounds.bottom() - e.event.position.y,
                             )
-                            .clamp(240., 500.);
+                            .clamp(300., 500.);
                             this.layout.commit_input_height = new_h;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -619,30 +619,164 @@ impl Render for Workspace {
                                             )
                                     }),
                             )
-                            // Diff viewer / Blame view / File History
-                            .child(
+                            // Bottom panel tabs + content
+                            .child({
+                                let tab_bar_bg = colors.toolbar_background;
+                                let tab_border = colors.border_variant;
+                                let tab_active_bg = colors.element_selected;
+                                let tab_hover = colors.ghost_element_hover;
+
+                                let make_tab = |id: &'static str,
+                                                label: &'static str,
+                                                mode: BottomPanelMode,
+                                                current: BottomPanelMode| {
+                                    let active = mode == current;
+                                    let label: SharedString = label.into();
+                                    div()
+                                        .id(SharedString::from(id))
+                                        .h(px(24.))
+                                        .px(px(10.))
+                                        .flex()
+                                        .items_center()
+                                        .cursor(CursorStyle::PointingHand)
+                                        .rounded_t(px(4.))
+                                        .text_xs()
+                                        .when(active, |el| el.bg(tab_active_bg))
+                                        .when(!active, |el| el.hover(move |s| s.bg(tab_hover)))
+                                        .child(Label::new(label).size(LabelSize::XSmall).color(
+                                            if active {
+                                                Color::Default
+                                            } else {
+                                                Color::Muted
+                                            },
+                                        ))
+                                };
+
+                                let ws = cx.entity().downgrade();
+                                let ws2 = cx.entity().downgrade();
+                                let ws3 = cx.entity().downgrade();
+
+                                let tab_bar = div()
+                                    .h_flex()
+                                    .w_full()
+                                    .h(px(26.))
+                                    .bg(tab_bar_bg)
+                                    .border_b_1()
+                                    .border_color(tab_border)
+                                    .gap(px(2.))
+                                    .px(px(6.))
+                                    .items_end()
+                                    .child(
+                                        make_tab(
+                                            "bottom-tab-diff",
+                                            "Diff",
+                                            BottomPanelMode::Diff,
+                                            bottom_panel_mode,
+                                        )
+                                        .on_click(
+                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                ws.update(cx, |this, cx| {
+                                                    if let Some(tab) =
+                                                        this.tabs.get_mut(this.active_tab)
+                                                    {
+                                                        tab.bottom_panel_mode =
+                                                            BottomPanelMode::Diff;
+                                                    }
+                                                    cx.notify();
+                                                })
+                                                .ok();
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        make_tab(
+                                            "bottom-tab-history",
+                                            "History",
+                                            BottomPanelMode::FileHistory,
+                                            bottom_panel_mode,
+                                        )
+                                        .on_click(
+                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                ws2.update(cx, |this, cx| {
+                                                    if let Some(tab) =
+                                                        this.tabs.get_mut(this.active_tab)
+                                                    {
+                                                        if tab.bottom_panel_mode
+                                                            == BottomPanelMode::FileHistory
+                                                        {
+                                                            tab.bottom_panel_mode =
+                                                                BottomPanelMode::Diff;
+                                                        } else {
+                                                            this.execute_command(
+                                                                crate::CommandId::FileHistory,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }
+                                                    cx.notify();
+                                                })
+                                                .ok();
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        make_tab(
+                                            "bottom-tab-blame",
+                                            "Blame",
+                                            BottomPanelMode::Blame,
+                                            bottom_panel_mode,
+                                        )
+                                        .on_click(
+                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                ws3.update(cx, |this, cx| {
+                                                    if let Some(tab) =
+                                                        this.tabs.get_mut(this.active_tab)
+                                                    {
+                                                        if tab.bottom_panel_mode
+                                                            == BottomPanelMode::Blame
+                                                        {
+                                                            tab.bottom_panel_mode =
+                                                                BottomPanelMode::Diff;
+                                                        } else {
+                                                            this.execute_command(
+                                                                crate::CommandId::Blame,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }
+                                                    cx.notify();
+                                                })
+                                                .ok();
+                                            },
+                                        ),
+                                    );
+
                                 div()
+                                    .v_flex()
                                     .h(px(self.layout.diff_viewer_height))
                                     .flex_shrink_0()
                                     .when(diff_focused, |el| {
                                         el.border_t_2().border_color(focus_accent)
                                     })
+                                    .child(tab_bar)
                                     .when(bottom_panel_mode == BottomPanelMode::Diff, |el| {
                                         el.child(active_tab.diff_viewer.clone())
                                     })
                                     .when(bottom_panel_mode == BottomPanelMode::Blame, |el| {
                                         el.child(active_tab.blame_view.clone())
                                     })
-                                    .when(bottom_panel_mode == BottomPanelMode::FileHistory, |el| {
-                                        el.child(active_tab.file_history_view.clone())
-                                    })
+                                    .when(
+                                        bottom_panel_mode == BottomPanelMode::FileHistory,
+                                        |el| el.child(active_tab.file_history_view.clone()),
+                                    )
                                     .when(bottom_panel_mode == BottomPanelMode::Reflog, |el| {
                                         el.child(active_tab.reflog_view.clone())
                                     })
-                                    .when(bottom_panel_mode == BottomPanelMode::Submodules, |el| {
-                                        el.child(active_tab.submodule_view.clone())
-                                    }),
-                            ),
+                                    .when(
+                                        bottom_panel_mode == BottomPanelMode::Submodules,
+                                        |el| el.child(active_tab.submodule_view.clone()),
+                                    )
+                            }),
                     )
                     // Right panel: detail + resize handle + commit input
                     .child({

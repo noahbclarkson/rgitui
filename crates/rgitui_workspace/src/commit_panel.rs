@@ -263,10 +263,14 @@ impl Render for CommitPanel {
             .try_global::<rgitui_settings::SettingsState>()
             .map(|s| {
                 let settings = s.settings();
-                (settings.ai.enabled, s.ai_api_key().is_some())
+                (
+                    settings.ai.enabled,
+                    s.ai_api_key().is_some(),
+                    settings.ai.use_tools,
+                )
             })
-            .unwrap_or((false, false));
-        let (ai_enabled, has_api_key) = ai_settings;
+            .unwrap_or((false, false, false));
+        let (ai_enabled, has_api_key, ai_use_tools) = ai_settings;
 
         div()
             .v_flex()
@@ -332,9 +336,13 @@ impl Render for CommitPanel {
                                         .color(Color::Accent),
                                 )
                                 .child(
-                                    Label::new("Generating...")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Accent),
+                                    Label::new(if ai_use_tools {
+                                        "Generating (with tools)..."
+                                    } else {
+                                        "Generating..."
+                                    })
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Accent),
                                 ),
                         )
                     })

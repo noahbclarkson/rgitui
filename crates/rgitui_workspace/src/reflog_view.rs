@@ -4,7 +4,7 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Pixels, Point, Render,
+    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render,
     ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::ReflogEntryInfo;
@@ -34,8 +34,6 @@ pub struct ReflogView {
     focus_handle: FocusHandle,
     selected_row: Option<usize>,
     highlighted_row: Option<usize>,
-    /// Right-click context menu state: (entry_index, screen_position).
-    context_menu: Option<(usize, Point<Pixels>)>,
 }
 
 impl EventEmitter<ReflogViewEvent> for ReflogView {}
@@ -48,7 +46,6 @@ impl ReflogView {
             focus_handle: cx.focus_handle(),
             selected_row: None,
             highlighted_row: None,
-            context_menu: None,
         }
     }
 
@@ -78,18 +75,6 @@ impl ReflogView {
 
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window)
-    }
-
-    fn dismiss_context_menu(&mut self, cx: &mut Context<Self>) {
-        if self.context_menu.is_some() {
-            self.context_menu = None;
-            cx.notify();
-        }
-    }
-
-    fn show_context_menu(&mut self, index: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
-        self.context_menu = Some((index, position));
-        cx.notify();
     }
 
     fn handle_key_down(
@@ -223,7 +208,7 @@ impl ReflogView {
 }
 
 impl Render for ReflogView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
         if self.entries.is_empty() {
@@ -292,7 +277,6 @@ impl Render for ReflogView {
 
                         let view_click = view.clone();
                         let view_entry = view.clone();
-                        let view_ctx_menu = view.clone();
                         let entry_oid = entry.new_oid.to_string();
 
                         div()
@@ -311,23 +295,7 @@ impl Render for ReflogView {
                                         .update(cx, |this, cx| {
                                             this.highlighted_row = Some(i);
                                             this.selected_row = Some(i);
-                                            this.dismiss_context_menu(cx);
                                             cx.notify();
-                                        })
-                                        .ok();
-                                },
-                            )
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                move |event: &MouseDownEvent,
-                                      _window: &mut Window,
-                                      cx: &mut App| {
-                                    view_ctx_menu
-                                        .update(cx, |this, cx| {
-                                            this.dismiss_context_menu(cx);
-                                            this.highlighted_row = Some(i);
-                                            this.selected_row = Some(i);
-                                            this.show_context_menu(i, event.position, cx);
                                         })
                                         .ok();
                                 },
@@ -430,12 +398,9 @@ impl Render for ReflogView {
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_mouse_down(
                 MouseButton::Left,
-                move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                    view_dismiss
-                        .update(cx, |this, cx| {
-                            this.dismiss_context_menu(cx);
-                        })
-                        .ok();
+                move |_: &MouseDownEvent, _: &mut Window, _cx: &mut App| {
+                    // Absorb stray left-clicks on the container background.
+                    let _ = view_dismiss;
                 },
             )
             .v_flex()
@@ -476,181 +441,7 @@ impl Render for ReflogView {
                     ),
             )
             .child(list)
-            .child(self.render_context_menu(window, cx))
             .into_any_element()
     }
 }
 
-impl ReflogView {
-    fn render_context_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let (entry_idx, pos) = match self.context_menu {
-            Some((idx, p)) => (idx, p),
-            None => return div().into_any_element(),
-        };
-
-        let entry = match self.entries.get(entry_idx) {
-            Some(e) => e,
-            None => return div().into_any_element(),
-        };
-
-        let oid = entry.new_oid.to_string();
-        let colors = cx.colors();
-        let weak = cx.weak_entity();
-
-        // Clamp menu position to stay within window bounds.
-        let menu_w = px(200.);
-        let menu_h = px(145.);
-        let window_bounds = window.bounds();
-        let max_x = window_bounds.size.width - menu_w;
-        let max_y = window_bounds.size.height - menu_h;
-        let clamped_x = if pos.x > max_x { max_x } else { pos.x };
-        let clamped_y = if pos.y > max_y { max_y } else { pos.y };
-
-        let menu_bg = colors.elevated_surface_background;
-        let menu_border = colors.border;
-        let menu_hover = colors.ghost_element_hover;
-        let menu_active = colors.ghost_element_active;
-
-        let menu_items: Vec<(&str, IconName)> = vec![
-            ("Checkout", IconName::GitBranch),
-            ("Reset (hard)", IconName::Trash),
-            ("Reset (soft)", IconName::Undo),
-            ("Reset (mixed)", IconName::Refresh),
-            ("Copy OID", IconName::Copy),
-        ];
-
-        let mut menu = div()
-            .id("reflog-context-menu")
-            .absolute()
-            .left(clamped_x)
-            .top(clamped_y)
-            .v_flex()
-            .min_w(px(200.))
-            .py(px(3.))
-            .bg(menu_bg)
-            .border_1()
-            .border_color(menu_border)
-            .rounded(px(6.))
-            .elevation_3(cx)
-            .on_mouse_down(
-                MouseButton::Left,
-                |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                    cx.stop_propagation();
-                },
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                    cx.stop_propagation();
-                },
-            );
-
-        for (idx, (label_text, icon_name)) in menu_items.into_iter().enumerate() {
-            let label: SharedString = label_text.into();
-            let icon = icon_name;
-
-            if idx > 0 {
-                menu = menu.child(
-                    div()
-                        .w_full()
-                        .h(px(1.))
-                        .my(px(2.))
-                        .mx(px(8.))
-                        .bg(colors.border_variant),
-                );
-            }
-
-            let mut item = div()
-                .id(ElementId::NamedInteger(
-                    "reflog-ctx-action".into(),
-                    idx as u64,
-                ))
-                .h_flex()
-                .w_full()
-                .h(px(26.))
-                .px(px(8.))
-                .mx(px(4.))
-                .gap(px(6.))
-                .items_center()
-                .cursor_pointer()
-                .rounded(px(3.))
-                .hover(move |s| s.bg(menu_hover))
-                .active(move |s| s.bg(menu_active));
-
-            match idx {
-                0 => {
-                    let w = weak.clone();
-                    let oid = oid.clone();
-                    item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                        w.update(cx, |this, cx| {
-                            this.context_menu = None;
-                            cx.notify();
-                            cx.emit(ReflogViewEvent::CheckoutCommit(oid.clone()));
-                        })
-                        .ok();
-                    });
-                }
-                1 => {
-                    let w = weak.clone();
-                    let oid = oid.clone();
-                    item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                        w.update(cx, |this, cx| {
-                            this.context_menu = None;
-                            cx.notify();
-                            cx.emit(ReflogViewEvent::ResetHard(oid.clone()));
-                        })
-                        .ok();
-                    });
-                }
-                2 => {
-                    let w = weak.clone();
-                    let oid = oid.clone();
-                    item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                        w.update(cx, |this, cx| {
-                            this.context_menu = None;
-                            cx.notify();
-                            cx.emit(ReflogViewEvent::ResetSoft(oid.clone()));
-                        })
-                        .ok();
-                    });
-                }
-                3 => {
-                    let w = weak.clone();
-                    let oid = oid.clone();
-                    item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                        w.update(cx, |this, cx| {
-                            this.context_menu = None;
-                            cx.notify();
-                            cx.emit(ReflogViewEvent::ResetMixed(oid.clone()));
-                        })
-                        .ok();
-                    });
-                }
-                4 => {
-                    let w = weak.clone();
-                    let oid = oid.clone();
-                    item = item.on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                        w.update(cx, |this, cx| {
-                            this.context_menu = None;
-                            cx.notify();
-                            cx.emit(ReflogViewEvent::CopyOID(oid.clone()));
-                        })
-                        .ok();
-                    });
-                }
-                _ => {}
-            }
-
-            menu = menu.child(
-                item.child(Icon::new(icon).size(IconSize::XSmall).color(Color::Muted))
-                    .child(
-                        Label::new(label)
-                            .size(LabelSize::XSmall)
-                            .color(Color::Default),
-                    ),
-            );
-        }
-
-        menu.into_any_element()
-    }
-}

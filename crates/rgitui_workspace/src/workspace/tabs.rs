@@ -224,6 +224,7 @@ impl Workspace {
             prs_panel,
             right_panel_mode: RightPanelMode::Details,
             bottom_panel_mode: BottomPanelMode::Diff,
+            caches: super::ViewCaches::new(),
         });
         self.active_tab = self.tabs.len() - 1;
         self.overlays.command_palette.update(cx, |cp, _cx| {
@@ -298,7 +299,7 @@ impl Workspace {
         self.active_tab = snapshot
             .active_repo_index
             .min(self.tabs.len().saturating_sub(1));
-        self.status_message = Some(format!("Opened workspace '{}'", snapshot.name));
+        self.set_status_message(format!("Opened workspace '{}'", snapshot.name), cx);
         self.persist_workspace_snapshot(cx);
         cx.notify();
         Ok(())
@@ -331,7 +332,7 @@ impl Workspace {
         self.layout.sidebar_width = layout.sidebar_width;
         self.layout.detail_panel_width = layout.detail_panel_width;
         self.layout.diff_viewer_height = layout.diff_viewer_height;
-        self.layout.commit_input_height = layout.commit_input_height.max(240.0);
+        self.layout.commit_input_height = layout.commit_input_height.max(300.0);
     }
 
     pub(super) fn persist_workspace_snapshot(&mut self, cx: &mut Context<Self>) {

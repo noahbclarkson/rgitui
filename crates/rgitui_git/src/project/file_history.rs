@@ -11,75 +11,45 @@ use super::refresh::parse_co_authors;
 const MAX_FILE_HISTORY: usize = 100;
 
 /// Get commit history for a specific file.
+///
+/// Uses `git log -- <path>` which leverages git's built-in pathspec
+/// optimization (tree-diff pruning) and is orders of magnitude faster
+/// than walking all commits and diffing each tree manually.
 pub fn compute_file_history(
     repo_path: &Path,
     file_path: &Path,
     limit: usize,
 ) -> Result<Vec<CommitInfo>> {
-    let repo = Repository::open(repo_path)?;
-
-    let mut revwalk = repo.revwalk()?;
-    revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
-    revwalk.push_head()?;
-
-    let mut commits = Vec::new();
     let limit = limit.min(MAX_FILE_HISTORY);
+    let file_str = file_path.to_string_lossy();
 
-    for oid_result in revwalk {
-        if commits.len() >= limit {
-            break;
-        }
+    let output = std::process::Command::new("git")
+        .args([
+            "log",
+            "--format=%H",
+            &format!("-{}", limit),
+            "--",
+            &file_str,
+        ])
+        .current_dir(repo_path)
+        .output()?;
 
-        let oid = oid_result?;
-        let commit = repo.find_commit(oid)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git log failed: {}", stderr.trim());
+    }
 
-        // Check if this commit touches the file
-        let tree = commit.tree()?;
-        let touches_file = if let Ok(parent) = commit.parent(0) {
-            let parent_tree = parent.tree()?;
-            let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&tree), None)?;
+    let repo = Repository::open(repo_path)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits = Vec::new();
 
-            // Check if the file is in the diff.
-            // Note: returning `false` from the callback causes git2 to surface
-            // an EUSER(-7) error — we treat that as a normal early-exit, not a
-            // real failure.
-            let mut found = false;
-            let foreach_result = diff.foreach(
-                &mut |delta, _| {
-                    if let Some(new_path) = delta.new_file().path() {
-                        if new_path == file_path {
-                            found = true;
-                            return false; // stop iteration
-                        }
-                    }
-                    if let Some(old_path) = delta.old_file().path() {
-                        if old_path == file_path {
-                            found = true;
-                            return false; // stop iteration
-                        }
-                    }
-                    true
-                },
-                None,
-                None,
-                None,
-            );
-            match foreach_result {
-                Ok(_) => {}
-                Err(e) if e.code() == git2::ErrorCode::User => {
-                    // EUSER is the expected early-exit signal from the callback
-                }
-                Err(e) => return Err(e.into()),
-            }
-            found
-        } else {
-            // First commit - check if file exists in tree
-            tree.get_path(file_path).is_ok()
-        };
-
-        if !touches_file {
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
+        let oid = git2::Oid::from_str(line)?;
+        let commit = repo.find_commit(oid)?;
 
         let author = commit.author();
         let committer = commit.committer();
@@ -104,7 +74,7 @@ pub fn compute_file_history(
             co_authors,
             time: time.unwrap_or_else(Utc::now),
             parent_oids: commit.parent_ids().collect(),
-            refs: Vec::new(), // No refs needed for file history
+            refs: Vec::new(),
             is_signed: commit.header_field_bytes("gpgsig").is_ok(),
         });
     }

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
-use git2::Repository;
 use std::path::Path;
 
 /// A single blame annotation for a line or range of lines.
@@ -24,66 +23,118 @@ pub struct BlameLine {
 }
 
 /// Compute blame for a file at a given commit (or HEAD if None).
+///
+/// Uses `git blame --porcelain` which is significantly faster than
+/// libgit2's blame implementation.
 pub fn compute_blame(
     repo_path: &Path,
     file_path: &Path,
     commit_oid: Option<git2::Oid>,
 ) -> Result<Vec<BlameLine>> {
-    let repo = Repository::open(repo_path)?;
+    let file_str = file_path.to_string_lossy();
+    let mut args = vec!["blame", "--porcelain"];
+    let oid_str = commit_oid.map(|o| o.to_string());
+    if let Some(ref s) = oid_str {
+        args.push(s);
+    }
+    args.push("--");
+    args.push(&file_str);
 
-    let mut opts = git2::BlameOptions::new();
-    if let Some(oid) = commit_oid {
-        opts.newest_commit(oid);
+    let output = std::process::Command::new("git")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git blame failed: {}", stderr.trim());
     }
 
-    let blame = repo.blame_file(file_path, Some(&mut opts))?;
+    parse_porcelain_blame(&String::from_utf8_lossy(&output.stdout))
+}
 
-    let content = if let Some(oid) = commit_oid {
-        let commit = repo.find_commit(oid)?;
-        let tree = commit.tree()?;
-        let entry = tree.get_path(file_path)?;
-        let blob = repo.find_blob(entry.id())?;
-        String::from_utf8_lossy(blob.content()).to_string()
-    } else {
-        let full_path = repo
-            .workdir()
-            .ok_or_else(|| anyhow::anyhow!("Bare repository"))?
-            .join(file_path);
-        std::fs::read_to_string(full_path)?
-    };
+/// Parse `git blame --porcelain` output into BlameLine entries.
+fn parse_porcelain_blame(output: &str) -> Result<Vec<BlameLine>> {
+    use std::collections::HashMap;
 
-    let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::with_capacity(lines.len());
+    // Cache commit metadata keyed by OID string.
+    struct CommitMeta {
+        author: String,
+        email: String,
+        time: DateTime<Utc>,
+    }
+    let mut meta_cache: HashMap<String, CommitMeta> = HashMap::new();
 
-    for (i, line_content) in lines.iter().enumerate() {
-        let line_no = i + 1;
-        if let Some(hunk) = blame.get_line(line_no) {
-            let sig = hunk.final_signature();
-            let author = String::from_utf8_lossy(sig.name_bytes()).to_string();
-            let email = String::from_utf8_lossy(sig.email_bytes()).to_string();
-            let time = Utc
-                .timestamp_opt(sig.when().seconds(), 0)
-                .single()
-                .unwrap_or_default();
+    let mut result = Vec::new();
+    let mut lines = output.lines().peekable();
 
-            let oid = hunk.final_commit_id();
-            let oid_str = oid.to_string();
-            let short_id = oid_str[..7.min(oid_str.len())].to_string();
-
-            result.push(BlameLine {
-                line_no,
-                content: line_content.to_string(),
-                entry: BlameEntry {
-                    oid,
-                    short_id,
-                    author,
-                    email,
-                    time,
-                    start_line: hunk.final_start_line(),
-                    line_count: hunk.lines_in_hunk(),
-                },
-            });
+    while let Some(header) = lines.next() {
+        // Header line: "<oid> <orig_line> <final_line> [<group_count>]"
+        let parts: Vec<&str> = header.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
         }
+        let oid_str = parts[0];
+        let final_line: usize = parts[2].parse().unwrap_or(1);
+
+        // Read metadata lines until the content line (starts with \t).
+        let mut author = String::new();
+        let mut email = String::new();
+        let mut timestamp: i64 = 0;
+        let mut content_line = String::new();
+
+        for line in lines.by_ref() {
+            if let Some(stripped) = line.strip_prefix('\t') {
+                content_line = stripped.to_string();
+                break;
+            }
+            if let Some(val) = line.strip_prefix("author ") {
+                author = val.to_string();
+            } else if let Some(val) = line.strip_prefix("author-mail <") {
+                email = val.trim_end_matches('>').to_string();
+            } else if let Some(val) = line.strip_prefix("author-time ") {
+                timestamp = val.parse().unwrap_or(0);
+            }
+        }
+
+        // Use cached metadata for repeated OIDs (porcelain only emits
+        // full metadata the first time an OID appears).
+        if !author.is_empty() {
+            meta_cache.insert(
+                oid_str.to_string(),
+                CommitMeta {
+                    author: author.clone(),
+                    email: email.clone(),
+                    time: Utc
+                        .timestamp_opt(timestamp, 0)
+                        .single()
+                        .unwrap_or_default(),
+                },
+            );
+        }
+
+        let meta = meta_cache.get(oid_str);
+        let (a, e, t) = match meta {
+            Some(m) => (m.author.clone(), m.email.clone(), m.time),
+            None => (String::new(), String::new(), Utc::now()),
+        };
+
+        let oid = git2::Oid::from_str(oid_str).unwrap_or(git2::Oid::zero());
+        let short_id = oid_str[..7.min(oid_str.len())].to_string();
+
+        result.push(BlameLine {
+            line_no: final_line,
+            content: content_line,
+            entry: BlameEntry {
+                oid,
+                short_id,
+                author: a,
+                email: e,
+                time: t,
+                start_line: final_line,
+                line_count: 1,
+            },
+        });
     }
 
     Ok(result)

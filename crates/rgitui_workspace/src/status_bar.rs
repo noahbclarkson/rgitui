@@ -218,9 +218,10 @@ impl StatusBar {
             }
 
             msg_row = msg_row.child(
-                Label::new(SharedString::from(msg.clone()))
+                Label::new(SharedString::from(msg.replace('\n', " ")))
                     .size(LabelSize::XSmall)
-                    .color(msg_color),
+                    .color(msg_color)
+                    .truncate(),
             );
 
             left = left.child(msg_row);

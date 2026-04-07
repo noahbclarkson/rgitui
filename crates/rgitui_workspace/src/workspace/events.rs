@@ -116,7 +116,7 @@ pub(super) fn subscribe_interactive_rebase(
 
                     let count = entries.len();
                     let msg = format!("Interactive rebase started with {} commits.", count);
-                    this.status_message = Some(msg.clone());
+                    this.set_status_message(msg.clone(), cx);
                     this.show_toast(msg, ToastKind::Info, cx);
                 }
             }
@@ -142,7 +142,7 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
         AiEvent::GenerationFailed(err) => {
             log::error!("AI generation failed: {}", err);
             let msg = format!("AI error: {}", err);
-            this.status_message = Some(msg.clone());
+            this.set_status_message(msg.clone(), cx);
             this.show_toast(msg, ToastKind::Error, cx);
             if let Some(tab) = this.tabs.get(this.active_tab) {
                 tab.commit_panel.update(cx, |cp, cx| {
@@ -151,7 +151,7 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
             }
         }
         AiEvent::GenerationStarted => {
-            this.status_message = Some("Generating AI commit message...".into());
+            this.set_status_message("Generating AI commit message...", cx);
             this.show_toast("Generating AI commit message...", ToastKind::Info, cx);
         }
     })
@@ -736,7 +736,7 @@ pub(super) fn subscribe_project(
                     GitOperationState::Running => {
                         this.operations.is_loading = true;
                         this.operations.loading_message = Some(update.summary.clone());
-                        this.status_message = Some(update.summary.clone());
+                        this.set_status_message(update.summary.clone(), cx);
                         this.operations.active_git_operation = Some(update.clone());
                         this.operations.active_operations.push(ActiveOperation {
                             id: operation_id,
@@ -755,7 +755,7 @@ pub(super) fn subscribe_project(
                             .active_operations
                             .last()
                             .map(|op| op.label.to_string());
-                        this.status_message = Some(update.summary.clone());
+                        this.set_status_message(update.summary.clone(), cx);
                         if this
                             .operations
                             .active_git_operation
@@ -807,7 +807,7 @@ pub(super) fn subscribe_project(
                             this.operations.active_git_operation = None;
                         }
                         this.operations.last_failed_git_operation = Some(update.clone());
-                        this.status_message = Some(failure_message.clone());
+                        this.set_status_message(failure_message.clone(), cx);
                         let error_output = update
                             .details
                             .clone()
@@ -857,6 +857,17 @@ pub(super) fn subscribe_sidebar(
                 let repo_path = project.read(cx).repo_path().to_path_buf();
                 let dv = diff_viewer.clone();
                 let dp = detail_panel_ref.clone();
+
+                // Prefetch blame + history in background for instant switching.
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    Workspace::prefetch_blame_and_history(
+                        repo_path.clone(),
+                        path.clone(),
+                        tab.caches.clone(),
+                        cx,
+                    );
+                }
+
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let result = cx
                         .background_executor()
@@ -1848,10 +1859,17 @@ pub(super) fn subscribe_blame_view(
                     });
                 }
             }
-            BlameViewEvent::Dismissed => {
+            BlameViewEvent::Dismissed | BlameViewEvent::SwitchToDiff => {
                 if let Some(tab) = this.tabs.get_mut(this.active_tab) {
                     tab.bottom_panel_mode = BottomPanelMode::Diff;
                     cx.notify();
+                }
+            }
+            BlameViewEvent::SwitchToHistory => {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    let tab = tab.clone();
+                    this.execute_command(crate::CommandId::FileHistory, cx);
+                    let _ = tab;
                 }
             }
         }
@@ -1875,10 +1893,17 @@ pub(super) fn subscribe_file_history_view(
                     });
                 }
             }
-            FileHistoryViewEvent::Dismissed => {
+            FileHistoryViewEvent::Dismissed | FileHistoryViewEvent::SwitchToDiff => {
                 if let Some(tab) = this.tabs.get_mut(this.active_tab) {
                     tab.bottom_panel_mode = BottomPanelMode::Diff;
                     cx.notify();
+                }
+            }
+            FileHistoryViewEvent::SwitchToBlame => {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    let tab = tab.clone();
+                    this.execute_command(crate::CommandId::Blame, cx);
+                    let _ = tab;
                 }
             }
         }

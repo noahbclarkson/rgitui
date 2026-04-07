@@ -72,6 +72,23 @@ pub(super) enum RightPanelMode {
 }
 
 /// A single open project tab.
+/// Shared LRU caches for blame and file history, populated in the background
+/// when a diff is opened so that switching to blame/history is near-instant.
+#[derive(Clone)]
+pub(super) struct ViewCaches {
+    pub blame: std::sync::Arc<std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::BlameLine>>>>,
+    pub history: std::sync::Arc<std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::CommitInfo>>>>,
+}
+
+impl ViewCaches {
+    fn new() -> Self {
+        Self {
+            blame: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(8))),
+            history: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(8))),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct ProjectTab {
     pub name: String,
@@ -90,6 +107,7 @@ pub(super) struct ProjectTab {
     pub prs_panel: Entity<crate::PrsPanel>,
     pub right_panel_mode: RightPanelMode,
     pub bottom_panel_mode: BottomPanelMode,
+    pub caches: ViewCaches,
 }
 
 /// Events from the workspace.
@@ -138,6 +156,7 @@ pub struct Workspace {
     pub(super) toast_layer: Entity<ToastLayer>,
     pub(super) active_workspace_id: Option<String>,
     pub(super) status_message: Option<String>,
+    pub(super) status_message_gen: u64,
     pub(super) undo_stack: UndoStack,
     pub(super) layout_save_task: Option<gpui::Task<()>>,
 }
@@ -189,7 +208,7 @@ impl Workspace {
         let sidebar_width = layout_settings.sidebar_width;
         let detail_panel_width = layout_settings.detail_panel_width;
         let diff_viewer_height = layout_settings.diff_viewer_height;
-        let commit_input_height = layout_settings.commit_input_height.max(240.0);
+        let commit_input_height = layout_settings.commit_input_height.max(300.0);
 
         Self {
             tabs: Vec::new(),
@@ -237,9 +256,30 @@ impl Workspace {
             toast_layer,
             active_workspace_id: None,
             status_message: None,
+            status_message_gen: 0,
             undo_stack: UndoStack::new(),
             layout_save_task: None,
         }
+    }
+
+    /// Set a status bar message that auto-clears after 5 seconds.
+    pub(super) fn set_status_message(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
+        self.status_message = Some(msg.into());
+        self.status_message_gen += 1;
+        let gen = self.status_message_gen;
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(5))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.status_message_gen == gen {
+                    this.status_message = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Start background tasks like update checking.

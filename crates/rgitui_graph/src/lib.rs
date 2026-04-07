@@ -6,7 +6,7 @@ use gpui::prelude::*;
 use gpui::{
     canvas, div, img, point, px, uniform_list, App, Bounds, ClickEvent, Context, CursorStyle,
     ElementId, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, ListSizingBehavior,
-    MouseButton, MouseDownEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy,
     SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel};
@@ -719,6 +719,7 @@ impl Render for GraphView {
             Some(self.filter_matches[self.current_match])
         };
         let has_search_query = self.show_search && !self.search_editor.read(cx).is_empty();
+        let has_context_menu = self.context_menu.is_some();
 
         let lane_width: f32 = 20.0;
         let graph_padding_left: f32 = 10.0;
@@ -908,6 +909,7 @@ impl Render for GraphView {
                                 show_absolute_dates,
                                 show_graph_lanes,
                                 compact_mul,
+                                has_context_menu,
                             });
                         }
 
@@ -1020,7 +1022,9 @@ impl Render for GraphView {
                             .w_full()
                             .bg(bg)
                             .cursor(CursorStyle::PointingHand)
-                            .hover(move |s| s.bg(row_hover_bg))
+                            .when(!has_context_menu, |el| {
+                                el.hover(move |s| s.bg(row_hover_bg))
+                            })
                             .active(move |s| s.bg(row_active_bg))
                             .on_click(
                                 move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
@@ -1081,7 +1085,7 @@ impl Render for GraphView {
                                                 let mut approach = PathBuilder::stroke(px(2.0));
                                                 approach.move_to(point(
                                                     origin.x + node_x_px,
-                                                    origin.y - px(2.0),
+                                                    origin.y - px(3.0),
                                                 ));
                                                 approach.line_to(point(
                                                     origin.x + node_x_px,
@@ -1110,9 +1114,9 @@ impl Render for GraphView {
                                                 let start_y = if edge.from_lane == node_lane {
                                                     origin.y + mid_y
                                                 } else {
-                                                    origin.y - px(2.0)
+                                                    origin.y - px(3.0)
                                                 };
-                                                let end_y = origin.y + h + px(2.0);
+                                                let end_y = origin.y + h + px(3.0);
 
                                                 let stroke_width = px(2.0);
 
@@ -1811,6 +1815,12 @@ impl Render for GraphView {
                         |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
                             cx.stop_propagation();
                         },
+                    )
+                    // Prevent hover from leaking through to graph rows
+                    .on_mouse_move(
+                        |_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
+                            cx.stop_propagation();
+                        },
                     );
 
                 for (idx, (label_text, icon_name)) in menu_items.iter().enumerate() {
@@ -2402,6 +2412,7 @@ struct WorkingTreeRowParams {
     show_absolute_dates: bool,
     show_graph_lanes: bool,
     compact_mul: f32,
+    has_context_menu: bool,
 }
 
 /// Render the virtual "Working Tree" row that appears at the top of the graph.
@@ -2430,6 +2441,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         show_absolute_dates: _,
         show_graph_lanes,
         compact_mul,
+        has_context_menu,
     } = params;
     let bg = if selected {
         selected_bg
@@ -2500,7 +2512,9 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
             ..working_tree_border_color
         })
         .cursor(CursorStyle::PointingHand)
-        .hover(move |s| s.bg(row_hover_bg))
+        .when(!has_context_menu, |el| {
+            el.hover(move |s| s.bg(row_hover_bg))
+        })
         .active(move |s| s.bg(row_active_bg))
         .on_click(
             move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {

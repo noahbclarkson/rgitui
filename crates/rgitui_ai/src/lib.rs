@@ -899,17 +899,17 @@ async fn generate_gemini_with_tools(
                     Err(e) => format!("Error: {}", e),
                 };
 
-                // Add model's function call with the model's thinking (thought).
-                // The thought must be echoed back so the model retains context
-                // across the tool-call round trip.
-                let thought = part.thought.clone();
-                let model_part: serde_json::Value = if let Some(ref t) = thought {
+                // Echo the model's function call with its thoughtSignature.
+                // The signature must be returned verbatim so the model retains
+                // reasoning continuity across tool-call round trips.
+                let sig = part.thought_signature.clone();
+                let model_part: serde_json::Value = if let Some(ref s) = sig {
                     serde_json::json!({
                         "functionCall": {
                             "name": fc.name,
                             "args": fc.args
                         },
-                        "thought": t
+                        "thoughtSignature": s
                     })
                 } else {
                     serde_json::json!({
@@ -1032,10 +1032,11 @@ struct GeminiToolPart {
     text: String,
     #[serde(rename = "functionCall")]
     function_call: Option<GeminiFunctionCall>,
-    /// The model's reasoning/thinking about this function call.
-    /// Must be echoed back in the next request when returning the function result.
-    #[serde(default)]
-    thought: Option<String>,
+    /// Opaque signature of the model's reasoning about this function call.
+    /// Must be echoed back verbatim in the next request so the model retains
+    /// reasoning continuity across tool-call round trips.
+    #[serde(default, rename = "thoughtSignature")]
+    thought_signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -18,6 +18,8 @@ use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 pub enum BlameViewEvent {
     CommitSelected(String),
     Dismissed,
+    SwitchToHistory,
+    SwitchToDiff,
 }
 
 /// A blame viewer panel that shows per-line annotations for a file.
@@ -140,8 +142,12 @@ impl BlameView {
                 }
                 cx.stop_propagation();
             }
-            "escape" => {
-                cx.emit(BlameViewEvent::Dismissed);
+            "escape" | "d" => {
+                cx.emit(BlameViewEvent::SwitchToDiff);
+                cx.stop_propagation();
+            }
+            "h" => {
+                cx.emit(BlameViewEvent::SwitchToHistory);
                 cx.stop_propagation();
             }
             "g" => {
