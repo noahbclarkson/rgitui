@@ -1189,9 +1189,13 @@ impl DiffViewer {
         window: &Window,
         text: &StyledLine,
         default_color: gpui::Hsla,
+        row_height: f32,
     ) -> gpui::AnyElement {
         let mut text_style = window.text_style();
         text_style.color = default_color;
+        // Clamp line_height to row height so highlight background rects
+        // don't extend past the row boundaries and overlap adjacent rows.
+        text_style.line_height = px(row_height).into();
 
         // Guard: if text is empty but highlights exist, GPUI panics on
         // StyledText::with_default_highlights (Text: '', run: len: N).
@@ -1658,6 +1662,12 @@ impl DiffViewer {
         let del_spans = Self::merge_nearby_spans(del_spans, 1);
         let add_spans = Self::merge_nearby_spans(add_spans, 1);
 
+        // Extend each span to include immediately adjacent punctuation
+        // (e.g. trailing parens/brackets) so `overflow_y_hidden()` highlights
+        // as one block instead of stopping before the `()`.
+        let del_spans = Self::extend_spans_to_punctuation(del_spans, old_trimmed);
+        let add_spans = Self::extend_spans_to_punctuation(add_spans, new_trimmed);
+
         (del_spans, add_spans)
     }
 
@@ -1715,6 +1725,33 @@ impl DiffViewer {
             }
         }
         merged
+    }
+
+    /// Extend each span to absorb immediately adjacent punctuation so
+    /// highlights cover complete expressions like `func()` or `arr[i]`.
+    fn extend_spans_to_punctuation(
+        spans: Vec<Range<usize>>,
+        text: &str,
+    ) -> Vec<Range<usize>> {
+        spans
+            .into_iter()
+            .map(|span| {
+                let mut end = span.end;
+                let bytes = text.as_bytes();
+                while end < bytes.len() {
+                    let ch = bytes[end];
+                    if ch == b'(' || ch == b')' || ch == b'[' || ch == b']'
+                        || ch == b'{' || ch == b'}' || ch == b'.' || ch == b','
+                        || ch == b';' || ch == b':' || ch == b'<' || ch == b'>'
+                    {
+                        end += 1;
+                    } else {
+                        break;
+                    }
+                }
+                span.start..end
+            })
+            .collect()
     }
 }
 
@@ -2144,7 +2181,8 @@ impl Render for DiffViewer {
                                                     .font_family("monospace")
                                                     .text_color(text_col)
                                                     .whitespace_nowrap()
-                                                    .child(Self::render_styled_text(window, styled, text_col)),
+                                                    .overflow_y_hidden()
+                                                    .child(Self::render_styled_text(window, styled, text_col, row_height)),
                                             )
                                             .into_any_element()
                                     }
@@ -2404,7 +2442,8 @@ impl Render for DiffViewer {
                                                             .text_color(left_text_col)
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
-                                                            .child(Self::render_styled_text(window, left_styled, left_text_col)),
+                                                            .overflow_y_hidden()
+                                                            .child(Self::render_styled_text(window, left_styled, left_text_col, row_height)),
                                                     ),
                                             )
                                             .child(
@@ -2451,7 +2490,8 @@ impl Render for DiffViewer {
                                                             .text_color(right_text_col)
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
-                                                            .child(Self::render_styled_text(window, right_styled, right_text_col)),
+                                                            .overflow_y_hidden()
+                                                            .child(Self::render_styled_text(window, right_styled, right_text_col, row_height)),
                                                     ),
                                             )
                                             .into_any_element()
@@ -2576,7 +2616,7 @@ impl Render for DiffViewer {
                                                             .font_family("monospace")
                                                             .text_color(left_text_col)
                                                             .overflow_x_hidden()
-                                                            .child(Self::render_styled_text(window, left_styled, left_text_col)),
+                                                            .child(Self::render_styled_text(window, left_styled, left_text_col, row_height)),
                                                     ),
                                             )
                                             .child(
@@ -2608,7 +2648,7 @@ impl Render for DiffViewer {
                                                             .font_family("monospace")
                                                             .text_color(text_color)
                                                             .overflow_x_hidden()
-                                                            .child(Self::render_styled_text(window, mid_styled, text_color)),
+                                                            .child(Self::render_styled_text(window, mid_styled, text_color, row_height)),
                                                     ),
                                             )
                                             .child(
@@ -2638,7 +2678,7 @@ impl Render for DiffViewer {
                                                             .font_family("monospace")
                                                             .text_color(right_text_col)
                                                             .overflow_x_hidden()
-                                                            .child(Self::render_styled_text(window, right_styled, right_text_col)),
+                                                            .child(Self::render_styled_text(window, right_styled, right_text_col, row_height)),
                                                     ),
                                             )
                                             .into_any_element()
