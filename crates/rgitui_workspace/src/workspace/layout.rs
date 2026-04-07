@@ -470,7 +470,7 @@ impl Render for Workspace {
                         |this, e: &DragMoveEvent<DetailPanelResize>, _, cx| {
                             let new_w =
                                 f32::from(this.layout.content_bounds.right() - e.event.position.x)
-                                    .clamp(180., 600.);
+                                    .clamp(180., 720.);
                             this.layout.detail_panel_width = new_w;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -626,31 +626,28 @@ impl Render for Workspace {
                                 let tab_active_bg = colors.element_selected;
                                 let tab_hover = colors.ghost_element_hover;
 
-                                let make_tab = |id: &'static str,
-                                                label: &'static str,
-                                                mode: BottomPanelMode,
-                                                current: BottomPanelMode| {
-                                    let active = mode == current;
-                                    let label: SharedString = label.into();
-                                    div()
-                                        .id(SharedString::from(id))
-                                        .h(px(24.))
-                                        .px(px(10.))
-                                        .flex()
-                                        .items_center()
-                                        .cursor(CursorStyle::PointingHand)
-                                        .rounded_t(px(4.))
-                                        .text_xs()
-                                        .when(active, |el| el.bg(tab_active_bg))
-                                        .when(!active, |el| el.hover(move |s| s.bg(tab_hover)))
-                                        .child(Label::new(label).size(LabelSize::XSmall).color(
-                                            if active {
-                                                Color::Default
-                                            } else {
-                                                Color::Muted
-                                            },
-                                        ))
-                                };
+                                let make_tab =
+                                    |id: &'static str,
+                                     label: &'static str,
+                                     mode: BottomPanelMode,
+                                     current: BottomPanelMode| {
+                                        let active = mode == current;
+                                        let label: SharedString = label.into();
+                                        div()
+                                            .id(SharedString::from(id))
+                                            .h(px(24.))
+                                            .px(px(10.))
+                                            .flex()
+                                            .items_center()
+                                            .cursor(CursorStyle::PointingHand)
+                                            .rounded_t(px(4.))
+                                            .text_xs()
+                                            .when(active, |el| el.bg(tab_active_bg))
+                                            .when(!active, |el| el.hover(move |s| s.bg(tab_hover)))
+                                            .child(Label::new(label).size(LabelSize::XSmall).color(
+                                                if active { Color::Default } else { Color::Muted },
+                                            ))
+                                    };
 
                                 let ws = cx.entity().downgrade();
                                 let ws2 = cx.entity().downgrade();
@@ -765,17 +762,15 @@ impl Render for Workspace {
                                     .when(bottom_panel_mode == BottomPanelMode::Blame, |el| {
                                         el.child(active_tab.blame_view.clone())
                                     })
-                                    .when(
-                                        bottom_panel_mode == BottomPanelMode::FileHistory,
-                                        |el| el.child(active_tab.file_history_view.clone()),
-                                    )
+                                    .when(bottom_panel_mode == BottomPanelMode::FileHistory, |el| {
+                                        el.child(active_tab.file_history_view.clone())
+                                    })
                                     .when(bottom_panel_mode == BottomPanelMode::Reflog, |el| {
                                         el.child(active_tab.reflog_view.clone())
                                     })
-                                    .when(
-                                        bottom_panel_mode == BottomPanelMode::Submodules,
-                                        |el| el.child(active_tab.submodule_view.clone()),
-                                    )
+                                    .when(bottom_panel_mode == BottomPanelMode::Submodules, |el| {
+                                        el.child(active_tab.submodule_view.clone())
+                                    })
                             }),
                     )
                     // Right panel: detail + resize handle + commit input

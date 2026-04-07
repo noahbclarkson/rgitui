@@ -651,48 +651,48 @@ impl Workspace {
             return;
         }
 
-        cx.spawn(async move |_this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            // Run both in parallel on the background executor.
-            let blame_key = file_key.clone();
-            let history_key = file_key;
+        cx.spawn(
+            async move |_this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                // Run both in parallel on the background executor.
+                let blame_key = file_key.clone();
+                let history_key = file_key;
 
-            let blame_fut = cx.background_executor().spawn({
-                let cache = blame_cache.clone();
-                let cached = blame_cached;
-                async move {
-                    if cached {
-                        return;
-                    }
-                    if let Ok(lines) =
-                        rgitui_git::compute_blame(&repo1, &blame_path, None)
-                    {
-                        if let Ok(mut c) = cache.lock() {
-                            c.insert(blame_key, lines);
+                let blame_fut = cx.background_executor().spawn({
+                    let cache = blame_cache.clone();
+                    let cached = blame_cached;
+                    async move {
+                        if cached {
+                            return;
+                        }
+                        if let Ok(lines) = rgitui_git::compute_blame(&repo1, &blame_path, None) {
+                            if let Ok(mut c) = cache.lock() {
+                                c.insert(blame_key, lines);
+                            }
                         }
                     }
-                }
-            });
+                });
 
-            let history_fut = cx.background_executor().spawn({
-                let cache = history_cache.clone();
-                let cached = history_cached;
-                async move {
-                    if cached {
-                        return;
-                    }
-                    if let Ok(commits) =
-                        rgitui_git::compute_file_history(&repo2, &history_path, 50)
-                    {
-                        if let Ok(mut c) = cache.lock() {
-                            c.insert(history_key, commits);
+                let history_fut = cx.background_executor().spawn({
+                    let cache = history_cache.clone();
+                    let cached = history_cached;
+                    async move {
+                        if cached {
+                            return;
+                        }
+                        if let Ok(commits) =
+                            rgitui_git::compute_file_history(&repo2, &history_path, 50)
+                        {
+                            if let Ok(mut c) = cache.lock() {
+                                c.insert(history_key, commits);
+                            }
                         }
                     }
-                }
-            });
+                });
 
-            blame_fut.await;
-            history_fut.await;
-        })
+                blame_fut.await;
+                history_fut.await;
+            },
+        )
         .detach();
     }
 }

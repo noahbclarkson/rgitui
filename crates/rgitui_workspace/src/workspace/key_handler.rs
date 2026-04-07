@@ -387,7 +387,7 @@ impl Workspace {
                 }
                 "]" | "bracketright" => {
                     self.layout.detail_panel_width =
-                        (self.layout.detail_panel_width + 20.0).min(480.0);
+                        (self.layout.detail_panel_width + 20.0).min(720.0);
                     self.schedule_layout_save(cx);
                     cx.notify();
                 }

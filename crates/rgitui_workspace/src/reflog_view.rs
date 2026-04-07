@@ -4,8 +4,8 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render,
-    ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window,
+    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render, ScrollStrategy,
+    SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::ReflogEntryInfo;
 use rgitui_settings::SettingsState;
@@ -444,4 +444,3 @@ impl Render for ReflogView {
             .into_any_element()
     }
 }
-

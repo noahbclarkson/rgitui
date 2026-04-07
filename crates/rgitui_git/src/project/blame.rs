@@ -105,10 +105,7 @@ fn parse_porcelain_blame(output: &str) -> Result<Vec<BlameLine>> {
                 CommitMeta {
                     author: author.clone(),
                     email: email.clone(),
-                    time: Utc
-                        .timestamp_opt(timestamp, 0)
-                        .single()
-                        .unwrap_or_default(),
+                    time: Utc.timestamp_opt(timestamp, 0).single().unwrap_or_default(),
                 },
             );
         }

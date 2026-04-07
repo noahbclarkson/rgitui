@@ -42,6 +42,8 @@ impl std::str::FromStr for CommitStyle {
 #[derive(Debug, Clone)]
 pub enum AiEvent {
     GenerationStarted,
+    /// A tool call is being executed. Contains a human-readable description.
+    ToolCallStarted(String),
     GenerationCompleted(String),
     GenerationFailed(String),
 }
@@ -98,6 +100,35 @@ impl AiGenerator {
         self.generate_commit_message_with_tools(diff, summary, repo_path, false, cx)
     }
 
+    /// Human-readable description of a tool call for status display.
+    fn describe_tool_call(call: &ToolCall) -> String {
+        let args = &call.arguments;
+        match call.name.as_str() {
+            "get_file_content" => {
+                let path = args["path"].as_str().unwrap_or("?");
+                format!("Reading {}", path)
+            }
+            "get_file_history" => {
+                let path = args["path"].as_str().unwrap_or("?");
+                format!("File history: {}", path)
+            }
+            "get_recent_commits" => {
+                let n = args["count"].as_u64().unwrap_or(5);
+                format!("Reading {} recent commits", n)
+            }
+            "get_diff" => {
+                let kind = args["kind"].as_str().unwrap_or("staged");
+                format!("Reading {} diff", kind)
+            }
+            "get_branch_list" => "Listing branches".to_string(),
+            "get_file_tree" => {
+                let path = args["path"].as_str().unwrap_or(".");
+                format!("Scanning {}", path)
+            }
+            _ => format!("Calling {}", call.name),
+        }
+    }
+
     /// Generate a commit message with optional tool-calling support.
     pub fn generate_commit_message_with_tools(
         &mut self,
@@ -151,6 +182,14 @@ impl AiGenerator {
                 None
             };
             let ctx_ref = project_context.as_deref();
+            // Callback for tool call status — emits events to update the status bar.
+            let mut on_tool_call = |desc: &str| {
+                let msg = desc.to_string();
+                let _ = this.update(cx, |_this, cx| {
+                    cx.emit(AiEvent::ToolCallStarted(msg));
+                    cx.notify();
+                });
+            };
             let result = match provider.as_str() {
                 "gemini" => {
                     if use_tools {
@@ -163,6 +202,7 @@ impl AiGenerator {
                             commit_style,
                             ctx_ref,
                             &repo_path,
+                            &mut on_tool_call,
                         )
                         .await
                     } else {
@@ -189,6 +229,7 @@ impl AiGenerator {
                             commit_style,
                             ctx_ref,
                             &repo_path,
+                            &mut on_tool_call,
                         )
                         .await
                     } else {
@@ -215,6 +256,7 @@ impl AiGenerator {
                             commit_style,
                             ctx_ref,
                             &repo_path,
+                            &mut on_tool_call,
                         )
                         .await
                     } else {
@@ -564,6 +606,7 @@ struct GeminiPart {
 const MAX_TOOL_ITERATIONS: usize = 3;
 
 /// Generate a commit message using Anthropic's API with tool-calling support.
+#[allow(clippy::too_many_arguments)]
 async fn generate_anthropic_with_tools(
     client: &Arc<dyn HttpClient>,
     api_key: &Option<String>,
@@ -573,6 +616,7 @@ async fn generate_anthropic_with_tools(
     commit_style: CommitStyle,
     project_context: Option<&str>,
     repo_path: &Path,
+    on_tool_call: &mut dyn FnMut(&str),
 ) -> Result<String> {
     let api_key = api_key
         .as_ref()
@@ -650,6 +694,7 @@ async fn generate_anthropic_with_tools(
                             arguments: block["input"].clone(),
                         };
 
+                        on_tool_call(&AiGenerator::describe_tool_call(&tool_call));
                         let result = execute_tool(&tool_call, repo_path);
                         let result_content = match result.result {
                             Ok(output) => output,
@@ -698,6 +743,7 @@ async fn generate_anthropic_with_tools(
 }
 
 /// Generate a commit message using OpenAI's API with function calling support.
+#[allow(clippy::too_many_arguments)]
 async fn generate_openai_with_tools(
     client: &Arc<dyn HttpClient>,
     api_key: &Option<String>,
@@ -707,6 +753,7 @@ async fn generate_openai_with_tools(
     commit_style: CommitStyle,
     project_context: Option<&str>,
     repo_path: &Path,
+    on_tool_call: &mut dyn FnMut(&str),
 ) -> Result<String> {
     let api_key = api_key
         .as_ref()
@@ -786,6 +833,7 @@ async fn generate_openai_with_tools(
                         .unwrap_or(serde_json::json!({})),
                     };
 
+                    on_tool_call(&AiGenerator::describe_tool_call(&tool_call_obj));
                     let result = execute_tool(&tool_call_obj, repo_path);
                     let result_content = match result.result {
                         Ok(output) => output,
@@ -817,6 +865,7 @@ async fn generate_openai_with_tools(
 }
 
 /// Generate a commit message using Gemini's API with function calling support.
+#[allow(clippy::too_many_arguments)]
 async fn generate_gemini_with_tools(
     client: &Arc<dyn HttpClient>,
     api_key: &Option<String>,
@@ -826,6 +875,7 @@ async fn generate_gemini_with_tools(
     commit_style: CommitStyle,
     project_context: Option<&str>,
     repo_path: &Path,
+    on_tool_call: &mut dyn FnMut(&str),
 ) -> Result<String> {
     let api_key = api_key
         .as_ref()
@@ -893,6 +943,7 @@ async fn generate_gemini_with_tools(
                     arguments: fc.args.clone(),
                 };
 
+                on_tool_call(&AiGenerator::describe_tool_call(&tool_call));
                 let result = execute_tool(&tool_call, repo_path);
                 let result_content = match result.result {
                     Ok(output) => output,

@@ -150,6 +150,9 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
                 });
             }
         }
+        AiEvent::ToolCallStarted(description) => {
+            this.set_status_message(format!("AI: {}", description), cx);
+        }
         AiEvent::GenerationStarted => {
             this.set_status_message("Generating AI commit message...", cx);
             this.show_toast("Generating AI commit message...", ToastKind::Info, cx);

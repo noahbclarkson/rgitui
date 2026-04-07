@@ -259,13 +259,13 @@ fn default_sidebar_width() -> f32 {
     240.0
 }
 fn default_detail_panel_width() -> f32 {
-    320.0
+    352.0
 }
 fn default_diff_viewer_height() -> f32 {
     345.0
 }
 fn default_commit_input_height() -> f32 {
-    320.0
+    385.0
 }
 
 impl Default for LayoutSettings {

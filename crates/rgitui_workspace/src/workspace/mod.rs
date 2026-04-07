@@ -76,8 +76,12 @@ pub(super) enum RightPanelMode {
 /// when a diff is opened so that switching to blame/history is near-instant.
 #[derive(Clone)]
 pub(super) struct ViewCaches {
-    pub blame: std::sync::Arc<std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::BlameLine>>>>,
-    pub history: std::sync::Arc<std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::CommitInfo>>>>,
+    pub blame: std::sync::Arc<
+        std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::BlameLine>>>,
+    >,
+    pub history: std::sync::Arc<
+        std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::CommitInfo>>>,
+    >,
 }
 
 impl ViewCaches {
@@ -267,18 +271,20 @@ impl Workspace {
         self.status_message = Some(msg.into());
         self.status_message_gen += 1;
         let gen = self.status_message_gen;
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(5))
-                .await;
-            this.update(cx, |this, cx| {
-                if this.status_message_gen == gen {
-                    this.status_message = None;
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(5))
+                    .await;
+                this.update(cx, |this, cx| {
+                    if this.status_message_gen == gen {
+                        this.status_message = None;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            },
+        )
         .detach();
     }
 

@@ -6,8 +6,8 @@ use gpui::prelude::*;
 use gpui::{
     canvas, div, img, point, px, uniform_list, App, Bounds, ClickEvent, Context, CursorStyle,
     ElementId, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, ListSizingBehavior,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render, ScrollStrategy,
-    SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render,
+    ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel};
 use rgitui_settings::{GraphStyle, SettingsState};
@@ -1817,11 +1817,9 @@ impl Render for GraphView {
                         },
                     )
                     // Prevent hover from leaking through to graph rows
-                    .on_mouse_move(
-                        |_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
-                            cx.stop_propagation();
-                        },
-                    );
+                    .on_mouse_move(|_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    });
 
                 for (idx, (label_text, icon_name)) in menu_items.iter().enumerate() {
                     let label: SharedString = (*label_text).into();

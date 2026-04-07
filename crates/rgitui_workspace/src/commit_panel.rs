@@ -282,48 +282,57 @@ impl Render for CommitPanel {
                     .w_full()
                     .h(px(34.))
                     .px(px(10.))
-                    .gap(px(8.))
                     .items_center()
+                    .justify_between()
                     .flex_shrink_0()
                     .bg(colors.toolbar_background)
                     .border_b_1()
                     .border_color(colors.border_variant)
-                    .child(
-                        rgitui_ui::Icon::new(IconName::GitCommit)
-                            .size(rgitui_ui::IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        Label::new("Commit")
-                            .size(LabelSize::XSmall)
-                            .weight(gpui::FontWeight::SEMIBOLD)
-                            .color(Color::Muted),
-                    )
+                    // Left group: icon + label + badge
                     .child(
                         div()
                             .h_flex()
-                            .h(px(18.))
-                            .px(px(6.))
-                            .rounded(px(3.))
-                            .bg(if self.staged_count > 0 {
-                                colors.ghost_element_selected
-                            } else {
-                                colors.element_disabled
-                            })
+                            .gap(px(8.))
                             .items_center()
-                            .child(Label::new(staged_label).size(LabelSize::XSmall).color(
-                                if self.staged_count > 0 {
-                                    Color::Added
-                                } else {
-                                    Color::Muted
-                                },
-                            )),
+                            .flex_shrink_0()
+                            .child(
+                                rgitui_ui::Icon::new(IconName::GitCommit)
+                                    .size(rgitui_ui::IconSize::XSmall)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new("Commit")
+                                    .size(LabelSize::XSmall)
+                                    .weight(gpui::FontWeight::SEMIBOLD)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .h(px(18.))
+                                    .px(px(6.))
+                                    .rounded(px(3.))
+                                    .bg(if self.staged_count > 0 {
+                                        colors.ghost_element_selected
+                                    } else {
+                                        colors.element_disabled
+                                    })
+                                    .items_center()
+                                    .child(Label::new(staged_label).size(LabelSize::XSmall).color(
+                                        if self.staged_count > 0 {
+                                            Color::Added
+                                        } else {
+                                            Color::Muted
+                                        },
+                                    )),
+                            ),
                     )
-                    .child(div().flex_1())
+                    // Right group: AI button or generating indicator
                     .when(self.is_ai_generating, |el| {
                         el.child(
                             div()
                                 .h_flex()
+                                .flex_shrink_0()
                                 .h(px(20.))
                                 .px(px(8.))
                                 .rounded(px(3.))
