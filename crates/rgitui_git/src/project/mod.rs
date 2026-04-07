@@ -24,6 +24,7 @@ use crate::types::*;
 /// Create a `git` [`Command`] with `CREATE_NO_WINDOW` set on Windows so that
 /// spawning it from a GUI application never flashes a visible console window.
 pub(crate) fn git_command() -> Command {
+    #[allow(unused_mut)]
     let mut cmd = Command::new("git");
     #[cfg(target_os = "windows")]
     {

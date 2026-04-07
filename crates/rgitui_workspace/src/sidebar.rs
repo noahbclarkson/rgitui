@@ -1672,63 +1672,84 @@ impl Render for Sidebar {
         );
 
         if remote_expanded {
-            for (i, branch) in self.remote_branches.iter().enumerate() {
-                let kb_active = keyboard_index == Some(nav_idx);
-                nav_idx += 1;
-                let name: SharedString = branch.name.clone().into();
-                let remote_branch_name = name.clone();
-                content = content.child(
-                    div()
-                        .id(ElementId::NamedInteger("remote-branch".into(), i as u64))
-                        .h_flex()
-                        .w_full()
-                        .h(px(item_h))
-                        .px_2()
-                        .pl(px(16.))
-                        .gap(px(4.))
-                        .items_center()
-                        .when(kb_active, |el| {
-                            el.bg(colors.ghost_element_hover)
-                                .border_l_2()
-                                .border_color(kb_accent)
-                        })
-                        .hover(|s| s.bg(colors.ghost_element_hover))
-                        .active(|s| s.bg(colors.ghost_element_active))
-                        .on_click({
-                            let remote_branch_name = remote_branch_name.clone();
-                            cx.listener(move |_this, event: &ClickEvent, _, cx| {
-                                if event.click_count() >= 2 {
-                                    cx.emit(SidebarEvent::BranchCheckout(
-                                        remote_branch_name.to_string(),
-                                    ));
-                                } else {
-                                    cx.emit(SidebarEvent::BranchSelected(
-                                        remote_branch_name.to_string(),
-                                    ));
-                                }
-                            })
-                        })
-                        .child(
+            nav_idx += self.flattened_remote_branches.len();
+            let flattened = self.flattened_remote_branches.clone();
+            let remote_branches = self.remote_branches.clone();
+            let w = Rc::new(sidebar_weak.clone());
+            let colors = colors.clone();
+
+            let list = uniform_list(
+                "remote-branches-list",
+                flattened.len(),
+                move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                    let w = w.clone();
+                    range
+                        .map(|i| {
+                            let branch_idx = flattened[i];
+                            let branch = &remote_branches[branch_idx];
+                            let kb_active = keyboard_index == Some(i);
+                            let name: SharedString = branch.name.clone().into();
+                            let remote_branch_name = name.clone();
+                            let w_item = w.clone();
+
                             div()
-                                .w(px(14.))
-                                .h(px(14.))
-                                .flex_shrink_0()
+                                .id(ElementId::NamedInteger("remote-branch".into(), i as u64))
+                                .h_flex()
+                                .w_full()
+                                .h(px(item_h))
+                                .px_2()
+                                .pl(px(16.))
+                                .gap(px(4.))
                                 .items_center()
-                                .justify_center()
+                                .when(kb_active, |el| {
+                                    el.bg(colors.ghost_element_hover)
+                                        .border_l_2()
+                                        .border_color(kb_accent)
+                                })
+                                .hover(|s| s.bg(colors.ghost_element_hover))
+                                .active(|s| s.bg(colors.ghost_element_active))
+                                .on_click(
+                                    move |event: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                        if event.click_count() >= 2 {
+                                            let _ = w_item.clone().update(cx, |_this, cx| {
+                                                cx.emit(SidebarEvent::BranchCheckout(
+                                                    remote_branch_name.to_string(),
+                                                ));
+                                            });
+                                        } else {
+                                            let _ = w_item.clone().update(cx, |_this, cx| {
+                                                cx.emit(SidebarEvent::BranchSelected(
+                                                    remote_branch_name.to_string(),
+                                                ));
+                                            });
+                                        }
+                                    },
+                                )
                                 .child(
-                                    rgitui_ui::Icon::new(IconName::GitBranch)
-                                        .size(rgitui_ui::IconSize::XSmall)
-                                        .color(Color::Muted),
-                                ),
-                        )
-                        .child(
-                            Label::new(name)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .truncate(),
-                        ),
-                );
-            }
+                                    div()
+                                        .w(px(14.))
+                                        .h(px(14.))
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            rgitui_ui::Icon::new(IconName::GitBranch)
+                                                .size(rgitui_ui::IconSize::XSmall)
+                                                .color(Color::Muted),
+                                        ),
+                                )
+                                .child(
+                                    Label::new(name)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .truncate(),
+                                )
+                        })
+                        .collect()
+                },
+            )
+            .with_sizing_behavior(ListSizingBehavior::Infer);
+            content = content.child(list);
         }
 
         // -- Tags --
