@@ -1729,10 +1729,7 @@ impl DiffViewer {
 
     /// Extend each span to absorb immediately adjacent punctuation so
     /// highlights cover complete expressions like `func()` or `arr[i]`.
-    fn extend_spans_to_punctuation(
-        spans: Vec<Range<usize>>,
-        text: &str,
-    ) -> Vec<Range<usize>> {
+    fn extend_spans_to_punctuation(spans: Vec<Range<usize>>, text: &str) -> Vec<Range<usize>> {
         spans
             .into_iter()
             .map(|span| {
@@ -1740,9 +1737,18 @@ impl DiffViewer {
                 let bytes = text.as_bytes();
                 while end < bytes.len() {
                     let ch = bytes[end];
-                    if ch == b'(' || ch == b')' || ch == b'[' || ch == b']'
-                        || ch == b'{' || ch == b'}' || ch == b'.' || ch == b','
-                        || ch == b';' || ch == b':' || ch == b'<' || ch == b'>'
+                    if ch == b'('
+                        || ch == b')'
+                        || ch == b'['
+                        || ch == b']'
+                        || ch == b'{'
+                        || ch == b'}'
+                        || ch == b'.'
+                        || ch == b','
+                        || ch == b';'
+                        || ch == b':'
+                        || ch == b'<'
+                        || ch == b'>'
                     {
                         end += 1;
                     } else {
@@ -3055,12 +3061,13 @@ mod tests {
         let (del_spans, add_spans) =
             DiffViewer::compute_word_diff("compute(x, y)", "compute(a, b)");
         // Changed tokens: "x" → "a" and "y" → "b" reported as separate spans.
+        // Spans are extended to absorb adjacent punctuation for visual grouping.
         assert_eq!(del_spans.len(), 2);
-        assert_eq!(del_spans[0], 8..9); // "x"
-        assert_eq!(del_spans[1], 11..12); // "y"
+        assert_eq!(del_spans[0], 8..10); // "x" extended with trailing comma
+        assert_eq!(del_spans[1], 11..13); // "y" extended with trailing )
         assert_eq!(add_spans.len(), 2);
-        assert_eq!(add_spans[0], 8..9); // "a"
-        assert_eq!(add_spans[1], 11..12); // "b"
+        assert_eq!(add_spans[0], 8..10); // "a" extended with trailing comma
+        assert_eq!(add_spans[1], 11..13); // "b" extended with trailing )
     }
 
     #[test]
@@ -3068,9 +3075,9 @@ mod tests {
         // Changing just the method name in a chain.
         let (del_spans, add_spans) = DiffViewer::compute_word_diff("foo.bar()", "foo.baz()");
         assert_eq!(del_spans.len(), 1);
-        assert_eq!(del_spans[0], 4..7); // "bar"
+        assert_eq!(del_spans[0], 4..9); // "bar" extended with trailing ()
         assert_eq!(add_spans.len(), 1);
-        assert_eq!(add_spans[0], 4..7); // "baz"
+        assert_eq!(add_spans[0], 4..9); // "baz" extended with trailing ()
     }
 
     #[test]
