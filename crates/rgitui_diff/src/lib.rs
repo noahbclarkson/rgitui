@@ -242,7 +242,8 @@ enum SyntaxLineHighlighter {
     Plain,
     Syntect {
         syntax_set: &'static SyntaxSet,
-        highlighter: Box<HighlightLines<'static>>,
+        syntax: &'static SyntaxReference,
+        theme: &'static Theme,
     },
 }
 
@@ -1107,7 +1108,8 @@ impl DiffViewer {
 
         SyntaxLineHighlighter::Syntect {
             syntax_set: &assets.syntax_set,
-            highlighter: Box::new(HighlightLines::new(syntax, Self::syntax_theme(appearance))),
+            syntax,
+            theme: Self::syntax_theme(appearance),
         }
     }
 
@@ -1141,9 +1143,17 @@ impl DiffViewer {
             SyntaxLineHighlighter::Plain => StyledLine::plain(trimmed.to_string()),
             SyntaxLineHighlighter::Syntect {
                 syntax_set,
-                highlighter,
+                syntax,
+                theme,
             } => {
-                let Ok(ranges) = highlighter.highlight_line(trimmed, syntax_set) else {
+                // Highlight each line with a fresh parse state to prevent
+                // block-comment / multi-line string state from bleeding across
+                // diff lines (additions, deletions, context are interleaved
+                // from different file versions so stateful highlighting
+                // produces incorrect results -- e.g. a `/*` in a deleted line
+                // would color all subsequent additions as comments).
+                let mut fresh = HighlightLines::new(syntax, theme);
+                let Ok(ranges) = fresh.highlight_line(trimmed, syntax_set) else {
                     return StyledLine::plain(trimmed.to_string());
                 };
 
