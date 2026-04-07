@@ -452,7 +452,7 @@ impl Render for CreatePrDialog {
                             .items_center()
                             .child(
                                 Label::new(
-                                    "Enter to create · Shift+Enter to create · Esc to cancel",
+                                    "Enter to create | Shift+Enter to create | Esc to cancel",
                                 )
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),

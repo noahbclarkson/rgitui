@@ -302,7 +302,7 @@ impl Render for RenameDialog {
                 .justify_between()
                 .items_center()
                 .child(
-                    Label::new("Enter to rename · Esc to cancel")
+                    Label::new("Enter to rename | Esc to cancel")
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )

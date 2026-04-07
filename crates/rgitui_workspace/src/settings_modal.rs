@@ -301,10 +301,6 @@ impl SettingsModal {
         None
     }
 
-    fn ssh_agent_available() -> bool {
-        std::env::var_os("SSH_AUTH_SOCK").is_some()
-    }
-
     pub fn new(cx: &mut Context<Self>) -> Self {
         let (settings, available_themes) = cx.read_global::<SettingsState, _>(|state, cx| {
             let settings = state.settings().clone();
@@ -2581,7 +2577,7 @@ impl SettingsModal {
                 ))
                 .child(Self::setting_label(
                     "Access Token",
-                    "Stored in your OS keychain. Use Paste Token if the browser flow does not return credentials automatically.",
+                    "Auto-filled when you sign in via browser. Stored securely in your OS keychain. You can also paste a Personal Access Token manually.",
                 ))
                 .child(self.masked_editor_row(
                     "provider-token",
@@ -2610,7 +2606,7 @@ impl SettingsModal {
                         .gap(px(12.))
                         .child(Self::setting_label(
                             "Use for HTTPS matching",
-                            "If enabled, rgitui will use this account automatically when a remote host matches the host above.",
+                            "When enabled, this account's token is used for fetch/pull/push to remotes matching the host above. Also enables automatic SSH-to-HTTPS rewriting.",
                         ))
                         .child(
                             Button::new(
@@ -2655,64 +2651,44 @@ impl SettingsModal {
 
         // SSH Key Path card
         let detected_ssh_key = Self::detected_default_ssh_key_path();
-        let ssh_agent_available = Self::ssh_agent_available();
+        let ssh_path_val = self.git_ssh_key_path_editor.read(cx).text().to_string();
+        let has_ssh_key = !ssh_path_val.trim().is_empty();
         let mut ssh_card = Self::setting_card(cx);
         ssh_card = ssh_card
             .child(Self::setting_label(
-                "SSH",
-                "SSH applies only to remotes such as git@github.com:owner/repo.git or ssh://host/path.git. SSH network operations use your system Git and SSH environment so existing keys, agent state, and host config continue to work.",
+                "SSH Key Override",
+                "Optional. If set, this key is tried first for SSH remotes. If SSH fails and you have a GitHub account above, rgitui automatically falls back to HTTPS.",
             ))
             .child(
                 div()
                     .h_flex()
-                    .flex_wrap()
-                    .gap(px(8.))
+                    .w_full()
+                    .gap(px(6.))
                     .child(
                         div()
-                            .px(px(8.))
-                            .py(px(4.))
-                            .rounded(px(999.))
-                            .bg(colors.surface_background)
-                            .child(
-                                Label::new(if ssh_agent_available {
-                                    "ssh-agent detected"
-                                } else {
-                                    "ssh-agent not detected"
-                                })
-                                .size(LabelSize::XSmall)
-                                .color(if ssh_agent_available {
-                                    Color::Success
-                                } else {
-                                    Color::Muted
-                                }),
-                            ),
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.icon_editor_row(
+                                &self.git_ssh_key_path_editor,
+                                IconName::File,
+                            )),
                     )
-                    .when_some(detected_ssh_key.clone(), |el, key_path| {
+                    .when(has_ssh_key, |el| {
                         el.child(
-                            div()
-                                .px(px(8.))
-                                .py(px(4.))
-                                .rounded(px(999.))
-                                .bg(colors.surface_background)
-                                .child(
-                                    Label::new(format!("Detected key: {}", key_path))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted)
-                                        .truncate(),
-                                ),
+                            Button::new("clear-ssh-key", "Clear")
+                                .style(ButtonStyle::Outlined)
+                                .size(ButtonSize::Compact)
+                                .icon(IconName::X)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.git_ssh_key_path_editor
+                                        .update(cx, |e, cx| e.set_text("", cx));
+                                    this.save_settings(cx);
+                                    cx.notify();
+                                })),
                         )
                     }),
             )
-            .child(Self::setting_label(
-                "SSH Key Path",
-                "Optional explicit private key path. Leave empty to use ssh-agent first and then fall back to automatically detected keys in ~/.ssh.",
-            ))
-            .child(self.icon_editor_row(
-                &self.git_ssh_key_path_editor,
-                IconName::File,
-            ))
             .when_some(detected_ssh_key, |el, key_path| {
-                let ssh_path_val = self.git_ssh_key_path_editor.read(cx).text().to_string();
                 let already_selected = ssh_path_val.trim() == key_path;
                 el.child(
                     div()
@@ -2733,48 +2709,24 @@ impl SettingsModal {
                                 .min_w_0()
                                 .gap(px(2.))
                                 .child(
-                                    Label::new(if already_selected {
-                                        "Detected key is currently selected"
-                                    } else {
-                                        "Detected default SSH key"
-                                    })
-                                    .size(LabelSize::Small)
-                                    .weight(FontWeight::SEMIBOLD),
-                                )
-                                .child(
-                                    Label::new(key_path.clone())
+                                    Label::new(format!("Detected: {}", key_path.clone()))
                                         .size(LabelSize::XSmall)
                                         .color(Color::Muted)
                                         .truncate(),
                                 ),
                         )
-                        .child(
-                            Button::new(
-                                "use-detected-ssh-key",
-                                if already_selected {
-                                    "Using This Key"
-                                } else {
-                                    "Use Detected Key"
-                                },
+                        .when(!already_selected, |el| {
+                            el.child(
+                                Button::new("use-detected-ssh-key", "Use This Key")
+                                    .style(ButtonStyle::Outlined)
+                                    .size(ButtonSize::Compact)
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.git_ssh_key_path_editor
+                                            .update(cx, |e, cx| e.set_text(key_path.clone(), cx));
+                                        this.save_settings(cx);
+                                    })),
                             )
-                            .style(if already_selected {
-                                ButtonStyle::Subtle
-                            } else {
-                                ButtonStyle::Filled
-                            })
-                            .size(ButtonSize::Compact)
-                            .icon(IconName::Check)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.git_ssh_key_path_editor
-                                    .update(cx, |e, cx| e.set_text(key_path.clone(), cx));
-                                this.feedback_message = Some(
-                                    "Configured the detected SSH private key for SSH remotes."
-                                        .into(),
-                                );
-                                this.feedback_is_error = false;
-                                this.save_settings(cx);
-                            })),
-                        ),
+                        }),
                 )
             });
         section = section.child(ssh_card);
@@ -2835,12 +2787,26 @@ impl SettingsModal {
                     .v_flex()
                     .gap(px(6.))
                     .child(Self::setting_label(
-                        "Authentication Order",
-                        "When contacting a remote, rgitui tries SSH first for SSH remotes, then matched provider accounts for HTTPS remotes, then the generic HTTPS fallback, then the git credential helper.",
+                        "How Authentication Works",
+                        "rgitui detects the remote URL protocol and authenticates accordingly.",
                     ))
                     .child(
                         Label::new(
-                            "If a repo remote is HTTPS, an SSH key will not be used until you change that remote to an SSH URL.",
+                            "HTTPS remotes: uses your GitHub account token (above), or falls back to your system git credential helper (e.g. gh auth).",
+                        )
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new(
+                            "SSH remotes: if no SSH key is configured above, and your system has an HTTPS credential helper, rgitui automatically rewrites SSH to HTTPS so your GitHub login works.",
+                        )
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new(
+                            "SSH remotes with a key: uses the SSH key path above (or ssh-agent) directly.",
                         )
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),

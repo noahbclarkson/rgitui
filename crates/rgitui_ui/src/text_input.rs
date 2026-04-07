@@ -499,7 +499,7 @@ impl Render for TextInput {
         let display_text: SharedString = if is_empty {
             self.placeholder.clone()
         } else if self.masked {
-            "•".repeat(self.text.len()).into()
+            "*".repeat(self.text.len()).into()
         } else {
             self.text.clone().into()
         };

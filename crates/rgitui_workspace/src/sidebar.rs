@@ -213,7 +213,7 @@ impl Sidebar {
 
         let branch_filter_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Filter branches…");
+            ti.set_placeholder("Filter branches...");
             ti
         });
 
@@ -1248,14 +1248,14 @@ impl Render for Sidebar {
                                         el.child(
                                             Badge::new(format!("{}", branch.ahead))
                                                 .color(Color::Success)
-                                                .prefix("↑"),
+                                                .prefix("+"),
                                         )
                                     })
                                     .when(branch.behind > 0, |el| {
                                         el.child(
                                             Badge::new(format!("{}", branch.behind))
                                                 .color(Color::Warning)
-                                                .prefix("↓"),
+                                                .prefix("-"),
                                         )
                                     }),
                             );
@@ -2851,7 +2851,7 @@ impl Render for Sidebar {
                                                         ));
                                                     }).ok();
                                                 }})
-                                                .child("×"),
+                                                .child("x"),
                                         )
                                         .into_any_element()
                                 }

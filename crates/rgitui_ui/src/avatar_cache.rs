@@ -94,11 +94,17 @@ impl AvatarCache {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Write to a temp file in the same directory, then rename atomically.
-        // This avoids concurrent writes interleaving and corrupting the cache.
-        // rename() is atomic on POSIX; the temporary file is on the same
-        // filesystem so the rename is guaranteed atomic even on Windows.
-        let tmp_path = path.with_extension("tmp");
+        // Write to a unique temp file in the same directory, then rename
+        // atomically. Each call gets its own temp file to avoid races when
+        // multiple avatar fetches complete concurrently.
+        let tmp_path = path.with_extension(format!(
+            "tmp.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
         if let Err(e) = fs::write(&tmp_path, &content) {
             eprintln!("rgitui: failed to write avatar disk cache temp file: {e}");
             return;

@@ -372,7 +372,7 @@ impl GlobalSearchView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Press Enter to search · j/k to navigate")
+                        Label::new("Press Enter to search | j/k to navigate")
                             .size(LabelSize::XSmall)
                             .color(Color::Placeholder),
                     ),
@@ -474,7 +474,7 @@ impl GlobalSearchView {
                                         .mx(px(6.))
                                         .text_xs()
                                         .text_color(text_muted)
-                                        .child(Label::new("│").size(LabelSize::XSmall)),
+                                        .child(Label::new("|").size(LabelSize::XSmall)),
                                     div()
                                         .flex_grow()
                                         .overflow_hidden()

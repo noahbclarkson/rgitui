@@ -15,7 +15,7 @@ pub(crate) fn format_github_collection_error(
     let detail = github_error_detail(body);
     match (status.as_u16(), detail) {
         (404, _) => format!(
-            "Repository not found — your token may not have access to {}/{}",
+            "Repository not found -- your token may not have access to {}/{}",
             owner, repo
         ),
         (401, _) => "GitHub token is invalid or expired".into(),
@@ -47,7 +47,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "Repository not found — your token may not have access to noahbclarkson/rgitui"
+            "Repository not found -- your token may not have access to noahbclarkson/rgitui"
         );
     }
 

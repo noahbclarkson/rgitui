@@ -223,7 +223,7 @@ impl Workspace {
                     self.show_toast("No operation in progress", ToastKind::Warning, cx);
                 } else if tab.project.read(cx).has_conflicts() {
                     self.show_toast(
-                        "Cannot continue — resolve all conflicts first",
+                        "Cannot continue -- resolve all conflicts first",
                         ToastKind::Error,
                         cx,
                     );

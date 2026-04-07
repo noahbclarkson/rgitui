@@ -324,7 +324,7 @@ pub(super) fn subscribe_rename_dialog(
                     });
                 }
                 this.show_toast(
-                    format!("Branch renamed: {} → {}", old_name, new_name),
+                    format!("Branch renamed: {} -> {}", old_name, new_name),
                     ToastKind::Success,
                     cx,
                 );
@@ -1480,7 +1480,7 @@ pub(super) fn subscribe_graph(
                 GraphViewEvent::LoadMoreCommits => {
                     let already_loaded = project.read(cx).loaded_commit_count();
                     this.show_toast(
-                        format!("Loading more commits ({} loaded so far)…", already_loaded),
+                        format!("Loading more commits ({} loaded so far)...", already_loaded),
                         ToastKind::Info,
                         cx,
                     );

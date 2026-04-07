@@ -542,7 +542,7 @@ fn execute_get_diff(repo_path: &Path, kind: &str, commit: &str) -> Result<String
         let truncated = &stdout[..MAX_DIFF_SIZE];
         let last_newline = truncated.rfind('\n').unwrap_or(MAX_DIFF_SIZE);
         return Ok(format!(
-            "{}\n\n[diff truncated — showing {}/{} bytes]",
+            "{}\n\n[diff truncated -- showing {}/{} bytes]",
             &stdout[..last_newline],
             last_newline,
             stdout.len()

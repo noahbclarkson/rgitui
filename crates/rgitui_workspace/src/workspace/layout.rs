@@ -349,13 +349,13 @@ impl Render for Workspace {
                 let state_label: SharedString = repo_state.label().into();
                 let detail_msg: SharedString = if has_conflicts {
                     format!(
-                        "{} file{} with conflicts — resolve before continuing",
+                        "{} file{} with conflicts -- resolve before continuing",
                         conflict_count,
                         if conflict_count == 1 { "" } else { "s" }
                     )
                     .into()
                 } else {
-                    "All conflicts resolved — ready to continue".into()
+                    "All conflicts resolved -- ready to continue".into()
                 };
 
                 el.child(
@@ -1033,7 +1033,7 @@ impl Workspace {
                 let workspace_id = workspace.id.clone();
                 let workspace_name: SharedString = workspace.name.clone().into();
                 let summary: SharedString = format!(
-                    "{} repositories · updated {}",
+                    "{} repositories | updated {}",
                     workspace.repos.len(),
                     workspace
                         .last_opened_at
@@ -1512,6 +1512,13 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
             }
             #[cfg(not(target_os = "windows"))]
             {
+                if !path.is_dir() {
+                    eprintln!(
+                        "[rgitui] Cannot open terminal: directory '{}' does not exist",
+                        path.display()
+                    );
+                    return;
+                }
                 let parts: Vec<&str> = custom_command.split_whitespace().collect();
                 if let Some((program, args)) = parts.split_first() {
                     if let Err(e) = std::process::Command::new(program)
@@ -1588,17 +1595,52 @@ pub(crate) fn open_terminal(path: &std::path::Path, custom_command: &str) {
             }
             #[cfg(target_os = "linux")]
             {
-                if let Err(e) = std::process::Command::new("x-terminal-emulator")
-                    .current_dir(&path)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
+                if !path.is_dir() {
                     eprintln!(
-                        "[rgitui] Failed to open terminal emulator in '{}': {}",
+                        "[rgitui] Cannot open terminal: directory '{}' does not exist",
+                        path.display()
+                    );
+                    return;
+                }
+                // Try terminals in preference order. $TERMINAL env, then common
+                // emulators. x-terminal-emulator is Debian-specific and missing
+                // on NixOS and other distros.
+                let candidates: Vec<String> = std::env::var("TERMINAL")
+                    .into_iter()
+                    .chain(
+                        [
+                            "kitty",
+                            "alacritty",
+                            "wezterm",
+                            "foot",
+                            "gnome-terminal",
+                            "konsole",
+                            "xfce4-terminal",
+                            "x-terminal-emulator",
+                            "xterm",
+                        ]
+                        .into_iter()
+                        .map(String::from),
+                    )
+                    .collect();
+                let mut launched = false;
+                for term in &candidates {
+                    let result = std::process::Command::new(term)
+                        .current_dir(&path)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                    if result.is_ok() {
+                        launched = true;
+                        break;
+                    }
+                }
+                if !launched {
+                    eprintln!(
+                        "[rgitui] Failed to open terminal emulator in '{}': none of {:?} found",
                         path.display(),
-                        e
+                        candidates
                     );
                 }
             }

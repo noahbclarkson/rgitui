@@ -238,7 +238,7 @@ impl Render for SubmoduleView {
                             .workdir_oid
                             .as_ref()
                             .map(|oid| format!("{:.7}", oid))
-                            .unwrap_or_else(|| "—".to_string())
+                            .unwrap_or_else(|| "--".to_string())
                             .into();
 
                         let branch_display: SharedString = sub

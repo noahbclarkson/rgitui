@@ -482,7 +482,7 @@ fn build_prompt(
     let diff_text = if diff.len() > max_diff_len {
         let truncation_point = diff[..max_diff_len].rfind('\n').unwrap_or(max_diff_len);
         format!(
-            "{}\n\n[diff truncated — showing {}/{} bytes]",
+            "{}\n\n[diff truncated -- showing {}/{} bytes]",
             &diff[..truncation_point],
             truncation_point,
             diff.len()
@@ -981,7 +981,7 @@ fn build_tool_prompt(
     let diff_text = if diff.len() > max_diff_len {
         let truncation_point = diff[..max_diff_len].rfind('\n').unwrap_or(max_diff_len);
         format!(
-            "{}\n\n[diff truncated — showing {}/{} bytes]",
+            "{}\n\n[diff truncated -- showing {}/{} bytes]",
             &diff[..truncation_point],
             truncation_point,
             diff.len()

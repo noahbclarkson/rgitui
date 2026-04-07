@@ -254,7 +254,7 @@ impl Render for ConfirmDialog {
                             .justify_between()
                             .items_center()
                             .child(
-                                Label::new("Enter to confirm · Esc to cancel")
+                                Label::new("Enter to confirm | Esc to cancel")
                                     .size(LabelSize::XSmall)
                                     .color(Color::Placeholder),
                             )

@@ -306,7 +306,7 @@ impl Render for BranchDialog {
                 .justify_between()
                 .items_center()
                 .child(
-                    Label::new("Enter to create · Esc to cancel")
+                    Label::new("Enter to create | Esc to cancel")
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
