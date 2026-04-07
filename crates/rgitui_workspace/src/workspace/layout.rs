@@ -1543,7 +1543,6 @@ pub(crate) fn build_terminal_args(
 ///
 /// Returns `(program, args)` where the file path is NOT included — callers
 /// construct the final command by appending the path appropriately per-editor.
-#[cfg(target_os = "windows")]
 pub(crate) fn build_editor_args(
     custom_command: &str,
     _path: &std::path::Path,
@@ -1805,13 +1804,16 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
             }
             #[cfg(not(target_os = "windows"))]
             {
-                let parts: Vec<&str> = custom_command.split_whitespace().collect();
-                if let Some((program, args)) = parts.split_first() {
+                let (program, base_args, path_is_bare_arg) =
+                    build_editor_args(&custom_command, &path);
+                if !program.is_empty() {
                     let cwd = path.parent().unwrap_or(&path);
-                    if let Err(e) = std::process::Command::new(program)
-                        .args(args)
-                        .current_dir(cwd)
-                        .spawn()
+                    let mut cmd = std::process::Command::new(&program);
+                    cmd.args(&base_args).current_dir(cwd);
+                    if path_is_bare_arg {
+                        cmd.arg(&path);
+                    }
+                    if let Err(e) = cmd.spawn()
                     {
                         eprintln!(
                             "[rgitui] Failed to open editor '{}' in '{}': {}",
