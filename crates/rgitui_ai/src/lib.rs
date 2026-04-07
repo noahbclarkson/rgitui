@@ -51,6 +51,24 @@ pub enum AiEvent {
 /// Minimum time between AI requests (rate limiting).
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Common parameters for all AI generation requests.
+struct GenerateRequest<'a> {
+    client: &'a Arc<dyn HttpClient>,
+    api_key: &'a Option<String>,
+    model: &'a str,
+    diff: &'a str,
+    summary: &'a str,
+    commit_style: CommitStyle,
+    project_context: Option<&'a str>,
+}
+
+/// Context for tool-calling generation — repo to run tools against
+/// and a callback to report tool execution status.
+struct ToolContext<'a> {
+    repo_path: &'a Path,
+    on_status: &'a mut dyn FnMut(&str),
+}
+
 /// AI commit message generator.
 pub struct AiGenerator {
     is_generating: bool,
@@ -190,84 +208,47 @@ impl AiGenerator {
                     cx.notify();
                 });
             };
+            let req = GenerateRequest {
+                client: &client,
+                api_key: &api_key,
+                model: &model,
+                diff: &diff,
+                summary: &summary,
+                commit_style,
+                project_context: ctx_ref,
+            };
             let result = match provider.as_str() {
                 "gemini" => {
                     if use_tools {
-                        generate_gemini_with_tools(
-                            &client,
-                            &api_key,
-                            &model,
-                            &diff,
-                            &summary,
-                            commit_style,
-                            ctx_ref,
-                            &repo_path,
-                            &mut on_tool_call,
-                        )
-                        .await
+                        let mut tc = ToolContext {
+                            repo_path: &repo_path,
+                            on_status: &mut on_tool_call,
+                        };
+                        generate_gemini_with_tools(&req, &mut tc).await
                     } else {
-                        generate_gemini(
-                            &client,
-                            &api_key,
-                            &model,
-                            &diff,
-                            &summary,
-                            commit_style,
-                            ctx_ref,
-                        )
-                        .await
+                        generate_gemini(&req).await
                     }
                 }
                 "openai" => {
                     if use_tools {
-                        generate_openai_with_tools(
-                            &client,
-                            &api_key,
-                            &model,
-                            &diff,
-                            &summary,
-                            commit_style,
-                            ctx_ref,
-                            &repo_path,
-                            &mut on_tool_call,
-                        )
-                        .await
+                        let mut tc = ToolContext {
+                            repo_path: &repo_path,
+                            on_status: &mut on_tool_call,
+                        };
+                        generate_openai_with_tools(&req, &mut tc).await
                     } else {
-                        generate_openai(
-                            &client,
-                            &api_key,
-                            &model,
-                            &diff,
-                            &summary,
-                            commit_style,
-                            ctx_ref,
-                        )
-                        .await
+                        generate_openai(&req).await
                     }
                 }
                 "anthropic" => {
                     if use_tools {
-                        generate_anthropic_with_tools(
-                            &client,
-                            &api_key,
-                            &model,
-                            &diff,
-                            &summary,
-                            commit_style,
-                            ctx_ref,
-                            &repo_path,
-                            &mut on_tool_call,
-                        )
-                        .await
+                        let mut tc = ToolContext {
+                            repo_path: &repo_path,
+                            on_status: &mut on_tool_call,
+                        };
+                        generate_anthropic_with_tools(&req, &mut tc).await
                     } else {
-                        generate_anthropic(
-                            &client,
-                            &api_key,
-                            &model,
-                            &diff,
-                            &summary,
-                            commit_style,
-                            ctx_ref,
+                        generate_anthropic(&req,
                         )
                         .await
                     }
@@ -309,24 +290,17 @@ async fn read_response_body(response: &mut Response<AsyncBody>) -> Result<Vec<u8
 }
 
 /// Generate a commit message using the Gemini API.
-async fn generate_gemini(
-    client: &Arc<dyn HttpClient>,
-    api_key: &Option<String>,
-    model: &str,
-    diff: &str,
-    summary: &str,
-    commit_style: CommitStyle,
-    project_context: Option<&str>,
-) -> Result<String> {
-    let api_key = api_key
+async fn generate_gemini(req: &GenerateRequest<'_>) -> Result<String> {
+    let api_key = req
+        .api_key
         .as_ref()
         .context("Gemini API key not configured. Set it in Settings > AI.")?;
 
-    let prompt = build_prompt(diff, summary, commit_style, project_context);
+    let prompt = build_prompt(req.diff, req.summary, req.commit_style, req.project_context);
 
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        model, api_key
+        req.model, api_key
     );
 
     let json_body = serde_json::json!({
@@ -350,7 +324,8 @@ async fn generate_gemini(
         .body(AsyncBody::from(body_bytes))
         .context("Failed to build Gemini request")?;
 
-    let mut response = client
+    let mut response = req
+        .client
         .send(request)
         .await
         .context("Failed to send request to Gemini API")?;
@@ -377,23 +352,16 @@ async fn generate_gemini(
 }
 
 /// Generate a commit message using the OpenAI API.
-async fn generate_openai(
-    client: &Arc<dyn HttpClient>,
-    api_key: &Option<String>,
-    model: &str,
-    diff: &str,
-    summary: &str,
-    commit_style: CommitStyle,
-    project_context: Option<&str>,
-) -> Result<String> {
-    let api_key = api_key
+async fn generate_openai(req: &GenerateRequest<'_>) -> Result<String> {
+    let api_key = req
+        .api_key
         .as_ref()
         .context("OpenAI API key not configured. Set it in Settings > AI.")?;
 
-    let prompt = build_prompt(diff, summary, commit_style, project_context);
+    let prompt = build_prompt(req.diff, req.summary, req.commit_style, req.project_context);
 
     let json_body = serde_json::json!({
-        "model": model,
+        "model": req.model,
         "messages": [{
             "role": "user",
             "content": prompt
@@ -411,7 +379,8 @@ async fn generate_openai(
         .body(AsyncBody::from(body_bytes))
         .context("Failed to build OpenAI request")?;
 
-    let mut response = client
+    let mut response = req
+        .client
         .send(request)
         .await
         .context("Failed to send request to OpenAI API")?;
@@ -436,23 +405,16 @@ async fn generate_openai(
 }
 
 /// Generate a commit message using the Anthropic API.
-async fn generate_anthropic(
-    client: &Arc<dyn HttpClient>,
-    api_key: &Option<String>,
-    model: &str,
-    diff: &str,
-    summary: &str,
-    commit_style: CommitStyle,
-    project_context: Option<&str>,
-) -> Result<String> {
-    let api_key = api_key
+async fn generate_anthropic(req: &GenerateRequest<'_>) -> Result<String> {
+    let api_key = req
+        .api_key
         .as_ref()
         .context("Anthropic API key not configured. Set it in Settings > AI.")?;
 
-    let prompt = build_prompt(diff, summary, commit_style, project_context);
+    let prompt = build_prompt(req.diff, req.summary, req.commit_style, req.project_context);
 
     let json_body = serde_json::json!({
-        "model": model,
+        "model": req.model,
         "max_tokens": 2048,
         "messages": [{
             "role": "user",
@@ -470,7 +432,8 @@ async fn generate_anthropic(
         .body(AsyncBody::from(body_bytes))
         .context("Failed to build Anthropic request")?;
 
-    let mut response = client
+    let mut response = req
+        .client
         .send(request)
         .await
         .context("Failed to send request to Anthropic API")?;
@@ -606,29 +569,22 @@ struct GeminiPart {
 const MAX_TOOL_ITERATIONS: usize = 3;
 
 /// Generate a commit message using Anthropic's API with tool-calling support.
-#[allow(clippy::too_many_arguments)]
 async fn generate_anthropic_with_tools(
-    client: &Arc<dyn HttpClient>,
-    api_key: &Option<String>,
-    model: &str,
-    diff: &str,
-    summary: &str,
-    commit_style: CommitStyle,
-    project_context: Option<&str>,
-    repo_path: &Path,
-    on_tool_call: &mut dyn FnMut(&str),
+    req: &GenerateRequest<'_>,
+    tc: &mut ToolContext<'_>,
 ) -> Result<String> {
-    let api_key = api_key
+    let api_key = req
+        .api_key
         .as_ref()
         .context("Anthropic API key not configured. Set it in Settings > AI.")?;
 
-    let system_prompt = build_tool_prompt(diff, summary, commit_style, project_context);
+    let system_prompt = build_tool_prompt(req.diff, req.summary, req.commit_style, req.project_context);
     let tools = anthropic_tool_definitions();
     let mut messages: Vec<serde_json::Value> = vec![];
 
     for _ in 0..MAX_TOOL_ITERATIONS {
         let json_body = serde_json::json!({
-            "model": model,
+            "model": req.model,
             "max_tokens": 2048,
             "system": system_prompt,
             "messages": messages.clone(),
@@ -645,7 +601,8 @@ async fn generate_anthropic_with_tools(
             .body(AsyncBody::from(body_bytes))
             .context("Failed to build Anthropic request")?;
 
-        let mut response = client
+        let mut response = req
+            .client
             .send(request)
             .await
             .context("Failed to send request to Anthropic API")?;
@@ -694,8 +651,8 @@ async fn generate_anthropic_with_tools(
                             arguments: block["input"].clone(),
                         };
 
-                        on_tool_call(&AiGenerator::describe_tool_call(&tool_call));
-                        let result = execute_tool(&tool_call, repo_path);
+                        (tc.on_status)(&AiGenerator::describe_tool_call(&tool_call));
+                        let result = execute_tool(&tool_call, tc.repo_path);
                         let result_content = match result.result {
                             Ok(output) => output,
                             Err(e) => format!("Error: {}", e),
@@ -743,23 +700,16 @@ async fn generate_anthropic_with_tools(
 }
 
 /// Generate a commit message using OpenAI's API with function calling support.
-#[allow(clippy::too_many_arguments)]
 async fn generate_openai_with_tools(
-    client: &Arc<dyn HttpClient>,
-    api_key: &Option<String>,
-    model: &str,
-    diff: &str,
-    summary: &str,
-    commit_style: CommitStyle,
-    project_context: Option<&str>,
-    repo_path: &Path,
-    on_tool_call: &mut dyn FnMut(&str),
+    req: &GenerateRequest<'_>,
+    tc: &mut ToolContext<'_>,
 ) -> Result<String> {
-    let api_key = api_key
+    let api_key = req
+        .api_key
         .as_ref()
         .context("OpenAI API key not configured. Set it in Settings > AI.")?;
 
-    let system_prompt = build_tool_prompt(diff, summary, commit_style, project_context);
+    let system_prompt = build_tool_prompt(req.diff, req.summary, req.commit_style, req.project_context);
     let tools = openai_tool_definitions();
     let mut messages: Vec<serde_json::Value> = vec![
         serde_json::json!({
@@ -774,7 +724,7 @@ async fn generate_openai_with_tools(
 
     for _ in 0..MAX_TOOL_ITERATIONS {
         let json_body = serde_json::json!({
-            "model": model,
+            "model": req.model,
             "messages": messages.clone(),
             "tools": tools,
             "tool_choice": "auto",
@@ -791,7 +741,8 @@ async fn generate_openai_with_tools(
             .body(AsyncBody::from(body_bytes))
             .context("Failed to build OpenAI request")?;
 
-        let mut response = client
+        let mut response = req
+            .client
             .send(request)
             .await
             .context("Failed to send request to OpenAI API")?;
@@ -833,8 +784,8 @@ async fn generate_openai_with_tools(
                         .unwrap_or(serde_json::json!({})),
                     };
 
-                    on_tool_call(&AiGenerator::describe_tool_call(&tool_call_obj));
-                    let result = execute_tool(&tool_call_obj, repo_path);
+                    (tc.on_status)(&AiGenerator::describe_tool_call(&tool_call_obj));
+                    let result = execute_tool(&tool_call_obj, tc.repo_path);
                     let result_content = match result.result {
                         Ok(output) => output,
                         Err(e) => format!("Error: {}", e),
@@ -865,28 +816,21 @@ async fn generate_openai_with_tools(
 }
 
 /// Generate a commit message using Gemini's API with function calling support.
-#[allow(clippy::too_many_arguments)]
 async fn generate_gemini_with_tools(
-    client: &Arc<dyn HttpClient>,
-    api_key: &Option<String>,
-    model: &str,
-    diff: &str,
-    summary: &str,
-    commit_style: CommitStyle,
-    project_context: Option<&str>,
-    repo_path: &Path,
-    on_tool_call: &mut dyn FnMut(&str),
+    req: &GenerateRequest<'_>,
+    tc: &mut ToolContext<'_>,
 ) -> Result<String> {
-    let api_key = api_key
+    let api_key = req
+        .api_key
         .as_ref()
         .context("Gemini API key not configured. Set it in Settings > AI.")?;
 
-    let prompt = build_tool_prompt(diff, summary, commit_style, project_context);
+    let prompt = build_tool_prompt(req.diff, req.summary, req.commit_style, req.project_context);
     let tools = vec![gemini_tool_definitions()];
 
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        model, api_key
+        req.model, api_key
     );
 
     let mut contents = vec![serde_json::json!({
@@ -913,7 +857,8 @@ async fn generate_gemini_with_tools(
             .body(AsyncBody::from(body_bytes))
             .context("Failed to build Gemini request")?;
 
-        let mut response = client
+        let mut response = req
+            .client
             .send(request)
             .await
             .context("Failed to send request to Gemini API")?;
@@ -943,8 +888,8 @@ async fn generate_gemini_with_tools(
                     arguments: fc.args.clone(),
                 };
 
-                on_tool_call(&AiGenerator::describe_tool_call(&tool_call));
-                let result = execute_tool(&tool_call, repo_path);
+                (tc.on_status)(&AiGenerator::describe_tool_call(&tool_call));
+                let result = execute_tool(&tool_call, tc.repo_path);
                 let result_content = match result.result {
                     Ok(output) => output,
                     Err(e) => format!("Error: {}", e),
