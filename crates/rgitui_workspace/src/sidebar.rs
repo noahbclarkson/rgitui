@@ -565,6 +565,11 @@ impl Sidebar {
         self.local_branches = local;
         self.remote_branches = remote;
 
+        // Rebuild flattened local branches for virtualized rendering.
+        self.flattened_local_branches.clear();
+        let visible_branch_indices = self.filtered_local_indices();
+        self.flattened_local_branches.extend(visible_branch_indices);
+
         // Rebuild flattened remote branches for virtualized rendering.
         self.flattened_remote_branches.clear();
         self.flattened_remote_branches
@@ -1606,7 +1611,7 @@ impl Render for Sidebar {
                             })
                             .collect()
                     },
-                ));
+                ).with_sizing_behavior(ListSizingBehavior::Infer));
             }
         }
 
