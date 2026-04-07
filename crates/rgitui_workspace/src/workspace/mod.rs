@@ -61,6 +61,7 @@ pub(super) enum BottomPanelMode {
     FileHistory,
     Reflog,
     Submodules,
+    GlobalSearch,
 }
 
 /// Which view is active in the right panel column above the commit panel.
@@ -109,6 +110,7 @@ pub(super) struct ProjectTab {
     pub toolbar: Entity<crate::Toolbar>,
     pub issues_panel: Entity<crate::IssuesPanel>,
     pub prs_panel: Entity<crate::PrsPanel>,
+    pub global_search_view: Entity<crate::GlobalSearchView>,
     pub right_panel_mode: RightPanelMode,
     pub bottom_panel_mode: BottomPanelMode,
     pub caches: ViewCaches,

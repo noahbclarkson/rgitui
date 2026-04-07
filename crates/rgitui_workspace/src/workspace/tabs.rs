@@ -85,6 +85,7 @@ impl Workspace {
         let sidebar = cx.new(crate::Sidebar::new);
         let commit_panel = cx.new(crate::CommitPanel::new);
         let toolbar = cx.new(|_cx| crate::Toolbar::new());
+        let global_search_view = cx.new(crate::GlobalSearchView::new);
 
         // Set the repo name on the sidebar header
         let repo_display_name = project.read(cx).repo_name().to_string();
@@ -104,6 +105,7 @@ impl Workspace {
         super::events::subscribe_file_history_view(cx, &file_history_view, &graph);
         super::events::subscribe_reflog_view(cx, &project, &reflog_view, &graph);
         super::events::subscribe_submodule_view(cx, &submodule_view, &project);
+        super::events::subscribe_global_search(cx, &global_search_view);
 
         // Initial sync
         {
@@ -222,6 +224,7 @@ impl Workspace {
             toolbar,
             issues_panel,
             prs_panel,
+            global_search_view,
             right_panel_mode: RightPanelMode::Details,
             bottom_panel_mode: BottomPanelMode::Diff,
             caches: super::ViewCaches::new(),

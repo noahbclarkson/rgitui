@@ -141,6 +141,7 @@ pub enum CommandId {
     BisectBad,
     BisectReset,
     BisectSkip,
+    GlobalSearch,
 }
 
 impl CommandId {
@@ -191,6 +192,7 @@ impl CommandId {
             Self::BisectBad => "bisect_bad",
             Self::BisectReset => "bisect_reset",
             Self::BisectSkip => "bisect_skip",
+            Self::GlobalSearch => "global_search",
         }
     }
 
@@ -241,6 +243,7 @@ impl CommandId {
             Self::BisectBad => "bisect bad (current)",
             Self::BisectReset => "bisect reset",
             Self::BisectSkip => "bisect skip (current)",
+            Self::GlobalSearch => "global search",
         }
     }
 }
@@ -301,6 +304,7 @@ impl TryFrom<&str> for CommandId {
             "bisect_bad" => Ok(Self::BisectBad),
             "bisect_reset" => Ok(Self::BisectReset),
             "bisect_skip" => Ok(Self::BisectSkip),
+            "global_search" => Ok(Self::GlobalSearch),
             _ => Err(()),
         }
     }
@@ -557,6 +561,12 @@ impl CommandPalette {
             .with_predicate(is_bisecting),
             PaletteCommand::new(CommandId::Reflog, "View: Reflog", None, "View"),
             PaletteCommand::new(CommandId::Submodules, "View: Submodules", None, "View"),
+            PaletteCommand::new(
+                CommandId::GlobalSearch,
+                "Search: Global Search",
+                Some("Ctrl+Shift+F"),
+                "Search",
+            ),
         ];
 
         let filtered_indices: Vec<(usize, usize)> = (0..commands.len()).map(|i| (i, 0)).collect();

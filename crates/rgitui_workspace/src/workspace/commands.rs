@@ -298,6 +298,16 @@ impl Workspace {
             CommandId::Submodules => {
                 self.toggle_submodule_view(tab, cx);
             }
+            CommandId::GlobalSearch => {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    if tab.bottom_panel_mode == BottomPanelMode::GlobalSearch {
+                        tab.bottom_panel_mode = BottomPanelMode::Diff;
+                    } else {
+                        tab.bottom_panel_mode = BottomPanelMode::GlobalSearch;
+                    }
+                    cx.notify();
+                }
+            }
             CommandId::BisectStart => {
                 let state = tab.project.read(cx).repo_state();
                 if matches!(state, rgitui_git::RepoState::Bisect) {

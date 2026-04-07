@@ -119,11 +119,31 @@ impl Workspace {
             || self.dialogs.stash_branch_dialog.read(cx).is_visible()
             || self.overlays.shortcuts_help.read(cx).is_visible();
 
-        // Ctrl+Shift+F to fetch
+        // Ctrl+Shift+F to toggle global search
         if !any_overlay_active
             && (modifiers.control || modifiers.platform)
             && modifiers.shift
             && key == "f"
+        {
+            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                if tab.bottom_panel_mode == BottomPanelMode::GlobalSearch {
+                    tab.bottom_panel_mode = BottomPanelMode::Diff;
+                } else {
+                    tab.bottom_panel_mode = BottomPanelMode::GlobalSearch;
+                    tab.global_search_view.update(cx, |sv, cx| {
+                        sv.focus(window, cx);
+                    });
+                }
+                cx.notify();
+            }
+            return;
+        }
+
+        // Ctrl+Shift+R to fetch
+        if !any_overlay_active
+            && (modifiers.control || modifiers.platform)
+            && modifiers.shift
+            && key == "r"
         {
             self.execute_command(CommandId::Fetch, cx);
             return;
