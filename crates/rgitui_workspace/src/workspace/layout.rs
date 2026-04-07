@@ -1784,10 +1784,13 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
         if !custom_command.is_empty() {
             #[cfg(target_os = "windows")]
             {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+
                 let (program, base_args, path_is_bare_arg) =
                     build_editor_args(&custom_command, &path);
                 let mut cmd = std::process::Command::new(&program);
-                cmd.args(&base_args);
+                cmd.args(&base_args).creation_flags(CREATE_NO_WINDOW);
                 if path_is_bare_arg {
                     cmd.arg(&path);
                 }
@@ -1822,7 +1825,14 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
         } else {
             #[cfg(target_os = "windows")]
             {
-                if let Err(e) = std::process::Command::new("code").arg(&path).spawn() {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+                if let Err(e) = std::process::Command::new("code")
+                    .arg(&path)
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn()
+                {
                     eprintln!(
                         "[rgitui] Failed to open VS Code in '{}': {}",
                         path.display(),

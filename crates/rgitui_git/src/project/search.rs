@@ -3,7 +3,6 @@
 use anyhow::{Context as _, Result};
 use gpui::{AsyncApp, Context, Task, WeakEntity};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use super::GitProject;
 use crate::types::SearchResult;
@@ -31,7 +30,7 @@ impl GitProject {
 
 /// Run `git grep` in the given repository.
 pub fn git_grep(repo_path: &Path, pattern: &str) -> Result<Vec<SearchResult>> {
-    let output = Command::new("git")
+    let output = super::git_command()
         .current_dir(repo_path)
         .args(["grep", "-n", pattern])
         .output()

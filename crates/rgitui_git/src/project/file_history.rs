@@ -23,7 +23,7 @@ pub fn compute_file_history(
     let limit = limit.min(MAX_FILE_HISTORY);
     let file_str = file_path.to_string_lossy();
 
-    let output = std::process::Command::new("git")
+    let output = super::git_command()
         .args([
             "log",
             "--format=%H",

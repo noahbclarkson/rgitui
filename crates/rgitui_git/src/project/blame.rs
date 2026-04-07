@@ -40,7 +40,7 @@ pub fn compute_blame(
     args.push("--");
     args.push(&file_str);
 
-    let output = std::process::Command::new("git")
+    let output = super::git_command()
         .args(&args)
         .current_dir(repo_path)
         .output()?;

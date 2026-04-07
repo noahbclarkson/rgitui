@@ -2,7 +2,6 @@ use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
 use std::path::PathBuf;
-use std::process::Command;
 
 use rgitui_settings::current_git_auth_runtime;
 
@@ -2217,7 +2216,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let output = Command::new("git")
+                    let output = super::git_command()
                         .current_dir(&repo_path)
                         .args(["bisect", "start"])
                         .output()
@@ -2291,7 +2290,7 @@ impl GitProject {
             let result: anyhow::Result<(Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut cmd = Command::new("git");
+                    let mut cmd = super::git_command();
                     cmd.current_dir(&repo_path).args(["bisect", "good"]);
                     if let Some(ref oid) = oid_str {
                         cmd.arg(oid);
@@ -2397,7 +2396,7 @@ impl GitProject {
             let result: anyhow::Result<(Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut cmd = Command::new("git");
+                    let mut cmd = super::git_command();
                     cmd.current_dir(&repo_path).args(["bisect", "bad"]);
                     if let Some(ref oid) = oid_str {
                         cmd.arg(oid);
@@ -2504,7 +2503,7 @@ impl GitProject {
             let result: anyhow::Result<(Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut cmd = Command::new("git");
+                    let mut cmd = super::git_command();
                     cmd.current_dir(&repo_path).args(["bisect", "skip"]);
                     if let Some(ref oid) = oid_str {
                         cmd.arg(oid);
@@ -2621,7 +2620,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let output = Command::new("git")
+                    let output = super::git_command()
                         .current_dir(&repo_path)
                         .args(["bisect", "reset"])
                         .output()
@@ -2764,7 +2763,7 @@ impl GitProject {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let output = Command::new("git")
+                    let output = super::git_command()
                         .current_dir(&repo_path)
                         .args(["worktree", "remove", "--force", &display_path_async])
                         .output()
@@ -2959,9 +2958,9 @@ enum ConflictSide {
 
 fn sign_with_gpg(content: &str, key_id: &str) -> Result<String> {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let mut cmd = Command::new("gpg");
+    let mut cmd = std::process::Command::new("gpg");
     cmd.args(["--status-fd=2", "-bsau", key_id])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

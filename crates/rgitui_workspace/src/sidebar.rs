@@ -1443,19 +1443,20 @@ impl Render for Sidebar {
                         ),
                 );
             } else {
-                nav_idx += self.remotes.len();
+                let flattened = self.flattened_remotes.clone();
+                nav_idx += flattened.len();
                 let remotes_list = self.remotes.clone();
                 let colors = colors.clone();
                 let w = sidebar_weak.clone();
 
                 content = content.child(uniform_list(
                     "remotes-list",
-                    remotes_list.len(),
+                    flattened.len(),
                     move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                         let w = w.clone();
                         range
                             .map(|i| {
-                                let remote = &remotes_list[i];
+                                let remote = &remotes_list[flattened[i]];
                                 let kb_active = keyboard_index == Some(i);
                                 let remote_name: SharedString = remote.name.clone().into();
                                 let url_text = remote

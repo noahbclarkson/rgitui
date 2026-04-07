@@ -1,7 +1,6 @@
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
-use std::process::Command;
 
 use crate::types::*;
 
@@ -100,16 +99,11 @@ impl GitProject {
                         format!("cp \"{}\" ", todo_file.to_string_lossy())
                     };
 
-                    let mut cmd = Command::new("git");
+                    let mut cmd = super::git_command();
                     cmd.current_dir(&repo_path)
                         .env("GIT_SEQUENCE_EDITOR", &sequence_editor)
                         .env("GIT_EDITOR", "true")
                         .args(["rebase", "-i", &base_oid]);
-                    #[cfg(target_os = "windows")]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd.creation_flags(0x08000000);
-                    }
                     let output = cmd
                         .output()
                         .with_context(|| "Failed to execute git rebase -i")?;

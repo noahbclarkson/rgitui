@@ -41,7 +41,7 @@ fn run_git_command(
     force_https: bool,
 ) -> Result<Option<String>> {
     let mut config_args: Vec<String> = Vec::new();
-    let mut cmd = Command::new("git");
+    let mut cmd = super::git_command();
     cmd.current_dir(repo_path).env("GIT_TERMINAL_PROMPT", "0");
 
     if let Some(ref url) = remote_url {
@@ -80,12 +80,6 @@ fn run_git_command(
         cmd.arg("-c").arg(cfg);
     }
     cmd.args(args);
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
 
     let output = cmd
         .output()
@@ -280,7 +274,7 @@ fn has_credential_helper_for_host(repo_path: &Path, https_url: &str) -> bool {
         return false;
     }
 
-    let output = Command::new("git")
+    let output = super::git_command()
         .args(["config", "--get-regexp", "credential"])
         .current_dir(repo_path)
         .output();
