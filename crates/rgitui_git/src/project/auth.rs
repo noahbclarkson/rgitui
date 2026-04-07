@@ -21,10 +21,7 @@ pub(crate) fn run_git_network_command(repo_path: &Path, args: &[&str]) -> Result
         if is_ssh_auth_error(&err_msg) {
             if let Some(ref url) = remote_url {
                 if is_ssh_url(url) && can_use_https(repo_path, &auth, url) {
-                    log::info!(
-                        "SSH auth failed, retrying with HTTPS rewriting for {}",
-                        url
-                    );
+                    log::info!("SSH auth failed, retrying with HTTPS rewriting for {}", url);
                     return run_git_command(repo_path, args, &auth, &remote_url, true);
                 }
             }
@@ -45,8 +42,7 @@ fn run_git_command(
 ) -> Result<Option<String>> {
     let mut config_args: Vec<String> = Vec::new();
     let mut cmd = Command::new("git");
-    cmd.current_dir(repo_path)
-        .env("GIT_TERMINAL_PROMPT", "0");
+    cmd.current_dir(repo_path).env("GIT_TERMINAL_PROMPT", "0");
 
     if let Some(ref url) = remote_url {
         if force_https && is_ssh_url(url) {
@@ -159,10 +155,7 @@ fn inject_https_credentials(cmd: &mut Command, auth: &GitAuthRuntime, remote_url
     cmd.env("RGITUI_GIT_TOKEN", token);
 }
 
-fn find_https_credentials(
-    auth: &GitAuthRuntime,
-    remote_url: &str,
-) -> Option<(String, String)> {
+fn find_https_credentials(auth: &GitAuthRuntime, remote_url: &str) -> Option<(String, String)> {
     let host = remote_url
         .strip_prefix("https://")
         .or_else(|| remote_url.strip_prefix("http://"))
