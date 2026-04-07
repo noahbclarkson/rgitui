@@ -248,9 +248,7 @@ impl AiGenerator {
                         };
                         generate_anthropic_with_tools(&req, &mut tc).await
                     } else {
-                        generate_anthropic(&req,
-                        )
-                        .await
+                        generate_anthropic(&req).await
                     }
                 }
                 other => Err(anyhow::anyhow!("Unknown AI provider: {}", other)),
@@ -578,7 +576,8 @@ async fn generate_anthropic_with_tools(
         .as_ref()
         .context("Anthropic API key not configured. Set it in Settings > AI.")?;
 
-    let system_prompt = build_tool_prompt(req.diff, req.summary, req.commit_style, req.project_context);
+    let system_prompt =
+        build_tool_prompt(req.diff, req.summary, req.commit_style, req.project_context);
     let tools = anthropic_tool_definitions();
     let mut messages: Vec<serde_json::Value> = vec![];
 
@@ -709,7 +708,8 @@ async fn generate_openai_with_tools(
         .as_ref()
         .context("OpenAI API key not configured. Set it in Settings > AI.")?;
 
-    let system_prompt = build_tool_prompt(req.diff, req.summary, req.commit_style, req.project_context);
+    let system_prompt =
+        build_tool_prompt(req.diff, req.summary, req.commit_style, req.project_context);
     let tools = openai_tool_definitions();
     let mut messages: Vec<serde_json::Value> = vec![
         serde_json::json!({
