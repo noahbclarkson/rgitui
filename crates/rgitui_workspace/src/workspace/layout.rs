@@ -1813,8 +1813,7 @@ pub(crate) fn open_editor(path: &std::path::Path, custom_command: &str) {
                     if path_is_bare_arg {
                         cmd.arg(&path);
                     }
-                    if let Err(e) = cmd.spawn()
-                    {
+                    if let Err(e) = cmd.spawn() {
                         eprintln!(
                             "[rgitui] Failed to open editor '{}' in '{}': {}",
                             program,
