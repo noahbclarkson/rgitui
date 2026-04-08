@@ -156,6 +156,13 @@ impl Workspace {
             commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
         }
 
+        // Compute ahead/behind for all branches in the background after the
+        // initial fast refresh. This avoids blocking the first render with
+        // expensive graph walks (particularly impactful on repos with many branches).
+        project.update(cx, |proj, cx| {
+            proj.refresh_ahead_behind(cx);
+        });
+
         let issues_panel = cx.new(crate::IssuesPanel::new);
         let workspace_weak = cx.entity().downgrade();
         let prs_panel = cx.new(|cx| crate::PrsPanel::new(cx, workspace_weak));

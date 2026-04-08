@@ -666,6 +666,18 @@ pub(super) fn subscribe_project(
 
     cx.subscribe(project, {
         move |this, project, event: &GitProjectEvent, cx| match event {
+            GitProjectEvent::AheadBehindRefreshed => {
+                let proj = project.read(cx);
+                let branches = proj.branches();
+                let (ahead, behind) = branches
+                    .iter()
+                    .find(|b| b.is_head)
+                    .map(|b| (b.ahead, b.behind))
+                    .unwrap_or((0, 0));
+                toolbar.update(cx, |tb, cx| {
+                    tb.set_ahead_behind(ahead, behind, cx);
+                });
+            }
             GitProjectEvent::StatusChanged
             | GitProjectEvent::HeadChanged
             | GitProjectEvent::RefsChanged => {

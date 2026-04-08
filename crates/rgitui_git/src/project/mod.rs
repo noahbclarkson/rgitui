@@ -191,6 +191,8 @@ pub enum GitProjectEvent {
     StatusChanged,
     HeadChanged,
     RefsChanged,
+    /// Emitted after ahead/behind for all branches has been recomputed in the background.
+    AheadBehindRefreshed,
     OperationUpdated(GitOperationUpdate),
 }
 
@@ -571,5 +573,84 @@ impl GitProject {
                 })
             })?
         })
+    }
+
+    /// Compute ahead/behind for all local branches with upstreams in a background
+    /// task, then update the branches list and emit `AheadBehindRefreshed` so the
+    /// UI refreshes. This is called after the initial refresh so that the
+    /// expensive graph walks don't block the first render.
+    pub fn refresh_ahead_behind(&mut self, cx: &mut Context<Self>) {
+        let repo_path = self.repo_path.clone();
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let computed = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = match git2::Repository::open(&repo_path) {
+                        Ok(r) => r,
+                        Err(_) => return Vec::new(),
+                    };
+
+                    let mut results = Vec::new();
+                    let branches = match repo.branches(None) {
+                        Ok(b) => b,
+                        Err(_) => return Vec::new(),
+                    };
+
+                    for branch_result in branches {
+                        let (branch, branch_type) = match branch_result {
+                            Ok(b) => b,
+                            Err(_) => continue,
+                        };
+                        if branch_type != git2::BranchType::Local {
+                            continue;
+                        }
+                        let branch_name = match branch.name() {
+                            Ok(Some(n)) => n.to_string(),
+                            _ => continue,
+                        };
+
+                        let upstream = match branch.upstream() {
+                            Ok(u) => u,
+                            Err(_) => continue,
+                        };
+                        let upstream_target = match upstream.get().target() {
+                            Some(t) => t,
+                            None => continue,
+                        };
+                        let local_target = match branch.get().target() {
+                            Some(t) => t,
+                            None => continue,
+                        };
+
+                        if let Ok((ahead, behind)) =
+                            repo.graph_ahead_behind(local_target, upstream_target)
+                        {
+                            results.push((branch_name, ahead, behind));
+                        }
+                    }
+                    results
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    if computed.is_empty() {
+                        return;
+                    }
+                    // Update ahead/behind values in place
+                    for (name, ahead, behind) in computed {
+                        if let Some(branch) = this.branches.iter_mut().find(|b| b.name == name) {
+                            branch.ahead = ahead;
+                            branch.behind = behind;
+                        }
+                    }
+                    cx.emit(GitProjectEvent::AheadBehindRefreshed);
+                    cx.notify();
+                })
+            })
+            .ok();
+        })
+        .detach();
     }
 }
