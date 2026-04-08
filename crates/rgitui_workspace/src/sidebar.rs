@@ -844,7 +844,7 @@ impl Sidebar {
                     break;
                 };
                 display_full_dir = format!("{}/{}", display_full_dir, next_name);
-                display_label = format!("{}{}/", display_label.trim_end_matches("/"), next_name);
+                display_label = format!("{}/{}/", display_label.trim_end_matches("/"), next_name);
                 display_node = next_child;
             }
             let display_key = format!("{}:{}", prefix, display_full_dir);
