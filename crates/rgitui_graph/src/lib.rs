@@ -1262,7 +1262,10 @@ impl Render for GraphView {
                                                 // Double-click: checkout this commit
                                                 cx.emit(GraphViewEvent::CheckoutCommit(oid));
                                             } else {
-                                                this.select_list_index(i, cx);
+                                                let offset = this.working_tree_offset();
+                                                let commit_index = i - offset;
+                                                let list_index = commit_index + offset;
+                                                this.select_list_index(list_index, cx);
                                             }
                                         })
                                         .ok();
