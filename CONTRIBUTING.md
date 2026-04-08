@@ -5,7 +5,6 @@ Thank you for your interest in contributing to rgitui! This document provides gu
 ## Prerequisites
 
 - Rust stable toolchain (see `rust-toolchain.toml`)
-- A local checkout of [Zed](https://github.com/zed-industries/zed) at `../zed` (sibling directory)
 - System dependencies for GPUI (see below)
 
 ### System Dependencies
@@ -58,15 +57,10 @@ sudo apt-get install -y \
 ## Building
 
 ```bash
-# Clone both repos
-git clone https://github.com/mrnoa/rgitui.git
-git clone https://github.com/zed-industries/zed.git
-
-# Build
+# Clone and build
+git clone https://github.com/noahbclarkson/rgitui.git
 cd rgitui
 cargo build
-
-# Run
 cargo run
 ```
 
