@@ -19,7 +19,7 @@
 ### UX Polish
 - [x] **Keyboard shortcut overlay:** ✅ implemented. Press `?` → `ShortcutsHelp` modal with 4 categories (~24 shortcuts). Exists at `crates/rgitui_workspace/src/shortcuts_help.rs`.
 - [x] **Command palette fuzzy search:** ✅ implemented. `fuzzy_score` function (char-by-char sequential match with position-weighted scoring) added in `9ca61f2`. Tested with edge cases in `a17dc62`. Already shipped in v0.1.0.
-- [ ] **Graph column resize:** user should be able to drag-resize the graph/author/date columns
+- [x] **Graph column resize:** ✅ user can drag-resize the author and date columns in the graph view.
 - [ ] **Toast notifications:** failed operations (push, pull, fetch) should show descriptive error toasts, not just status bar
 
 ---
@@ -54,7 +54,7 @@
 |---------|-----------|---------|-------|--------|
 | Keyboard shortcut overlay | ✅ | ✅ | ✅ | ✅ |
 | Fuzzy command palette | ✅ | ✅ | ✅ | ✅ |
-| Resizable columns | ✅ | ✅ | ✅ | ❌ |
+| Resizable columns | ✅ | ✅ | ✅ | ✅ |
 | Submodule depth view | ✅ | partial | ✅ | ⚠️ basic |
 | Git health dashboard | ✅ | ❌ | ✅ | ❌ |
 | Partial hunk staging UX | ✅ | ✅ | ✅ | ⚠️ exists, needs polish |
