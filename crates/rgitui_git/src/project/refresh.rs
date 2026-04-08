@@ -123,7 +123,10 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
 /// Ahead/behind values will be (0, 0) — they'll be recomputed on the next
 /// full refresh from a git operation (fetch/push/pull) or explicit user refresh.
 pub fn gather_refresh_data_lightweight(repo_path: &Path) -> Result<RefreshData> {
-    log::debug!("gather_refresh_data_lightweight: repo={}", repo_path.display());
+    log::debug!(
+        "gather_refresh_data_lightweight: repo={}",
+        repo_path.display()
+    );
     gather_refresh_data_internal(repo_path, false)
 }
 

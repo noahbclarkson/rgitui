@@ -54,7 +54,11 @@ pub fn compute_blame(
 
     let result = parse_porcelain_blame(&String::from_utf8_lossy(&output.stdout));
     if let Ok(ref lines) = result {
-        log::debug!("compute_blame complete in {:?}: {} lines", blame_timer.elapsed(), lines.len());
+        log::debug!(
+            "compute_blame complete in {:?}: {} lines",
+            blame_timer.elapsed(),
+            lines.len()
+        );
     }
     result
 }

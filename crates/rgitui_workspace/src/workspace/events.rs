@@ -1657,7 +1657,13 @@ pub(super) fn subscribe_detail_panel(
                                     let path = first_file.path.display().to_string();
                                     let oid_str = target_oid.to_string();
                                     dv.update(cx, |dv, cx| {
-                                        dv.set_diff(first_file.clone(), path, false, Some(&oid_str), cx)
+                                        dv.set_diff(
+                                            first_file.clone(),
+                                            path,
+                                            false,
+                                            Some(&oid_str),
+                                            cx,
+                                        )
                                     });
                                 }
                             }

@@ -53,10 +53,7 @@ fn bezier_pt(x0: f32, y0: f32, x1: f32, y1: f32, t: f32) -> (f32, f32) {
     let mid_y = y0 + (y1 - y0) * 0.5;
     let u = 1.0 - t;
     let bx = u * u * u * x0 + 3.0 * u * u * t * x0 + 3.0 * u * t * t * x1 + t * t * t * x1;
-    let by = u * u * u * y0
-        + 3.0 * u * u * t * mid_y
-        + 3.0 * u * t * t * mid_y
-        + t * t * t * y1;
+    let by = u * u * u * y0 + 3.0 * u * u * t * mid_y + 3.0 * u * t * t * mid_y + t * t * t * y1;
     (bx, by)
 }
 
@@ -150,14 +147,38 @@ struct Row {
 }
 
 const ROWS: &[Row] = &[
-    Row { lane: 0, color_idx: 0 },
-    Row { lane: 0, color_idx: 0 },
-    Row { lane: 1, color_idx: 1 },
-    Row { lane: 0, color_idx: 0 },
-    Row { lane: 1, color_idx: 1 },
-    Row { lane: 0, color_idx: 0 },
-    Row { lane: 2, color_idx: 2 },
-    Row { lane: 0, color_idx: 0 },
+    Row {
+        lane: 0,
+        color_idx: 0,
+    },
+    Row {
+        lane: 0,
+        color_idx: 0,
+    },
+    Row {
+        lane: 1,
+        color_idx: 1,
+    },
+    Row {
+        lane: 0,
+        color_idx: 0,
+    },
+    Row {
+        lane: 1,
+        color_idx: 1,
+    },
+    Row {
+        lane: 0,
+        color_idx: 0,
+    },
+    Row {
+        lane: 2,
+        color_idx: 2,
+    },
+    Row {
+        lane: 0,
+        color_idx: 0,
+    },
 ];
 
 struct Edge {
@@ -167,15 +188,51 @@ struct Edge {
 }
 
 const EDGES: &[Edge] = &[
-    Edge { from: 0, to: 1, color_idx: 0 },
-    Edge { from: 1, to: 3, color_idx: 0 },
-    Edge { from: 3, to: 5, color_idx: 0 },
-    Edge { from: 5, to: 7, color_idx: 0 },
-    Edge { from: 1, to: 2, color_idx: 1 },
-    Edge { from: 2, to: 4, color_idx: 1 },
-    Edge { from: 4, to: 5, color_idx: 1 },
-    Edge { from: 5, to: 6, color_idx: 2 },
-    Edge { from: 6, to: 7, color_idx: 2 },
+    Edge {
+        from: 0,
+        to: 1,
+        color_idx: 0,
+    },
+    Edge {
+        from: 1,
+        to: 3,
+        color_idx: 0,
+    },
+    Edge {
+        from: 3,
+        to: 5,
+        color_idx: 0,
+    },
+    Edge {
+        from: 5,
+        to: 7,
+        color_idx: 0,
+    },
+    Edge {
+        from: 1,
+        to: 2,
+        color_idx: 1,
+    },
+    Edge {
+        from: 2,
+        to: 4,
+        color_idx: 1,
+    },
+    Edge {
+        from: 4,
+        to: 5,
+        color_idx: 1,
+    },
+    Edge {
+        from: 5,
+        to: 6,
+        color_idx: 2,
+    },
+    Edge {
+        from: 6,
+        to: 7,
+        color_idx: 2,
+    },
 ];
 
 fn paint_graph(bounds: &Bounds<Pixels>, window: &mut Window, progress: f32) {
@@ -261,22 +318,19 @@ const FADE_DURATION: Duration = Duration::from_millis(1000);
 
 impl SplashScreen {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let done = this
-                    .update(cx, |this: &mut SplashScreen, cx| {
-                        let t =
-                            this.start.elapsed().as_secs_f32() / ANIM_DURATION.as_secs_f32();
-                        cx.notify();
-                        t >= 1.0
-                    })
-                    .unwrap_or(true);
-                if done {
-                    break;
-                }
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(16))
+                .await;
+            let done = this
+                .update(cx, |this: &mut SplashScreen, cx| {
+                    let t = this.start.elapsed().as_secs_f32() / ANIM_DURATION.as_secs_f32();
+                    cx.notify();
+                    t >= 1.0
+                })
+                .unwrap_or(true);
+            if done {
+                break;
             }
         })
         .detach();
@@ -319,8 +373,7 @@ impl Render for SplashScreen {
         // Title typewriter: plays over the first 600ms
         let title_t = (elapsed.as_secs_f32() / 0.6).min(1.0);
         // Subtitle typewriter: starts at 300ms, plays over 500ms
-        let subtitle_t =
-            ((elapsed.as_secs_f32() - 0.3).max(0.0) / 0.5).min(1.0);
+        let subtitle_t = ((elapsed.as_secs_f32() - 0.3).max(0.0) / 0.5).min(1.0);
 
         let colors = cx.colors();
         let text_color = colors.text;
@@ -330,10 +383,7 @@ impl Render for SplashScreen {
         let border = colors.border;
 
         // Very dim version of muted for not-yet-typed characters
-        let hidden = gpui::Hsla {
-            a: 0.08,
-            ..muted
-        };
+        let hidden = gpui::Hsla { a: 0.08, ..muted };
 
         let title = div()
             .text_size(px(22.))
@@ -366,8 +416,7 @@ impl Render for SplashScreen {
             .into_any_element();
 
         // Loading text typewriter: starts at 500ms, plays over 400ms
-        let loading_t =
-            ((elapsed.as_secs_f32() - 0.5).max(0.0) / 0.4).min(1.0);
+        let loading_t = ((elapsed.as_secs_f32() - 0.5).max(0.0) / 0.4).min(1.0);
 
         let loading = div()
             .text_size(px(10.))

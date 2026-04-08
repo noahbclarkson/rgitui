@@ -306,7 +306,12 @@ impl GitProject {
         set_upstream: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("push_to: remote={} branch={} force={}", remote_name, remote_branch_name, force);
+        log::info!(
+            "push_to: remote={} branch={} force={}",
+            remote_name,
+            remote_branch_name,
+            force
+        );
         let remote_name = remote_name.to_string();
         let remote_branch_name = remote_branch_name.to_string();
         let task_remote_name = remote_name.clone();

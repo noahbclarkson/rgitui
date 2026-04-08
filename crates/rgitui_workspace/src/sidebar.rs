@@ -644,7 +644,11 @@ impl Sidebar {
         unstaged: Vec<FileStatus>,
         cx: &mut Context<Self>,
     ) {
-        log::debug!("Sidebar::update_status: staged={} unstaged={}", staged.len(), unstaged.len());
+        log::debug!(
+            "Sidebar::update_status: staged={} unstaged={}",
+            staged.len(),
+            unstaged.len()
+        );
         if self.staged == staged && self.unstaged == unstaged {
             return;
         }

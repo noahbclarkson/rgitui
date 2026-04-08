@@ -336,7 +336,11 @@ impl DetailPanel {
     }
 
     pub fn set_commit(&mut self, commit: CommitInfo, diff: CommitDiff, cx: &mut Context<Self>) {
-        log::debug!("DetailPanel::set_commit: oid={} files={}", commit.short_id, diff.files.len());
+        log::debug!(
+            "DetailPanel::set_commit: oid={} files={}",
+            commit.short_id,
+            diff.files.len()
+        );
         self.cached_file_tree = Some(build_cached_file_tree(&diff.files));
         self.commit = Some(commit);
         self.commit_diff = Some(Arc::new(diff));

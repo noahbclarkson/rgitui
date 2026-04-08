@@ -344,10 +344,18 @@ impl DiffViewer {
         if let Some(ref diff) = self.diff {
             if let Some(ref path) = self.file_path {
                 self.display_rows = Arc::new(Self::compute_display_rows(
-                    diff, path, appearance, added_word_bg, deleted_word_bg,
+                    diff,
+                    path,
+                    appearance,
+                    added_word_bg,
+                    deleted_word_bg,
                 ));
                 self.sbs_rows = Arc::new(Self::compute_sbs_rows(
-                    diff, path, appearance, added_word_bg, deleted_word_bg,
+                    diff,
+                    path,
+                    appearance,
+                    added_word_bg,
+                    deleted_word_bg,
                 ));
             }
         }
@@ -363,7 +371,14 @@ impl DiffViewer {
         self.focus_handle.is_focused(window)
     }
 
-    pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, commit_id: Option<&str>, cx: &mut Context<Self>) {
+    pub fn set_diff(
+        &mut self,
+        diff: FileDiff,
+        path: String,
+        staged: bool,
+        commit_id: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
         log::debug!("DiffViewer::set_diff: path={} staged={}", path, staged);
         let appearance = cx.theme().appearance;
         let is_dark = appearance == Appearance::Dark;
@@ -426,16 +441,23 @@ impl DiffViewer {
             added_word_bg,
             deleted_word_bg,
         ));
-        log::debug!("DiffViewer: computed {} display_rows, {} sbs_rows", self.display_rows.len(), self.sbs_rows.len());
+        log::debug!(
+            "DiffViewer: computed {} display_rows, {} sbs_rows",
+            self.display_rows.len(),
+            self.sbs_rows.len()
+        );
 
         // Store in cache (cap at 50 entries)
         if self.display_cache.len() >= 50 {
             self.display_cache.clear();
         }
-        self.display_cache.insert(cache_key, CachedDisplayRows {
-            display_rows: self.display_rows.clone(),
-            sbs_rows: self.sbs_rows.clone(),
-        });
+        self.display_cache.insert(
+            cache_key,
+            CachedDisplayRows {
+                display_rows: self.display_rows.clone(),
+                sbs_rows: self.sbs_rows.clone(),
+            },
+        );
 
         self.diff = Some(diff);
         self.file_path = Some(path);
@@ -1870,7 +1892,12 @@ impl DiffViewer {
 
 impl Render for DiffViewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        log::trace!("DiffViewer::render: path={:?} display_rows={} sbs_rows={}", self.file_path, self.display_rows.len(), self.sbs_rows.len());
+        log::trace!(
+            "DiffViewer::render: path={:?} display_rows={} sbs_rows={}",
+            self.file_path,
+            self.display_rows.len(),
+            self.sbs_rows.len()
+        );
         let colors = cx.colors();
 
         if self.diff.is_none() {

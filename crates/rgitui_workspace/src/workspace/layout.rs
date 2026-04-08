@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, App, ClickEvent, Context, CursorStyle, DragMoveEvent, ElementId,
-    MouseButton, MouseDownEvent, Render, SharedString, Window,
+    canvas, div, px, App, ClickEvent, Context, CursorStyle, DragMoveEvent, ElementId, MouseButton,
+    MouseDownEvent, Render, SharedString, Window,
 };
 use rgitui_git::GitOperationState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
@@ -19,7 +19,11 @@ use super::{
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        log::trace!("Workspace::render: tabs={} active={}", self.tabs.len(), self.active_tab);
+        log::trace!(
+            "Workspace::render: tabs={} active={}",
+            self.tabs.len(),
+            self.active_tab
+        );
         if self.focus.pending_focus_restore {
             self.focus.pending_focus_restore = false;
             self.restore_focus(window, cx);

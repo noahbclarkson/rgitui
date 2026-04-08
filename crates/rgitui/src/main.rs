@@ -116,10 +116,7 @@ impl Render for AppRoot {
                 .child(splash.clone())
                 .into_any_element()
         } else {
-            div()
-                .id("app-root-empty")
-                .size_full()
-                .into_any_element()
+            div().id("app-root-empty").size_full().into_any_element()
         }
     }
 }

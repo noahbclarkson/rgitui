@@ -78,7 +78,11 @@ where
 
         // New key: evict LRU if at capacity.
         if self.map.len() >= self.cap {
-            log::debug!("LruCache::insert eviction: len={}/{}", self.map.len(), self.cap);
+            log::debug!(
+                "LruCache::insert eviction: len={}/{}",
+                self.map.len(),
+                self.cap
+            );
             if let Some(evicted) = self.order.pop_front() {
                 self.map.remove(&evicted);
             }

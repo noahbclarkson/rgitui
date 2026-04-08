@@ -248,11 +248,19 @@ impl GraphView {
         let graph_style = cx.global::<SettingsState>().settings().graph_style;
         let new_hash = Self::compute_commits_hash(&commits, &graph_style);
         if new_hash == self.cached_graph_hash && !self.commits.is_empty() {
-            log::debug!("GraphView::set_commits: hash unchanged ({:#x}), skipping ({} commits)", new_hash, commits.len());
+            log::debug!(
+                "GraphView::set_commits: hash unchanged ({:#x}), skipping ({} commits)",
+                new_hash,
+                commits.len()
+            );
             return;
         }
         self.cached_graph_hash = new_hash;
-        log::debug!("GraphView::set_commits: hash changed -> {:#x}, spawning graph compute for {} commits", new_hash, commits.len());
+        log::debug!(
+            "GraphView::set_commits: hash changed -> {:#x}, spawning graph compute for {} commits",
+            new_hash,
+            commits.len()
+        );
 
         // Preserve selection by OID across refreshes
         let prev_selected_oid = self.selected_oid;
@@ -278,14 +286,16 @@ impl GraphView {
                     .unwrap_or(1)
                     .max(1);
                 this.graph_rows = Arc::new(graph_rows);
-                log::debug!("GraphView: graph rows applied: {} rows, max_lane={}", this.graph_rows.len(), this.global_max_lane);
+                log::debug!(
+                    "GraphView: graph rows applied: {} rows, max_lane={}",
+                    this.graph_rows.len(),
+                    this.global_max_lane
+                );
 
                 // Restore selection if the previously selected commit still exists
                 let offset = this.working_tree_offset();
                 if let Some(prev_oid) = prev_selected_oid {
-                    if let Some(new_index) =
-                        this.commits.iter().position(|c| c.oid == prev_oid)
-                    {
+                    if let Some(new_index) = this.commits.iter().position(|c| c.oid == prev_oid) {
                         this.selected_index = Some(new_index + offset);
                     } else {
                         this.selected_index = None;
@@ -304,9 +314,7 @@ impl GraphView {
 
                 // Check if a pending scroll target has just been loaded.
                 if let Some(pending_oid) = this.pending_scroll_oid {
-                    if let Some(index) =
-                        this.commits.iter().position(|c| c.oid == pending_oid)
-                    {
+                    if let Some(index) = this.commits.iter().position(|c| c.oid == pending_oid) {
                         let list_index = index + offset;
                         this.select_list_index(list_index, cx);
                         this.scroll_handle
@@ -348,7 +356,11 @@ impl GraphView {
         self.staged_breakdown = staged_breakdown;
         self.unstaged_breakdown = unstaged_breakdown;
         if changed {
-            log::debug!("GraphView: working tree status changed: staged={} unstaged={}", staged, unstaged);
+            log::debug!(
+                "GraphView: working tree status changed: staged={} unstaged={}",
+                staged,
+                unstaged
+            );
             cx.notify();
         }
     }
@@ -550,7 +562,11 @@ impl GraphView {
             }
         }
         self.filter_match_set_arc = Arc::new(self.filter_match_set.clone());
-        log::debug!("GraphView::search: query={:?} matches={}", query, self.filter_matches.len());
+        log::debug!(
+            "GraphView::search: query={:?} matches={}",
+            query,
+            self.filter_matches.len()
+        );
 
         // If no matches but more commits are available, auto-load more.
         if self.filter_matches.is_empty() && !self.all_commits_loaded {
@@ -708,7 +724,12 @@ impl GraphView {
 
 impl Render for GraphView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        log::trace!("GraphView::render: commits={} graph_rows={} selected={:?}", self.commits.len(), self.graph_rows.len(), self.selected_index);
+        log::trace!(
+            "GraphView::render: commits={} graph_rows={} selected={:?}",
+            self.commits.len(),
+            self.graph_rows.len(),
+            self.selected_index
+        );
         let colors = cx.colors();
 
         if self.commits.is_empty() {

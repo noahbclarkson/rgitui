@@ -396,7 +396,11 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         });
     }
 
-    log::debug!("compute_graph complete in {:?}: {} rows", graph_timer.elapsed(), rows.len());
+    log::debug!(
+        "compute_graph complete in {:?}: {} rows",
+        graph_timer.elapsed(),
+        rows.len()
+    );
     rows
 }
 

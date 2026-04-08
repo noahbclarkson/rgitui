@@ -164,7 +164,10 @@ impl IssuesPanel {
         if !self.issues.is_empty() {
             if let Some(last) = self.last_fetched {
                 if last.elapsed() < std::time::Duration::from_secs(60) {
-                    log::debug!("fetch_issues: cached, skipping (loaded {:.0}s ago)", last.elapsed().as_secs_f32());
+                    log::debug!(
+                        "fetch_issues: cached, skipping (loaded {:.0}s ago)",
+                        last.elapsed().as_secs_f32()
+                    );
                     return;
                 }
             }
