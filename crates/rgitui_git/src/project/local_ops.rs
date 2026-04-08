@@ -3115,6 +3115,81 @@ fn sign_with_gpg(content: &str, key_id: &str) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
+/// Return local branches that contain the given commit.
+///
+/// Uses the git2 merge-base check: if `merge_base(branch_tip, commit_oid) == commit_oid`,
+/// then `commit_oid` is an ancestor of `branch_tip` — meaning the branch contains the commit.
+///
+/// Remote branches are excluded since the UX is about "which of my branches has this commit".
+pub fn branches_containing_commit(
+    repo_path: &std::path::Path,
+    oid: git2::Oid,
+) -> Result<Vec<BranchInfo>> {
+    let repo = Repository::open(repo_path)
+        .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
+
+    // Verify the commit exists (will error gracefully if not found)
+    repo.find_commit(oid)?;
+    let mut containing = Vec::new();
+
+    let branch_iter = repo.branches(Some(git2::BranchType::Local))?;
+    for branch_result in branch_iter {
+        let (branch, _branch_type) = branch_result?;
+        let name = branch.name()?.unwrap_or("").to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let Some(tip_oid) = branch.get().target() else {
+            continue;
+        };
+
+        // Skip if tip is the commit itself (avoid self-reference)
+        if tip_oid == oid {
+            let upstream = if let Ok(upstream_ref) = branch.upstream() {
+                upstream_ref.name().ok().flatten().map(|s| s.to_string())
+            } else {
+                None
+            };
+            containing.push(BranchInfo {
+                name,
+                is_head: branch.is_head(),
+                is_remote: false,
+                upstream,
+                ahead: 0,
+                behind: 0,
+                tip_oid: Some(tip_oid),
+            });
+            continue;
+        }
+
+        // merge_base(tip, commit) returns the common ancestor.
+        // If it equals our commit oid, then commit is an ancestor of tip.
+        if let Ok(merge_base) = repo.merge_base(tip_oid, oid) {
+            if merge_base == oid {
+                let upstream = if let Ok(upstream_ref) = branch.upstream() {
+                    upstream_ref.name().ok().flatten().map(|s| s.to_string())
+                } else {
+                    None
+                };
+                containing.push(BranchInfo {
+                    name,
+                    is_head: branch.is_head(),
+                    is_remote: false,
+                    upstream,
+                    ahead: 0,
+                    behind: 0,
+                    tip_oid: Some(tip_oid),
+                });
+            }
+        }
+    }
+
+    containing.sort_by(|a, b| b.is_head.cmp(&a.is_head).then(a.name.cmp(&b.name)));
+
+    Ok(containing)
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

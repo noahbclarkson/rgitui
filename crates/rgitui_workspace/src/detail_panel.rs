@@ -16,7 +16,9 @@ use gpui::{
     FocusHandle, KeyDownEvent, ListSizingBehavior, ObjectFit, Render, SharedString, WeakEntity,
     Window,
 };
-use rgitui_git::{CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel, Signature};
+use rgitui_git::{
+    BranchInfo, CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel, Signature,
+};
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
@@ -140,6 +142,8 @@ pub struct DetailPanel {
     file_view_mode: FileViewMode,
     collapsed_dirs: HashSet<String>,
     description_expanded: bool,
+    contained_in: Vec<BranchInfo>,
+    contained_in_loading: bool,
 }
 
 impl EventEmitter<DetailPanelEvent> for DetailPanel {}
@@ -158,6 +162,8 @@ impl DetailPanel {
             file_view_mode: FileViewMode::default(),
             collapsed_dirs: HashSet::new(),
             description_expanded: false,
+            contained_in: Vec::new(),
+            contained_in_loading: false,
         }
     }
 
@@ -349,6 +355,8 @@ impl DetailPanel {
         self.file_search_active = false;
         self.collapsed_dirs.clear();
         self.description_expanded = false;
+        self.contained_in.clear();
+        self.contained_in_loading = false;
         cx.notify();
     }
 
@@ -362,6 +370,19 @@ impl DetailPanel {
         self.file_search_active = false;
         self.collapsed_dirs.clear();
         self.description_expanded = false;
+        self.contained_in.clear();
+        self.contained_in_loading = false;
+        cx.notify();
+    }
+
+    pub fn set_contained_in(&mut self, branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
+        self.contained_in = branches;
+        self.contained_in_loading = false;
+        cx.notify();
+    }
+
+    pub fn set_contained_in_loading(&mut self, cx: &mut Context<Self>) {
+        self.contained_in_loading = true;
         cx.notify();
     }
 
@@ -1076,6 +1097,67 @@ impl Render for DetailPanel {
         if !commit.co_authors.is_empty() {
             header_card =
                 header_card.child(self.render_co_authors(&commit.co_authors, &colors, cx));
+        }
+
+        // Contained in — branches that have this commit as an ancestor (i.e. "merged into").
+        // Exclude branches already shown as direct refs to avoid redundancy.
+        let refs_names: std::collections::HashSet<_> = commit
+            .refs
+            .iter()
+            .filter_map(|r| {
+                if let RefLabel::LocalBranch(name) = r {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let contained_filtered: Vec<_> = self
+            .contained_in
+            .iter()
+            .filter(|b| !refs_names.contains(b.name.as_str()))
+            .collect();
+
+        if self.contained_in_loading {
+            header_card = header_card.child(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Refresh)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new("Finding branches…")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            );
+        } else if !contained_filtered.is_empty() {
+            let mut contained_row = div().v_flex().gap(px(4.));
+            contained_row = contained_row.child(
+                Label::new("CONTAINED IN")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted)
+                    .weight(gpui::FontWeight::SEMIBOLD),
+            );
+            let mut badges = div().h_flex().gap_1().flex_wrap();
+            for branch in &contained_filtered {
+                let branch_name: SharedString = branch.name.clone().into();
+                badges = badges.child(
+                    Badge::new(branch_name)
+                        .color(if branch.is_head {
+                            Color::Warning
+                        } else {
+                            Color::Success
+                        })
+                        .bold(),
+                );
+            }
+            contained_row = contained_row.child(badges);
+            header_card = header_card.child(contained_row);
         }
 
         content = content.child(header_card);

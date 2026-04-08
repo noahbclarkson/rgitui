@@ -40,6 +40,7 @@ pub use diff::{
     compute_three_way_conflict_diff,
 };
 pub use file_history::compute_file_history;
+pub use local_ops::branches_containing_commit;
 pub use reflog::{compute_reflog, ReflogEntryInfo};
 pub use refresh::gather_refresh_data;
 pub use refresh::gather_refresh_data_lightweight;
