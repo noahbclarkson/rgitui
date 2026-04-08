@@ -241,7 +241,9 @@ jobs:
           RGITUI_VERSION: ${{ needs.preflight.outputs.version }}
           # appimagetool needs FUSE; in CI without FUSE, use --appimage-extract-and-run
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: ./script/bundle-linux.sh
+        run: |
+          chmod +x script/bundle-linux.sh
+          ./script/bundle-linux.sh
 
       - name: Create plain tarball
         env:
@@ -289,10 +291,10 @@ jobs:
         include:
           - arch: x86_64
             target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-latest
           - arch: aarch64
             target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout rgitui
@@ -315,7 +317,9 @@ jobs:
           RGITUI_VERSION: ${{ needs.preflight.outputs.version }}
           RGITUI_MAC_TARGET: ${{ matrix.target }}
           RGITUI_MAC_CREATE_DMG: "1"
-        run: ./script/bundle-mac.sh
+        run: |
+          chmod +x script/bundle-mac.sh
+          ./script/bundle-mac.sh
 
       - name: Verify DMG was produced
         env:
