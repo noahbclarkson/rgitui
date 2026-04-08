@@ -98,6 +98,7 @@ pub struct IssuesPanel {
     selected_issue: Option<Issue>,
     selected_comments: Vec<IssueComment>,
     comments_loading: bool,
+    last_fetched: Option<std::time::Instant>,
 }
 
 impl IssuesPanel {
@@ -117,6 +118,7 @@ impl IssuesPanel {
             selected_issue: None,
             selected_comments: Vec::new(),
             comments_loading: false,
+            last_fetched: None,
         }
     }
 
@@ -158,6 +160,16 @@ impl IssuesPanel {
             }
         };
 
+        // Skip refetch if data was loaded recently (within 60 seconds).
+        if !self.issues.is_empty() {
+            if let Some(last) = self.last_fetched {
+                if last.elapsed() < std::time::Duration::from_secs(60) {
+                    log::debug!("fetch_issues: cached, skipping (loaded {:.0}s ago)", last.elapsed().as_secs_f32());
+                    return;
+                }
+            }
+        }
+
         self.is_loading = true;
         self.error_message = None;
         cx.notify();
@@ -165,6 +177,7 @@ impl IssuesPanel {
         let owner = self.github_owner.clone();
         let repo = self.github_repo.clone();
         let state = self.filter.api_value().to_string();
+        log::info!("fetch_issues: {}/{} filter={}", owner, repo, state);
         let http = cx.http_client();
 
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
@@ -176,6 +189,8 @@ impl IssuesPanel {
                         Ok(issues) => {
                             panel.issues = issues;
                             panel.selected_index = None;
+                            panel.last_fetched = Some(std::time::Instant::now());
+                            log::info!("fetch_issues complete: {} issues", panel.issues.len());
                         }
                         Err(e) => {
                             panel.error_message = Some(e);
@@ -243,6 +258,7 @@ impl IssuesPanel {
     fn set_filter(&mut self, filter: IssueFilter, cx: &mut Context<Self>) {
         if self.filter != filter {
             self.filter = filter;
+            self.last_fetched = None;
             self.fetch_issues(cx);
         }
     }

@@ -113,6 +113,7 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
 /// Gather all refresh data from a repository at the given path.
 /// This is a standalone function (no `&self`) so it can run on a background thread.
 pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
+    log::debug!("gather_refresh_data: repo={}", repo_path.display());
     gather_refresh_data_internal(repo_path, true)
 }
 
@@ -122,6 +123,7 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
 /// Ahead/behind values will be (0, 0) — they'll be recomputed on the next
 /// full refresh from a git operation (fetch/push/pull) or explicit user refresh.
 pub fn gather_refresh_data_lightweight(repo_path: &Path) -> Result<RefreshData> {
+    log::debug!("gather_refresh_data_lightweight: repo={}", repo_path.display());
     gather_refresh_data_internal(repo_path, false)
 }
 
@@ -129,6 +131,7 @@ fn gather_refresh_data_internal(
     repo_path: &Path,
     compute_ahead_behind: bool,
 ) -> Result<RefreshData> {
+    let refresh_timer = std::time::Instant::now();
     let repo = Repository::open(repo_path)
         .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
 
@@ -226,22 +229,26 @@ fn gather_refresh_data_internal(
         }
     }
 
-    // Stashes
-    let mut stashes = Vec::new();
-    {
-        let mut repo_mut = Repository::open(repo_path)?;
-        repo_mut.stash_foreach(|stash_index, message, oid| {
-            stashes.push(StashEntry {
-                index: stash_index,
-                message: message.to_string(),
-                oid: *oid,
-            });
-            true
-        })?;
-    }
-
-    // Worktrees
-    let worktrees = gather_worktrees(&repo);
+    // Stashes + Worktrees (parallelized: stash opens its own repo)
+    let (stashes, worktrees) = std::thread::scope(|s| {
+        let stash_handle = s.spawn(|| {
+            let mut stashes = Vec::new();
+            if let Ok(mut repo_mut) = Repository::open(repo_path) {
+                let _ = repo_mut.stash_foreach(|stash_index, message, oid| {
+                    stashes.push(StashEntry {
+                        index: stash_index,
+                        message: message.to_string(),
+                        oid: *oid,
+                    });
+                    true
+                });
+            }
+            stashes
+        });
+        let worktrees = gather_worktrees(&repo);
+        let stashes = stash_handle.join().unwrap_or_default();
+        (stashes, worktrees)
+    });
 
     // Status
     let status = {
@@ -253,8 +260,24 @@ fn gather_refresh_data_internal(
             .include_unmodified(false);
 
         let statuses = repo.statuses(Some(&mut opts))?;
-        let staged_stats = batch_diff_stats(&repo, true);
-        let unstaged_stats = batch_diff_stats(&repo, false);
+        let (staged_stats, unstaged_stats) = std::thread::scope(|s| {
+            let staged_handle = s.spawn(|| {
+                let repo = Repository::open(repo_path).ok();
+                repo.as_ref()
+                    .map(|r| batch_diff_stats(r, true))
+                    .unwrap_or_default()
+            });
+            let unstaged_handle = s.spawn(|| {
+                let repo = Repository::open(repo_path).ok();
+                repo.as_ref()
+                    .map(|r| batch_diff_stats(r, false))
+                    .unwrap_or_default()
+            });
+            (
+                staged_handle.join().unwrap_or_default(),
+                unstaged_handle.join().unwrap_or_default(),
+            )
+        });
         for entry in statuses.iter() {
             let path = PathBuf::from(entry.path().unwrap_or(""));
             let st = entry.status();
@@ -427,6 +450,14 @@ fn gather_refresh_data_internal(
         (commits, has_more)
     };
 
+    log::info!(
+        "gather_refresh_data_internal complete in {:?}: {} commits, {} branches, staged={} unstaged={}",
+        refresh_timer.elapsed(),
+        recent_commits.len(),
+        branches.len(),
+        status.staged.len(),
+        status.unstaged.len()
+    );
     Ok(RefreshData {
         head_branch,
         head_detached,
@@ -449,6 +480,7 @@ impl GitProject {
     /// Refresh all state asynchronously on a background thread.
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
+        let t = std::time::Instant::now();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let data = cx
                 .background_executor()
@@ -458,6 +490,7 @@ impl GitProject {
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     this.apply_refresh_data(data);
+                    log::info!("GitProject::refresh applied in {:?}", t.elapsed());
                     cx.emit(GitProjectEvent::StatusChanged);
                     cx.notify();
                     Ok(())

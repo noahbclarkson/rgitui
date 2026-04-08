@@ -12,12 +12,14 @@ use super::{BottomPanelMode, ProjectTab, RightPanelMode, Workspace};
 impl Workspace {
     /// Open a repository as a new tab.
     pub fn open_repo(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) -> Result<()> {
+        log::info!("open_repo: path={}", path.display());
         // Check if already open
         if let Some(idx) = self
             .tabs
             .iter()
             .position(|t| t.project.read(cx).repo_path() == path)
         {
+            log::debug!("open_repo: already open at tab {}", idx);
             self.active_tab = idx;
             // Update command palette with the switched-to project's context.
             let proj = self.tabs[idx].project.read(cx);
@@ -230,6 +232,7 @@ impl Workspace {
             caches: super::ViewCaches::new(),
         });
         self.active_tab = self.tabs.len() - 1;
+        log::info!("open_repo: opened as tab {}", self.tabs.len() - 1);
         self.overlays.command_palette.update(cx, |cp, _cx| {
             cp.set_context(ctx);
         });
@@ -240,6 +243,7 @@ impl Workspace {
     }
 
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        log::info!("close_tab: index={}", index);
         if index < self.tabs.len() {
             self.tabs.remove(index);
             if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {

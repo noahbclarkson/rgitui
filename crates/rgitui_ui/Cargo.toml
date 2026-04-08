@@ -12,3 +12,4 @@ gpui.workspace = true
 rgitui_theme.workspace = true
 rgitui_settings.workspace = true
 smallvec.workspace = true
+log.workspace = true

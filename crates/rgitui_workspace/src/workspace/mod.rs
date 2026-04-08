@@ -165,6 +165,7 @@ pub struct Workspace {
     pub(super) status_message_gen: u64,
     pub(super) undo_stack: UndoStack,
     pub(super) layout_save_task: Option<gpui::Task<()>>,
+    pub(super) cached_ui_font: Option<(String, gpui::Font)>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -265,6 +266,7 @@ impl Workspace {
             status_message_gen: 0,
             undo_stack: UndoStack::new(),
             layout_save_task: None,
+            cached_ui_font: None,
         }
     }
 
@@ -460,5 +462,28 @@ impl Workspace {
         if let Some(panel) = panel {
             self.focus_panel(panel, window, cx);
         }
+    }
+
+    pub(super) fn build_ui_font(primary: String) -> gpui::Font {
+        let candidates = [
+            "JetBrainsMono Nerd Font",
+            "JetBrains Mono",
+            #[cfg(target_os = "windows")]
+            "Cascadia Code",
+            #[cfg(target_os = "macos")]
+            "SF Mono",
+            #[cfg(target_os = "linux")]
+            "DejaVu Sans Mono",
+            "monospace",
+        ];
+        let fallbacks: Vec<String> = candidates
+            .iter()
+            .filter(|c| **c != primary)
+            .map(|c| c.to_string())
+            .collect();
+
+        let mut f = gpui::font(SharedString::from(primary));
+        f.fallbacks = Some(gpui::FontFallbacks::from_fonts(fallbacks));
+        f
     }
 }

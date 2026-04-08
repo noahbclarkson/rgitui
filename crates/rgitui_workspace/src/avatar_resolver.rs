@@ -35,6 +35,8 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
             .collect()
     };
 
+    log::debug!("resolve_avatars: {} authors need fetch", to_fetch.len());
+
     if to_fetch.is_empty() {
         return;
     }
@@ -45,11 +47,13 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
         let http = http.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
             let result = resolve_single(&name, &email, &http).await;
+            let resolved = result.is_some();
             cx.update(|cx: &mut App| {
                 if cx.has_global::<AvatarCache>() {
                     let cache = cx.global_mut::<AvatarCache>();
                     match &result {
                         Some(url) => {
+                            log::info!("avatar resolved: email={} url={}", email, url);
                             cache.set_resolved(email.clone(), url.clone());
                             // Persist to disk in the background (blocking I/O, fire-and-forget)
                             let email_clone = email.clone();
@@ -59,12 +63,17 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
                             });
                         }
                         None => {
+                            log::debug!("avatar not found: email={}", email);
                             cache.set_not_found(email);
                         }
                     }
                 }
             });
-            cx.refresh();
+            // Only refresh when an avatar was actually resolved — NotFound doesn't
+            // change what's displayed (initials fallback remains unchanged).
+            if resolved {
+                cx.refresh();
+            }
         })
         .detach();
     }

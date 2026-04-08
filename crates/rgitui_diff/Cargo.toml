@@ -15,4 +15,5 @@ rgitui_ui.workspace = true
 rgitui_git.workspace = true
 rgitui_settings.workspace = true
 anyhow.workspace = true
+log.workspace = true
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }

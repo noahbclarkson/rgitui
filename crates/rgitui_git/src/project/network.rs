@@ -13,6 +13,7 @@ use super::{
 
 impl GitProject {
     pub fn fetch_default(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("fetch_default");
         let remote_name = match self.preferred_remote_name() {
             Ok(remote_name) => remote_name,
             Err(error) => {
@@ -29,6 +30,7 @@ impl GitProject {
     }
 
     pub fn pull_default(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("pull_default");
         let (remote_name, branch_name) =
             match self.open_repo().and_then(|repo| pull_target(&repo, None)) {
                 Ok(target) => target,
@@ -46,6 +48,7 @@ impl GitProject {
     }
 
     pub fn push_default(&mut self, force: bool, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("push_default: force={}", force);
         let (remote_name, branch_name, set_upstream) =
             match self.open_repo().and_then(|repo| push_target(&repo, None)) {
                 Ok(target) => target,
@@ -64,6 +67,7 @@ impl GitProject {
 
     /// Fetch from a remote.
     pub fn fetch(&mut self, remote_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("fetch: remote={}", remote_name);
         let remote_name = remote_name.to_string();
         let task_remote_name = remote_name.clone();
         let repo_path = self.repo_path.clone();
@@ -126,6 +130,7 @@ impl GitProject {
 
     /// Pull from a remote (fetch + merge).
     pub fn pull(&mut self, remote_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("pull: remote={}", remote_name);
         let branch_name = match self
             .open_repo()
             .and_then(|repo| pull_target(&repo, Some(remote_name)).map(|(_, branch)| branch))
@@ -150,6 +155,7 @@ impl GitProject {
         branch_name: &str,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("pull_from: remote={} branch={}", remote_name, branch_name);
         let remote_name = remote_name.to_string();
         let branch_name = branch_name.to_string();
         let task_remote_name = remote_name.clone();
@@ -274,6 +280,7 @@ impl GitProject {
         force: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("push: remote={} force={}", remote_name, force);
         let (branch_name, set_upstream) = match self.open_repo().and_then(|repo| {
             push_target(&repo, Some(remote_name)).map(|(_, branch, set)| (branch, set))
         }) {
@@ -299,6 +306,7 @@ impl GitProject {
         set_upstream: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("push_to: remote={} branch={} force={}", remote_name, remote_branch_name, force);
         let remote_name = remote_name.to_string();
         let remote_branch_name = remote_branch_name.to_string();
         let task_remote_name = remote_name.clone();

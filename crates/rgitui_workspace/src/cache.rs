@@ -40,12 +40,14 @@ where
         V: Clone,
     {
         if self.map.contains_key(key) {
+            log::debug!("LruCache::get hit: len={}/{}", self.map.len(), self.cap);
             if let Some(pos) = self.order.iter().position(|k| k == key) {
                 self.order.remove(pos);
                 self.order.push_back(key.clone());
             }
             self.map.get(key).cloned()
         } else {
+            log::debug!("LruCache::get miss: len={}/{}", self.map.len(), self.cap);
             None
         }
     }
@@ -76,6 +78,7 @@ where
 
         // New key: evict LRU if at capacity.
         if self.map.len() >= self.cap {
+            log::debug!("LruCache::insert eviction: len={}/{}", self.map.len(), self.cap);
             if let Some(evicted) = self.order.pop_front() {
                 self.map.remove(&evicted);
             }

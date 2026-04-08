@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, font, px, App, ClickEvent, Context, CursorStyle, DragMoveEvent, ElementId,
-    FontFallbacks, MouseButton, MouseDownEvent, Render, SharedString, Window,
+    canvas, div, px, App, ClickEvent, Context, CursorStyle, DragMoveEvent, ElementId,
+    MouseButton, MouseDownEvent, Render, SharedString, Window,
 };
 use rgitui_git::GitOperationState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
@@ -19,6 +19,7 @@ use super::{
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        log::trace!("Workspace::render: tabs={} active={}", self.tabs.len(), self.active_tab);
         if self.focus.pending_focus_restore {
             self.focus.pending_focus_restore = false;
             self.restore_focus(window, cx);
@@ -40,26 +41,19 @@ impl Render for Workspace {
 
             let primary = configured.unwrap_or_else(|| "JetBrainsMono Nerd Font".to_string());
 
-            let candidates = [
-                "JetBrainsMono Nerd Font",
-                "JetBrains Mono",
-                #[cfg(target_os = "windows")]
-                "Cascadia Code",
-                #[cfg(target_os = "macos")]
-                "SF Mono",
-                #[cfg(target_os = "linux")]
-                "DejaVu Sans Mono",
-                "monospace",
-            ];
-            let fallbacks: Vec<String> = candidates
-                .iter()
-                .filter(|c| **c != primary)
-                .map(|c| c.to_string())
-                .collect();
-
-            let mut f = font(SharedString::from(primary));
-            f.fallbacks = Some(FontFallbacks::from_fonts(fallbacks));
-            f
+            if let Some((cached_name, cached_font)) = &self.cached_ui_font {
+                if cached_name == &primary {
+                    cached_font.clone()
+                } else {
+                    let f = Self::build_ui_font(primary.clone());
+                    self.cached_ui_font = Some((primary, f.clone()));
+                    f
+                }
+            } else {
+                let f = Self::build_ui_font(primary.clone());
+                self.cached_ui_font = Some((primary, f.clone()));
+                f
+            }
         };
 
         // If no tabs, show welcome screen

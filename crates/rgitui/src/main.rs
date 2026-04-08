@@ -5,6 +5,125 @@ use rust_embed::RustEmbed;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+// ---------------------------------------------------------------------------
+// AppRoot – transitions from splash screen to workspace
+// ---------------------------------------------------------------------------
+
+struct WorkspaceInit {
+    repos_to_open: Vec<PathBuf>,
+    startup_workspace: Option<rgitui_settings::StoredWorkspace>,
+    has_cli_path: bool,
+    was_clean_exit: bool,
+}
+
+struct AppRoot {
+    splash: Option<Entity<rgitui_workspace::SplashScreen>>,
+    workspace: Option<Entity<rgitui_workspace::Workspace>>,
+    pending_init: Option<WorkspaceInit>,
+    transitioning: bool,
+    needs_maximize: bool,
+    focus: FocusHandle,
+}
+
+impl AppRoot {
+    fn transition_to_workspace(&mut self, cx: &mut Context<Self>) {
+        if self.transitioning || self.workspace.is_some() {
+            return;
+        }
+        self.transitioning = true;
+
+        let Some(init) = self.pending_init.take() else {
+            return;
+        };
+
+        let workspace = cx.new(|cx| {
+            let mut ws = rgitui_workspace::Workspace::new(cx);
+            ws.set_crash_recovery_available(
+                !init.was_clean_exit && init.startup_workspace.is_some(),
+            );
+
+            if !init.has_cli_path {
+                if let Some(snapshot) = init.startup_workspace {
+                    if let Err(error) = ws.restore_workspace_snapshot(snapshot, cx) {
+                        log::error!("Failed to restore saved workspace: {}", error);
+                    }
+                } else {
+                    for repo_path in init.repos_to_open {
+                        if let Err(error) = ws.open_repo(repo_path, cx) {
+                            log::error!("Failed to open repo: {}", error);
+                        }
+                    }
+                }
+            } else {
+                for repo_path in init.repos_to_open {
+                    if let Err(error) = ws.open_repo(repo_path, cx) {
+                        log::error!("Failed to open repo: {}", error);
+                    }
+                }
+            }
+            ws
+        });
+
+        workspace.update(cx, |ws, cx| {
+            ws.start_background_tasks(cx);
+            ws.show_crash_recovery_toast(cx);
+        });
+
+        self.workspace = Some(workspace);
+        self.splash = None;
+        self.needs_maximize = true;
+        cx.notify();
+    }
+
+    fn skip_splash(&mut self, cx: &mut Context<Self>) {
+        self.transition_to_workspace(cx);
+    }
+}
+
+impl Render for AppRoot {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Each branch returns a different concrete type due to GPUI's builder pattern.
+        // Type-erase with into_any_element() to avoid a massive enum that overflows
+        // the stack frame.
+        if let Some(workspace) = &self.workspace {
+            if self.needs_maximize {
+                self.needs_maximize = false;
+                window.set_window_title("rgitui");
+                window.zoom_window();
+            }
+            div()
+                .id("app-root-workspace")
+                .size_full()
+                .child(workspace.clone())
+                .into_any_element()
+        } else if let Some(splash) = &self.splash {
+            if !self.focus.is_focused(window) {
+                self.focus.focus(window, cx);
+            }
+            div()
+                .id("app-root-splash")
+                .size_full()
+                .track_focus(&self.focus)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.skip_splash(cx);
+                    }),
+                )
+                .on_key_down(cx.listener(|this, _event: &KeyDownEvent, _window, cx| {
+                    this.skip_splash(cx);
+                }))
+                .child(splash.clone())
+                .into_any_element()
+        } else {
+            div()
+                .id("app-root-empty")
+                .size_full()
+                .into_any_element()
+        }
+    }
+}
+
 #[derive(RustEmbed)]
 #[folder = "../../assets"]
 #[include = "icons/**/*"]
@@ -118,6 +237,7 @@ fn main() {
             was_clean_exit
         );
 
+        // Small centered window for the splash, maximizes on workspace transition.
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some("rgitui".into()),
@@ -125,9 +245,17 @@ fn main() {
                 ..Default::default()
             }),
             window_min_size: Some(Size {
-                width: px(800.0),
-                height: px(600.0),
+                width: px(320.0),
+                height: px(420.0),
             }),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                Size {
+                    width: px(320.0),
+                    height: px(420.0),
+                },
+                cx,
+            ))),
             focus: true,
             show: true,
             app_id: Some("rgitui".to_string()),
@@ -135,42 +263,39 @@ fn main() {
         };
 
         cx.open_window(options, |_window, cx| {
-            let workspace = cx.new(|cx| {
-                let mut ws = rgitui_workspace::Workspace::new(cx);
+            cx.new(|cx| {
+                let splash = cx.new(rgitui_workspace::SplashScreen::new);
 
-                // Store crash recovery state for later use
-                ws.set_crash_recovery_available(!was_clean_exit && startup_workspace.is_some());
+                let init = WorkspaceInit {
+                    repos_to_open,
+                    startup_workspace,
+                    has_cli_path,
+                    was_clean_exit,
+                };
 
-                if !has_cli_path {
-                    if let Some(snapshot) = startup_workspace.clone() {
-                        if let Err(error) = ws.restore_workspace_snapshot(snapshot, cx) {
-                            log::error!("Failed to restore saved workspace: {}", error);
-                        }
-                    } else {
-                        for repo_path in repos_to_open {
-                            if let Err(error) = ws.open_repo(repo_path, cx) {
-                                log::error!("Failed to open repo: {}", error);
-                            }
-                        }
-                    }
-                } else {
-                    for repo_path in repos_to_open {
-                        if let Err(error) = ws.open_repo(repo_path, cx) {
-                            log::error!("Failed to open repo: {}", error);
-                        }
-                    }
+                // Transition after 1.5s minimum animation time.
+                cx.spawn(
+                    async move |this: gpui::WeakEntity<AppRoot>, cx: &mut gpui::AsyncApp| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(1500))
+                            .await;
+                        this.update(cx, |this: &mut AppRoot, cx| {
+                            this.transition_to_workspace(cx);
+                        })
+                        .ok();
+                    },
+                )
+                .detach();
+
+                AppRoot {
+                    splash: Some(splash),
+                    workspace: None,
+                    pending_init: Some(init),
+                    transitioning: false,
+                    needs_maximize: false,
+                    focus: cx.focus_handle(),
                 }
-                ws
-            });
-
-            // Start background tasks like update checking
-            workspace.update(cx, |ws, cx| {
-                ws.start_background_tasks(cx);
-                // Show crash recovery toast if applicable
-                ws.show_crash_recovery_toast(cx);
-            });
-
-            workspace
+            })
         })
         .expect("Failed to open window");
     });

@@ -14,6 +14,8 @@ pub(crate) fn batch_diff_stats(
     repo: &Repository,
     staged: bool,
 ) -> std::collections::HashMap<PathBuf, (usize, usize)> {
+    let batch_timer = std::time::Instant::now();
+    log::debug!("batch_diff_stats: staged={}", staged);
     let mut opts = DiffOptions::new();
     opts.include_untracked(true);
     opts.show_untracked_content(true);
@@ -36,6 +38,7 @@ pub(crate) fn batch_diff_stats(
             }
         }
     }
+    log::debug!("batch_diff_stats complete in {:?}: {} file stats, staged={}", batch_timer.elapsed(), stats_map.len(), staged);
     stats_map
 }
 
@@ -562,6 +565,8 @@ pub fn compute_file_diff(repo_path: &Path, file_path: &Path, staged: bool) -> Re
 }
 
 pub fn compute_commit_diff(repo_path: &Path, oid: git2::Oid) -> Result<CommitDiff> {
+    let diff_timer = std::time::Instant::now();
+    log::debug!("compute_commit_diff: oid={} repo={}", oid, repo_path.display());
     let repo = Repository::open(repo_path)?;
     let commit = repo.find_commit(oid)?;
     let tree = commit.tree()?;
@@ -571,7 +576,11 @@ pub fn compute_commit_diff(repo_path: &Path, oid: git2::Oid) -> Result<CommitDif
         None
     };
     let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
-    parse_multi_file_diff(&diff)
+    let result = parse_multi_file_diff(&diff);
+    if let Ok(ref d) = result {
+        log::debug!("compute_commit_diff complete in {:?}: {} files", diff_timer.elapsed(), d.files.len());
+    }
+    result
 }
 
 pub fn compute_stash_diff(repo_path: &Path, index: usize) -> Result<CommitDiff> {

@@ -5105,6 +5105,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui",
+ "log",
  "rgitui_git",
  "rgitui_settings",
  "rgitui_theme",
@@ -5181,6 +5182,7 @@ name = "rgitui_ui"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "log",
  "rgitui_settings",
  "rgitui_theme",
  "smallvec",

@@ -164,6 +164,8 @@ fn pick_main_parent(
 /// - Lanes are compacted: when multiple lanes become free, later lanes shift inward
 /// - Colors are assigned per-lane and stay consistent along a branch
 pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
+    let graph_timer = std::time::Instant::now();
+    log::debug!("compute_graph: {} commits", commits.len());
     if commits.is_empty() {
         return Vec::new();
     }
@@ -394,6 +396,7 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         });
     }
 
+    log::debug!("compute_graph complete in {:?}: {} rows", graph_timer.elapsed(), rows.len());
     rows
 }
 

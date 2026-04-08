@@ -111,6 +111,7 @@ impl GitProject {
             let git_fingerprint = last_git_fingerprint.clone();
             cx.spawn(async move |weak, cx: &mut AsyncApp| loop {
                 smol::Timer::after(Duration::from_millis(300)).await;
+                log::trace!("watcher: poll tick");
 
                 // Detect git internal state changes (commits, pushes, branch ops,
                 // staging changes, etc.) that don't produce working-directory events.
@@ -129,6 +130,7 @@ impl GitProject {
                     .flatten();
 
                 if let Some(new_fp) = fingerprint_changed {
+                    log::debug!("watcher: git state changed, scheduling lightweight refresh");
                     if let Ok(mut guard) = git_fingerprint.lock() {
                         *guard = Some(new_fp);
                     }
@@ -153,7 +155,10 @@ impl GitProject {
                         .await;
 
                     let data = match data {
-                        Ok(d) => d,
+                        Ok(d) => {
+                            log::debug!("watcher: lightweight refresh complete");
+                            d
+                        }
                         Err(_) => continue,
                     };
 

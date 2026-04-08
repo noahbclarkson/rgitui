@@ -31,6 +31,8 @@ pub fn compute_blame(
     file_path: &Path,
     commit_oid: Option<git2::Oid>,
 ) -> Result<Vec<BlameLine>> {
+    let blame_timer = std::time::Instant::now();
+    log::debug!("compute_blame: path={}", file_path.display());
     let file_str = file_path.to_string_lossy();
     let mut args = vec!["blame", "--porcelain"];
     let oid_str = commit_oid.map(|o| o.to_string());
@@ -50,7 +52,11 @@ pub fn compute_blame(
         anyhow::bail!("git blame failed: {}", stderr.trim());
     }
 
-    parse_porcelain_blame(&String::from_utf8_lossy(&output.stdout))
+    let result = parse_porcelain_blame(&String::from_utf8_lossy(&output.stdout));
+    if let Ok(ref lines) = result {
+        log::debug!("compute_blame complete in {:?}: {} lines", blame_timer.elapsed(), lines.len());
+    }
+    result
 }
 
 /// Parse `git blame --porcelain` output into BlameLine entries.

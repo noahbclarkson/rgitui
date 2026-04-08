@@ -13,6 +13,7 @@ use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent
 impl GitProject {
     /// Stage specific files.
     pub fn stage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("stage_files: {} paths", paths.len());
         let paths = paths.to_vec();
         let task_paths = paths.clone();
         let repo_path = self.repo_path.clone();
@@ -84,6 +85,7 @@ impl GitProject {
 
     /// Unstage specific files.
     pub fn unstage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("unstage_files: {} paths", paths.len());
         let paths = paths.to_vec();
         let task_paths = paths.clone();
         let repo_path = self.repo_path.clone();
@@ -161,6 +163,7 @@ impl GitProject {
 
     /// Stage all changes.
     pub fn stage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("stage_all");
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -216,6 +219,7 @@ impl GitProject {
 
     /// Unstage all changes.
     pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("unstage_all");
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -277,6 +281,7 @@ impl GitProject {
         amend: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<git2::Oid>> {
+        log::info!("commit: amend={}", amend);
         let message = message.to_string();
         let task_message = message.clone();
         let commit_summary = message.lines().next().unwrap_or("").to_string();
@@ -443,6 +448,7 @@ impl GitProject {
     /// Handles both local branches and remote tracking branches (e.g. `origin/main`).
     /// For remote branches, creates a local tracking branch first.
     pub fn checkout_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("checkout_branch: name={}", name);
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
@@ -582,6 +588,7 @@ impl GitProject {
 
     /// Checkout a specific commit (detached HEAD).
     pub fn checkout_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("checkout_commit: oid={}", oid);
         let repo_path = self.repo_path.clone();
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
@@ -647,6 +654,7 @@ impl GitProject {
 
     /// Checkout a tag, putting HEAD in detached state.
     pub fn checkout_tag(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("checkout_tag: name={}", name);
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
@@ -726,6 +734,7 @@ impl GitProject {
         base_ref: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("create_branch_at: name={}", name);
         let name = name.to_string();
         let base_ref = base_ref.map(|s| s.to_string());
         let task_name = name.clone();
@@ -798,6 +807,7 @@ impl GitProject {
 
     /// Delete a local branch.
     pub fn delete_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("delete_branch: name={}", name);
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
@@ -858,6 +868,7 @@ impl GitProject {
         new_name: &str,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("rename_branch: old={} new={}", old_name, new_name);
         let old_name = old_name.to_string();
         let new_name = new_name.to_string();
         let task_old_name = old_name.clone();
@@ -921,6 +932,7 @@ impl GitProject {
         target_oid: git2::Oid,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("create_tag: name={} target={}", name, target_oid);
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
@@ -976,6 +988,7 @@ impl GitProject {
 
     /// Delete a tag by name.
     pub fn delete_tag(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("delete_tag: name={}", name);
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
@@ -1034,6 +1047,7 @@ impl GitProject {
         message: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("stash_save");
         let message = message.map(String::from);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
@@ -1089,6 +1103,7 @@ impl GitProject {
 
     /// Pop the top stash entry.
     pub fn stash_pop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("stash_pop: index={}", index);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -1142,6 +1157,7 @@ impl GitProject {
 
     /// Apply a stash entry without removing it from the stash list.
     pub fn stash_apply(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("stash_apply: index={}", index);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -1199,6 +1215,7 @@ impl GitProject {
 
     /// Drop a stash entry without applying it.
     pub fn stash_drop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("stash_drop: index={}", index);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -1258,6 +1275,7 @@ impl GitProject {
         stash_index: usize,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("stash_branch: branch={} index={}", branch_name, stash_index);
         let repo_path = self.repo_path.clone();
         let branch_name_owned = branch_name.to_string();
         let current_branch = self.head_branch.clone();
@@ -1346,6 +1364,7 @@ impl GitProject {
         paths: &[PathBuf],
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("discard_changes: {} paths", paths.len());
         let paths = paths.to_vec();
         let operation_id = self.begin_operation(
             GitOperationKind::Discard,
@@ -1525,6 +1544,7 @@ impl GitProject {
 
     /// Hard reset to HEAD, discarding all working tree and index changes.
     pub fn reset_hard(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("reset_hard");
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -1584,6 +1604,7 @@ impl GitProject {
 
     /// Hard-reset the current branch to a specific commit.
     pub fn reset_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("reset_to_commit: oid={}", oid);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
@@ -1645,6 +1666,7 @@ impl GitProject {
 
     /// Soft-reset the current branch to a specific commit, preserving changes in the index.
     pub fn reset_soft(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("reset_soft: oid={}", oid);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
@@ -1706,6 +1728,7 @@ impl GitProject {
 
     /// Mixed-reset the current branch to a specific commit, unstaging all changes.
     pub fn reset_mixed(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("reset_mixed: oid={}", oid);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
@@ -1767,6 +1790,7 @@ impl GitProject {
 
     /// Revert a commit (creates a new commit that undoes the given commit).
     pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("revert_commit: oid={}", oid);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
@@ -1844,6 +1868,7 @@ impl GitProject {
 
     /// Cherry-pick a commit onto the current HEAD.
     pub fn cherry_pick(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("cherry_pick: oid={}", oid);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
@@ -1922,6 +1947,7 @@ impl GitProject {
     /// Abort the current in-progress operation (merge, rebase, cherry-pick, revert).
     /// Resets the working tree and index to HEAD and cleans up the repo state.
     pub fn abort_operation(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("abort_operation");
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let state_label = self.repo_state.label().to_string();
@@ -1988,6 +2014,7 @@ impl GitProject {
     /// Continue the current merge by committing with the default merge message.
     /// This stages all files and creates the merge commit.
     pub fn continue_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("continue_merge");
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -2089,6 +2116,7 @@ impl GitProject {
 
     /// Merge a branch into the current HEAD.
     pub fn merge_branch(&mut self, branch_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("merge_branch: name={}", branch_name);
         let branch_name = branch_name.to_string();
         let task_branch_name = branch_name.clone();
         let repo_path = self.repo_path.clone();
@@ -2232,6 +2260,7 @@ impl GitProject {
 
     /// Remove a remote by name.
     pub fn remove_remote(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("remove_remote: name={}", name);
         let name = name.to_string();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -2295,6 +2324,7 @@ impl GitProject {
     /// Start a bisect session to find a commit that introduced a bug.
     /// After starting, mark commits as good/bad with bisect_good/bisect_bad.
     pub fn bisect_start(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("bisect_start");
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -2365,6 +2395,7 @@ impl GitProject {
         oid: Option<git2::Oid>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("bisect_good: oid={:?}", oid);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid
@@ -2471,6 +2502,7 @@ impl GitProject {
         oid: Option<git2::Oid>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("bisect_bad: oid={:?}", oid);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid
@@ -2578,6 +2610,7 @@ impl GitProject {
         oid: Option<git2::Oid>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("bisect_skip: oid={:?}", oid);
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let short_id = oid
@@ -2699,6 +2732,7 @@ impl GitProject {
 
     /// Reset the bisect session and return to the original branch/commit.
     pub fn bisect_reset(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("bisect_reset");
         let repo_path = self.repo_path.clone();
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -2772,6 +2806,7 @@ impl GitProject {
         branch: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("create_worktree: name={} path={}", name, path.display());
         let name_clone = name.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Worktree,
@@ -2841,6 +2876,7 @@ impl GitProject {
 
     /// Remove a Git worktree.
     pub fn remove_worktree(&mut self, path: PathBuf, cx: &mut Context<Self>) -> Task<Result<()>> {
+        log::info!("remove_worktree: path={}", path.display());
         let display_path = path.display().to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Worktree,
@@ -2909,6 +2945,7 @@ impl GitProject {
         path: String,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("accept_conflict_ours: path={}", path);
         self.accept_conflict_side(path, ConflictSide::Ours, cx)
     }
 
@@ -2918,6 +2955,7 @@ impl GitProject {
         path: String,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        log::info!("accept_conflict_theirs: path={}", path);
         self.accept_conflict_side(path, ConflictSide::Theirs, cx)
     }
 

@@ -104,6 +104,7 @@ pub struct PrsPanel {
     selected_comments: Vec<PrComment>,
     comments_loading: bool,
     workspace: WeakEntity<Workspace>,
+    last_fetched: Option<std::time::Instant>,
 }
 
 impl PrsPanel {
@@ -124,6 +125,7 @@ impl PrsPanel {
             selected_comments: Vec::new(),
             comments_loading: false,
             workspace,
+            last_fetched: None,
         }
     }
 
@@ -187,6 +189,16 @@ impl PrsPanel {
             }
         };
 
+        // Skip refetch if data was loaded recently (within 60 seconds).
+        if !self.prs.is_empty() {
+            if let Some(last) = self.last_fetched {
+                if last.elapsed() < std::time::Duration::from_secs(60) {
+                    log::debug!("fetch_prs: cached, skipping");
+                    return;
+                }
+            }
+        }
+
         self.is_loading = true;
         self.error_message = None;
         cx.notify();
@@ -194,6 +206,7 @@ impl PrsPanel {
         let owner = self.github_owner.clone();
         let repo = self.github_repo.clone();
         let state = self.filter.api_value().to_string();
+        log::info!("fetch_prs: {}/{} filter={}", owner, repo, state);
         let http = cx.http_client();
 
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
@@ -205,6 +218,8 @@ impl PrsPanel {
                         Ok(prs) => {
                             panel.prs = prs;
                             panel.selected_index = None;
+                            panel.last_fetched = Some(std::time::Instant::now());
+                            log::info!("fetch_prs complete: {} PRs", panel.prs.len());
                         }
                         Err(e) => {
                             panel.error_message = Some(e);
@@ -272,6 +287,7 @@ impl PrsPanel {
     fn set_filter(&mut self, filter: PrFilter, cx: &mut Context<Self>) {
         if self.filter != filter {
             self.filter = filter;
+            self.last_fetched = None;
             self.fetch_prs(cx);
         }
     }

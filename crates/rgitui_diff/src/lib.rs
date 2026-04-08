@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -13,7 +13,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{DiffLine, FileDiff, ThreeWayFileDiff};
-use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt};
+use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
 };
@@ -247,6 +247,17 @@ enum SyntaxLineHighlighter {
     },
 }
 
+/// Cache key: (file_path, is_dark_theme, commit_id, hunk_count, additions, deletions).
+/// `commit_id` is empty for working-tree diffs (staged/unstaged).
+type DisplayCacheKey = (String, bool, String, usize, usize, usize);
+
+/// Pre-computed display rows cached to avoid redundant syntax highlighting.
+#[derive(Clone)]
+struct CachedDisplayRows {
+    display_rows: Arc<Vec<DisplayRow>>,
+    sbs_rows: Arc<Vec<SideBySideRow>>,
+}
+
 /// A diff viewer panel that displays file diffs with syntax coloring.
 pub struct DiffViewer {
     diff: Option<FileDiff>,
@@ -264,16 +275,25 @@ pub struct DiffViewer {
     /// When true, selection tracks individual lines for partial hunk staging.
     partial_mode: bool,
     selection_anchor: Option<usize>,
+    /// The commit OID for the current diff (empty for working-tree diffs).
+    commit_id: String,
     /// Tracks the current theme appearance to drive syntax highlighting.
     current_appearance: Appearance,
     /// Top item index to restore after a display mode switch.
     pending_scroll_top: Option<usize>,
+    /// LRU cache for computed display rows, keyed by (path, is_dark, commit_id, hunks, additions, deletions).
+    display_cache: HashMap<DisplayCacheKey, CachedDisplayRows>,
 }
 
 impl EventEmitter<DiffViewerEvent> for DiffViewer {}
 
 impl DiffViewer {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        cx.observe_global::<ThemeState>(|this: &mut Self, cx| {
+            this.rehighlight(cx);
+        })
+        .detach();
+
         Self {
             diff: None,
             display_mode: DiffDisplayMode::Unified,
@@ -289,9 +309,49 @@ impl DiffViewer {
             selected_lines: None,
             partial_mode: false,
             selection_anchor: None,
+            commit_id: String::new(),
             current_appearance: Appearance::Dark,
             pending_scroll_top: None,
+            display_cache: HashMap::new(),
         }
+    }
+
+    /// Re-compute syntax-highlighted display rows when the theme appearance changes.
+    fn rehighlight(&mut self, cx: &mut Context<Self>) {
+        log::debug!("DiffViewer::rehighlight: appearance changed");
+        let appearance = cx.theme().appearance;
+        if appearance == self.current_appearance {
+            return;
+        }
+        // Clear the display cache since the appearance changed.
+        self.display_cache.clear();
+        self.current_appearance = appearance;
+        let colors = cx.colors();
+        let added_word_bg = HighlightStyle {
+            background_color: Some(gpui::Hsla {
+                a: 0.25,
+                ..colors.vc_added
+            }),
+            ..Default::default()
+        };
+        let deleted_word_bg = HighlightStyle {
+            background_color: Some(gpui::Hsla {
+                a: 0.25,
+                ..colors.vc_deleted
+            }),
+            ..Default::default()
+        };
+        if let Some(ref diff) = self.diff {
+            if let Some(ref path) = self.file_path {
+                self.display_rows = Arc::new(Self::compute_display_rows(
+                    diff, path, appearance, added_word_bg, deleted_word_bg,
+                ));
+                self.sbs_rows = Arc::new(Self::compute_sbs_rows(
+                    diff, path, appearance, added_word_bg, deleted_word_bg,
+                ));
+            }
+        }
+        cx.notify();
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -303,8 +363,39 @@ impl DiffViewer {
         self.focus_handle.is_focused(window)
     }
 
-    pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, cx: &mut Context<Self>) {
+    pub fn set_diff(&mut self, diff: FileDiff, path: String, staged: bool, commit_id: Option<&str>, cx: &mut Context<Self>) {
+        log::debug!("DiffViewer::set_diff: path={} staged={}", path, staged);
         let appearance = cx.theme().appearance;
+        let is_dark = appearance == Appearance::Dark;
+        let cid = commit_id.unwrap_or("").to_string();
+        let cache_key: DisplayCacheKey = (
+            path.clone(),
+            is_dark,
+            cid.clone(),
+            diff.hunks.len(),
+            diff.additions,
+            diff.deletions,
+        );
+
+        // Check display rows cache
+        if let Some(cached) = self.display_cache.get(&cache_key) {
+            log::debug!("DiffViewer: display_cache hit for path={}", path);
+            self.display_rows = cached.display_rows.clone();
+            self.sbs_rows = cached.sbs_rows.clone();
+            self.current_appearance = appearance;
+            self.diff = Some(diff);
+            self.file_path = Some(path);
+            self.is_staged = staged;
+            self.commit_id = cid;
+            self.highlighted_row = None;
+            self.selected_lines = None;
+            self.partial_mode = false;
+            self.selection_anchor = None;
+            cx.notify();
+            return;
+        }
+
+        log::debug!("DiffViewer: display_cache miss for path={}", path);
         let colors = cx.colors();
         let added_word_bg = HighlightStyle {
             background_color: Some(gpui::Hsla {
@@ -335,9 +426,21 @@ impl DiffViewer {
             added_word_bg,
             deleted_word_bg,
         ));
+        log::debug!("DiffViewer: computed {} display_rows, {} sbs_rows", self.display_rows.len(), self.sbs_rows.len());
+
+        // Store in cache (cap at 50 entries)
+        if self.display_cache.len() >= 50 {
+            self.display_cache.clear();
+        }
+        self.display_cache.insert(cache_key, CachedDisplayRows {
+            display_rows: self.display_rows.clone(),
+            sbs_rows: self.sbs_rows.clone(),
+        });
+
         self.diff = Some(diff);
         self.file_path = Some(path);
         self.is_staged = staged;
+        self.commit_id = cid;
         self.highlighted_row = None;
         self.selected_lines = None;
         self.partial_mode = false;
@@ -346,6 +449,7 @@ impl DiffViewer {
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        log::debug!("DiffViewer::clear");
         self.diff = None;
         self.file_path = None;
         self.display_rows = Arc::new(Vec::new());
@@ -993,9 +1097,12 @@ impl DiffViewer {
 
     fn syntax_assets() -> &'static SyntaxAssets {
         static ASSETS: OnceLock<SyntaxAssets> = OnceLock::new();
-        ASSETS.get_or_init(|| SyntaxAssets {
-            syntax_set: SyntaxSet::load_defaults_newlines(),
-            theme_set: ThemeSet::load_defaults(),
+        ASSETS.get_or_init(|| {
+            log::info!("DiffViewer: initializing SyntaxAssets (one-time cost)");
+            SyntaxAssets {
+                syntax_set: SyntaxSet::load_defaults_newlines(),
+                theme_set: ThemeSet::load_defaults(),
+            }
         })
     }
 
@@ -1763,49 +1870,8 @@ impl DiffViewer {
 
 impl Render for DiffViewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        log::trace!("DiffViewer::render: path={:?} display_rows={} sbs_rows={}", self.file_path, self.display_rows.len(), self.sbs_rows.len());
         let colors = cx.colors();
-
-        // Re-render with syntax highlighting if the theme appearance changed while a diff
-        // was open. Without this, switching themes (e.g. Dark → Light) leaves the stored
-        // rows with the old syntect palette until the next `set_diff` call.
-        if self.diff.is_some() {
-            let appearance = cx.theme().appearance;
-            if appearance != self.current_appearance {
-                let added_word_bg = HighlightStyle {
-                    background_color: Some(gpui::Hsla {
-                        a: 0.25,
-                        ..colors.vc_added
-                    }),
-                    ..Default::default()
-                };
-                let deleted_word_bg = HighlightStyle {
-                    background_color: Some(gpui::Hsla {
-                        a: 0.25,
-                        ..colors.vc_deleted
-                    }),
-                    ..Default::default()
-                };
-                self.current_appearance = appearance;
-                if let Some(ref diff) = self.diff {
-                    if let Some(ref path) = self.file_path {
-                        self.display_rows = Arc::new(Self::compute_display_rows(
-                            diff,
-                            path,
-                            appearance,
-                            added_word_bg,
-                            deleted_word_bg,
-                        ));
-                        self.sbs_rows = Arc::new(Self::compute_sbs_rows(
-                            diff,
-                            path,
-                            appearance,
-                            added_word_bg,
-                            deleted_word_bg,
-                        ));
-                    }
-                }
-            }
-        }
 
         if self.diff.is_none() {
             return div()

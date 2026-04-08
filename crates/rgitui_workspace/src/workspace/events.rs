@@ -622,7 +622,7 @@ pub(super) fn subscribe_global_search(
                             let path_str_owned = path_str.clone();
                             let line_owned = line_for_toast;
                             dv.update(cx, move |dv, cx| {
-                                dv.set_diff(diff, path_str_owned, false, cx);
+                                dv.set_diff(diff, path_str_owned, false, None, cx);
                                 dv.scroll_to_line(line_owned);
                             });
                             dp.update(cx, |dp, cx| dp.clear(cx));
@@ -859,6 +859,7 @@ pub(super) fn subscribe_sidebar(
     cx.subscribe(&sidebar, {
         move |this, _sidebar, event: &SidebarEvent, cx| match event {
             SidebarEvent::FileSelected { path, staged } => {
+                log::info!("FileSelected: path={} staged={}", path, staged);
                 let path_buf = std::path::PathBuf::from(path);
                 let p = path.clone();
                 let is_staged = *staged;
@@ -885,7 +886,7 @@ pub(super) fn subscribe_sidebar(
                         .await;
                     cx.update(|cx| match result {
                         Ok(diff) => {
-                            dv.update(cx, |dv, cx| dv.set_diff(diff, p, is_staged, cx));
+                            dv.update(cx, |dv, cx| dv.set_diff(diff, p, is_staged, None, cx));
                             dp.update(cx, |dp, cx| dp.clear(cx));
                         }
                         Err(e) => log::error!("Failed to get diff: {}", e),
@@ -1018,7 +1019,7 @@ pub(super) fn subscribe_sidebar(
                             if let Some(first_file) = commit_diff.files.first() {
                                 let path = first_file.path.display().to_string();
                                 dv.update(cx, |dv, cx| {
-                                    dv.set_diff(first_file.clone(), path, false, cx)
+                                    dv.set_diff(first_file.clone(), path, false, None, cx)
                                 });
                             }
                             // Populate detail panel with the full stash file list so users
@@ -1230,7 +1231,7 @@ pub(super) fn subscribe_graph(
     let diff_viewer = diff_viewer.clone();
     let detail_panel_ref = detail_panel.clone();
     /// LRU cache: bounded to 100 entries to prevent unbounded memory growth.
-    const DIFF_CACHE_CAP: usize = 100;
+    const DIFF_CACHE_CAP: usize = 200;
     let diff_cache: Arc<Mutex<CommitDiffCache>> =
         Arc::new(Mutex::new(CommitDiffCache::new(DIFF_CACHE_CAP)));
 
@@ -1239,16 +1240,13 @@ pub(super) fn subscribe_graph(
             match event {
                 GraphViewEvent::CommitSelected(oid) => {
                     let commit_oid = *oid;
+                    log::info!("CommitSelected: oid={:.7}", commit_oid);
                     let proj = project.read(cx);
                     let commits = proj.recent_commits();
                     let commit_info = commits.iter().find(|c| c.oid == commit_oid).cloned();
                     let repo_path = proj.repo_path().to_path_buf();
 
-                    // Prefetch diffs for nearby commits in the background.
-                    // Users navigate in jumps (keyboard, scroll, page-up/down), not just ±1.
-                    // ±10 window covers most navigation patterns while staying well within
-                    // the 100-slot LRU cache capacity.
-                    const PREFETCH_WINDOW: usize = 10;
+                    const PREFETCH_WINDOW: usize = 25;
                     if let Some(idx) = commits.iter().position(|c| c.oid == commit_oid) {
                         let mut prefetch_oids = Vec::new();
                         for delta in 1..=PREFETCH_WINDOW {
@@ -1263,31 +1261,53 @@ pub(super) fn subscribe_graph(
                                 }
                             }
                         }
+
+                        // On first interaction, also include the first 30 commits
+                        // to pre-warm the cache for common navigation patterns.
+                        let is_first = diff_cache.lock().unwrap().is_empty();
+                        if is_first {
+                            for c in commits.iter().take(30) {
+                                if !prefetch_oids.contains(&c.oid) {
+                                    prefetch_oids.push(c.oid);
+                                }
+                            }
+                            log::debug!("diff_prefetch: first interaction, combined {} OIDs (prefetch + prewarm)", prefetch_oids.len());
+                        }
+
                         if !prefetch_oids.is_empty() {
+                            if !is_first {
+                                log::debug!("diff_prefetch: starting for {} OIDs around {:.7}", prefetch_oids.len(), commit_oid);
+                            }
                             let prefetch_repo_path = repo_path.clone();
                             let prefetch_cache = diff_cache.clone();
                             cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                                for prefetch_oid in prefetch_oids {
-                                    // Skip if already cached.
-                                    {
-                                        let cached = prefetch_cache.lock().unwrap();
-                                        if cached.contains(&prefetch_oid) {
-                                            continue;
-                                        }
-                                    }
-                                    let repo_path = prefetch_repo_path.clone();
-                                    let result = cx
-                                        .background_executor()
-                                        .spawn(async move {
-                                            rgitui_git::compute_commit_diff(
-                                                &repo_path,
-                                                prefetch_oid,
-                                            )
+                                let oids_to_fetch: Vec<git2::Oid> = {
+                                    let cached = prefetch_cache.lock().unwrap();
+                                    prefetch_oids
+                                        .into_iter()
+                                        .filter(|oid| !cached.contains(oid))
+                                        .collect()
+                                };
+
+                                let tasks: Vec<_> = oids_to_fetch
+                                    .into_iter()
+                                    .map(|oid| {
+                                        let repo_path = prefetch_repo_path.clone();
+                                        cx.background_executor().spawn(async move {
+                                            let result =
+                                                rgitui_git::compute_commit_diff(&repo_path, oid);
+                                            (oid, result)
                                         })
-                                        .await;
+                                    })
+                                    .collect();
+
+                                let results = futures::future::join_all(tasks).await;
+
+                                log::debug!("diff_prefetch: complete, {} results cached", results.iter().filter(|(_, r)| r.is_ok()).count());
+                                let mut cache = prefetch_cache.lock().unwrap();
+                                for (oid, result) in results {
                                     if let Ok(commit_diff) = result {
-                                        let diff_arc = Arc::new(commit_diff);
-                                        prefetch_cache.lock().unwrap().insert(prefetch_oid, diff_arc);
+                                        cache.insert(oid, Arc::new(commit_diff));
                                     }
                                 }
                             })
@@ -1297,6 +1317,7 @@ pub(super) fn subscribe_graph(
 
                     // Check cache synchronously — instant display on cache hit.
                     let cached = diff_cache.lock().unwrap().get(&commit_oid);
+                    log::debug!("CommitSelected: diff_cache {}", if cached.is_some() { "hit" } else { "miss" });
                     if let Some(cached) = cached {
                         let dv = diff_viewer.clone();
                         let dp = detail_panel_ref.clone();
@@ -1308,8 +1329,9 @@ pub(super) fn subscribe_graph(
                         }
                         if let Some(first_file) = cached.files.first() {
                             let path = first_file.path.display().to_string();
+                            let oid_str = commit_oid.to_string();
                             dv.update(cx, |dv, cx| {
-                                dv.set_diff(first_file.clone(), path, false, cx)
+                                dv.set_diff(first_file.clone(), path, false, Some(&oid_str), cx)
                             });
                         }
                         return;
@@ -1318,6 +1340,7 @@ pub(super) fn subscribe_graph(
                     let dv = diff_viewer.clone();
                     let dp = detail_panel_ref.clone();
                     let cache = diff_cache.clone();
+                    let oid_str = commit_oid.to_string();
 
                     cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                         let result = cx
@@ -1340,7 +1363,7 @@ pub(super) fn subscribe_graph(
                                 if let Some(first_file) = commit_diff.files.first() {
                                     let path = first_file.path.display().to_string();
                                     dv.update(cx, |dv, cx| {
-                                        dv.set_diff(first_file.clone(), path, false, cx)
+                                        dv.set_diff(first_file.clone(), path, false, Some(&oid_str), cx)
                                     });
                                 }
                             }
@@ -1352,14 +1375,16 @@ pub(super) fn subscribe_graph(
                 GraphViewEvent::CherryPick(oid) => {
                     let oid = *oid;
                     // Capture HEAD before cherry-pick for undo support
-                    let repo_path = project.read(cx).repo_path().to_path_buf();
-                    let previous_head_oid: Option<String> = match git2::Repository::open(&repo_path) {
-                        Ok(repo) => {
-                            let oid = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).map(|c| c.id().to_string());
-                            oid
-                        }
-                        Err(_) => None,
-                    };
+                    let previous_head_oid: Option<String> = project
+                        .read(cx)
+                        .recent_commits()
+                        .iter()
+                        .find(|c| {
+                            c.refs
+                                .iter()
+                                .any(|r| matches!(r, rgitui_git::RefLabel::Head))
+                        })
+                        .map(|c| c.oid.to_string());
 
                     project.update(cx, |proj, cx| {
                         proj.cherry_pick(oid, cx).detach();
@@ -1383,14 +1408,16 @@ pub(super) fn subscribe_graph(
                 GraphViewEvent::RevertCommit(oid) => {
                     let oid = *oid;
                     // Capture HEAD before revert for undo support
-                    let repo_path = project.read(cx).repo_path().to_path_buf();
-                    let previous_head_oid: Option<String> = match git2::Repository::open(&repo_path) {
-                        Ok(repo) => {
-                            let oid = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).map(|c| c.id().to_string());
-                            oid
-                        }
-                        Err(_) => None,
-                    };
+                    let previous_head_oid: Option<String> = project
+                        .read(cx)
+                        .recent_commits()
+                        .iter()
+                        .find(|c| {
+                            c.refs
+                                .iter()
+                                .any(|r| matches!(r, rgitui_git::RefLabel::Head))
+                        })
+                        .map(|c| c.oid.to_string());
 
                     project.update(cx, |proj, cx| {
                         proj.revert_commit(oid, cx).detach();
@@ -1508,6 +1535,7 @@ pub(super) fn subscribe_graph(
                     });
                 }
                 GraphViewEvent::WorkingTreeSelected => {
+                    log::info!("WorkingTreeSelected");
                     let dp = detail_panel_ref.clone();
                     let dv = diff_viewer.clone();
                     dp.update(cx, |dp, cx| dp.clear(cx));
@@ -1534,8 +1562,9 @@ pub(super) fn subscribe_detail_panel(
             DetailPanelEvent::FileSelected(file_diff, path) => {
                 let p = path.clone();
                 let fd = file_diff.clone();
+                let oid_str = _dp.read(cx).commit().map(|c| c.oid.to_string());
                 diff_viewer.update(cx, |dv, cx| {
-                    dv.set_diff(fd, p, false, cx);
+                    dv.set_diff(fd, p, false, oid_str.as_deref(), cx);
                 });
             }
             DetailPanelEvent::CopySha(sha) => {
@@ -1546,16 +1575,16 @@ pub(super) fn subscribe_detail_panel(
                 if let Some(project) = this.active_project().cloned() {
                     if let Ok(oid) = git2::Oid::from_str(sha) {
                         // Capture HEAD before cherry-pick for undo support
-                        let repo_path = project.read(cx).repo_path().to_path_buf();
-                        let previous_head_oid: Option<String> =
-                            match git2::Repository::open(&repo_path) {
-                                Ok(repo) => repo
-                                    .head()
-                                    .ok()
-                                    .and_then(|h| h.peel_to_commit().ok())
-                                    .map(|c| c.id().to_string()),
-                                Err(_) => None,
-                            };
+                        let previous_head_oid: Option<String> = project
+                            .read(cx)
+                            .recent_commits()
+                            .iter()
+                            .find(|c| {
+                                c.refs
+                                    .iter()
+                                    .any(|r| matches!(r, rgitui_git::RefLabel::Head))
+                            })
+                            .map(|c| c.oid.to_string());
 
                         project.update(cx, |proj, cx| {
                             proj.cherry_pick(oid, cx).detach();
@@ -1626,8 +1655,9 @@ pub(super) fn subscribe_detail_panel(
                                 });
                                 if let Some(first_file) = commit_diff.files.first() {
                                     let path = first_file.path.display().to_string();
+                                    let oid_str = target_oid.to_string();
                                     dv.update(cx, |dv, cx| {
-                                        dv.set_diff(first_file.clone(), path, false, cx)
+                                        dv.set_diff(first_file.clone(), path, false, Some(&oid_str), cx)
                                     });
                                 }
                             }

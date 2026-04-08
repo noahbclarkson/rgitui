@@ -1,13 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, img, point, px, uniform_list, App, Bounds, ClickEvent, Context, CursorStyle,
-    ElementId, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, ListSizingBehavior,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render,
-    ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
+    canvas, div, img, point, px, uniform_list, Animation, AnimationExt, App, Bounds, ClickEvent,
+    Context, CursorStyle, ElementId, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder,
+    Pixels, Point, Render, ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity,
+    Window,
 };
 use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel};
 use rgitui_settings::{GraphStyle, SettingsState};
@@ -15,6 +17,80 @@ use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     AvatarCache, Badge, CheckState, Checkbox, Icon, IconName, IconSize, Label, LabelSize, Tooltip,
 };
+
+/// Pre-computed unit circle vertex offsets (cos, sin) for 36-step circles.
+/// Computed once and reused across all frames to avoid per-frame trig calls.
+fn unit_circle_offsets() -> &'static [(f32, f32)] {
+    use std::sync::OnceLock;
+    static OFFSETS: OnceLock<Vec<(f32, f32)>> = OnceLock::new();
+    OFFSETS.get_or_init(|| {
+        let steps = 36_usize;
+        (0..=steps)
+            .map(|s| {
+                let angle = (s as f32) * std::f32::consts::TAU / (steps as f32);
+                (angle.cos(), angle.sin())
+            })
+            .collect()
+    })
+}
+
+/// Build a filled circle path from pre-computed unit circle offsets.
+fn build_filled_circle(cx_x: Pixels, cy_y: Pixels, radius: f32) -> Option<gpui::Path<Pixels>> {
+    let offsets = unit_circle_offsets();
+    let mut path = PathBuilder::fill();
+    for (i, &(cos, sin)) in offsets.iter().enumerate() {
+        // Skip the last (duplicate of first, only needed for stroke closure)
+        if i >= 36 {
+            break;
+        }
+        let x = cx_x + px(radius * cos);
+        let y = cy_y + px(radius * sin);
+        if i == 0 {
+            path.move_to(point(x, y));
+        } else {
+            path.line_to(point(x, y));
+        }
+    }
+    path.close();
+    path.build().ok()
+}
+
+/// Build a stroked circle path from pre-computed unit circle offsets.
+fn build_stroked_circle(
+    cx_x: Pixels,
+    cy_y: Pixels,
+    radius: f32,
+    stroke_width: Pixels,
+) -> Option<gpui::Path<Pixels>> {
+    let offsets = unit_circle_offsets();
+    let mut path = PathBuilder::stroke(stroke_width);
+    for (i, &(cos, sin)) in offsets.iter().enumerate() {
+        let x = cx_x + px(radius * cos);
+        let y = cy_y + px(radius * sin);
+        if i == 0 {
+            path.move_to(point(x, y));
+        } else {
+            path.line_to(point(x, y));
+        }
+    }
+    path.build().ok()
+}
+
+/// Pre-computed quarter-circle arc offsets (sin, 1-cos) for 12-segment arcs.
+fn quarter_arc_offsets() -> &'static [(f32, f32)] {
+    use std::sync::OnceLock;
+    static OFFSETS: OnceLock<Vec<(f32, f32)>> = OnceLock::new();
+    OFFSETS.get_or_init(|| {
+        let segments = 12_usize;
+        (1..=segments)
+            .map(|s| {
+                let t = s as f32 / segments as f32;
+                let angle = t * std::f32::consts::FRAC_PI_2;
+                (angle.sin(), 1.0 - angle.cos())
+            })
+            .collect()
+    })
+}
 
 /// Events emitted by the graph view.
 #[derive(Debug, Clone)]
@@ -172,59 +248,80 @@ impl GraphView {
         let graph_style = cx.global::<SettingsState>().settings().graph_style;
         let new_hash = Self::compute_commits_hash(&commits, &graph_style);
         if new_hash == self.cached_graph_hash && !self.commits.is_empty() {
+            log::debug!("GraphView::set_commits: hash unchanged ({:#x}), skipping ({} commits)", new_hash, commits.len());
             return;
         }
         self.cached_graph_hash = new_hash;
+        log::debug!("GraphView::set_commits: hash changed -> {:#x}, spawning graph compute for {} commits", new_hash, commits.len());
 
         // Preserve selection by OID across refreshes
         let prev_selected_oid = self.selected_oid;
 
-        let graph_rows = compute_graph(&commits);
-        self.global_max_lane = graph_rows
-            .iter()
-            .map(|r| r.lane_count)
-            .max()
-            .unwrap_or(1)
-            .max(1);
-        self.graph_rows = Arc::new(graph_rows);
-        self.commits = commits;
+        // Store commits immediately so other state (search, working tree row) stays in sync.
+        // The old graph_rows remain in place until the background computation finishes,
+        // so the UI renders the previous graph during computation rather than going blank.
+        self.commits = commits.clone();
 
-        // Restore selection if the previously selected commit still exists
-        let offset = self.working_tree_offset();
-        if let Some(prev_oid) = prev_selected_oid {
-            if let Some(new_index) = self.commits.iter().position(|c| c.oid == prev_oid) {
-                self.selected_index = Some(new_index + offset);
-            } else {
-                self.selected_index = None;
-                self.selected_oid = None;
-            }
-        } else if self.selected_index == Some(0) && offset > 0 {
-            // Working tree row was selected; keep it selected
-            self.selected_index = Some(0);
-        } else {
-            self.selected_index = None;
-        }
+        // Spawn graph computation on the background executor.
+        let commits_for_bg = commits;
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let graph_rows = cx
+                .background_executor()
+                .spawn(async move { compute_graph(&commits_for_bg) })
+                .await;
 
-        if self.show_search && !self.search_editor.read(cx).is_empty() {
-            self.update_search_filter(cx);
-        }
+            this.update(cx, |this: &mut GraphView, cx| {
+                this.global_max_lane = graph_rows
+                    .iter()
+                    .map(|r| r.lane_count)
+                    .max()
+                    .unwrap_or(1)
+                    .max(1);
+                this.graph_rows = Arc::new(graph_rows);
+                log::debug!("GraphView: graph rows applied: {} rows, max_lane={}", this.graph_rows.len(), this.global_max_lane);
 
-        // Check if a pending scroll target has just been loaded.
-        if let Some(pending_oid) = self.pending_scroll_oid {
-            if let Some(index) = self.commits.iter().position(|c| c.oid == pending_oid) {
-                let list_index = index + offset;
-                self.select_list_index(list_index, cx);
-                self.scroll_handle
-                    .scroll_to_item(list_index, ScrollStrategy::Top);
-            }
-            // Keep pending_scroll_oid set if not found yet — more loads may be needed.
-            // Only clear it when all commits are loaded and still not found.
-            if self.all_commits_loaded {
-                self.pending_scroll_oid = None;
-            }
-        }
+                // Restore selection if the previously selected commit still exists
+                let offset = this.working_tree_offset();
+                if let Some(prev_oid) = prev_selected_oid {
+                    if let Some(new_index) =
+                        this.commits.iter().position(|c| c.oid == prev_oid)
+                    {
+                        this.selected_index = Some(new_index + offset);
+                    } else {
+                        this.selected_index = None;
+                        this.selected_oid = None;
+                    }
+                } else if this.selected_index == Some(0) && offset > 0 {
+                    // Working tree row was selected; keep it selected
+                    this.selected_index = Some(0);
+                } else {
+                    this.selected_index = None;
+                }
 
-        cx.notify();
+                if this.show_search && !this.search_editor.read(cx).is_empty() {
+                    this.update_search_filter(cx);
+                }
+
+                // Check if a pending scroll target has just been loaded.
+                if let Some(pending_oid) = this.pending_scroll_oid {
+                    if let Some(index) =
+                        this.commits.iter().position(|c| c.oid == pending_oid)
+                    {
+                        let list_index = index + offset;
+                        this.select_list_index(list_index, cx);
+                        this.scroll_handle
+                            .scroll_to_item(list_index, ScrollStrategy::Top);
+                    }
+                    if this.all_commits_loaded {
+                        this.pending_scroll_oid = None;
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Mark that all available commits have been loaded (disables "load more").
@@ -251,6 +348,7 @@ impl GraphView {
         self.staged_breakdown = staged_breakdown;
         self.unstaged_breakdown = unstaged_breakdown;
         if changed {
+            log::debug!("GraphView: working tree status changed: staged={} unstaged={}", staged, unstaged);
             cx.notify();
         }
     }
@@ -270,8 +368,10 @@ impl GraphView {
     }
 
     /// Total number of list items (working tree row + commits).
+    /// Uses the minimum of commits and graph_rows to avoid index-out-of-bounds
+    /// while graph computation is still running on the background thread.
     fn total_list_items(&self) -> usize {
-        self.commits.len() + self.working_tree_offset()
+        self.commits.len().min(self.graph_rows.len()) + self.working_tree_offset()
     }
 
     pub fn selected_commit(&self) -> Option<&CommitInfo> {
@@ -450,6 +550,7 @@ impl GraphView {
             }
         }
         self.filter_match_set_arc = Arc::new(self.filter_match_set.clone());
+        log::debug!("GraphView::search: query={:?} matches={}", query, self.filter_matches.len());
 
         // If no matches but more commits are available, auto-load more.
         if self.filter_matches.is_empty() && !self.all_commits_loaded {
@@ -607,6 +708,7 @@ impl GraphView {
 
 impl Render for GraphView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        log::trace!("GraphView::render: commits={} graph_rows={} selected={:?}", self.commits.len(), self.graph_rows.len(), self.selected_index);
         let colors = cx.colors();
 
         if self.commits.is_empty() {
@@ -876,6 +978,8 @@ impl Render for GraphView {
                 ),
         );
 
+        let now_utc = chrono::Utc::now();
+
         // The virtualized list
         let list = uniform_list(
             "graph-commit-list",
@@ -990,7 +1094,7 @@ impl Render for GraphView {
                         let time_str: SharedString = if show_absolute_dates {
                             commit.time.format("%b %d").to_string().into()
                         } else {
-                            format_relative_time(&commit.time).into()
+                            format_relative_time(&commit.time, now_utc).into()
                         };
 
                         // Clone only the edges vec for canvas closure (not the entire GraphRow)
@@ -1151,12 +1255,9 @@ impl Render for GraphView {
 
                                                             path.move_to(point(fx, start_y));
 
-                                                            let segments = 12_usize;
-                                                            for s in 1..=segments {
-                                                                let t = s as f32 / segments as f32;
-                                                                let angle = t * std::f32::consts::FRAC_PI_2;
-                                                                let px_x = fx + rx * dir * angle.sin();
-                                                                let px_y = bend_y + ry * (1.0 - angle.cos());
+                                                            for &(sin_a, one_minus_cos) in quarter_arc_offsets() {
+                                                                let px_x = fx + rx * dir * sin_a;
+                                                                let px_y = bend_y + ry * one_minus_cos;
                                                                 path.line_to(point(px_x, px_y));
                                                             }
                                                         }
@@ -1186,12 +1287,9 @@ impl Render for GraphView {
                                                             let horiz_end_x = tx - r * dir;
                                                             path.line_to(point(horiz_end_x, horiz_y));
 
-                                                            let segments = 12_usize;
-                                                            for s in 1..=segments {
-                                                                let t = s as f32 / segments as f32;
-                                                                let angle = t * std::f32::consts::FRAC_PI_2;
-                                                                let arc_x = horiz_end_x + r * dir * angle.sin();
-                                                                let arc_y = horiz_y + r * (1.0 - angle.cos());
+                                                            for &(sin_a, one_minus_cos) in quarter_arc_offsets() {
+                                                                let arc_x = horiz_end_x + r * dir * sin_a;
+                                                                let arc_y = horiz_y + r * one_minus_cos;
                                                                 path.line_to(point(arc_x, arc_y));
                                                             }
 
@@ -1227,46 +1325,16 @@ impl Render for GraphView {
                                             };
                                             let cx_x = origin.x + node_x_px;
                                             let cy_y = origin.y + mid_y;
-                                            let steps = 36_usize;
-
                                             // Background ring to occlude lines passing behind the dot
                                             let ring_r = 14.0_f32 * compact_mul;
-                                            let mut ring = PathBuilder::fill();
-                                            for s in 0..steps {
-                                                let angle = (s as f32)
-                                                    * std::f32::consts::TAU
-                                                    / (steps as f32);
-                                                let x = cx_x + px(ring_r * angle.cos());
-                                                let y = cy_y + px(ring_r * angle.sin());
-                                                if s == 0 {
-                                                    ring.move_to(point(x, y));
-                                                } else {
-                                                    ring.line_to(point(x, y));
-                                                }
-                                            }
-                                            ring.close();
-                                            if let Ok(built_ring) = ring.build() {
-                                                window
-                                                    .paint_path(built_ring, row_bg_for_canvas);
+                                            if let Some(built_ring) = build_filled_circle(cx_x, cy_y, ring_r) {
+                                                window.paint_path(built_ring, row_bg_for_canvas);
                                             }
 
                                             // HEAD commit: glow ring + filled circle
                                             if is_head_row {
                                                 let glow_r = dot_radius + 4.0 * compact_mul;
-                                                let mut glow = PathBuilder::stroke(px(2.5));
-                                                for s in 0..=steps {
-                                                    let angle = (s as f32)
-                                                        * std::f32::consts::TAU
-                                                        / (steps as f32);
-                                                    let x = cx_x + px(glow_r * angle.cos());
-                                                    let y = cy_y + px(glow_r * angle.sin());
-                                                    if s == 0 {
-                                                        glow.move_to(point(x, y));
-                                                    } else {
-                                                        glow.line_to(point(x, y));
-                                                    }
-                                                }
-                                                if let Ok(built_glow) = glow.build() {
+                                                if let Some(built_glow) = build_stroked_circle(cx_x, cy_y, glow_r, px(2.5)) {
                                                     let glow_color = gpui::Hsla {
                                                         a: 0.35,
                                                         ..node_color
@@ -1275,61 +1343,17 @@ impl Render for GraphView {
                                                 }
 
                                                 // Filled circle for HEAD
-                                                let mut head_fill = PathBuilder::fill();
-                                                for s in 0..steps {
-                                                    let angle = (s as f32)
-                                                        * std::f32::consts::TAU
-                                                        / (steps as f32);
-                                                    let x = cx_x + px(dot_radius * angle.cos());
-                                                    let y = cy_y + px(dot_radius * angle.sin());
-                                                    if s == 0 {
-                                                        head_fill.move_to(point(x, y));
-                                                    } else {
-                                                        head_fill.line_to(point(x, y));
-                                                    }
-                                                }
-                                                head_fill.close();
-                                                if let Ok(built_head) = head_fill.build() {
+                                                if let Some(built_head) = build_filled_circle(cx_x, cy_y, dot_radius) {
                                                     window.paint_path(built_head, node_color);
                                                 }
                                             } else if is_merge_commit {
                                                 // Merge commit: filled circle with outer ring
-                                                let mut merge_fill = PathBuilder::fill();
-                                                for s in 0..steps {
-                                                    let angle = (s as f32)
-                                                        * std::f32::consts::TAU
-                                                        / (steps as f32);
-                                                    let x = cx_x + px(dot_radius * angle.cos());
-                                                    let y = cy_y + px(dot_radius * angle.sin());
-                                                    if s == 0 {
-                                                        merge_fill.move_to(point(x, y));
-                                                    } else {
-                                                        merge_fill.line_to(point(x, y));
-                                                    }
-                                                }
-                                                merge_fill.close();
-                                                if let Ok(built_merge_fill) = merge_fill.build() {
-                                                    window.paint_path(built_merge_fill, node_color);
+                                                if let Some(built_merge) = build_filled_circle(cx_x, cy_y, dot_radius) {
+                                                    window.paint_path(built_merge, node_color);
                                                 }
 
                                                 let outer_r = dot_radius + 2.5;
-                                                let mut merge_ring =
-                                                    PathBuilder::stroke(px(1.5));
-                                                for s in 0..=steps {
-                                                    let angle = (s as f32)
-                                                        * std::f32::consts::TAU
-                                                        / (steps as f32);
-                                                    let x =
-                                                        cx_x + px(outer_r * angle.cos());
-                                                    let y =
-                                                        cy_y + px(outer_r * angle.sin());
-                                                    if s == 0 {
-                                                        merge_ring.move_to(point(x, y));
-                                                    } else {
-                                                        merge_ring.line_to(point(x, y));
-                                                    }
-                                                }
-                                                if let Ok(built_merge) = merge_ring.build() {
+                                                if let Some(built_merge) = build_stroked_circle(cx_x, cy_y, outer_r, px(1.5)) {
                                                     let merge_ring_color = gpui::Hsla {
                                                         a: 0.6,
                                                         ..node_color
@@ -1341,21 +1365,7 @@ impl Render for GraphView {
                                                 }
                                             } else {
                                                 // Normal commit: filled circle
-                                                let mut normal_fill = PathBuilder::fill();
-                                                for s in 0..steps {
-                                                    let angle = (s as f32)
-                                                        * std::f32::consts::TAU
-                                                        / (steps as f32);
-                                                    let x = cx_x + px(dot_radius * angle.cos());
-                                                    let y = cy_y + px(dot_radius * angle.sin());
-                                                    if s == 0 {
-                                                        normal_fill.move_to(point(x, y));
-                                                    } else {
-                                                        normal_fill.line_to(point(x, y));
-                                                    }
-                                                }
-                                                normal_fill.close();
-                                                if let Ok(built_normal) = normal_fill.build() {
+                                                if let Some(built_normal) = build_filled_circle(cx_x, cy_y, dot_radius) {
                                                     window.paint_path(built_normal, node_color);
                                                 }
                                             }
@@ -1759,6 +1769,7 @@ impl Render for GraphView {
                 let menu_border = colors.border;
                 let menu_hover = colors.ghost_element_hover;
                 let menu_active = colors.ghost_element_active;
+                let menu_accent = colors.text_accent;
 
                 let menu_items: Vec<(&str, IconName)> = vec![
                     ("Cherry-pick commit", IconName::GitCommit),
@@ -1848,7 +1859,7 @@ impl Render for GraphView {
                         .items_center()
                         .cursor_pointer()
                         .rounded(px(3.))
-                        .hover(move |s| s.bg(menu_hover))
+                        .hover(move |s| s.bg(menu_hover).border_l_2().border_color(menu_accent))
                         .active(move |s| s.bg(menu_active));
 
                     match idx {
@@ -2040,6 +2051,12 @@ impl Render for GraphView {
                     menu = menu.child(item);
                 }
 
+                let menu = menu.with_animation(
+                    "graph-context-menu-entrance",
+                    Animation::new(Duration::from_millis(100))
+                        .with_easing(|t| 1.0 - (1.0 - t).powi(5)),
+                    |el, delta| el.opacity(delta),
+                );
                 container = container.child(menu);
             }
         }
@@ -2757,8 +2774,10 @@ pub fn compute_breakdown(files: &[rgitui_git::FileStatus]) -> HashMap<FileChange
     map
 }
 
-fn format_relative_time(time: &chrono::DateTime<chrono::Utc>) -> String {
-    let now = chrono::Utc::now();
+fn format_relative_time(
+    time: &chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
     let duration = now.signed_duration_since(*time);
 
     if duration.num_minutes() < 1 {
@@ -2854,48 +2873,54 @@ mod tests {
     #[test]
     fn format_relative_time_just_now() {
         let now = Utc::now();
-        assert_eq!(format_relative_time(&now), "just now");
+        assert_eq!(format_relative_time(&now, now), "just now");
     }
 
     #[test]
     fn format_relative_time_minutes() {
-        let t = Utc::now() - Duration::minutes(30);
-        let result = format_relative_time(&t);
+        let now = Utc::now();
+        let t = now - Duration::minutes(30);
+        let result = format_relative_time(&t, now);
         assert_eq!(result, "30m ago");
     }
 
     #[test]
     fn format_relative_time_hours() {
-        let t = Utc::now() - Duration::hours(5);
-        let result = format_relative_time(&t);
+        let now = Utc::now();
+        let t = now - Duration::hours(5);
+        let result = format_relative_time(&t, now);
         assert_eq!(result, "5h ago");
     }
 
     #[test]
     fn format_relative_time_days() {
-        let t = Utc::now() - Duration::days(3);
-        let result = format_relative_time(&t);
+        let now = Utc::now();
+        let t = now - Duration::days(3);
+        let result = format_relative_time(&t, now);
         assert_eq!(result, "3d ago");
     }
 
     #[test]
     fn format_relative_time_weeks() {
-        let t = Utc::now() - Duration::weeks(2);
-        let result = format_relative_time(&t);
+        let now = Utc::now();
+        let t = now - Duration::weeks(2);
+        let result = format_relative_time(&t, now);
         assert_eq!(result, "2w ago");
     }
 
     #[test]
     fn format_relative_time_months() {
-        let t = Utc::now() - Duration::days(60);
-        let result = format_relative_time(&t);
+        let now = Utc::now();
+        let t = now - Duration::days(60);
+        let result = format_relative_time(&t, now);
         assert_eq!(result, "2mo ago");
     }
 
     #[test]
     fn format_relative_time_years() {
-        let t = Utc::now() - Duration::days(400);
-        let result = format_relative_time(&t);
+        let now = Utc::now();
+        let t = now - Duration::days(400);
+        let result = format_relative_time(&t, now);
         assert_eq!(result, "1y ago");
     }
 }

@@ -35,6 +35,8 @@ impl Default for AvatarCache {
 }
 
 impl AvatarCache {
+    const MAX_ENTRIES: usize = 2000;
+
     /// Returns the path where the avatar disk cache is stored.
     fn disk_cache_path() -> path::PathBuf {
         rgitui_settings::config_dir()
@@ -164,13 +166,26 @@ impl AvatarCache {
 
     /// Store a resolved avatar URL.
     pub fn set_resolved(&mut self, email: String, url: String) {
+        log::debug!("AvatarCache::set_resolved: email={} cache_size={}", email, self.cache.len());
         self.pending.remove(&email);
+        if self.cache.len() >= Self::MAX_ENTRIES {
+            log::debug!("AvatarCache: evicting NotFound entries at capacity {}", Self::MAX_ENTRIES);
+            // Evict NotFound entries to make room for resolved ones.
+            self.cache
+                .retain(|_, v| matches!(v, AvatarState::Resolved(_)));
+        }
         self.cache.insert(email, AvatarState::Resolved(url));
     }
 
     /// Mark an email as having no avatar, incrementing the retry count.
     pub fn set_not_found(&mut self, email: String) {
+        log::debug!("AvatarCache::set_not_found: email={}", email);
         self.pending.remove(&email);
+        // Don't waste capacity on NotFound entries when the cache is full.
+        if self.cache.len() >= Self::MAX_ENTRIES && !self.cache.contains_key(&email) {
+            log::debug!("AvatarCache::set_not_found: skipped (at capacity), email={}", email);
+            return;
+        }
         let retries = match self.cache.get(&email) {
             Some(AvatarState::NotFound(n)) => n + 1,
             _ => 1,
