@@ -196,6 +196,10 @@ pub struct AppSettings {
     pub graph_style: GraphStyle,
     #[serde(default = "default_show_subject_column")]
     pub show_subject_column: bool,
+    #[serde(default = "default_author_column_width")]
+    pub author_column_width: f32,
+    #[serde(default = "default_date_column_width")]
+    pub date_column_width: f32,
     #[serde(default)]
     pub auto_fetch_interval: AutoFetchInterval,
     #[serde(default = "default_confirm_destructive")]
@@ -209,7 +213,7 @@ pub struct AppSettings {
 }
 
 /// Current settings version. Increment when making breaking changes.
-const CURRENT_SETTINGS_VERSION: u32 = 1;
+const CURRENT_SETTINGS_VERSION: u32 = 2;
 
 fn default_settings_version() -> u32 {
     CURRENT_SETTINGS_VERSION
@@ -225,6 +229,14 @@ fn default_show_line_numbers_in_diff() -> bool {
 
 fn default_show_subject_column() -> bool {
     true
+}
+
+fn default_author_column_width() -> f32 {
+    140.0
+}
+
+fn default_date_column_width() -> f32 {
+    100.0
 }
 
 fn default_confirm_destructive() -> bool {
@@ -449,6 +461,8 @@ impl Default for AppSettings {
             diff_view_mode: DiffViewMode::default(),
             graph_style: GraphStyle::default(),
             show_subject_column: default_show_subject_column(),
+            author_column_width: default_author_column_width(),
+            date_column_width: default_date_column_width(),
             auto_fetch_interval: AutoFetchInterval::default(),
             confirm_destructive_operations: default_confirm_destructive(),
             auto_check_updates: default_auto_check_updates(),
@@ -695,6 +709,15 @@ impl SettingsState {
             self.settings.version = 1;
             migrated = true;
             log::info!("Migrated settings from version 0 to 1");
+        }
+
+        // Migration 1 -> 2: Add graph column width settings
+        if self.settings.version == 1 {
+            self.settings.author_column_width = default_author_column_width();
+            self.settings.date_column_width = default_date_column_width();
+            self.settings.version = 2;
+            migrated = true;
+            log::info!("Migrated settings from version 1 to 2");
         }
 
         // Future migrations go here:

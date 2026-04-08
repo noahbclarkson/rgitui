@@ -18,6 +18,22 @@ use rgitui_ui::{
     AvatarCache, Badge, CheckState, Checkbox, Icon, IconName, IconSize, Label, LabelSize, Tooltip,
 };
 
+#[derive(Clone)]
+pub struct AuthorColumnResize;
+impl Render for AuthorColumnResize {
+    fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+#[derive(Clone)]
+pub struct DateColumnResize;
+impl Render for DateColumnResize {
+    fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
 /// Pre-computed unit circle vertex offsets (cos, sin) for 36-step circles.
 /// Computed once and reused across all frames to avoid per-frame trig calls.
 fn unit_circle_offsets() -> &'static [(f32, f32)] {
@@ -863,7 +879,12 @@ impl Render for GraphView {
         let show_graph_lanes = self.show_graph_lanes;
         let show_ref_badges = self.show_ref_badges;
         let show_subject_column = cx.global::<SettingsState>().settings().show_subject_column;
+        let author_col_width = cx.global::<SettingsState>().settings().author_column_width;
+        let date_col_width = cx.global::<SettingsState>().settings().date_column_width;
         let show_author_email = self.show_author_email;
+
+        // Helper to get global position
+        let entity = cx.entity();
 
         // Header row (not virtualized — always visible)
         let view_settings_toggle = cx.weak_entity();
@@ -877,6 +898,42 @@ impl Render for GraphView {
             .bg(colors.toolbar_background)
             .border_b_1()
             .border_color(border_color)
+            .child(
+                canvas(
+                    {
+                        let entity = entity.clone();
+                        move |bounds, _, cx| {
+                            entity.update(cx, |this, _| this.container_bounds = bounds);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .on_drag_move::<AuthorColumnResize>(cx.listener(
+                move |this, e: &gpui::DragMoveEvent<AuthorColumnResize>, _, cx| {
+                    let settings = cx.global_mut::<SettingsState>();
+                    let right_edge = this.container_bounds.right()
+                        - px(22.0 + 8.0 + 12.0)
+                        - px(date_col_width)
+                        - px(12.0);
+                    let new_w = f32::from(e.event.position.x - (right_edge - px(author_col_width)))
+                        .clamp(50., 600.);
+                    settings.settings_mut().author_column_width = new_w;
+                    cx.notify();
+                },
+            ))
+            .on_drag_move::<DateColumnResize>(cx.listener(
+                move |this, e: &gpui::DragMoveEvent<DateColumnResize>, _, cx| {
+                    let settings = cx.global_mut::<SettingsState>();
+                    let right_edge = this.container_bounds.right() - px(22.0 + 8.0);
+                    let new_w = f32::from(e.event.position.x - (right_edge - px(date_col_width)))
+                        .clamp(50., 300.);
+                    settings.settings_mut().date_column_width = new_w;
+                    cx.notify();
+                },
+            ))
             .when(show_graph_lanes, |el| {
                 el.child(
                     div()
@@ -919,10 +976,15 @@ impl Render for GraphView {
             });
 
         if show_author_column {
-            let author_col_width = if self.show_author_email { 180.0 } else { 140.0 };
+            let author_width = if self.show_author_email {
+                author_col_width.max(180.0)
+            } else {
+                author_col_width
+            };
             header = header.child(
                 div()
-                    .w(px(author_col_width))
+                    .relative()
+                    .w(px(author_width))
                     .flex_shrink_0()
                     .ml(px(12.))
                     .px(px(4.))
@@ -939,6 +1001,22 @@ impl Render for GraphView {
                             .size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .weight(gpui::FontWeight::SEMIBOLD),
+                    )
+                    .child(
+                        div()
+                            .id("author-resize-handle")
+                            .absolute()
+                            .right(px(-4.))
+                            .w(px(8.))
+                            .h_full()
+                            .cursor_col_resize()
+                            .on_drag(AuthorColumnResize, |val, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| val.clone())
+                            })
+                            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation()
+                            }),
                     ),
             );
         }
@@ -946,7 +1024,8 @@ impl Render for GraphView {
         if show_date_column {
             header = header.child(
                 div()
-                    .w(px(100.))
+                    .relative()
+                    .w(px(date_col_width))
                     .flex_shrink_0()
                     .ml(px(12.))
                     .mr(px(8.))
@@ -964,6 +1043,22 @@ impl Render for GraphView {
                             .size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .weight(gpui::FontWeight::SEMIBOLD),
+                    )
+                    .child(
+                        div()
+                            .id("date-resize-handle")
+                            .absolute()
+                            .right(px(-4.))
+                            .w(px(8.))
+                            .h_full()
+                            .cursor_col_resize()
+                            .on_drag(DateColumnResize, |val, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| val.clone())
+                            })
+                            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation()
+                            }),
                     ),
             );
         }
@@ -1035,6 +1130,8 @@ impl Render for GraphView {
                                 view: view.clone(),
                                 show_author_column,
                                 show_date_column,
+                                author_col_width,
+                                date_col_width,
                                 show_absolute_dates,
                                 show_graph_lanes,
                                 compact_mul,
@@ -1525,7 +1622,7 @@ impl Render for GraphView {
                             row = row.child(
                                 div()
                                     .id(ElementId::NamedInteger("graph-author".into(), i as u64))
-                                    .w(px(if show_author_email { 180. } else { 140. }))
+                                    .w(px(if show_author_email { author_col_width.max(180.) } else { author_col_width }))
                                     .flex_shrink_0()
                                     .ml(px(12.))
                                     .px(px(4.))
@@ -1546,7 +1643,7 @@ impl Render for GraphView {
                         if show_date_column {
                             row = row.child(
                                 div()
-                                    .w(px(100.))
+                                    .w(px(date_col_width))
                                     .flex_shrink_0()
                                     .ml(px(12.))
                                     .mr(px(8.))
@@ -2461,6 +2558,8 @@ struct WorkingTreeRowParams {
     view: WeakEntity<GraphView>,
     show_author_column: bool,
     show_date_column: bool,
+    author_col_width: f32,
+    date_col_width: f32,
     #[allow(dead_code)]
     show_absolute_dates: bool,
     show_graph_lanes: bool,
@@ -2491,6 +2590,8 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         view,
         show_author_column,
         show_date_column,
+        author_col_width,
+        date_col_width,
         show_absolute_dates: _,
         show_graph_lanes,
         compact_mul,
@@ -2783,10 +2884,10 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
             message_col
         })
         .when(show_author_column, |el| {
-            el.child(div().w(px(120.)).flex_shrink_0())
+            el.child(div().w(px(author_col_width)).flex_shrink_0())
         })
         .when(show_date_column, |el| {
-            el.child(div().w(px(100.)).flex_shrink_0())
+            el.child(div().w(px(date_col_width)).flex_shrink_0())
         })
         .into_any_element()
 }
