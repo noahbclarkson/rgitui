@@ -14,7 +14,7 @@
 ### Bugs / Crash Fixes
 - [ ] **Crash recovery edge case:** workspace snapshot restored but state may be inconsistent
 - [x] **Graph row click:** ✅ occasionally selects wrong commit when scrolled far down (suspect off-by-one in index calculation)
-- [ ] **Rebase conflict:** interactive rebase shows conflict but cancel/abort doesn't fully restore state
+- [x] **Rebase conflict:** ✅ interactive rebase shows conflict but cancel/abort doesn't fully restore state
 
 ### UX Polish
 - [x] **Keyboard shortcut overlay:** ✅ implemented. Press `?` → `ShortcutsHelp` modal with 4 categories (~24 shortcuts). Exists at `crates/rgitui_workspace/src/shortcuts_help.rs`.
