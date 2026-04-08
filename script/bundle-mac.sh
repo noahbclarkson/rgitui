@@ -87,9 +87,15 @@ if [ "${RGITUI_MAC_CREATE_DMG:-0}" = "1" ]; then
         *)                    ARCH_SUFFIX="$TARGET_TRIPLE" ;;
     esac
     DMG_PATH="target/rgitui-${VERSION}-${ARCH_SUFFIX}-macos.dmg"
+    DMG_STAGING="target/dmg-staging"
     echo "Creating DMG at $DMG_PATH..."
     rm -f "$DMG_PATH"
-    hdiutil create -volname rgitui -srcfolder "$APP_DIR" -ov -format UDZO "$DMG_PATH"
+    rm -rf "$DMG_STAGING"
+    mkdir -p "$DMG_STAGING"
+    cp -R "$APP_DIR" "$DMG_STAGING/"
+    ln -s /Applications "$DMG_STAGING/Applications"
+    hdiutil create -volname rgitui -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH"
+    rm -rf "$DMG_STAGING"
     echo "Done! DMG created at $DMG_PATH"
 else
     echo "To create a DMG: RGITUI_MAC_CREATE_DMG=1 $0"
