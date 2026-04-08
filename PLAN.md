@@ -30,7 +30,7 @@
 - [ ] **Reflog view:** exists per CHANGELOG but not accessible from UI — wire up the panel
 - [ ] **Git bisect UI:** logic exists (events fire) but no dedicated panel — need to show progress
 - [ ] **Stash pop --index:** apply specific stash index, not just top
-- [ ] **Worktree delete:** can create worktrees, but can't delete them from UI
+- [x] **Contained in:** ✅ Commit detail panel now shows local branches that contain the selected commit (using `git2` merge-base check in a background task).
 
 ### GitHub Integration
 - [ ] **PR review:** browse PR diff and comments in-app, not just list
