@@ -4,7 +4,8 @@
 - **Tests:** 6/6 passing, 1 ignored (binary launch)
 - **Clippy:** clean (no warnings)
 - **Release build:** clean (~2m08s)
-- **Last release:** v0.1.0 (2026-04-08) — first public release
+- **Last release:** v0.1.1 (2026-04-08) — deferred ahead/behind, double-click checkout, graph header fixes
+- **Build:** cargo test + clippy + fmt clean. CI running on `553a679` (version bump fix)
 
 ---
 
@@ -16,7 +17,7 @@
 - [ ] **Rebase conflict:** interactive rebase shows conflict but cancel/abort doesn't fully restore state
 
 ### UX Polish
-- [ ] **Keyboard shortcut overlay:** press `?` to show all shortcuts (GitKraken-style) — major quality-of-life
+- [x] **Keyboard shortcut overlay:** ✅ implemented. Press `?` → `ShortcutsHelp` modal with 4 categories (~24 shortcuts). Exists at `crates/rgitui_workspace/src/shortcuts_help.rs`.
 - [ ] **Command palette fuzzy search:** current implementation is exact match — fuzzy would improve discoverability
 - [ ] **Graph column resize:** user should be able to drag-resize the graph/author/date columns
 - [ ] **Toast notifications:** failed operations (push, pull, fetch) should show descriptive error toasts, not just status bar
@@ -51,7 +52,7 @@
 
 | Feature | GitKraken | Lazygit | Tower | rgitui |
 |---------|-----------|---------|-------|--------|
-| Keyboard shortcut overlay | ✅ | ✅ | ✅ | ❌ |
+| Keyboard shortcut overlay | ✅ | ✅ | ✅ | ✅ |
 | Fuzzy command palette | ✅ | ✅ | ✅ | ❌ (exact match) |
 | Resizable columns | ✅ | ✅ | ✅ | ❌ |
 | Submodule depth view | ✅ | partial | ✅ | ⚠️ basic |
