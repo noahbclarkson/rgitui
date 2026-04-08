@@ -107,7 +107,6 @@ Download the latest release for your platform from the [Releases](https://github
 |----------|----------|
 | **Windows** | `.zip` (portable) or `.exe` installer (adds to PATH, integrates with Add/Remove Programs) |
 | **Linux** | `.AppImage` (recommended) or `.tar.gz` |
-| **macOS Intel** | `.dmg` (x86_64) |
 | **macOS Apple Silicon** | `.dmg` (aarch64) |
 
 Each release includes a `SHA256SUMS.txt` file for verification.

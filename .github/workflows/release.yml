@@ -283,19 +283,9 @@ jobs:
             rgitui-*.AppImage
 
   build-macos:
-    name: Build macOS (${{ matrix.arch }})
+    name: Build macOS (aarch64)
     needs: preflight
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            target: x86_64-apple-darwin
-            runner: macos-latest
-          - arch: aarch64
-            target: aarch64-apple-darwin
-            runner: macos-latest
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
     steps:
       - name: Checkout rgitui
         uses: actions/checkout@v4
@@ -304,18 +294,13 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
 
       - name: Build .app bundle and DMG
         env:
           RGITUI_VERSION: ${{ needs.preflight.outputs.version }}
-          RGITUI_MAC_TARGET: ${{ matrix.target }}
           RGITUI_MAC_CREATE_DMG: "1"
         run: |
           chmod +x script/bundle-mac.sh
@@ -324,8 +309,8 @@ jobs:
       - name: Verify DMG was produced
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
-          ARCH: ${{ matrix.arch }}
         run: |
+          ARCH="$(uname -m)"
           DMG="target/rgitui-${VERSION}-${ARCH}-macos.dmg"
           if [ ! -f "$DMG" ]; then
             echo "::error::DMG $DMG not produced"
@@ -336,9 +321,9 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ matrix.arch }}-release
+          name: macos-release
           if-no-files-found: error
-          path: target/rgitui-*-${{ matrix.arch }}-macos.dmg
+          path: target/rgitui-*-macos.dmg
 
   create-release:
     name: Create GitHub Release

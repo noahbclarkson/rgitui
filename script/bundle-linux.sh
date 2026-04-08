@@ -54,7 +54,7 @@ else
 fi
 
 # Copy appdata
-cp crates/rgitui/resources/linux/rgitui.appdata.xml "$APP_DIR/usr/share/metainfo/"
+cp crates/rgitui/resources/linux/com.rgitui.app.metainfo.xml "$APP_DIR/usr/share/metainfo/"
 
 # Create AppImage
 if command -v appimagetool &> /dev/null; then

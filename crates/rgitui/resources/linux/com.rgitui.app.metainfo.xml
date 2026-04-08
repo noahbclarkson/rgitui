@@ -5,12 +5,24 @@
   <summary>GPU-accelerated Git client</summary>
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
+  <developer id="com.github.noahbclarkson">
+    <name>Noah Clarkson</name>
+  </developer>
   <description>
     <p>rgitui is a GPU-accelerated Git client built with GPUI, featuring a commit graph, diff viewer, interactive rebase, AI commit messages, and more.</p>
   </description>
+  <launchable type="desktop-id">rgitui.desktop</launchable>
   <url type="homepage">https://github.com/noahbclarkson/rgitui</url>
   <url type="bugtracker">https://github.com/noahbclarkson/rgitui/issues</url>
+  <content_rating type="oars-1.1" />
   <provides>
     <binary>rgitui</binary>
   </provides>
+  <releases>
+    <release version="0.1.0" date="2026-04-08">
+      <description>
+        <p>First public release.</p>
+      </description>
+    </release>
+  </releases>
 </component>
