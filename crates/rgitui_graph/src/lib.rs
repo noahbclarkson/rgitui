@@ -920,7 +920,7 @@ impl Render for GraphView {
             });
 
         if show_author_column {
-            let author_col_width = if self.show_author_email { 180.0 } else { 120.0 };
+            let author_col_width = if self.show_author_email { 180.0 } else { 140.0 };
             header = header.child(
                 div()
                     .w(px(author_col_width))
@@ -947,6 +947,7 @@ impl Render for GraphView {
                 div()
                     .w(px(100.))
                     .flex_shrink_0()
+                    .pr(px(8.))
                     .h_flex()
                     .items_center()
                     .gap(px(4.))
@@ -1515,7 +1516,7 @@ impl Render for GraphView {
                             row = row.child(
                                 div()
                                     .id(ElementId::NamedInteger("graph-author".into(), i as u64))
-                                    .w(px(if show_author_email { 180. } else { 120. }))
+                                    .w(px(if show_author_email { 180. } else { 140. }))
                                     .flex_shrink_0()
                                     .px(px(4.))
                                     .h_flex()
@@ -1538,7 +1539,7 @@ impl Render for GraphView {
                                     .w(px(100.))
                                     .flex_shrink_0()
                                     .px(px(4.))
-                                    .pr(px(4.))
+                                    .pr(px(8.))
                                     .h_flex()
                                     .items_center()
                                     .overflow_x_hidden()
