@@ -39,6 +39,7 @@ pub enum SidebarEvent {
     StashSelected(usize),
     StashApply(usize),
     StashDrop(usize),
+    StashPop(usize),
     StashBranch(usize),
     WorktreeSelected(usize),
     WorktreeCreate,
@@ -2161,6 +2162,30 @@ impl Render for Sidebar {
                                                     let _ = w_apply.clone()
                                                         .update(cx, |_: &mut Sidebar, cx| {
                                                         cx.emit(SidebarEvent::StashApply(
+                                                            stash_index,
+                                                        ));
+                                                    });
+                                                },
+                                            )
+                                                })
+                                                .child({
+                                                    let w_pop = w.clone();
+                                                    IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "pop-stash".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::Undo,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .color(Color::Info)
+                                            .tooltip("Pop stash")
+                                            .on_click(
+                                                move |_: &ClickEvent, _: &mut Window,
+                                                      cx: &mut App| {
+                                                    let _ = w_pop.clone()
+                                                        .update(cx, |_: &mut Sidebar, cx| {
+                                                        cx.emit(SidebarEvent::StashPop(
                                                             stash_index,
                                                         ));
                                                     });

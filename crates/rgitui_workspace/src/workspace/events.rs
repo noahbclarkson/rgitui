@@ -1212,6 +1212,12 @@ pub(super) fn subscribe_sidebar(
                     );
                 });
             }
+            SidebarEvent::StashPop(index) => {
+                let index = *index;
+                project.update(cx, |proj, cx| {
+                    proj.stash_pop(index, cx).detach();
+                });
+            }
             SidebarEvent::StashBranch(index) => {
                 let index = *index;
                 this.dialogs.stash_branch_dialog.update(cx, |d, cx| {

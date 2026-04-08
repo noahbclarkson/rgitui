@@ -5,7 +5,8 @@
 - **Clippy:** clean (no warnings)
 - **Release build:** clean (~2m08s)
 - **Last release:** v0.1.1 (2026-04-08) — deferred ahead/behind, double-click checkout, graph header fixes
-- **Build:** cargo test + clippy + fmt clean. CI running on `553a679` (version bump fix)
+- **Current:** `c5ed151` + `feat(sidebar): pop button per stash index` — cargo test + clippy + fmt clean
+- **CI:** green on `c5ed151`
 
 ---
 
@@ -20,16 +21,16 @@
 - [x] **Keyboard shortcut overlay:** ✅ implemented. Press `?` → `ShortcutsHelp` modal with 4 categories (~24 shortcuts). Exists at `crates/rgitui_workspace/src/shortcuts_help.rs`.
 - [x] **Command palette fuzzy search:** ✅ implemented. `fuzzy_score` function (char-by-char sequential match with position-weighted scoring) added in `9ca61f2`. Tested with edge cases in `a17dc62`. Already shipped in v0.1.0.
 - [x] **Graph column resize:** ✅ user can drag-resize the author and date columns in the graph view.
-- [ ] **Toast notifications:** failed operations (push, pull, fetch) should show descriptive error toasts, not just status bar
+- [x] **Toast notifications:** ✅ `GitOperationState::Failed` path shows `ToastKind::Error` with full failure message (summary + details). Shipped — working as designed.
 
 ---
 
 ## P1 — Feature Parity
 
 ### Git Operations
-- [ ] **Reflog view:** exists per CHANGELOG but not accessible from UI — wire up the panel
+- [x] **Reflog view:** ✅ wired up via command palette ("View: Reflog") and bottom panel mode switcher. Available since earlier releases.
 - [ ] **Git bisect UI:** logic exists (events fire) but no dedicated panel — need to show progress
-- [ ] **Stash pop --index:** apply specific stash index, not just top
+- [x] **Stash pop --index:** ✅ per-index pop button added to sidebar stash items. `SidebarEvent::StashPop(usize)` wired to `proj.stash_pop(index, cx)`.
 - [x] **Contained in:** ✅ Commit detail panel now shows local branches that contain the selected commit (using `git2` merge-base check in a background task).
 
 ### GitHub Integration
