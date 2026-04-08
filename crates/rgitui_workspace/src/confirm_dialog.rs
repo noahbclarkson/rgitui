@@ -250,6 +250,7 @@ impl Render for ConfirmDialog {
                     .child(
                         div()
                             .pt_2()
+                            .px(px(4.))
                             .border_t_1()
                             .border_color(colors.border_variant)
                             .h_flex()
