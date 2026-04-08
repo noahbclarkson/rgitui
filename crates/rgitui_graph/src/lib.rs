@@ -1044,6 +1044,7 @@ impl Render for GraphView {
 
                         let commit_idx = i - wt_offset;
                         let commit = &commits[commit_idx];
+                        let oid = commit.oid;
                         let graph_row = &graph_rows[commit_idx];
                         let selected = selected_index == Some(i);
                         let is_current_match = current_match_index == Some(commit_idx);
@@ -1156,11 +1157,16 @@ impl Render for GraphView {
                             })
                             .active(move |s| s.bg(row_active_bg))
                             .on_click(
-                                move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                                move |event: &ClickEvent, _window: &mut Window, cx: &mut App| {
                                     view_clone
                                         .update(cx, |this, cx| {
                                             this.dismiss_context_menu(cx);
-                                            this.select_list_index(i, cx);
+                                            if event.click_count() >= 2 {
+                                                // Double-click: checkout this commit
+                                                cx.emit(GraphViewEvent::CheckoutCommit(oid));
+                                            } else {
+                                                this.select_list_index(i, cx);
+                                            }
                                         })
                                         .ok();
                                 },
