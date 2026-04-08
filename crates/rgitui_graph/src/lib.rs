@@ -872,9 +872,8 @@ impl Render for GraphView {
             .items_center()
             .w_full()
             .h(px(26.))
-            .pl(px(11.))
+            .pl(px(8.))
             .pr(px(8.))
-            .gap_1()
             .bg(colors.toolbar_background)
             .border_b_1()
             .border_color(border_color)
@@ -926,6 +925,7 @@ impl Render for GraphView {
                     .w(px(author_col_width))
                     .flex_shrink_0()
                     .ml(px(12.))
+                    .px(px(4.))
                     .h_flex()
                     .items_center()
                     .gap(px(4.))
@@ -950,6 +950,7 @@ impl Render for GraphView {
                     .flex_shrink_0()
                     .ml(px(12.))
                     .mr(px(8.))
+                    .px(px(4.))
                     .h_flex()
                     .items_center()
                     .gap(px(4.))
@@ -1555,6 +1556,11 @@ impl Render for GraphView {
                                     ),
                             );
                         }
+
+                        // Spacer matching the gear icon width in the header
+                        // so the flex-1 message column is the same width in
+                        // both header and rows, keeping Author/Date aligned.
+                        row = row.child(div().w(px(26.)).flex_shrink_0());
 
                         row.into_any_element()
                     })
