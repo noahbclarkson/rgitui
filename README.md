@@ -23,6 +23,11 @@
 
 ---
 
+> [!WARNING]
+> **rgitui is still in early, active development.** Expect bugs, rough edges, and breaking changes between releases. If you run into something, please [open an issue](https://github.com/noahbclarkson/rgitui/issues) — it genuinely helps.
+
+---
+
 ## Highlights
 
 - **GPU-accelerated** rendering via [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (Zed's UI framework) — smooth 60 fps, even on large repos
