@@ -1431,6 +1431,98 @@ impl GitProject {
         })
     }
 
+    /// Remove all untracked files and directories from the working tree.
+    /// Uses `git clean -fd` after a dry-run to enumerate files.
+    pub fn clean_untracked(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let repo_path = self.repo_path.clone();
+        let branch_name = self.head_branch.clone();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Clean,
+            "Cleaning untracked files...",
+            None,
+            branch_name.clone(),
+            cx,
+        );
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    // Dry run first to count files
+                    let dry_output = super::git_command()
+                        .current_dir(&repo_path)
+                        .args(["clean", "-n", "-fd"])
+                        .output()
+                        .context("Failed to execute git clean -n")?;
+
+                    let dry_stderr = String::from_utf8_lossy(&dry_output.stderr);
+                    if !dry_output.status.success() {
+                        anyhow::bail!("git clean -n failed: {}", dry_stderr.trim());
+                    }
+
+                    let file_count = dry_stderr
+                        .lines()
+                        .filter(|l| l.contains("Would remove"))
+                        .count();
+
+                    if file_count == 0 {
+                        // Nothing to clean
+                        return gather_refresh_data(&repo_path);
+                    }
+
+                    // Actually remove untracked files and directories
+                    let output = super::git_command()
+                        .current_dir(&repo_path)
+                        .args(["clean", "-f", "-fd"])
+                        .output()
+                        .context("Failed to execute git clean -f")?;
+
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !output.status.success() {
+                        anyhow::bail!("git clean -f failed: {}", stderr.trim());
+                    }
+
+                    gather_refresh_data(&repo_path)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Clean,
+                                "Cleaned untracked files".to_string(),
+                                (
+                                    Some(
+                                        "All untracked files and directories were removed.".into(),
+                                    ),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.notify();
+                        }
+                        Err(e) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Clean,
+                                "Clean failed",
+                                e.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Hard reset to HEAD, discarding all working tree and index changes.
     pub fn reset_hard(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();

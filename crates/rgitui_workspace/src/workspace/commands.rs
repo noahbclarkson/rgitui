@@ -198,6 +198,16 @@ impl Workspace {
                     );
                 });
             }
+            CommandId::CleanUntracked => {
+                self.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                    cd.show_visible(
+                        "Clean Untracked Files",
+                        "This will permanently remove all untracked files and directories. This action cannot be undone.",
+                        ConfirmAction::CleanUntracked,
+                        cx,
+                    );
+                });
+            }
             CommandId::AbortOperation => {
                 let state = tab.project.read(cx).repo_state();
                 if state.is_clean() {

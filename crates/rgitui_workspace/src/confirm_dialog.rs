@@ -11,6 +11,7 @@ use rgitui_ui::{Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label
 pub enum ConfirmAction {
     DiscardFile(String),
     DiscardAll,
+    CleanUntracked,
     ForcePush,
     StashDrop(usize),
     BranchDelete(String),
@@ -122,6 +123,7 @@ impl ConfirmDialog {
             Some(
                 ConfirmAction::DiscardFile(_)
                     | ConfirmAction::DiscardAll
+                    | ConfirmAction::CleanUntracked
                     | ConfirmAction::BranchDelete(_)
                     | ConfirmAction::TagDelete(_)
                     | ConfirmAction::RemoveRemote(_)
@@ -152,6 +154,7 @@ impl ConfirmDialog {
     fn confirm_label(&self) -> &'static str {
         match &self.action {
             Some(ConfirmAction::DiscardFile(_) | ConfirmAction::DiscardAll) => "Discard",
+            Some(ConfirmAction::CleanUntracked) => "Clean",
             Some(ConfirmAction::BranchDelete(_)) => "Delete Branch",
             Some(ConfirmAction::TagDelete(_)) => "Delete Tag",
             Some(ConfirmAction::RemoveRemote(_)) => "Remove",

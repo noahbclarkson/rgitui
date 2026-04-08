@@ -318,6 +318,7 @@ pub enum GitOperationKind {
     Bisect,
     Worktree,
     ResolveConflict,
+    Clean,
 }
 
 impl GitOperationKind {
@@ -343,6 +344,7 @@ impl GitOperationKind {
             GitOperationKind::Bisect => "Bisect",
             GitOperationKind::Worktree => "Worktree",
             GitOperationKind::ResolveConflict => "Resolve conflict",
+            GitOperationKind::Clean => "Clean",
         }
     }
 }

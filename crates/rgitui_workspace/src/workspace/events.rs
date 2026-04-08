@@ -415,6 +415,11 @@ pub(super) fn subscribe_confirm_dialog(
                                 );
                             }
                         }
+                        ConfirmAction::CleanUntracked => {
+                            project.update(cx, |proj, cx| {
+                                proj.clean_untracked(cx).detach();
+                            });
+                        }
                         ConfirmAction::TagDelete(name) => {
                             let tag_oid = project
                                 .read(cx)
