@@ -319,7 +319,13 @@ impl GitProject {
                                     "GPG signing enabled but no key ID configured in settings"
                                 )
                             })?;
-                            let head = repo.head()?.peel_to_commit()?;
+                            let mut reset_target: Option<git2::Commit> = None;
+                    if repo.state() == git2::RepositoryState::Rebase || repo.state() == git2::RepositoryState::RebaseInteractive || repo.state() == git2::RepositoryState::RebaseMerge {
+                        if let Ok(mut rebase) = repo.open_rebase(None) {
+                            let _ = rebase.abort();
+                        }
+                    }
+                    let head = repo.head()?.peel_to_commit()?;
                             let parents: Vec<git2::Commit> = head.parents().collect();
                             let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
                             let buf = repo.commit_create_buffer(
@@ -346,7 +352,13 @@ impl GitProject {
                             }
                             commit_oid
                         } else {
-                            let head = repo.head()?.peel_to_commit()?;
+                            let mut reset_target: Option<git2::Commit> = None;
+                    if repo.state() == git2::RepositoryState::Rebase || repo.state() == git2::RepositoryState::RebaseInteractive || repo.state() == git2::RepositoryState::RebaseMerge {
+                        if let Ok(mut rebase) = repo.open_rebase(None) {
+                            let _ = rebase.abort();
+                        }
+                    }
+                    let head = repo.head()?.peel_to_commit()?;
                             head.amend(
                                 Some("HEAD"),
                                 Some(&sig),
@@ -1963,6 +1975,12 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let repo = Repository::open(&repo_path)?;
+                    let mut reset_target: Option<git2::Commit> = None;
+                    if repo.state() == git2::RepositoryState::Rebase || repo.state() == git2::RepositoryState::RebaseInteractive || repo.state() == git2::RepositoryState::RebaseMerge {
+                        if let Ok(mut rebase) = repo.open_rebase(None) {
+                            let _ = rebase.abort();
+                        }
+                    }
                     let head = repo.head()?.peel_to_commit()?;
                     repo.reset(
                         head.as_object(),
