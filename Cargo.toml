@@ -17,7 +17,7 @@ default-members = ["crates/rgitui"]
 edition = "2021"
 publish = false
 license = "MIT"
-repository = "https://github.com/mrnoa/rgitui"
+repository = "https://github.com/noahbclarkson/rgitui"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"
@@ -67,6 +67,7 @@ dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 md5 = "0.7"
 rust-embed = "8"
+semver = "1"
 
 [patch.crates-io]
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }

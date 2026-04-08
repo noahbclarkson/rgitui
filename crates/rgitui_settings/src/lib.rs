@@ -200,6 +200,12 @@ pub struct AppSettings {
     pub auto_fetch_interval: AutoFetchInterval,
     #[serde(default = "default_confirm_destructive")]
     pub confirm_destructive_operations: bool,
+    #[serde(default = "default_auto_check_updates")]
+    pub auto_check_updates: bool,
+    /// Timestamp of the most recent successful GitHub release check. Used to
+    /// throttle background update polling so restarts don't spam the API.
+    #[serde(default)]
+    pub last_update_check_at: Option<DateTime<Utc>>,
 }
 
 /// Current settings version. Increment when making breaking changes.
@@ -222,6 +228,10 @@ fn default_show_subject_column() -> bool {
 }
 
 fn default_confirm_destructive() -> bool {
+    true
+}
+
+fn default_auto_check_updates() -> bool {
     true
 }
 
@@ -441,6 +451,8 @@ impl Default for AppSettings {
             show_subject_column: default_show_subject_column(),
             auto_fetch_interval: AutoFetchInterval::default(),
             confirm_destructive_operations: default_confirm_destructive(),
+            auto_check_updates: default_auto_check_updates(),
+            last_update_check_at: None,
         }
     }
 }
@@ -505,6 +517,14 @@ impl SettingsState {
 
     pub fn set_last_workspace(&mut self, repos: Vec<PathBuf>) {
         self.settings.last_workspace = dedup_paths(repos);
+    }
+
+    /// Record that an update check just completed.
+    pub fn mark_update_check_completed(&mut self) {
+        self.settings.last_update_check_at = Some(Utc::now());
+        if let Err(error) = self.save() {
+            log::warn!("Failed to persist update-check timestamp: {}", error);
+        }
     }
 
     pub fn add_recent_repo(&mut self, path: PathBuf) {

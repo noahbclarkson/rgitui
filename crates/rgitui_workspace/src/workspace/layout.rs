@@ -312,6 +312,7 @@ impl Render for Workspace {
         };
 
         let operation_output_bar = self.render_operation_output_bar(cx);
+        let update_banner = self.render_update_banner(cx);
 
         div()
             .id("workspace-root")
@@ -338,6 +339,7 @@ impl Render for Workspace {
             })
             // Toolbar
             .child(active_tab.toolbar.clone())
+            .when_some(update_banner, |el, banner| el.child(banner))
             .when_some(operation_banner, |el, banner| el.child(banner))
             .when_some(operation_output_bar, |el, bar| el.child(bar))
             // Conflict state banner (merge/rebase/cherry-pick/revert in progress)
@@ -1063,6 +1065,77 @@ impl Render for Workspace {
 }
 
 impl Workspace {
+    /// Persistent banner shown when the update checker has found a newer
+    /// release. Contains a "Download" button that opens the release URL and
+    /// an "X" button to dismiss for the remainder of the session.
+    pub(super) fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let update = self.update_notification.as_ref()?.clone();
+        let accent = cx.status().info;
+        let bg = cx.status().info_background;
+        let release_url = SharedString::from(update.release_url.clone());
+        let message: SharedString = format!(
+            "rgitui {} is available (you have {})",
+            update.latest_version, update.current_version
+        )
+        .into();
+
+        let url_for_open = update.release_url.clone();
+
+        Some(
+            div()
+                .h_flex()
+                .w_full()
+                .min_h(px(30.))
+                .px(px(10.))
+                .py(px(4.))
+                .gap(px(8.))
+                .items_center()
+                .bg(bg)
+                .border_b_1()
+                .border_color(accent)
+                .child(
+                    Icon::new(IconName::Info)
+                        .size(IconSize::Small)
+                        .color(Color::Info),
+                )
+                .child(
+                    div()
+                        .v_flex()
+                        .min_w_0()
+                        .flex_1()
+                        .child(
+                            Label::new(message)
+                                .size(LabelSize::Small)
+                                .weight(gpui::FontWeight::SEMIBOLD)
+                                .truncate(),
+                        )
+                        .child(
+                            Label::new(release_url)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted)
+                                .truncate(),
+                        ),
+                )
+                .child(
+                    Button::new("update-download", "Download")
+                        .size(ButtonSize::Compact)
+                        .style(ButtonStyle::Filled)
+                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                            cx.open_url(&url_for_open);
+                        })),
+                )
+                .child(
+                    IconButton::new("update-dismiss", IconName::X)
+                        .size(ButtonSize::Compact)
+                        .color(Color::Muted)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.dismiss_update_notification(cx);
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn render_welcome_interactive(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
         let recent_workspaces = cx

@@ -149,6 +149,14 @@ pub(super) struct OperationOutput {
 
 pub(super) const OPERATION_OUTPUT_AUTO_HIDE_SECS: u64 = 10;
 
+/// A pending "new release available" banner shown above the status bar.
+#[derive(Debug, Clone)]
+pub(super) struct UpdateNotification {
+    pub latest_version: String,
+    pub current_version: String,
+    pub release_url: String,
+}
+
 /// The root workspace view.
 pub struct Workspace {
     pub(super) tabs: Vec<ProjectTab>,
@@ -166,6 +174,7 @@ pub struct Workspace {
     pub(super) undo_stack: UndoStack,
     pub(super) layout_save_task: Option<gpui::Task<()>>,
     pub(super) cached_ui_font: Option<(String, gpui::Font)>,
+    pub(super) update_notification: Option<UpdateNotification>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -267,6 +276,7 @@ impl Workspace {
             undo_stack: UndoStack::new(),
             layout_save_task: None,
             cached_ui_font: None,
+            update_notification: None,
         }
     }
 
@@ -296,6 +306,23 @@ impl Workspace {
     pub fn start_background_tasks(&self, cx: &mut Context<Self>) {
         // Check for app updates in the background
         update_checker::check_for_updates(cx.entity().downgrade(), cx);
+    }
+
+    /// Called by the update checker when a newer release is detected.
+    pub(super) fn set_update_notification(
+        &mut self,
+        notification: UpdateNotification,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_notification = Some(notification);
+        cx.notify();
+    }
+
+    /// Dismiss the in-app update notification.
+    pub(super) fn dismiss_update_notification(&mut self, cx: &mut Context<Self>) {
+        if self.update_notification.take().is_some() {
+            cx.notify();
+        }
     }
 
     /// Set whether crash recovery is available (previous session didn't exit cleanly).

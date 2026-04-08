@@ -256,6 +256,7 @@ pub struct SettingsModal {
     show_subject_column: bool,
     auto_fetch_interval: AutoFetchInterval,
     confirm_destructive_operations: bool,
+    auto_check_updates: bool,
     terminal_command_editor: Entity<TextInput>,
     editor_command_editor: Entity<TextInput>,
     detected_terminals: Vec<DetectedApp>,
@@ -653,6 +654,7 @@ impl SettingsModal {
             show_subject_column: settings.show_subject_column,
             auto_fetch_interval: settings.auto_fetch_interval,
             confirm_destructive_operations: settings.confirm_destructive_operations,
+            auto_check_updates: settings.auto_check_updates,
             terminal_command_editor,
             editor_command_editor,
             detected_terminals,
@@ -743,6 +745,7 @@ impl SettingsModal {
                 self.show_subject_column = s.show_subject_column;
                 self.auto_fetch_interval = s.auto_fetch_interval;
                 self.confirm_destructive_operations = s.confirm_destructive_operations;
+                self.auto_check_updates = s.auto_check_updates;
                 self.feedback_message = None;
                 self.feedback_is_error = false;
                 (
@@ -847,6 +850,7 @@ impl SettingsModal {
             state.settings_mut().auto_fetch_interval = self.auto_fetch_interval;
             state.settings_mut().confirm_destructive_operations =
                 self.confirm_destructive_operations;
+            state.settings_mut().auto_check_updates = self.auto_check_updates;
             state.settings_mut().terminal_command = terminal_command.trim().to_string();
             state.settings_mut().editor_command = editor_command.trim().to_string();
             {
@@ -3254,6 +3258,52 @@ impl SettingsModal {
                 ),
         );
         section = section.child(confirm_card);
+
+        // Auto-check updates card
+        let auto_check_updates = self.auto_check_updates;
+        let mut updates_card = Self::setting_card(cx);
+        updates_card = updates_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(
+                            Label::new("Check for Updates on Startup")
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            Label::new(
+                                "Contact api.github.com once per day to see if a newer release is available. Turn off to keep rgitui offline.",
+                            )
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("auto-check-updates-toggle")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.auto_check_updates = !this.auto_check_updates;
+                            this.save_settings(cx);
+                        }))
+                        .child(Checkbox::new(
+                            "auto-check-updates-cb",
+                            if auto_check_updates {
+                                CheckState::Checked
+                            } else {
+                                CheckState::Unchecked
+                            },
+                        )),
+                ),
+        );
+        section = section.child(updates_card);
         section = section.child(Self::section_divider(cx));
 
         // External tools card

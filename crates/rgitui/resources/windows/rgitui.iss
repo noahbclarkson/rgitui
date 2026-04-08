@@ -1,10 +1,12 @@
 ; rgitui - Inno Setup 6 Installer Script
-; https://github.com/mrnoa/rgitui
+; https://github.com/noahbclarkson/rgitui
 
 #define MyAppName "rgitui"
-#define MyAppVersion "0.1.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
 #define MyAppPublisher "rgitui contributors"
-#define MyAppURL "https://github.com/mrnoa/rgitui"
+#define MyAppURL "https://github.com/noahbclarkson/rgitui"
 #define MyAppExeName "rgitui.exe"
 
 [Setup]

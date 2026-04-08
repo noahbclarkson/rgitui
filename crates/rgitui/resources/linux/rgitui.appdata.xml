@@ -8,8 +8,8 @@
   <description>
     <p>rgitui is a GPU-accelerated Git client built with GPUI, featuring a commit graph, diff viewer, interactive rebase, AI commit messages, and more.</p>
   </description>
-  <url type="homepage">https://github.com/mrnoa/rgitui</url>
-  <url type="bugtracker">https://github.com/mrnoa/rgitui/issues</url>
+  <url type="homepage">https://github.com/noahbclarkson/rgitui</url>
+  <url type="bugtracker">https://github.com/noahbclarkson/rgitui/issues</url>
   <provides>
     <binary>rgitui</binary>
   </provides>

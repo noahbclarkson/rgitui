@@ -1,7 +1,26 @@
-# Build release binary and create Windows installer
+# Build release binary and create Windows installer.
+#
+# Usage:
+#   ./script/bundle-windows.ps1                 # uses version from crates/rgitui/Cargo.toml
+#   ./script/bundle-windows.ps1 -Version 0.2.0  # overrides the version
+#   $env:RGITUI_VERSION="0.2.0"; ./script/bundle-windows.ps1
+param(
+    [string]$Version = $env:RGITUI_VERSION
+)
+
 $ErrorActionPreference = "Stop"
 
-Write-Host "Building rgitui release binary..."
+if (-not $Version) {
+    $cargoToml = Get-Content "crates\rgitui\Cargo.toml" -Raw
+    if ($cargoToml -match '(?m)^version\s*=\s*"([^"]+)"') {
+        $Version = $Matches[1]
+    } else {
+        Write-Error "Could not determine version from crates/rgitui/Cargo.toml"
+        exit 1
+    }
+}
+
+Write-Host "Building rgitui $Version release binary..."
 cargo build --release --package rgitui
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
@@ -15,8 +34,8 @@ if (-Not (Test-Path $iscc)) {
     exit 1
 }
 
-Write-Host "Creating installer..."
-& $iscc "crates\rgitui\resources\windows\rgitui.iss"
+Write-Host "Creating installer for version $Version..."
+& $iscc "/DMyAppVersion=$Version" "crates\rgitui\resources\windows\rgitui.iss"
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Write-Host "Done! Installer created in Output/"

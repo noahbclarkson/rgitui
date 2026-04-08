@@ -1,10 +1,28 @@
 #!/usr/bin/env bash
+#
+# Build a Linux AppImage (or a fallback tarball if appimagetool is missing).
+#
+# Version resolution order:
+#   1. $RGITUI_VERSION environment variable
+#   2. First positional argument
+#   3. version field parsed from crates/rgitui/Cargo.toml
 set -euo pipefail
 
-echo "Building rgitui release binary..."
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+VERSION="${RGITUI_VERSION:-${1:-}}"
+if [ -z "$VERSION" ]; then
+    VERSION="$(awk -F '"' '/^version *=/ {print $2; exit}' crates/rgitui/Cargo.toml)"
+fi
+if [ -z "$VERSION" ]; then
+    echo "error: could not determine version from crates/rgitui/Cargo.toml" >&2
+    exit 1
+fi
+
+echo "Building rgitui $VERSION release binary..."
 cargo build --release --package rgitui
 
-VERSION="0.1.0"
 ARCH="$(uname -m)"
 APP_DIR="target/AppDir"
 

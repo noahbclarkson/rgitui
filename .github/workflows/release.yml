@@ -4,20 +4,125 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to release (e.g. v0.1.0). Must already exist."
+        required: true
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
 
 jobs:
+  # Pre-flight: resolve version + run the same quality gates as ci.yml so a
+  # broken tag cannot ship. Every build job depends on this.
+  preflight:
+    name: Preflight (format, clippy, tests)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Checkout rgitui
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve version from tag
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE="true"
+          else
+            PRERELEASE="false"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Building release $TAG (version=$VERSION, prerelease=$PRERELEASE)"
+
+      - name: Verify Cargo.toml version matches tag
+        shell: bash
+        run: |
+          CARGO_VERSION="$(awk -F '"' '/^version *=/ {print $2; exit}' crates/rgitui/Cargo.toml)"
+          if [ "$CARGO_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "::error::crates/rgitui/Cargo.toml version ($CARGO_VERSION) does not match tag version (${{ steps.version.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            lld \
+            gcc \
+            g++ \
+            pkg-config \
+            libasound2-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
+            libgit2-dev \
+            libglib2.0-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libva-dev \
+            libvulkan1 \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxkbcommon-x11-dev \
+            libxkbcommon-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libzstd-dev \
+            vulkan-tools \
+            xvfb
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: xvfb-run -a cargo test --workspace
+
   build-windows:
-    name: Build Windows
+    name: Build Windows (x86_64)
+    needs: preflight
     runs-on: windows-latest
     steps:
       - name: Checkout rgitui
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -28,43 +133,57 @@ jobs:
       - name: Build release binary
         run: cargo build --release --package rgitui
 
-      - name: Get version from tag
-        id: version
-        shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: Create zip archive
         shell: pwsh
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          New-Item -ItemType Directory -Force -Path staging
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
           Copy-Item "target\release\rgitui.exe" -Destination staging\
           Copy-Item LICENSE -Destination staging\ -ErrorAction SilentlyContinue
           Copy-Item README.md -Destination staging\ -ErrorAction SilentlyContinue
-          Compress-Archive -Path staging\* -DestinationPath "rgitui-${{ steps.version.outputs.version }}-x86_64-windows.zip"
+          Compress-Archive -Path staging\* -DestinationPath "rgitui-${env:VERSION}-x86_64-windows.zip"
 
       - name: Install Inno Setup
-        run: choco install innosetup -y
-        continue-on-error: true
+        run: choco install innosetup -y --no-progress
 
       - name: Create installer
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "crates\rgitui\resources\windows\rgitui.iss"
-        continue-on-error: true
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$env:VERSION" "crates\rgitui\resources\windows\rgitui.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
+
+      - name: Verify installer was produced
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          $expected = "Output\rgitui-$env:VERSION-x86_64-windows-setup.exe"
+          if (-not (Test-Path $expected)) {
+            throw "Installer not found at $expected"
+          }
+          Write-Host "Installer built: $expected"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
+          if-no-files-found: error
           path: |
             *.zip
             Output/*.exe
 
   build-linux:
-    name: Build Linux
+    name: Build Linux (x86_64, AppImage + tarball)
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - name: Checkout rgitui
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install system dependencies
         run: |
@@ -102,7 +221,8 @@ jobs:
             libdrm-dev \
             libgbm-dev \
             libzstd-dev \
-            vulkan-tools
+            vulkan-tools \
+            fuse libfuse2
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -110,51 +230,202 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --release --package rgitui
+      - name: Install appimagetool
+        run: |
+          curl -L https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -o /usr/local/bin/appimagetool
+          chmod +x /usr/local/bin/appimagetool
 
-      - name: Get version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Build AppImage
+        env:
+          RGITUI_VERSION: ${{ needs.preflight.outputs.version }}
+          # appimagetool needs FUSE; in CI without FUSE, use --appimage-extract-and-run
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: ./script/bundle-linux.sh
 
-      - name: Create tarball
+      - name: Create plain tarball
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           mkdir -p staging/rgitui
           cp target/release/rgitui staging/rgitui/
           cp LICENSE staging/rgitui/ 2>/dev/null || true
           cp README.md staging/rgitui/ 2>/dev/null || true
-          tar -czf "rgitui-${{ steps.version.outputs.version }}-x86_64-linux.tar.gz" -C staging rgitui
+          tar -czf "rgitui-${VERSION}-x86_64-linux.tar.gz" -C staging rgitui
 
-      - name: Upload tarball artifact
+      - name: Verify artifacts
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          TARBALL="rgitui-${VERSION}-x86_64-linux.tar.gz"
+          APPIMAGE_PATH="target/rgitui-${VERSION}-x86_64.AppImage"
+          if [ ! -f "$TARBALL" ]; then
+            echo "::error::Tarball $TARBALL not produced"
+            exit 1
+          fi
+          if [ ! -f "$APPIMAGE_PATH" ]; then
+            echo "::error::AppImage $APPIMAGE_PATH not produced"
+            exit 1
+          fi
+          # Stage AppImage next to the tarball so upload-artifact finds it
+          cp "$APPIMAGE_PATH" "rgitui-${VERSION}-x86_64.AppImage"
+          ls -la rgitui-*.tar.gz rgitui-*.AppImage
+
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-release
-          path: "*.tar.gz"
+          if-no-files-found: error
+          path: |
+            rgitui-*.tar.gz
+            rgitui-*.AppImage
+
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            runner: macos-13
+          - arch: aarch64
+            target: aarch64-apple-darwin
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout rgitui
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build .app bundle and DMG
+        env:
+          RGITUI_VERSION: ${{ needs.preflight.outputs.version }}
+          RGITUI_MAC_TARGET: ${{ matrix.target }}
+          RGITUI_MAC_CREATE_DMG: "1"
+        run: ./script/bundle-mac.sh
+
+      - name: Verify DMG was produced
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          DMG="target/rgitui-${VERSION}-${ARCH}-macos.dmg"
+          if [ ! -f "$DMG" ]; then
+            echo "::error::DMG $DMG not produced"
+            exit 1
+          fi
+          ls -la "$DMG"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-release
+          if-no-files-found: error
+          path: target/rgitui-*-${{ matrix.arch }}-macos.dmg
 
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-windows, build-linux]
+    needs: [preflight, build-windows, build-linux, build-macos]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Display downloaded artifacts
-        run: ls -R artifacts/
+      - name: Stage release assets
+        id: stage
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \
+            \( -name "*.zip" -o -name "*.exe" -o -name "*.tar.gz" -o -name "*.AppImage" -o -name "*.dmg" \) \
+            -exec cp {} release-assets/ \;
+          echo "--- release assets ---"
+          ls -la release-assets/
 
-      - name: Create GitHub Release
+          cd release-assets
+          # Deterministic ordering so SHA256SUMS.txt is stable across runs
+          sha256sum $(ls | sort) > SHA256SUMS.txt
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          # Always produce release-notes.md so body_path is stable; leave
+          # generate_release_notes to fill in history if our notes are empty.
+          : > release-notes.md
+          if [ -f CHANGELOG.md ]; then
+            # Extract the section for the current version: lines between the
+            # "## [VERSION] - date" heading and the next "## [" heading.
+            # Uses a literal prefix match to avoid awk regex escaping quirks.
+            python3 - <<'PY'
+          import os, re
+          version = os.environ["VERSION"]
+          header_re = re.compile(r"^## \[" + re.escape(version) + r"\]")
+          next_re = re.compile(r"^## \[")
+          lines = []
+          grab = False
+          with open("CHANGELOG.md", encoding="utf-8") as fh:
+              for line in fh:
+                  if grab:
+                      if next_re.match(line):
+                          break
+                      lines.append(line)
+                  elif header_re.match(line):
+                      grab = True
+          with open("release-notes.md", "w", encoding="utf-8") as fh:
+              fh.writelines(lines)
+          PY
+          fi
+          if [ -s release-notes.md ]; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release (with CHANGELOG notes)
+        if: steps.notes.outputs.has_notes == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          name: rgitui ${{ github.ref_name }}
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          name: rgitui ${{ needs.preflight.outputs.tag }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
+          body_path: release-notes.md
+          fail_on_unmatched_files: true
           files: |
-            artifacts/windows-release/*.zip
-            artifacts/windows-release/*.exe
-            artifacts/linux-release/*.tar.gz
+            release-assets/*
+
+      - name: Create GitHub Release (auto-generated notes)
+        if: steps.notes.outputs.has_notes != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          name: rgitui ${{ needs.preflight.outputs.tag }}
+          draft: false
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*

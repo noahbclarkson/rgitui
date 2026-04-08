@@ -5210,6 +5210,7 @@ dependencies = [
  "rgitui_settings",
  "rgitui_theme",
  "rgitui_ui",
+ "semver",
  "serde",
  "serde_json",
  "smallvec",
