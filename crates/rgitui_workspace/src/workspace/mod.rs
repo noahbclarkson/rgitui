@@ -495,8 +495,8 @@ impl Workspace {
 
     pub(super) fn build_ui_font(primary: String) -> gpui::Font {
         let candidates = [
-            "JetBrainsMono Nerd Font",
             "JetBrains Mono",
+            "JetBrainsMono Nerd Font",
             #[cfg(target_os = "windows")]
             "Cascadia Code",
             #[cfg(target_os = "macos")]
