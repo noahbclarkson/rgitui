@@ -1,0 +1,56 @@
+--- avatar_cache.rs
++++ avatar_cache.rs
+@@ -1,4 +1,4 @@
+-use std::collections::{HashMap, HashSet};
++use std::collections::{HashMap, HashSet, VecDeque};
+ use std::fs;
+ use std::path;
+ 
+@@ -23,6 +23,7 @@
+ pub struct AvatarCache {
+     cache: HashMap<String, AvatarState>,
+     pending: HashSet<String>,
++    order: VecDeque<String>,
+ }
+ 
+ impl Global for AvatarCache {}
+@@ -133,6 +134,7 @@
+         Self {
+             cache: HashMap::new(),
+             pending: HashSet::new(),
++            order: VecDeque::new(),
+         }
+     }
+ 
+@@ -176,11 +178,21 @@
+             // Evict NotFound entries to make room for resolved ones.
+             self.cache
+                 .retain(|_, v| matches!(v, AvatarState::Resolved(_)));
++            
++            // LRU eviction if still at capacity
++            while self.cache.len() >= Self::MAX_ENTRIES {
++                if let Some(oldest) = self.order.pop_front() {
++                    self.cache.remove(&oldest);
++                } else {
++                    break;
++                }
++            }
++        }
++        if let Some(pos) = self.order.iter().position(|k| k == &email) {
++            self.order.remove(pos);
+         }
++        self.order.push_back(email.clone());
+         self.cache.insert(email, AvatarState::Resolved(url));
+     }
+ 
+@@ -201,6 +213,10 @@
+             Some(AvatarState::NotFound(n)) => n + 1,
+             _ => 1,
+         };
++        if let Some(pos) = self.order.iter().position(|k| k == &email) {
++            self.order.remove(pos);
++        }
++        self.order.push_back(email.clone());
+         self.cache.insert(email, AvatarState::NotFound(retries));
+     }
+ 

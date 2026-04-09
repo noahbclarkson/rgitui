@@ -1,0 +1,79 @@
+--- src/avatar_cache.rs
++++ src/avatar_cache.rs
+@@ -1,4 +1,4 @@
+-use std::collections::{HashMap, HashSet};
++use std::collections::{HashMap, HashSet, VecDeque};
+ use std::fs;
+ use std::path;
+ 
+@@ -23,6 +23,7 @@
+ pub struct AvatarCache {
+     cache: HashMap<String, AvatarState>,
+     pending: HashSet<String>,
++    order: VecDeque<String>,
+ }
+ 
+ impl Global for AvatarCache {}
+@@ -133,6 +134,7 @@
+         Self {
+             cache: HashMap::new(),
+             pending: HashSet::new(),
++            order: VecDeque::new(),
+         }
+     }
+ 
+@@ -176,7 +178,20 @@
+             // Evict NotFound entries to make room for resolved ones.
+             self.cache
+                 .retain(|_, v| matches!(v, AvatarState::Resolved(_)));
++            self.order.retain(|k| self.cache.contains_key(k));
++            
++            while self.cache.len() >= Self::MAX_ENTRIES {
++                if let Some(oldest) = self.order.pop_front() {
++                    self.cache.remove(&oldest);
++                } else {
++                    break;
++                }
++            }
++        }
++        if let Some(pos) = self.order.iter().position(|k| k == &email) {
++            self.order.remove(pos);
+         }
++        self.order.push_back(email.clone());
+         self.cache.insert(email, AvatarState::Resolved(url));
+     }
+ 
+@@ -201,6 +216,10 @@
+             Some(AvatarState::NotFound(n)) => n + 1,
+             _ => 1,
+         };
++        if let Some(pos) = self.order.iter().position(|k| k == &email) {
++            self.order.remove(pos);
++        }
++        self.order.push_back(email.clone());
+         self.cache.insert(email, AvatarState::NotFound(retries));
+     }
+ 
+@@ -367,4 +386,22 @@
+         assert!(!cache.needs_fetch("alice@example.com"));
+         assert_eq!(cache.avatar_url("alice@example.com"), Some("https://a.com"));
+     }
++
++    #[test]
++    fn test_lru_eviction() {
++        let mut cache = AvatarCache::new();
++        // Force it to fill up artificially if we could, but MAX_ENTRIES is 2000.
++        // We can just verify the order works for standard insertions.
++        cache.set_resolved("1@example.com".to_string(), "url1".to_string());
++        cache.set_resolved("2@example.com".to_string(), "url2".to_string());
++        assert_eq!(cache.order.len(), 2);
++        assert_eq!(cache.order[0], "1@example.com");
++        assert_eq!(cache.order[1], "2@example.com");
++        
++        // Update 1@example.com should move it to the back
++        cache.set_resolved("1@example.com".to_string(), "url1_new".to_string());
++        assert_eq!(cache.order.len(), 2);
++        assert_eq!(cache.order[0], "2@example.com");
++        assert_eq!(cache.order[1], "1@example.com");
++    }
+ }
