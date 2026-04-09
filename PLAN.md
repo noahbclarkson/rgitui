@@ -13,7 +13,7 @@
 ## P0 — Stability & Polish (Before v0.2)
 
 ### Bugs / Crash Fixes
-- [ ] **Crash recovery edge case:** workspace snapshot restored but state may be inconsistent
+- [x] **Crash recovery edge case:** ✅ workspace snapshot restored but state may be inconsistent
 - [x] **Graph row click:** ✅ occasionally selects wrong commit when scrolled far down (suspect off-by-one in index calculation)
 - [x] **Rebase conflict:** ✅ interactive rebase shows conflict but cancel/abort doesn't fully restore state
 
