@@ -111,7 +111,7 @@ Download the latest release for your platform from the [Releases](https://github
 
 Each release includes a `SHA256SUMS.txt` file for verification.
 
-> **Note:** Binaries are not yet code-signed. On Windows, click "More info" then "Run anyway" in SmartScreen. On macOS, right-click the app and choose "Open".
+> **Note:** Binaries are not code-signed. On Windows, click "More info" then "Run anyway" in SmartScreen. On macOS, right-click the app and choose "Open", or run `xattr -cr /Applications/rgitui.app` from the terminal. **macOS builds are experimental** — the `.dmg` may trigger Gatekeeper warnings. Building from source (`cargo build --release`) is reliable and recommended for macOS users.
 
 ### Build from source
 
