@@ -29,7 +29,7 @@
 
 ### Git Operations
 - [x] **Reflog view:** ✅ wired up via command palette ("View: Reflog") and bottom panel mode switcher. Available since earlier releases.
-- [ ] **Git bisect UI:** logic exists (events fire) but no dedicated panel — need to show progress
+- [ ] **Git bisect UI:** logic exists (need dedicated panel) (events fire) but no dedicated panel — need to show progress
 - [x] **Stash pop --index:** ✅ per-index pop button added to sidebar stash items. `SidebarEvent::StashPop(usize)` wired to `proj.stash_pop(index, cx)`.
 - [x] **Contained in:** ✅ Commit detail panel now shows local branches that contain the selected commit (using `git2` merge-base check in a background task).
 
