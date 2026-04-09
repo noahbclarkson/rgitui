@@ -157,20 +157,48 @@ impl AssetSource for Assets {
 
 fn load_embedded_fonts(cx: &App) {
     let asset_source = cx.asset_source();
-    let font_paths = asset_source.list("fonts").unwrap();
+    let font_paths = match asset_source.list("fonts") {
+        Ok(paths) => paths,
+        Err(e) => {
+            log::error!("failed to list embedded fonts directory: {e}");
+            return;
+        }
+    };
+
+    if font_paths.is_empty() {
+        log::warn!("no embedded fonts found — text may not render on some platforms");
+        return;
+    }
+
+    log::info!("loading {} embedded font files", font_paths.len());
     let mut fonts = Vec::new();
     for font_path in &font_paths {
         if !font_path.ends_with(".ttf") {
             continue;
         }
-        if let Ok(Some(font_bytes)) = asset_source.load(font_path) {
-            fonts.push(font_bytes);
+        match asset_source.load(font_path) {
+            Ok(Some(font_bytes)) => {
+                log::debug!("loaded font: {font_path} ({} bytes)", font_bytes.len());
+                fonts.push(font_bytes);
+            }
+            Ok(None) => {
+                log::warn!("font path listed but load returned None: {font_path}");
+            }
+            Err(e) => {
+                log::error!("failed to load font {}: {e}", font_path);
+            }
         }
     }
-    if !fonts.is_empty() {
-        cx.text_system()
-            .add_fonts(fonts)
-            .expect("failed to load embedded fonts");
+
+    if fonts.is_empty() {
+        log::error!("no embedded fonts could be loaded — text will not render");
+        return;
+    }
+
+    if let Err(e) = cx.text_system().add_fonts(fonts) {
+        log::error!("text_system.add_fonts failed: {e}");
+    } else {
+        log::info!("embedded fonts registered successfully");
     }
 }
 
