@@ -1121,11 +1121,13 @@ impl Render for Sidebar {
                                 ))
                             })
                             .size(LabelSize::XSmall)
-                            .color(if !self.my_branches_active && !branch_filter.is_empty() {
-                                Color::Accent
-                            } else {
-                                Color::Muted
-                            }),
+                            .color(
+                                if !self.my_branches_active && !branch_filter.is_empty() {
+                                    Color::Accent
+                                } else {
+                                    Color::Muted
+                                },
+                            ),
                         ),
                 ),
         );
