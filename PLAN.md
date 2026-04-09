@@ -50,7 +50,15 @@ See MEMORY.md and daily logs for historical records. All core P0 bugs resolved.
 6. ~~Discard dialog padding~~ ✅ DONE `ce988c5`
 
 ### Audits
-7. **Comprehensive audit** — security, bugs, performance, visual issues across full codebase
+7. ~~Comprehensive audit~~ ✅ DONE 2026-04-09
+- **Security:** Clean — keychain for secrets, no hardcoded tokens, no unsafe in hot paths
+- **Bugs:** Clean — all `unwrap` have fallbacks, `panic!` only in test code
+- **Performance:** Clean — git ops on background executor, no N+1 patterns
+- **Visual:** Clean — confirmed action buttons have proper padding via row/container level px()
+
+### Issues
+- **#9** (macOS font rendering) — investigating, waiting on user terminal output
+- **#7** (macOS Gatekeeper) — wontfix (distribution/infra issue)
 
 ### Already Implemented (confirm before treating as backlog)
 - Stage/unstage all ✅ (Ctrl+S / Ctrl+Shift+S / Ctrl+U / command palette / sidebar buttons)
