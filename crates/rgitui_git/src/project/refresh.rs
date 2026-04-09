@@ -601,7 +601,6 @@ impl GitProject {
                 .await?;
 
             let needs_more = data.has_more_commits && first_batch < commit_limit;
-            let user_email_for_commits = data.current_user_email.clone();
             let branch_tips: Vec<(git2::Oid, bool, String)> = data
                 .branches
                 .iter()
@@ -630,7 +629,6 @@ impl GitProject {
             if needs_more {
                 let remaining = commit_limit - first_batch;
                 let repo_path_p2 = repo_path.clone();
-                let user_email_p2 = user_email_for_commits.clone();
                 let (more_commits, has_more) = cx
                     .background_executor()
                     .spawn(async move {
@@ -640,7 +638,7 @@ impl GitProject {
                             remaining,
                             &branch_tips,
                             &tag_tips,
-                            user_email_p2.as_deref(),
+                            None,
                         )
                     })
                     .await?;
