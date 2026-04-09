@@ -6,13 +6,15 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ## Current Focus
 
-**This cycle (2026-04-08 10:05 UTC):** `origin/main` = `5d17062`.
+**This cycle (2026-04-09 05:05 UTC):** `origin/main` = `10e5012`.
 
-**Build:** ✅ 578 tests, clippy 0 warnings, fmt clean. Project at v0.1.0.
+**Build:** ✅ 581 tests, clippy 0 warnings, fmt clean.
 
-**Shipped:** `5d17062` — fix(ci): opt into Node.js 24 for GitHub Actions runners. Added `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` to CI and Release workflow env blocks. Eliminates deprecation warnings from Node.js 20 actions. Resolved merge conflict with Noah's concurrent `RUST_BACKTRACE: "1"` addition to release.yml.
+**Shipped:** `10e5012` — feat(ui): add bisect log progress panel. Built and wired the `BisectView` bottom panel to visualize `git bisect log` state, remaining step estimates, and click-to-jump OID selection.
 
 ---
+
+**Previous cycle (2026-04-08 10:05 UTC):** `origin/main` = `5d17062`.
 
 ---
 
