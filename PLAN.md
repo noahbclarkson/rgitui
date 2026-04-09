@@ -802,3 +802,4 @@ Right-click on a reflog entry now shows "Checkout" as the first option, letting 
 ### Previously Logged Backlog (from 2026-04-09 05:22)
 - macOS experimental warning in README ✅ (done)
 - Remove temp .sh scripts from repo root ✅ (done)
+- [x] Avatar cache performance: LRU eviction added to prevent boundless expansion while keeping recent authors active.
