@@ -385,6 +385,7 @@ impl Render for BisectView {
                             // SHA column
                             .child(
                                 div()
+                                    .id(ElementId::NamedInteger("bisect-sha".into(), i as u64))
                                     .w(px(80.))
                                     .flex_shrink_0()
                                     .h_full()
