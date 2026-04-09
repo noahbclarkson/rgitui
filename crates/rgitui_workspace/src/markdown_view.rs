@@ -377,7 +377,7 @@ fn render_block(block: &MarkdownBlock, window: &Window, cx: &gpui::App) -> gpui:
                 .bg(colors.editor_background)
                 .rounded(px(3.))
                 .p(px(6.))
-                .font_family("monospace")
+                .font_family("Lilex")
                 .text_size(rems(0.65))
                 .text_color(colors.text)
                 .child(code_text)

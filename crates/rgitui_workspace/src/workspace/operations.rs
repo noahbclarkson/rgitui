@@ -154,7 +154,7 @@ impl Workspace {
                     .pb(px(6.))
                     .child(
                         div()
-                            .font_family("monospace")
+                            .font_family("Lilex")
                             .text_xs()
                             .text_color(colors.text_muted)
                             .whitespace_nowrap()

@@ -2103,7 +2103,7 @@ impl Render for DiffViewer {
                                             .child(
                                                 div()
                                                     .text_xs()
-                                                    .font_family("monospace")
+                                                    .font_family("Lilex")
                                                     .text_color(text_muted)
                                                     .child(line_range),
                                             );
@@ -2232,7 +2232,7 @@ impl Render for DiffViewer {
                                                     .border_r_1()
                                                     .border_color(border_variant)
                                                     .text_xs()
-                                                    .font_family("monospace")
+                                                    .font_family("Lilex")
                                                     .text_color(text_muted)
                                                     .pr(px(4.))
                                                     .child(old_str),
@@ -2249,7 +2249,7 @@ impl Render for DiffViewer {
                                                     .border_r_1()
                                                     .border_color(border_variant)
                                                     .text_xs()
-                                                    .font_family("monospace")
+                                                    .font_family("Lilex")
                                                     .text_color(text_muted)
                                                     .pr(px(4.))
                                                     .child(new_str),
@@ -2263,7 +2263,7 @@ impl Render for DiffViewer {
                                                     .items_center()
                                                     .justify_center()
                                                     .text_xs()
-                                                    .font_family("monospace")
+                                                    .font_family("Lilex")
                                                     .font_weight(FontWeight::BOLD)
                                                     .text_color(text_col)
                                                     .child(prefix_str),
@@ -2277,7 +2277,7 @@ impl Render for DiffViewer {
                                                     .items_center()
                                                     .pl(px(6.))
                                                     .text_xs()
-                                                    .font_family("monospace")
+                                                    .font_family("Lilex")
                                                     .text_color(text_col)
                                                     .whitespace_nowrap()
                                                     .overflow_y_hidden()
@@ -2362,7 +2362,7 @@ impl Render for DiffViewer {
                                             .child(
                                                 div()
                                                     .text_xs()
-                                                    .font_family("monospace")
+                                                    .font_family("Lilex")
                                                     .text_color(text_muted)
                                                     .child(line_range),
                                             );
@@ -2523,7 +2523,7 @@ impl Render for DiffViewer {
                                                             .border_r_1()
                                                             .border_color(border_variant)
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(text_muted)
                                                             .pr(px(4.))
                                                             .child(left_num_str),
@@ -2537,7 +2537,7 @@ impl Render for DiffViewer {
                                                             .items_center()
                                                             .pl(px(6.))
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(left_text_col)
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
@@ -2571,7 +2571,7 @@ impl Render for DiffViewer {
                                                             .border_r_1()
                                                             .border_color(border_variant)
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(text_muted)
                                                             .pr(px(4.))
                                                             .child(right_num_str),
@@ -2585,7 +2585,7 @@ impl Render for DiffViewer {
                                                             .items_center()
                                                             .pl(px(6.))
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(right_text_col)
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
@@ -2632,14 +2632,14 @@ impl Render for DiffViewer {
                                             .child(
                                                 div()
                                                     .text_xs()
-                                                    .font_family("monospace")
+                                                    .font_family("Lilex")
                                                     .text_color(text_muted)
                                                     .child(header.clone()),
                                             )
                                             .child(
                                                 div()
                                                     .text_xs()
-                                                    .font_family("monospace")
+                                                    .font_family("Lilex")
                                                     .text_color(text_muted)
                                                     .ml(px(8.))
                                                     .child(format!("[{}]", context_name)),
@@ -2702,7 +2702,7 @@ impl Render for DiffViewer {
                                                             .w(px(32.))
                                                             .flex_shrink_0()
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(text_muted)
                                                             .justify_end()
                                                             .child(left_num_str.clone()),
@@ -2712,7 +2712,7 @@ impl Render for DiffViewer {
                                                             .flex_1()
                                                             .min_w_0()
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(left_text_col)
                                                             .overflow_x_hidden()
                                                             .child(Self::render_styled_text(window, left_styled, left_text_col, row_height)),
@@ -2734,7 +2734,7 @@ impl Render for DiffViewer {
                                                             .w(px(32.))
                                                             .flex_shrink_0()
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(text_muted)
                                                             .justify_end()
                                                             .child(mid_num_str.clone()),
@@ -2744,7 +2744,7 @@ impl Render for DiffViewer {
                                                             .flex_1()
                                                             .min_w_0()
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(text_color)
                                                             .overflow_x_hidden()
                                                             .child(Self::render_styled_text(window, mid_styled, text_color, row_height)),
@@ -2764,7 +2764,7 @@ impl Render for DiffViewer {
                                                             .w(px(32.))
                                                             .flex_shrink_0()
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(text_muted)
                                                             .justify_end()
                                                             .child(right_num_str.clone()),
@@ -2774,7 +2774,7 @@ impl Render for DiffViewer {
                                                             .flex_1()
                                                             .min_w_0()
                                                             .text_xs()
-                                                            .font_family("monospace")
+                                                            .font_family("Lilex")
                                                             .text_color(right_text_col)
                                                             .overflow_x_hidden()
                                                             .child(Self::render_styled_text(window, right_styled, right_text_col, row_height)),
@@ -2872,7 +2872,7 @@ impl Render for DiffViewer {
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_family("monospace")
+                                    .font_family("Lilex")
                                     .text_color(vc_added)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(format!("+{}", additions))),
@@ -2880,7 +2880,7 @@ impl Render for DiffViewer {
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_family("monospace")
+                                    .font_family("Lilex")
                                     .text_color(vc_deleted)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(format!("-{}", deletions))),

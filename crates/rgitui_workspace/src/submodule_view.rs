@@ -338,7 +338,7 @@ impl Render for SubmoduleView {
                                     .px(px(6.))
                                     .text_xs()
                                     .text_color(text_muted)
-                                    .font_family("monospace")
+                                    .font_family("Lilex")
                                     .child(commit_display),
                             )
                             // Branch

@@ -967,7 +967,7 @@ impl Render for DetailPanel {
             .border_color(colors.border_variant)
             .child(
                 div()
-                    .font_family("monospace")
+                    .font_family("Lilex")
                     .text_xs()
                     .text_color(colors.text_accent)
                     .font_weight(gpui::FontWeight::BOLD)

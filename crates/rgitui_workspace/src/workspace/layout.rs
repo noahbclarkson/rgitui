@@ -43,7 +43,7 @@ impl Render for Workspace {
                     }
                 });
 
-            let primary = configured.unwrap_or_else(|| "JetBrainsMono Nerd Font".to_string());
+            let primary = configured.unwrap_or_else(|| "Lilex".to_string());
 
             if let Some((cached_name, cached_font)) = &self.cached_ui_font {
                 if cached_name == &primary {

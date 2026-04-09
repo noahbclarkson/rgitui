@@ -501,13 +501,16 @@ impl Workspace {
         let candidates = [
             "JetBrains Mono",
             "JetBrainsMono Nerd Font",
+            "Lilex",
             #[cfg(target_os = "windows")]
             "Cascadia Code",
             #[cfg(target_os = "macos")]
             "SF Mono",
+            #[cfg(target_os = "macos")]
+            "Menlo",
             #[cfg(target_os = "linux")]
             "DejaVu Sans Mono",
-            "monospace",
+            "Courier New",
         ];
         let fallbacks: Vec<String> = candidates
             .iter()
