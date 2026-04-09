@@ -18,3 +18,6 @@
 ## Competitive
 - Git health dashboard missing
 - Custom theme editor missing
+
+## Recent Architecture Additions
+- **Commit Author Filtering:** The `GraphView` now supports a "My Commits" toggle which passes an `--author` flag directly to the `git log` subprocess during `load_more_commits_from_repo`. This pushes the filtering down to `git` itself (which can use commit-graph acceleration), rather than attempting to filter in-memory after loading thousands of commits.
