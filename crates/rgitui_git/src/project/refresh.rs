@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::types::*;
 
 use super::diff::batch_diff_stats;
+use super::git_command;
 use super::GitProject;
 use super::GitProjectEvent;
 use super::RefreshData;
@@ -434,7 +435,7 @@ fn gather_refresh_data_internal(
             RS, GS, GS, GS, GS, GS, GS, GS, GS, GS, GS
         );
 
-        let output = std::process::Command::new("git")
+        let output = git_command()
             .current_dir(repo_path)
             .args([
                 "log",
