@@ -3223,6 +3223,7 @@ pub fn branches_containing_commit(
                 ahead: 0,
                 behind: 0,
                 tip_oid: Some(tip_oid),
+                author_email: None,
             });
             continue;
         }
@@ -3244,6 +3245,7 @@ pub fn branches_containing_commit(
                     ahead: 0,
                     behind: 0,
                     tip_oid: Some(tip_oid),
+                    author_email: None,
                 });
             }
         }

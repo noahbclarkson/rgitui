@@ -3259,6 +3259,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             tip_oid: None,
+            author_email: None,
         }
     }
 

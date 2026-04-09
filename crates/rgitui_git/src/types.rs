@@ -67,6 +67,8 @@ pub struct BranchInfo {
     pub ahead: usize,
     pub behind: usize,
     pub tip_oid: Option<git2::Oid>,
+    /// Author email of the tip commit — used to filter "My Branches".
+    pub author_email: Option<String>,
 }
 
 /// Information about a tag.

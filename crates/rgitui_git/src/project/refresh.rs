@@ -326,6 +326,9 @@ fn gather_refresh_data_internal(
                 ahead,
                 behind,
                 tip_oid,
+                author_email: tip_oid.and_then(|oid| {
+                    repo.find_commit(oid).ok().and_then(|c| c.author().email().map(String::from))
+                }),
             });
         }
 
