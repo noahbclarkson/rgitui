@@ -9,9 +9,11 @@ use gpui::{
 use http_client::HttpClient;
 
 use crate::github_api::{format_github_collection_error, format_github_detail_error};
+use gpui::Entity;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
+    TextInput, TextInputEvent,
 };
 
 #[derive(Clone, Debug)]
@@ -99,6 +101,9 @@ pub struct IssuesPanel {
     selected_comments: Vec<IssueComment>,
     comments_loading: bool,
     last_fetched: Option<std::time::Instant>,
+    search_query: Option<String>,
+    is_searching: bool,
+    query_input: Entity<TextInput>,
 }
 
 impl IssuesPanel {
@@ -119,6 +124,28 @@ impl IssuesPanel {
             selected_comments: Vec::new(),
             comments_loading: false,
             last_fetched: None,
+            search_query: None,
+            is_searching: false,
+            query_input: {
+                let query_input = cx.new(|cx| {
+                    let mut ti = TextInput::new(cx);
+                    ti.set_placeholder("Search issues...");
+                    ti
+                });
+                let input = query_input.clone();
+                cx.subscribe(
+                    &query_input,
+                    move |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                        TextInputEvent::Submit => {
+                            let query = input.read(cx).text().to_string();
+                            this.submit_search(query, cx);
+                        }
+                        TextInputEvent::Changed(_) => {}
+                    },
+                )
+                .detach();
+                query_input
+            },
         }
     }
 
@@ -259,11 +286,83 @@ impl IssuesPanel {
     }
 
     fn set_filter(&mut self, filter: IssueFilter, cx: &mut Context<Self>) {
+        self.is_searching = false;
+        self.search_query = None;
         if self.filter != filter {
             self.filter = filter;
             self.last_fetched = None;
             self.fetch_issues(cx);
         }
+    }
+
+    fn toggle_search(&mut self, cx: &mut Context<Self>) {
+        self.is_searching = !self.is_searching;
+        if !self.is_searching {
+            self.search_query = None;
+            // Refetch normal list when exiting search
+            if self.issues.is_empty() {
+                self.fetch_issues(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn submit_search(&mut self, query: String, cx: &mut Context<Self>) {
+        let query = query.trim();
+        if query.is_empty() {
+            self.is_searching = false;
+            self.search_query = None;
+            cx.notify();
+            return;
+        }
+        self.search_query = Some(query.to_string());
+        self.is_searching = false;
+        self.do_search(query.to_string(), cx);
+    }
+
+    fn do_search(&mut self, query: String, cx: &mut Context<Self>) {
+        if self.github_owner.is_empty() || self.github_repo.is_empty() {
+            self.error_message = Some("No GitHub remote configured".into());
+            cx.notify();
+            return;
+        }
+        let token = match &self.github_token {
+            Some(t) if !t.is_empty() => t.clone(),
+            _ => {
+                self.error_message =
+                    Some("Configure a GitHub token in settings to view issues".into());
+                cx.notify();
+                return;
+            }
+        };
+        self.is_loading = true;
+        self.error_message = None;
+        cx.notify();
+        let owner = self.github_owner.clone();
+        let repo = self.github_repo.clone();
+        let http = cx.http_client();
+        log::info!("search_issues: {}/{} query='{}'", owner, repo, query);
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let result = fetch_github_issue_search(&http, &token, &owner, &repo, &query).await;
+            cx.update(|cx| {
+                let _ = this.update(cx, |panel, cx| {
+                    panel.is_loading = false;
+                    match result {
+                        Ok(issues) => {
+                            panel.issues = issues;
+                            panel.selected_index = None;
+                            panel.last_fetched = Some(std::time::Instant::now());
+                            log::info!("search_issues complete: {} results", panel.issues.len());
+                        }
+                        Err(e) => {
+                            panel.error_message = Some(e);
+                        }
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -302,6 +401,7 @@ impl IssuesPanel {
         let is_all = self.filter == IssueFilter::All;
 
         let issue_count: SharedString = format!("{}", self.issues.len()).into();
+        let search_query = self.search_query.clone();
 
         div()
             .h_flex()
@@ -324,54 +424,82 @@ impl IssuesPanel {
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Default),
             )
-            .when(!self.issues.is_empty(), |el| {
+            .when(!self.issues.is_empty() && search_query.is_none(), |el| {
                 el.child(Badge::new(issue_count).color(Color::Muted))
             })
+            .when(search_query.is_some(), |el| {
+                el.child(
+                    Label::new(format!("Search: '{}'", search_query.as_ref().unwrap()))
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+            })
             .child(div().flex_1())
+            .when(!self.is_searching, |el| {
+                el.child(
+                    div()
+                        .h_flex()
+                        .h(px(22.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(colors.border_variant)
+                        .overflow_hidden()
+                        .child(
+                            Button::new("filter-open", "Open")
+                                .size(ButtonSize::Compact)
+                                .style(if is_open {
+                                    ButtonStyle::Filled
+                                } else {
+                                    ButtonStyle::Transparent
+                                })
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.set_filter(IssueFilter::Open, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("filter-closed", "Closed")
+                                .size(ButtonSize::Compact)
+                                .style(if is_closed {
+                                    ButtonStyle::Filled
+                                } else {
+                                    ButtonStyle::Transparent
+                                })
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.set_filter(IssueFilter::Closed, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("filter-all", "All")
+                                .size(ButtonSize::Compact)
+                                .style(if is_all {
+                                    ButtonStyle::Filled
+                                } else {
+                                    ButtonStyle::Transparent
+                                })
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.set_filter(IssueFilter::All, cx);
+                                })),
+                        ),
+                )
+            })
+            .when(self.is_searching, |el| {
+                el.child(
+                    div()
+                        .id("issues-search-input-container")
+                        .h(px(24.))
+                        .flex_1()
+                        .max_w(px(200.))
+                        .child(self.query_input.clone()),
+                )
+            })
             .child(
-                div()
-                    .h_flex()
-                    .h(px(22.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(colors.border_variant)
-                    .overflow_hidden()
-                    .child(
-                        Button::new("filter-open", "Open")
-                            .size(ButtonSize::Compact)
-                            .style(if is_open {
-                                ButtonStyle::Filled
-                            } else {
-                                ButtonStyle::Transparent
-                            })
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.set_filter(IssueFilter::Open, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("filter-closed", "Closed")
-                            .size(ButtonSize::Compact)
-                            .style(if is_closed {
-                                ButtonStyle::Filled
-                            } else {
-                                ButtonStyle::Transparent
-                            })
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.set_filter(IssueFilter::Closed, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("filter-all", "All")
-                            .size(ButtonSize::Compact)
-                            .style(if is_all {
-                                ButtonStyle::Filled
-                            } else {
-                                ButtonStyle::Transparent
-                            })
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.set_filter(IssueFilter::All, cx);
-                            })),
-                    ),
+                IconButton::new("issues-search", IconName::Search)
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Subtle)
+                    .tooltip("Search issues")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.toggle_search(cx);
+                    })),
             )
             .child(
                 IconButton::new("issues-refresh", IconName::Refresh)
@@ -974,6 +1102,118 @@ async fn fetch_github_issues(
 
     let mut issues = Vec::new();
     for item in items {
+        if item.get("pull_request").is_some() {
+            continue;
+        }
+
+        let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let body_text = item
+            .get("body")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let state_str = item.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+        let state = if state_str == "closed" {
+            IssueState::Closed
+        } else {
+            IssueState::Open
+        };
+        let author = item
+            .get("user")
+            .and_then(|u| u.get("login"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let created_at = item
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let comments_count = item.get("comments").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+        let mut labels = Vec::new();
+        if let Some(label_array) = item.get("labels").and_then(|v| v.as_array()) {
+            for label_item in label_array {
+                let name = label_item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let color = label_item
+                    .get("color")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("cccccc")
+                    .to_string();
+                labels.push(IssueLabel { name, color });
+            }
+        }
+
+        let created_display = format_github_date(&created_at);
+
+        issues.push(Issue {
+            number,
+            title,
+            body: body_text,
+            state,
+            author,
+            created_at: created_display,
+            labels,
+            comments_count,
+        });
+    }
+
+    Ok(issues)
+}
+
+async fn fetch_github_issue_search(
+    http: &Arc<dyn HttpClient>,
+    token: &str,
+    owner: &str,
+    repo: &str,
+    query: &str,
+) -> Result<Vec<Issue>, String> {
+    let url = format!(
+        "https://api.github.com/search/issues?q={}+repo:{}/{}&per_page=50&sort=updated",
+        urlencoding::encode(query),
+        owner,
+        repo
+    );
+
+    let request = http_client::http::Request::builder()
+        .uri(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github.v3+json")
+        .header("User-Agent", "rgitui")
+        .body(Default::default())
+        .map_err(|e| e.to_string())?;
+
+    let response = http.send(request).await.map_err(|e| e.to_string())?;
+
+    let status = response.status();
+    let mut body = String::new();
+    let mut reader = response.into_body();
+    reader
+        .read_to_string(&mut body)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !status.is_success() {
+        return Err(format_github_collection_error(status, &body, owner, repo));
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let items = json
+        .get("items")
+        .and_then(|v| v.as_array())
+        .ok_or("Expected 'items' array in search response")?;
+
+    let mut issues = Vec::new();
+    for item in items {
+        // Filter out pull requests from issue search results
         if item.get("pull_request").is_some() {
             continue;
         }

@@ -32,3 +32,4 @@ rfd = "0.17.2"
 pulldown-cmark = "0.13.1"
 smol.workspace = true
 semver.workspace = true
+urlencoding.workspace = true
