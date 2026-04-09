@@ -5,7 +5,7 @@
 - **Clippy:** clean (no warnings)
 - **Release build:** clean (~2m08s)
 - **Last release:** v0.1.1 (2026-04-08) — deferred ahead/behind, double-click checkout, graph header fixes
-- **Current:** `c5ed151` + `feat(sidebar): pop button per stash index` — cargo test + clippy + fmt clean
+- **Current:** `418d97f` + `docs: check off crash recovery` — cargo test + clippy + fmt clean
 - **CI:** green on `c5ed151`
 
 ---
