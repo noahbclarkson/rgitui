@@ -32,16 +32,7 @@ pub enum BisectViewEvent {
     Skip(String),
 }
 
-impl BisectViewEvent {
-    fn decision(&self) -> Option<&str> {
-        match self {
-            Self::Good(_) => Some("good"),
-            Self::Bad(_) => Some("bad"),
-            Self::Skip(_) => Some("skip"),
-            _ => None,
-        }
-    }
-}
+impl BisectViewEvent {}
 
 /// A bisect viewer panel that shows the git bisect log.
 pub struct BisectView {

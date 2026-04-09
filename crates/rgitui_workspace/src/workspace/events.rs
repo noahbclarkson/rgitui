@@ -2133,7 +2133,7 @@ pub(super) fn subscribe_bisect_view(
                 this.show_toast(format!("Copied OID: {}", short), ToastKind::Success, cx);
             }
             BisectViewEvent::Good(oid) => {
-                if let Ok(git_oid) = git2::Oid::from_str(&oid) {
+                if let Ok(git_oid) = git2::Oid::from_str(oid) {
                     project.update(cx, |proj, cx| {
                         proj.bisect_good(Some(git_oid), cx).detach();
                     });
@@ -2145,7 +2145,7 @@ pub(super) fn subscribe_bisect_view(
                 }
             }
             BisectViewEvent::Bad(oid) => {
-                if let Ok(git_oid) = git2::Oid::from_str(&oid) {
+                if let Ok(git_oid) = git2::Oid::from_str(oid) {
                     project.update(cx, |proj, cx| {
                         proj.bisect_bad(Some(git_oid), cx).detach();
                     });
@@ -2157,7 +2157,7 @@ pub(super) fn subscribe_bisect_view(
                 }
             }
             BisectViewEvent::Skip(oid) => {
-                if let Ok(git_oid) = git2::Oid::from_str(&oid) {
+                if let Ok(git_oid) = git2::Oid::from_str(oid) {
                     project.update(cx, |proj, cx| {
                         proj.bisect_skip(Some(git_oid), cx).detach();
                     });
