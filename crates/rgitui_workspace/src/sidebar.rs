@@ -2582,7 +2582,7 @@ impl Render for Sidebar {
                 let list = uniform_list(
                     "staged-file-list",
                     flattened.len(),
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                    move |range: Range<usize>, _window: &mut Window, cx: &mut App| {
                         let w = w.clone();
                         range.map(|i| {
                             let item = &flattened[i];
@@ -2600,6 +2600,7 @@ impl Render for Sidebar {
                                     let file_path_for_emit: String =
                                         file.path.display().to_string();
                                     let file_path_clone = file_path_for_emit.clone();
+                                    let file_path_unstage = file_path_for_emit.clone();
                                     div()
                                         .id(ElementId::NamedInteger("staged-file".into(), i as u64))
                                         .group("sidebar-file-row")
@@ -2640,6 +2641,33 @@ impl Render for Sidebar {
                                                 .truncate(),
                                         )
                                         .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .id(ElementId::NamedInteger("unstage-action".into(), i as u64))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .w(px(18.))
+                                                .h(px(18.))
+                                                .rounded(px(3.))
+                                                .invisible()
+                                                .group_hover("sidebar-file-row", |s| s.visible())
+                                                .text_xs()
+                                                .text_color(Color::Added.color(cx))
+                                                .hover(|s| s.bg(colors.ghost_element_hover))
+                                                .cursor_pointer()
+                                                .tooltip(Tooltip::text("Unstage file"))
+                                                .on_click({
+                                                    let w_unstg = w.clone();
+                                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                    w_unstg.clone().update(cx, |_, cx| {
+                                                        cx.emit(SidebarEvent::UnstageFile(
+                                                            file_path_unstage.clone(),
+                                                        ));
+                                                    }).ok();
+                                                }})
+                                                .child(rgitui_ui::Icon::new(IconName::Minus)),
+                                        )
                                         .into_any_element()
                                 }
                                 FlatFileItem::Dir { dir_key, label, file_count, collapsed, indent } => {
@@ -2853,6 +2881,7 @@ impl Render for Sidebar {
                                     let file_path_for_emit: String =
                                         file.path.display().to_string();
                                     let file_path_clone = file_path_for_emit.clone();
+                                    let file_path_stage = file_path_for_emit.clone();
                                     div()
                                         .id(ElementId::NamedInteger("unstaged-file".into(), i as u64))
                                         .group("sidebar-file-row")
@@ -2918,6 +2947,33 @@ impl Render for Sidebar {
                                                     }).ok();
                                                 }})
                                                 .child("x"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(ElementId::NamedInteger("stage-action".into(), i as u64))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .w(px(18.))
+                                                .h(px(18.))
+                                                .rounded(px(3.))
+                                                .invisible()
+                                                .group_hover("sidebar-file-row", |s| s.visible())
+                                                .text_xs()
+                                                .text_color(Color::Added.color(cx))
+                                                .hover(|s| s.bg(colors.ghost_element_hover))
+                                                .cursor_pointer()
+                                                .tooltip(Tooltip::text("Stage file"))
+                                                .on_click({
+                                                    let w_stg = w.clone();
+                                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                    w_stg.clone().update(cx, |_, cx| {
+                                                        cx.emit(SidebarEvent::StageFile(
+                                                            file_path_stage.clone(),
+                                                        ));
+                                                    }).ok();
+                                                }})
+                                                .child(rgitui_ui::Icon::new(IconName::Plus)),
                                         )
                                         .into_any_element()
                                 }
