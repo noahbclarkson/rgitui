@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-09
+
+### Added
+
+- **macOS support**: Bundle embedded fonts (IBM Plex Sans, Lilex, JetBrains Mono)
+  so text and icons render correctly on macOS. Ad-hoc code sign the .app bundle
+  to prevent Gatekeeper "damaged" errors. Generate .icns app icon from PNGs
+  during the Mac bundle step.
+- **macOS CI**: Add `macos-14` to the CI test matrix alongside Linux and Windows.
+- **Configurable commit limit**: New `commit_limit` setting (default 1000) lets
+  users control how many commits are loaded per repo.
+
+### Changed
+
+- **Startup performance**: Repos now load during the splash animation instead of
+  after it. Active tab refreshes first; inactive tabs load after it completes.
+  Avatar disk cache loads on a background thread.
+- **Commit walk uses git subprocess**: Replaced libgit2's `revwalk` with
+  `git log` subprocess, leveraging commit-graph files for ~100x speedup on large
+  repos (Linux kernel: 14.7s to 1.2s).
+- **Two-phase commit loading**: First 100 commits load immediately so the graph
+  appears fast, remaining commits load in the background.
+- **Deferred commit metadata**: GPG signature checking and co-author parsing
+  are skipped during the commit walk and computed on-demand when clicking a
+  commit, reducing per-commit overhead.
+- **Parallel status computation**: Working tree status now runs on a separate
+  thread in parallel with stash enumeration and the commit walk.
+- **Lightweight initial refresh**: Initial repo load skips ahead/behind
+  computation for all branches; it runs in the background after the UI appears.
+- **Diff computation**: Removed redundant `diff.stats()` call (~31% CPU savings)
+  and intra-diff thread serialization overhead. Diff cache prewarming fires once
+  per tab and only for the active tab initially.
+- **Diff cache shared across workspace**: The LRU diff cache is now stored in
+  `ViewCaches` and shared between project and graph subscriptions.
+- **Selected commit priority**: On cache miss, the clicked commit's diff task is
+  submitted to the thread pool before neighbor prefetch tasks to ensure it gets
+  processed first.
+
+### Fixed
+
+- Resolved clippy warnings in bisect view and workspace events.
+- Fixed unnecessary reference creation in events.rs and items-after-test-module
+  ordering in bisect.rs.
+
 ## [0.1.0] - 2026-04-08
 
 First public release. rgitui is a GPU-accelerated, multi-repo desktop Git
