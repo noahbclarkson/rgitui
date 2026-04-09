@@ -245,6 +245,7 @@ fn main() {
                 width: px(320.0),
                 height: px(420.0),
             }),
+            window_decorations: Some(gpui::WindowDecorations::Server),
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
                 Size {
