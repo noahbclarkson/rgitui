@@ -174,19 +174,37 @@ pub struct Sidebar {
     branch_filter_editor: Entity<TextInput>,
     /// Whether the branch filter input is currently visible/active.
     branch_filter_active: bool,
+    /// Whether "My Branches" filter is active (show only branches authored by current user).
+    my_branches_active: bool,
+    /// Current user email for "My Branches" filtering.
+    current_user_email: Option<String>,
 }
 
 /// Pure filtering function: returns indices into `branches` whose names contain
-/// `filter` (case-insensitive substring). When filter is empty, returns all indices.
-pub(crate) fn filter_local_branch_indices(branches: &[BranchInfo], filter: &str) -> Vec<usize> {
-    if filter.is_empty() {
-        return (0..branches.len()).collect();
-    }
+/// `filter` (case-insensitive substring) and, if `current_user_email` is `Some`
+/// and `my_branches` is true, also have a matching author email.
+pub(crate) fn filter_local_branch_indices(
+    branches: &[BranchInfo],
+    filter: &str,
+    my_branches: bool,
+    current_user_email: Option<&str>,
+) -> Vec<usize> {
     let filter_lc = filter.to_lowercase();
     branches
         .iter()
         .enumerate()
-        .filter(|(_, b)| b.name.to_lowercase().contains(&filter_lc))
+        .filter(|(_, b)| {
+            let name_match = filter.is_empty() || b.name.to_lowercase().contains(&filter_lc);
+            let author_match = if !my_branches {
+                true
+            } else {
+                match (&b.author_email, current_user_email) {
+                    (Some(ae), Some(ue)) => ae.eq_ignore_ascii_case(ue),
+                    _ => false,
+                }
+            };
+            name_match && author_match
+        })
         .map(|(i, _)| i)
         .collect()
 }
@@ -262,12 +280,19 @@ impl Sidebar {
             branch_filter: String::new(),
             branch_filter_editor,
             branch_filter_active: false,
+            my_branches_active: false,
+            current_user_email: None,
         }
     }
 
-    /// Returns the branch indices that pass the current filter.
-    fn filtered_local_indices(&self) -> Vec<usize> {
-        filter_local_branch_indices(&self.local_branches, &self.branch_filter)
+    /// Returns the branch indices that pass the current branch filter and "My Branches" toggle.
+    fn filtered_local_indices(&self, current_user_email: Option<&str>) -> Vec<usize> {
+        filter_local_branch_indices(
+            &self.local_branches,
+            &self.branch_filter,
+            self.my_branches_active,
+            current_user_email,
+        )
     }
 
     /// Rebuild the cached navigable items list from current state.
@@ -279,7 +304,7 @@ impl Sidebar {
 
         items.push(SidebarItem::SectionHeader(SidebarSection::LocalBranches));
         if is_expanded(SidebarSection::LocalBranches, &self.expanded_sections) {
-            for i in self.filtered_local_indices() {
+            for i in self.filtered_local_indices(self.current_user_email.as_deref()) {
                 items.push(SidebarItem::LocalBranch(i));
             }
         }
@@ -549,6 +574,30 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// Set the current user email for "My Branches" filtering.
+    pub fn set_current_user_email(&mut self, email: Option<&str>, cx: &mut Context<Self>) {
+        let same = match (&self.current_user_email, email) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.current_user_email = email.map(String::from);
+        self.rebuild_flattened_branches();
+        self.rebuild_nav_items();
+        cx.notify();
+    }
+
+    /// Rebuild flattened local branches (used after filter changes).
+    fn rebuild_flattened_branches(&mut self) {
+        self.flattened_local_branches.clear();
+        let visible_branch_indices =
+            self.filtered_local_indices(self.current_user_email.as_deref());
+        self.flattened_local_branches.extend(visible_branch_indices);
+    }
+
     pub fn update_branches(&mut self, mut branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
         branches.sort_by(|a, b| {
             if a.is_remote != b.is_remote {
@@ -568,7 +617,8 @@ impl Sidebar {
 
         // Rebuild flattened local branches for virtualized rendering.
         self.flattened_local_branches.clear();
-        let visible_branch_indices = self.filtered_local_indices();
+        let visible_branch_indices =
+            self.filtered_local_indices(self.current_user_email.as_deref());
         self.flattened_local_branches.extend(visible_branch_indices);
 
         // Rebuild flattened remote branches for virtualized rendering.
@@ -684,7 +734,8 @@ impl Sidebar {
 
         // Rebuild flattened local branches for virtualized rendering.
         self.flattened_local_branches.clear();
-        let visible_branch_indices = self.filtered_local_indices();
+        let visible_branch_indices =
+            self.filtered_local_indices(self.current_user_email.as_deref());
         self.flattened_local_branches.extend(visible_branch_indices);
 
         self.rebuild_nav_items();
@@ -998,10 +1049,11 @@ impl Render for Sidebar {
         // -- Local Branches --
         let local_branch_count = self.local_branches.len();
         let branch_filter = self.branch_filter.clone();
-        let filtered_count = if branch_filter.is_empty() {
-            local_branch_count
+        let filtered_count = if self.my_branches_active || !branch_filter.is_empty() {
+            self.filtered_local_indices(self.current_user_email.as_deref())
+                .len()
         } else {
-            self.filtered_local_indices().len()
+            local_branch_count
         };
 
         let local_expanded = self.is_expanded(SidebarSection::LocalBranches);
@@ -1060,7 +1112,7 @@ impl Render for Sidebar {
                         .items_center()
                         .justify_center()
                         .child(
-                            Label::new(if branch_filter.is_empty() {
+                            Label::new(if !self.my_branches_active && branch_filter.is_empty() {
                                 SharedString::from(format!("{}", local_branch_count))
                             } else {
                                 SharedString::from(format!(
@@ -1069,7 +1121,7 @@ impl Render for Sidebar {
                                 ))
                             })
                             .size(LabelSize::XSmall)
-                            .color(if !branch_filter.is_empty() {
+                            .color(if !self.my_branches_active && !branch_filter.is_empty() {
                                 Color::Accent
                             } else {
                                 Color::Muted
@@ -1098,12 +1150,33 @@ impl Render for Sidebar {
                             .size(rgitui_ui::IconSize::XSmall)
                             .color(Color::Muted),
                     )
-                    .child(div().flex_1().child(self.branch_filter_editor.clone())),
+                    .child(div().flex_1().child(self.branch_filter_editor.clone()))
+                    .child(
+                        IconButton::new("my-branches-filter", IconName::User)
+                            .size(ButtonSize::Compact)
+                            .color(if self.my_branches_active {
+                                Color::Accent
+                            } else {
+                                Color::Muted
+                            })
+                            .tooltip(if self.my_branches_active {
+                                "Show all branches"
+                            } else {
+                                "Show only my branches"
+                            })
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.my_branches_active = !this.my_branches_active;
+                                this.rebuild_flattened_branches();
+                                this.rebuild_nav_items();
+                                cx.notify();
+                            })),
+                    ),
             );
         }
 
         if local_expanded {
-            let visible_branch_indices = self.filtered_local_indices();
+            let visible_branch_indices =
+                self.filtered_local_indices(self.current_user_email.as_deref());
             if visible_branch_indices.is_empty() {
                 let empty_msg = if !branch_filter.is_empty() {
                     "No matching branches"
@@ -3271,7 +3344,7 @@ mod tests {
             make_branch("feature/logout"),
             make_branch("bugfix/123"),
         ];
-        let result = filter_local_branch_indices(&branches, "");
+        let result = filter_local_branch_indices(&branches, "", false, None);
         assert_eq!(result, vec![0, 1, 2, 3]);
     }
 
@@ -3283,7 +3356,7 @@ mod tests {
             make_branch("Feature/Logout"),
             make_branch("FEATURE/DASHBOARD"),
         ];
-        let result = filter_local_branch_indices(&branches, "feature");
+        let result = filter_local_branch_indices(&branches, "feature", false, None);
         assert_eq!(result, vec![1, 2, 3]);
     }
 
@@ -3296,21 +3369,21 @@ mod tests {
             make_branch("release/1.0"),
         ];
         // "log" matches feature/login
-        let result = filter_local_branch_indices(&branches, "log");
+        let result = filter_local_branch_indices(&branches, "log", false, None);
         assert_eq!(result, vec![1]);
     }
 
     #[test]
     fn test_filter_branches_no_match_returns_empty() {
         let branches = vec![make_branch("main"), make_branch("feature/login")];
-        let result = filter_local_branch_indices(&branches, "xyz");
+        let result = filter_local_branch_indices(&branches, "xyz", false, None);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_filter_branches_empty_branches() {
         let branches: Vec<BranchInfo> = vec![];
-        let result = filter_local_branch_indices(&branches, "main");
+        let result = filter_local_branch_indices(&branches, "main", false, None);
         assert!(result.is_empty());
     }
 
@@ -3321,7 +3394,7 @@ mod tests {
             make_branch("develop"),
             make_branch("feature/xyz"),
         ];
-        let result = filter_local_branch_indices(&branches, "develop");
+        let result = filter_local_branch_indices(&branches, "develop", false, None);
         assert_eq!(result, vec![1]);
     }
 
@@ -3333,7 +3406,7 @@ mod tests {
             make_branch("release/main-v2"),
         ];
         // "main" appears in all three
-        let result = filter_local_branch_indices(&branches, "main");
+        let result = filter_local_branch_indices(&branches, "main", false, None);
         assert_eq!(result, vec![0, 1, 2]);
     }
 
@@ -3345,7 +3418,7 @@ mod tests {
             make_branch("release/v1"),
         ];
         // "/" and digits should work as normal filter characters
-        let result = filter_local_branch_indices(&branches, "release/v1");
+        let result = filter_local_branch_indices(&branches, "release/v1", false, None);
         assert_eq!(result, vec![2]);
     }
 
@@ -3356,7 +3429,7 @@ mod tests {
             make_branch("release/1.0"),
             make_branch("release/1.1"),
         ];
-        let result = filter_local_branch_indices(&branches, "release/1.0");
+        let result = filter_local_branch_indices(&branches, "release/1.0", false, None);
         assert_eq!(result, vec![1]);
     }
 

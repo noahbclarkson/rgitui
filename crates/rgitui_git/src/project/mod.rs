@@ -185,6 +185,9 @@ pub struct RefreshData {
     /// The remote default branch (e.g. "main", "master"), detected from
     /// `refs/remotes/origin/HEAD` symbolic target. `None` if not set.
     pub default_branch: Option<String>,
+    /// Current Git user email, read from repo config then global config.
+    /// Used for "My Branches" / "My Commits" filtering.
+    pub current_user_email: Option<String>,
 }
 
 /// Events emitted by GitProject.
@@ -220,6 +223,9 @@ pub struct GitProject {
     next_operation_id: u64,
     /// Remote default branch (e.g. "main"), from `refs/remotes/origin/HEAD`.
     default_branch: Option<String>,
+    /// Current Git user email, read from repo config then global config.
+    /// Used for "My Branches" / "My Commits" filtering.
+    current_user_email: Option<String>,
     /// Maximum number of commits to load (configurable via settings).
     commit_limit: usize,
 
@@ -250,6 +256,7 @@ impl GitProject {
             commit_offset: 0,
             next_operation_id: 1,
             default_branch: None,
+            current_user_email: None,
             commit_limit: 1000,
             _watcher: None,
         }
@@ -278,6 +285,7 @@ impl GitProject {
             commit_offset: 0,
             next_operation_id: 1,
             default_branch: None,
+            current_user_email: None,
             commit_limit,
             _watcher: None,
         };
@@ -510,6 +518,7 @@ impl GitProject {
         self.recent_commits = Arc::new(data.recent_commits);
         self.has_more_commits = data.has_more_commits;
         self.default_branch = data.default_branch;
+        self.current_user_email = data.current_user_email;
         // Reset offset — the full refresh replaces all commits.
         self.commit_offset = self.recent_commits.len();
     }
@@ -523,6 +532,11 @@ impl GitProject {
     /// `refs/remotes/origin/HEAD` symbolic reference.
     pub fn default_branch(&self) -> Option<&str> {
         self.default_branch.as_deref()
+    }
+
+    /// The current Git user email, used for "My Branches" / "My Commits" filtering.
+    pub fn current_user_email(&self) -> Option<&str> {
+        self.current_user_email.as_deref()
     }
 
     /// How many commits are currently loaded.

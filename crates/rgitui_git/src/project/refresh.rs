@@ -283,6 +283,12 @@ fn gather_refresh_data_internal(
     let head_detached = repo.head_detached().unwrap_or(false);
     let repo_state = RepoState::from_git2(repo.state());
 
+    // Current user email (for "My Branches" / "My Commits" filtering)
+    let current_user_email = repo
+        .config()
+        .ok()
+        .and_then(|cfg| cfg.get_string("user.email").ok());
+
     // Branches
     let mut branches = Vec::new();
     {
@@ -556,6 +562,7 @@ fn gather_refresh_data_internal(
         has_more_commits,
         worktrees,
         default_branch: None,
+        current_user_email,
     })
 }
 
