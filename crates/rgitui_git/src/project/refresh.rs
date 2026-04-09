@@ -700,7 +700,7 @@ pub(super) fn load_more_commits_from_repo(
         RS, GS, GS, GS, GS, GS, GS, GS, GS, GS, GS
     );
 
-    let output = std::process::Command::new("git")
+    let output = git_command()
         .current_dir(repo_path)
         .args([
             "log",
