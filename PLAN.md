@@ -6,19 +6,25 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ## Current Focus
 
-**This cycle (2026-04-09 10:05 UTC):** `origin/main` = `3359380` → `924e02a`.
+**This cycle (2026-04-09 14:54 UTC):** `origin/main` = `242ad6d`.
 
-**Build:** ✅ 589 tests, clippy 0 warnings, fmt clean.
+**Build:** ✅ 337 tests, clippy 0 warnings, fmt clean.
 
-**Shipped:** `924e02a` — feat(sidebar): add per-file stage/unstage buttons on hover. Unstaged files now show green (+) stage button on hover; staged files show red (−) unstage button. Fixes GitHub #8.
-
-**Issues triaged:**
-- **#8** (Windows, v0.1.2): No per-file stage button — FIXED ✅
-- **#7** (macOS, v0.1.1): App won't launch after `xattr -cr` — NOT A CODE BUG (Gatekeeper requires Apple code signing/notarization; explained in comment)
+**Shipped:** Investigated GitHub Issue #7 (macOS Gatekeeper code signing). Confirmed it's a known OS security limitation (requires `xattr -cr` or ad-hoc signing bypass), not a code bug. Evaluated codebase for next P1 priorities (bisect UI progress tracking, PR review/create, issue search).
 
 ---
 
-**Previous cycle (2026-04-09 05:05 UTC):** `origin/main` = `3359380`.
+## Current Focus
+
+**This cycle (2026-04-09 05:05 UTC):** `origin/main` = `10e5012`.
+
+**Build:** ✅ 581 tests, clippy 0 warnings, fmt clean.
+
+**Shipped:** `10e5012` — feat(ui): add bisect log progress panel. Built and wired the `BisectView` bottom panel to visualize `git bisect log` state, remaining step estimates, and click-to-jump OID selection.
+
+---
+
+**Previous cycle (2026-04-08 10:05 UTC):** `origin/main` = `5d17062`.
 
 ---
 
@@ -763,7 +769,6 @@ _Last updated: 2026-04-03 15:31 UTC_
 1. **[MEDIUM] Interactive rebase visual polish** — drop indicator line while dragging
 2. **[LOW] Sidebar file tree virtualization** — O(n) construction per frame on large trees
 3. **[LOW] PR creation UI** — GitHub API client exists; needs create PR dialog
-4. **[MEDIUM] Switch file_history to git log subprocess** — `compute_file_history` in `crates/rgitui_git/src/project/file_history.rs` still uses libgit2's revwalk which is extremely slow on large repos (no commit-graph support). Switch to `git log --follow -- <path>` subprocess, same approach used for the main commit walk in `refresh.rs`. This will make file history instant on repos like the Linux kernel.
 
 ### Last Shipped
 - `48d8c0f`: fix(sidebar): resolve borrow checker E0502 in flatten_tree
@@ -775,31 +780,3 @@ _Last updated: 2026-04-03 15:31 UTC_
 Right-click on a reflog entry now shows "Checkout" as the first option, letting users jump directly to any previous HEAD state. Previously only reset variants and Copy OID were available. Uses GitBranch icon. `subscribe_reflog_view` now also takes `project` parameter for checkout wiring.
 
 **Build:** ✅ 578 tests, clippy 0 warnings, fmt clean. Pushed `5390f2b`. CI running.
-
----
-
-## Backlog (as of 2026-04-09 10:45 UTC — Do not implement yet)
-
-### Features
-1. **Stage/unstage all** — Add "Stage All" / "Unstage All" buttons (toolbar or sidebar header)
-2. **Avatar cache performance** — In-memory LRU cache to avoid loading avatars from disk on every render
-
-### Visual Bug
-3. **Discard file dialog padding** — Discard button touches far right edge with no right-side padding
-
-### Audits
-4. **Comprehensive audit** — Security, bugs, performance, visual issues across the full codebase
-
-### Previously Logged Backlog (from 2026-04-08)
-- Performance investigation (5s Linux load, preload verification)
-- Double-click checkout from history ✅ (done)
-- Drag commits in history for quick rebase
-- Worktree change graph (pending changes as nodes)
-- Loading UX (blank screen → progress indicator)
-- Filter to my branches/commits
-- Branches containing a commit ("Contained in" panel) ✅ (done)
-
-### Previously Logged Backlog (from 2026-04-09 05:22)
-- macOS experimental warning in README ✅ (done)
-- Remove temp .sh scripts from repo root ✅ (done)
-- [x] Avatar cache performance: LRU eviction added to prevent boundless expansion while keeping recent authors active.
