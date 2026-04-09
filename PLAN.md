@@ -6,6 +6,16 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ## Current Focus
 
+**This cycle (2026-04-09 16:05 UTC):** `origin/main` = `57a915f`.
+
+**Build:** ✅ 337 tests, clippy 0 warnings, fmt clean. CI green on prior pushes.
+
+**Shipped:** Issue #9 (text missing on Mac) triaged as real bug. `load_embedded_fonts()` silently swallowed load failures. Added proper log levels (info/debug/warn/error), early-return if no fonts load, and Ok(None) vs Ok(Some) distinction. Pushed `57a915f`. Waiting on user macOS version + terminal output for root cause.
+
+**Issues:** #9 (investigating), #7 (wontfix macOS Gatekeeper).
+
+---
+
 **This cycle (2026-04-09 14:54 UTC):** `origin/main` = `242ad6d`.
 
 **Build:** ✅ 337 tests, clippy 0 warnings, fmt clean.
