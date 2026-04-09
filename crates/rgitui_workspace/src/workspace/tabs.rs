@@ -82,6 +82,7 @@ impl Workspace {
         let blame_view = cx.new(crate::BlameView::new);
         let file_history_view = cx.new(crate::FileHistoryView::new);
         let reflog_view = cx.new(crate::ReflogView::new);
+        let bisect_view = cx.new(crate::BisectView::new);
         let submodule_view = cx.new(crate::SubmoduleView::new);
         let detail_panel = cx.new(crate::DetailPanel::new);
         let sidebar = cx.new(crate::Sidebar::new);
@@ -106,6 +107,7 @@ impl Workspace {
         super::events::subscribe_blame_view(cx, &blame_view, &graph);
         super::events::subscribe_file_history_view(cx, &file_history_view, &graph);
         super::events::subscribe_reflog_view(cx, &project, &reflog_view, &graph);
+        super::events::subscribe_bisect_view(cx, &project, &bisect_view, &graph);
         super::events::subscribe_submodule_view(cx, &submodule_view, &project);
         super::events::subscribe_global_search(cx, &global_search_view);
 
@@ -226,6 +228,7 @@ impl Workspace {
             blame_view,
             file_history_view,
             reflog_view,
+            bisect_view,
             submodule_view,
             detail_panel,
             sidebar,

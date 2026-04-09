@@ -12,15 +12,15 @@ use rgitui_git::{
 use rgitui_graph::{GraphView, GraphViewEvent};
 
 use crate::{
-    cache::LruCache, BlameView, BlameViewEvent, BranchDialog, BranchDialogEvent, CommandPalette,
-    CommandPaletteEvent, CommitPanel, CommitPanelEvent, ConfirmAction, ConfirmDialog,
-    ConfirmDialogEvent, CreatePrDialog, CreatePrDialogEvent, DetailPanel, DetailPanelEvent,
-    FileHistoryView, FileHistoryViewEvent, GlobalSearchView, GlobalSearchViewEvent,
-    InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent, RenameDialog,
-    RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal, SettingsModalEvent,
-    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog,
-    StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent,
-    ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
+    cache::LruCache, BisectView, BisectViewEvent, BlameView, BlameViewEvent, BranchDialog,
+    BranchDialogEvent, CommandPalette, CommandPaletteEvent, CommitPanel, CommitPanelEvent,
+    ConfirmAction, ConfirmDialog, ConfirmDialogEvent, CreatePrDialog, CreatePrDialogEvent,
+    DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent, GlobalSearchView,
+    GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent,
+    RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal,
+    SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent,
+    StashBranchDialog, StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog,
+    TagDialogEvent, ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -2096,6 +2096,76 @@ pub(super) fn subscribe_submodule_view(
                 if let Some(tab) = this.tabs.get_mut(this.active_tab) {
                     tab.bottom_panel_mode = BottomPanelMode::Diff;
                     cx.notify();
+                }
+            }
+        }
+    })
+    .detach();
+}
+
+pub(super) fn subscribe_bisect_view(
+    cx: &mut Context<Workspace>,
+    project: &Entity<GitProject>,
+    bisect_view: &Entity<BisectView>,
+    graph: &Entity<GraphView>,
+) {
+    let graph = graph.clone();
+    let project = project.clone();
+
+    cx.subscribe(bisect_view, {
+        move |this, _bv, event: &BisectViewEvent, cx| match event {
+            BisectViewEvent::CommitSelected(oid_str) => {
+                if let Ok(oid) = git2::Oid::from_str(oid_str) {
+                    graph.update(cx, |g, cx| {
+                        g.scroll_to_commit(oid, cx);
+                    });
+                }
+            }
+            BisectViewEvent::Dismissed => {
+                if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                    tab.bottom_panel_mode = BottomPanelMode::Diff;
+                    cx.notify();
+                }
+            }
+            BisectViewEvent::CopyOID(oid) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(oid.clone()));
+                let short = &oid[..7.min(oid.len())];
+                this.show_toast(format!("Copied OID: {}", short), ToastKind::Success, cx);
+            }
+            BisectViewEvent::Good(oid) => {
+                if let Ok(git_oid) = git2::Oid::from_str(&oid) {
+                    project.update(cx, |proj, cx| {
+                        proj.bisect_good(Some(git_oid), cx).detach();
+                    });
+                    this.show_toast(
+                        format!("Marked {} as good", &oid[..7.min(oid.len())]),
+                        ToastKind::Success,
+                        cx,
+                    );
+                }
+            }
+            BisectViewEvent::Bad(oid) => {
+                if let Ok(git_oid) = git2::Oid::from_str(&oid) {
+                    project.update(cx, |proj, cx| {
+                        proj.bisect_bad(Some(git_oid), cx).detach();
+                    });
+                    this.show_toast(
+                        format!("Marked {} as bad", &oid[..7.min(oid.len())]),
+                        ToastKind::Success,
+                        cx,
+                    );
+                }
+            }
+            BisectViewEvent::Skip(oid) => {
+                if let Ok(git_oid) = git2::Oid::from_str(&oid) {
+                    project.update(cx, |proj, cx| {
+                        proj.bisect_skip(Some(git_oid), cx).detach();
+                    });
+                    this.show_toast(
+                        format!("Skipped {}", &oid[..7.min(oid.len())]),
+                        ToastKind::Success,
+                        cx,
+                    );
                 }
             }
         }

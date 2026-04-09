@@ -1,4 +1,5 @@
 pub(crate) mod avatar_resolver;
+mod bisect_view;
 mod blame_view;
 mod branch_dialog;
 mod cache;
@@ -33,6 +34,7 @@ mod toolbar;
 mod workspace;
 pub(crate) mod worktree_dialog;
 
+pub use bisect_view::*;
 pub use blame_view::*;
 pub use branch_dialog::*;
 pub use command_palette::*;

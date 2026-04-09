@@ -62,6 +62,7 @@ pub(super) enum BottomPanelMode {
     Reflog,
     Submodules,
     GlobalSearch,
+    Bisect,
 }
 
 /// Which view is active in the right panel column above the commit panel.
@@ -103,6 +104,7 @@ pub(super) struct ProjectTab {
     pub blame_view: Entity<crate::BlameView>,
     pub file_history_view: Entity<crate::FileHistoryView>,
     pub reflog_view: Entity<crate::ReflogView>,
+    pub bisect_view: Entity<crate::BisectView>,
     pub submodule_view: Entity<crate::SubmoduleView>,
     pub detail_panel: Entity<crate::DetailPanel>,
     pub sidebar: Entity<crate::Sidebar>,

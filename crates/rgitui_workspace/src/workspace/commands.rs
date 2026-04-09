@@ -305,6 +305,9 @@ impl Workspace {
             CommandId::Reflog => {
                 self.toggle_reflog_view(tab, cx);
             }
+            CommandId::Bisect => {
+                self.toggle_bisect_view(tab, cx);
+            }
             CommandId::Submodules => {
                 self.toggle_submodule_view(tab, cx);
             }
@@ -631,6 +634,52 @@ impl Workspace {
                         let _ = this.update(cx, |workspace, cx| {
                             workspace.show_toast(
                                 format!("Failed to compute submodules: {}", e),
+                                ToastKind::Error,
+                                cx,
+                            );
+                        });
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    fn toggle_bisect_view(&mut self, tab: &ProjectTab, cx: &mut Context<Self>) {
+        if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+            if active_tab.bottom_panel_mode == BottomPanelMode::Bisect {
+                active_tab.bottom_panel_mode = BottomPanelMode::Diff;
+                cx.notify();
+                return;
+            }
+        }
+
+        let project = tab.project.clone();
+        let bisect_view = tab.bisect_view.clone();
+        let active_tab_index = self.active_tab;
+
+        let task = project.update(cx, |proj, cx| proj.bisect_log_async(cx));
+
+        cx.spawn(
+            async move |this, cx: &mut gpui::AsyncApp| match task.await {
+                Ok(entries) => {
+                    cx.update(|cx| {
+                        bisect_view.update(cx, |bv, cx| {
+                            bv.set_entries(entries, cx);
+                        });
+                        let _ = this.update(cx, |workspace, cx| {
+                            if let Some(active_tab) = workspace.tabs.get_mut(active_tab_index) {
+                                active_tab.bottom_panel_mode = BottomPanelMode::Bisect;
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+                Err(e) => {
+                    cx.update(|cx| {
+                        let _ = this.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                format!("Failed to load bisect log: {}", e),
                                 ToastKind::Error,
                                 cx,
                             );

@@ -771,6 +771,9 @@ impl Render for Workspace {
                                     .when(bottom_panel_mode == BottomPanelMode::Submodules, |el| {
                                         el.child(active_tab.submodule_view.clone())
                                     })
+                                    .when(bottom_panel_mode == BottomPanelMode::Bisect, |el| {
+                                        el.child(active_tab.bisect_view.clone())
+                                    })
                             }),
                     )
                     // Right panel: detail + resize handle + commit input

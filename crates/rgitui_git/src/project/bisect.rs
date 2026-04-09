@@ -1,8 +1,8 @@
+use super::GitProject;
 use anyhow::{Context as AnyhowContext, Result};
+use gpui::{AsyncApp, Context, Task, WeakEntity};
 use std::path::Path;
 use std::process::Command;
-use gpui::{AsyncApp, Context, Task, WeakEntity};
-use super::GitProject;
 
 /// A single entry in the bisect log.
 #[derive(Debug, Clone)]
@@ -87,10 +87,7 @@ pub fn compute_bisect_log(repo_path: &Path) -> Result<Vec<BisectLogEntry>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let entries: Vec<BisectLogEntry> = stdout
-        .lines()
-        .filter_map(parse_bisect_line)
-        .collect();
+    let entries: Vec<BisectLogEntry> = stdout.lines().filter_map(parse_bisect_line).collect();
 
     Ok(entries)
 }
@@ -161,10 +158,7 @@ impl GitProject {
     }
 
     /// Get bisect log entries asynchronously.
-    pub fn bisect_log_async(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<Vec<BisectLogEntry>>> {
+    pub fn bisect_log_async(&self, cx: &mut Context<Self>) -> Task<Result<Vec<BisectLogEntry>>> {
         let repo_path = self.repo_path().to_path_buf();
         cx.spawn(async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
             cx.background_executor()

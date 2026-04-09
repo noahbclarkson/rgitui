@@ -35,7 +35,7 @@ pub(crate) fn git_command() -> Command {
     cmd
 }
 
-pub use bisect::{compute_bisect_log, is_bisect_in_progress, BisectLogEntry, BisectDecision};
+pub use bisect::{compute_bisect_log, is_bisect_in_progress, BisectDecision, BisectLogEntry};
 pub use blame::{compute_blame, BlameEntry, BlameLine};
 pub use diff::{
     compute_commit_diff, compute_file_diff, compute_staged_diff_text, compute_stash_diff,
