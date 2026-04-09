@@ -98,7 +98,7 @@ rm -rf "$ICONSET_DIR"
 
 # Ad-hoc code sign the app bundle so macOS doesn't report it as "damaged"
 echo "Ad-hoc signing app bundle..."
-codesign --force --deep -s - "$APP_DIR"
+codesign --force --deep --sign - "$APP_DIR"
 
 echo "Done! App bundle created at $APP_DIR"
 
