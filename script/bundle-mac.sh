@@ -66,16 +66,39 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
+    <key>CFBundleIconFile</key>
+    <string>rgitui</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
 </plist>
 PLIST
 
-# Copy icon if available
-if [ -f "assets/icons/app-icon.icns" ]; then
+# Generate .icns from PNG sources using iconutil (macOS-only)
+ICONSET_DIR="target/rgitui.iconset"
+rm -rf "$ICONSET_DIR"
+mkdir -p "$ICONSET_DIR"
+if [ -f "assets/icons/app-icon-16.png" ]; then
+    sips -z 16 16     "assets/icons/app-icon-16.png"  --out "$ICONSET_DIR/icon_16x16.png"      > /dev/null 2>&1
+    sips -z 32 32     "assets/icons/app-icon-32.png"  --out "$ICONSET_DIR/icon_16x16@2x.png"   > /dev/null 2>&1
+    sips -z 32 32     "assets/icons/app-icon-32.png"  --out "$ICONSET_DIR/icon_32x32.png"      > /dev/null 2>&1
+    sips -z 64 64     "assets/icons/app-icon-48.png"  --out "$ICONSET_DIR/icon_32x32@2x.png"   > /dev/null 2>&1
+    sips -z 128 128   "assets/icons/app-icon-256.png" --out "$ICONSET_DIR/icon_128x128.png"    > /dev/null 2>&1
+    sips -z 256 256   "assets/icons/app-icon-256.png" --out "$ICONSET_DIR/icon_128x128@2x.png" > /dev/null 2>&1
+    sips -z 256 256   "assets/icons/app-icon-256.png" --out "$ICONSET_DIR/icon_256x256.png"    > /dev/null 2>&1
+    sips -z 512 512   "assets/icons/app-icon-512.png" --out "$ICONSET_DIR/icon_256x256@2x.png" > /dev/null 2>&1
+    sips -z 512 512   "assets/icons/app-icon-512.png" --out "$ICONSET_DIR/icon_512x512.png"    > /dev/null 2>&1
+    sips -z 1024 1024 "assets/icons/app-icon-512.png" --out "$ICONSET_DIR/icon_512x512@2x.png" > /dev/null 2>&1
+    iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/rgitui.icns"
+    echo "Generated app icon (rgitui.icns)"
+elif [ -f "assets/icons/app-icon.icns" ]; then
     cp assets/icons/app-icon.icns "$APP_DIR/Contents/Resources/rgitui.icns"
 fi
+rm -rf "$ICONSET_DIR"
+
+# Ad-hoc code sign the app bundle so macOS doesn't report it as "damaged"
+echo "Ad-hoc signing app bundle..."
+codesign --force --deep -s - "$APP_DIR"
 
 echo "Done! App bundle created at $APP_DIR"
 

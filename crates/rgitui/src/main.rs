@@ -124,6 +124,7 @@ impl Render for AppRoot {
 #[derive(RustEmbed)]
 #[folder = "../../assets"]
 #[include = "icons/**/*"]
+#[include = "fonts/**/*"]
 struct Assets;
 
 impl AssetSource for Assets {
@@ -146,6 +147,25 @@ impl AssetSource for Assets {
     }
 }
 
+fn load_embedded_fonts(cx: &App) {
+    let asset_source = cx.asset_source();
+    let font_paths = asset_source.list("fonts").unwrap();
+    let mut fonts = Vec::new();
+    for font_path in &font_paths {
+        if !font_path.ends_with(".ttf") {
+            continue;
+        }
+        if let Ok(Some(font_bytes)) = asset_source.load(font_path) {
+            fonts.push(font_bytes);
+        }
+    }
+    if !fonts.is_empty() {
+        cx.text_system()
+            .add_fonts(fonts)
+            .expect("failed to load embedded fonts");
+    }
+}
+
 fn main() {
     env_logger::init();
     std::panic::set_hook(Box::new(|panic_info| {
@@ -159,6 +179,8 @@ fn main() {
 
     app.run(move |cx| {
         log::info!("starting rgitui");
+        load_embedded_fonts(cx);
+
         // Initialize subsystems
         rgitui_theme::init(cx);
         rgitui_settings::init(cx);

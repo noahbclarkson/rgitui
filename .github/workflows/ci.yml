@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-14]
 
     steps:
       - name: Checkout rgitui
@@ -82,8 +82,8 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a cargo test --workspace
 
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
+      - name: Run tests (Windows / macOS)
+        if: runner.os != 'Linux'
         run: cargo test --workspace
 
       - name: Build release binary
