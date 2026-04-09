@@ -6,27 +6,15 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ## Current Focus
 
-**This cycle (2026-04-09 19:36 UTC):** `origin/main` = `ce988c5`.
+**This cycle (2026-04-09 19:40 UTC):** `origin/main` = `3686cfd`.
 
 **Build:** ✅ All tests pass, clippy 0 warnings, fmt clean.
 
-**Shipped:** `ce988c5` — fix(ui): add right padding to confirm dialog action buttons. Discard/Clean/Delete action buttons now have `.pr(px(4.))` so they are not flush against the modal edge.
+**Shipped:** `3686cfd` — feat(sidebar): add filter to only show my branches. Updated `BranchInfo` to compute author emails, laying the foundation for "My Branches" and "My Commits" filters in the sidebar and commit graph.
 
 **Issues:** #9 (investigating macOS font rendering — waiting on user terminal output), #7 (wontfix).
 
-**Build:** ✅ All tests pass, clippy 0 warnings, fmt clean. Pushed `96ff458`.
-
-**Shipped:** Fixed broken build from `entity_by_id` gpui API mismatch. The subscribe callback was trying to use `cx.entity_by_id(input_id)` to look up a `TextInput` by ID — that method doesn't exist in this Zed version. Replaced with direct entity capture in closure. Also fixed `this.update()` result not being dropped and removed unused import.
-
-**Issues:** #9 (investigating, waiting on user feedback), #7 (wontfix). CI running on `96ff458`.
-
-**Build:** ✅ All tests pass, clippy 0 warnings, fmt clean. CI green.
-
-**Shipped:** Investigated font loading to diagnose Issue #9 (missing text on Mac). Verified that the 12 embedded `.ttf` files are correctly packaged and accessible via `Assets::list` and `Assets::load`. The issue is likely upstream in how the macOS text system handles the provided bytes, not a failure to bundle the fonts. Waiting on the user's terminal output from the new diagnostics we added in `57a915f`. 
-
-**Issues:** #9 (investigating), #7 (wontfix macOS Gatekeeper).
-
-**Next:** Need Noah's input on P1 backlog or wait for user log output for #9.
+**Next:** Finish the "Filter to my branches/commits" feature by wiring up the UI toggle in the sidebar and adding an `--author` filter to the commit graph query.
 
 ---
 
@@ -58,11 +46,3 @@ See MEMORY.md and daily logs for historical records. All core P0 bugs resolved.
 
 ### Issues
 - **#9** (macOS font rendering) — investigating, waiting on user terminal output
-- **#7** (macOS Gatekeeper) — wontfix (distribution/infra issue)
-
-### Already Implemented (confirm before treating as backlog)
-- Stage/unstage all ✅ (Ctrl+S / Ctrl+Shift+S / Ctrl+U / command palette / sidebar buttons)
-- Avatar LRU cache ✅ (in-memory + disk persistence, 2000-entry cap)
-- Double-click checkout ✅
-- Branches containing commit ("Contained in") ✅
-- macOS experimental note in README ✅
