@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::types::{CommitInfo, Signature};
 
-use super::refresh::parse_co_authors;
+use super::refresh::clean_co_author_lines;
 
 /// Maximum number of commits to return for file history.
 const MAX_FILE_HISTORY: usize = 100;
@@ -56,7 +56,7 @@ pub fn compute_file_history(
         let time = Utc.timestamp_opt(commit.time().seconds(), 0).single();
 
         let raw_message = commit.message().unwrap_or("").to_string();
-        let (message, co_authors) = parse_co_authors(&raw_message);
+        let message = clean_co_author_lines(&raw_message);
 
         commits.push(CommitInfo {
             oid,
@@ -71,11 +71,11 @@ pub fn compute_file_history(
                 name: committer.name().unwrap_or("").to_string(),
                 email: committer.email().unwrap_or("").to_string(),
             },
-            co_authors,
+            co_authors: Vec::new(),
             time: time.unwrap_or_else(Utc::now),
             parent_oids: commit.parent_ids().collect(),
             refs: Vec::new(),
-            is_signed: commit.header_field_bytes("gpgsig").is_ok(),
+            is_signed: false,
         });
     }
 

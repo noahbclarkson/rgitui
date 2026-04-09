@@ -71,6 +71,7 @@ impl GitProject {
         let remote_name = remote_name.to_string();
         let task_remote_name = remote_name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Fetch,
             format!("Fetching from '{}'...", remote_name),
@@ -86,7 +87,7 @@ impl GitProject {
                         &repo_path,
                         &["fetch", "--prune", &task_remote_name],
                     )?;
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     anyhow::Ok((details, data))
                 })
                 .await;
@@ -161,6 +162,7 @@ impl GitProject {
         let task_remote_name = remote_name.clone();
         let task_branch_name = branch_name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Pull,
             format!("Pulling '{}' from '{}'...", branch_name, remote_name),
@@ -219,7 +221,7 @@ impl GitProject {
                         }
                     }; // repo dropped here
 
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((msg, details, data))
                 })
                 .await;
@@ -317,6 +319,7 @@ impl GitProject {
         let task_remote_name = remote_name.clone();
         let task_remote_branch_name = remote_branch_name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Push,
             if force {
@@ -369,7 +372,7 @@ impl GitProject {
                         };
                         (msg, details)
                     };
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((msg, details, data))
                 })
                 .await;

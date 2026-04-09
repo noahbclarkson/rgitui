@@ -43,6 +43,7 @@ impl AppRoot {
                             log::error!("Failed to open repo: {}", error);
                         }
                     }
+                    ws.refresh_all_tabs_prioritized(cx);
                 }
             } else {
                 for repo_path in init.repos_to_open {
@@ -50,6 +51,7 @@ impl AppRoot {
                         log::error!("Failed to open repo: {}", error);
                     }
                 }
+                ws.refresh_all_tabs_prioritized(cx);
             }
             ws
         });
@@ -188,13 +190,22 @@ fn main() {
         rgitui_theme::init(cx);
         rgitui_settings::init(cx);
 
-        // Load avatar disk cache and pre-populate the in-memory cache
-        let loaded = rgitui_ui::AvatarCache::load_from_disk();
-        let mut cache = rgitui_ui::AvatarCache::new();
-        for (email, url) in loaded {
-            cache.set_resolved(email, url);
-        }
-        cx.set_global(cache);
+        // Initialize empty avatar cache immediately, load disk data in background
+        cx.set_global(rgitui_ui::AvatarCache::new());
+        cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async { rgitui_ui::AvatarCache::load_from_disk() })
+                .await;
+            cx.update(|cx| {
+                cx.update_global::<rgitui_ui::AvatarCache, _>(|cache, _| {
+                    for (email, url) in loaded {
+                        cache.set_resolved(email, url);
+                    }
+                });
+            });
+        })
+        .detach();
 
         // Apply saved theme from settings
         let saved_theme = cx

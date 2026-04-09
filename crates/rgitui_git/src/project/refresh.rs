@@ -9,36 +9,65 @@ use super::diff::batch_diff_stats;
 use super::GitProject;
 use super::GitProjectEvent;
 use super::RefreshData;
-use super::DEFAULT_COMMIT_LIMIT;
 
-pub(super) fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
-    let mut co_authors = Vec::new();
-    let mut cleaned_lines = Vec::new();
+/// Remove valid Co-Authored-By trailer lines from a commit message.
+/// Only strips lines that have a parseable `Name <email>` format.
+pub(super) fn clean_co_author_lines(message: &str) -> String {
     let prefix = "co-authored-by:";
+    let cleaned_lines: Vec<&str> = message
+        .lines()
+        .filter(|line| {
+            let lower = line.trim().to_ascii_lowercase();
+            if !lower.starts_with(prefix) {
+                return true;
+            }
+            let rest = &line.trim()[prefix.len()..].trim();
+            let has_email = rest.contains('<') && rest.contains('>');
+            if !has_email {
+                return true;
+            }
+            if let Some(start) = rest.find('<') {
+                if let Some(end) = rest.find('>') {
+                    let name = rest[..start].trim();
+                    let email = rest[start + 1..end].trim();
+                    return name.is_empty() || email.is_empty();
+                }
+            }
+            true
+        })
+        .collect();
+    let cleaned = cleaned_lines.join("\n");
+    cleaned.trim_end().to_string()
+}
 
+/// Extract Co-Authored-By signatures from a commit message.
+pub fn extract_co_authors(message: &str) -> Vec<Signature> {
+    let prefix = "co-authored-by:";
+    let mut co_authors = Vec::new();
     for line in message.lines() {
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
-        if lower.strip_prefix(prefix).is_some() {
-            let rest = &trimmed[prefix.len()..];
-            let rest = rest.trim();
+        if lower.starts_with(prefix) {
+            let rest = &trimmed[prefix.len()..].trim();
             if let Some(email_start) = rest.find('<') {
                 if let Some(email_end) = rest.find('>') {
                     let name = rest[..email_start].trim().to_string();
                     let email = rest[email_start + 1..email_end].trim().to_string();
                     if !name.is_empty() && !email.is_empty() {
                         co_authors.push(Signature { name, email });
-                        continue;
                     }
                 }
             }
         }
-        cleaned_lines.push(line);
     }
+    co_authors
+}
 
-    let cleaned = cleaned_lines.join("\n");
-    let cleaned = cleaned.trim_end().to_string();
-
+/// Combined: clean message and extract co-authors in one pass.
+#[cfg(test)]
+fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
+    let co_authors = extract_co_authors(message);
+    let cleaned = clean_co_author_lines(message);
     (cleaned, co_authors)
 }
 
@@ -112,9 +141,112 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
 
 /// Gather all refresh data from a repository at the given path.
 /// This is a standalone function (no `&self`) so it can run on a background thread.
-pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
+fn compute_working_tree_status(repo_path: &Path) -> Result<WorkingTreeStatus> {
+    let repo = Repository::open(repo_path)?;
+    let mut wt_status = WorkingTreeStatus::default();
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(false);
+
+    let statuses = repo.statuses(Some(&mut opts))?;
+    let (staged_stats, unstaged_stats) = std::thread::scope(|s| {
+        let staged_handle = s.spawn(|| {
+            let repo = Repository::open(repo_path).ok();
+            repo.as_ref()
+                .map(|r| batch_diff_stats(r, true))
+                .unwrap_or_default()
+        });
+        let unstaged_handle = s.spawn(|| {
+            let repo = Repository::open(repo_path).ok();
+            repo.as_ref()
+                .map(|r| batch_diff_stats(r, false))
+                .unwrap_or_default()
+        });
+        (
+            staged_handle.join().unwrap_or_default(),
+            unstaged_handle.join().unwrap_or_default(),
+        )
+    });
+
+    for entry in statuses.iter() {
+        let path = PathBuf::from(entry.path().unwrap_or(""));
+        let st = entry.status();
+
+        if st.intersects(
+            git2::Status::INDEX_NEW
+                | git2::Status::INDEX_MODIFIED
+                | git2::Status::INDEX_DELETED
+                | git2::Status::INDEX_RENAMED
+                | git2::Status::INDEX_TYPECHANGE,
+        ) {
+            let kind = if st.contains(git2::Status::INDEX_NEW) {
+                FileChangeKind::Added
+            } else if st.contains(git2::Status::INDEX_MODIFIED) {
+                FileChangeKind::Modified
+            } else if st.contains(git2::Status::INDEX_DELETED) {
+                FileChangeKind::Deleted
+            } else if st.contains(git2::Status::INDEX_RENAMED) {
+                FileChangeKind::Renamed
+            } else {
+                FileChangeKind::TypeChange
+            };
+            let &(additions, deletions) = staged_stats.get(&path).unwrap_or(&(0, 0));
+            wt_status.staged.push(FileStatus {
+                path: path.clone(),
+                kind,
+                old_path: None,
+                additions,
+                deletions,
+            });
+        }
+
+        if st.intersects(
+            git2::Status::WT_NEW
+                | git2::Status::WT_MODIFIED
+                | git2::Status::WT_DELETED
+                | git2::Status::WT_RENAMED
+                | git2::Status::WT_TYPECHANGE,
+        ) {
+            let kind = if st.contains(git2::Status::WT_NEW) {
+                FileChangeKind::Untracked
+            } else if st.contains(git2::Status::WT_MODIFIED) {
+                FileChangeKind::Modified
+            } else if st.contains(git2::Status::WT_DELETED) {
+                FileChangeKind::Deleted
+            } else if st.contains(git2::Status::WT_RENAMED) {
+                FileChangeKind::Renamed
+            } else {
+                FileChangeKind::TypeChange
+            };
+            let &(additions, deletions) = unstaged_stats.get(&path).unwrap_or(&(0, 0));
+            wt_status.unstaged.push(FileStatus {
+                path: path.clone(),
+                kind,
+                old_path: None,
+                additions,
+                deletions,
+            });
+        }
+
+        if st.contains(git2::Status::CONFLICTED) {
+            wt_status.unstaged.push(FileStatus {
+                path,
+                kind: FileChangeKind::Conflicted,
+                old_path: None,
+                additions: 0,
+                deletions: 0,
+            });
+        }
+    }
+
+    Ok(wt_status)
+}
+
+pub fn gather_refresh_data(repo_path: &Path, commit_limit: usize) -> Result<RefreshData> {
     log::debug!("gather_refresh_data: repo={}", repo_path.display());
-    gather_refresh_data_internal(repo_path, true)
+    gather_refresh_data_internal(repo_path, true, commit_limit)
 }
 
 /// Gather refresh data without computing ahead/behind for every branch.
@@ -122,17 +254,18 @@ pub fn gather_refresh_data(repo_path: &Path) -> Result<RefreshData> {
 /// Use this for filesystem watcher events where only file status needs updating.
 /// Ahead/behind values will be (0, 0) — they'll be recomputed on the next
 /// full refresh from a git operation (fetch/push/pull) or explicit user refresh.
-pub fn gather_refresh_data_lightweight(repo_path: &Path) -> Result<RefreshData> {
+pub fn gather_refresh_data_lightweight(repo_path: &Path, commit_limit: usize) -> Result<RefreshData> {
     log::debug!(
         "gather_refresh_data_lightweight: repo={}",
         repo_path.display()
     );
-    gather_refresh_data_internal(repo_path, false)
+    gather_refresh_data_internal(repo_path, false, commit_limit)
 }
 
 fn gather_refresh_data_internal(
     repo_path: &Path,
     compute_ahead_behind: bool,
+    commit_limit: usize,
 ) -> Result<RefreshData> {
     let refresh_timer = std::time::Instant::now();
     let repo = Repository::open(repo_path)
@@ -232,8 +365,11 @@ fn gather_refresh_data_internal(
         }
     }
 
-    // Stashes + Worktrees (parallelized: stash opens its own repo)
-    let (stashes, worktrees) = std::thread::scope(|s| {
+    // Run status, stashes, worktrees in parallel.
+    // Status and stashes open their own repos; worktrees and revwalk use &repo.
+    let (status, stashes, worktrees) = std::thread::scope(|s| {
+        let status_handle = s.spawn(|| compute_working_tree_status(repo_path));
+
         let stash_handle = s.spawn(|| {
             let mut stashes = Vec::new();
             if let Ok(mut repo_mut) = Repository::open(repo_path) {
@@ -248,126 +384,27 @@ fn gather_refresh_data_internal(
             }
             stashes
         });
+
         let worktrees = gather_worktrees(&repo);
+
+        let status = status_handle.join().unwrap().unwrap_or_default();
         let stashes = stash_handle.join().unwrap_or_default();
-        (stashes, worktrees)
+        (status, stashes, worktrees)
     });
 
-    // Status
-    let status = {
-        let mut wt_status = WorkingTreeStatus::default();
-
-        let mut opts = StatusOptions::new();
-        opts.include_untracked(true)
-            .recurse_untracked_dirs(true)
-            .include_unmodified(false);
-
-        let statuses = repo.statuses(Some(&mut opts))?;
-        let (staged_stats, unstaged_stats) = std::thread::scope(|s| {
-            let staged_handle = s.spawn(|| {
-                let repo = Repository::open(repo_path).ok();
-                repo.as_ref()
-                    .map(|r| batch_diff_stats(r, true))
-                    .unwrap_or_default()
-            });
-            let unstaged_handle = s.spawn(|| {
-                let repo = Repository::open(repo_path).ok();
-                repo.as_ref()
-                    .map(|r| batch_diff_stats(r, false))
-                    .unwrap_or_default()
-            });
-            (
-                staged_handle.join().unwrap_or_default(),
-                unstaged_handle.join().unwrap_or_default(),
-            )
-        });
-        for entry in statuses.iter() {
-            let path = PathBuf::from(entry.path().unwrap_or(""));
-            let st = entry.status();
-
-            if st.intersects(
-                git2::Status::INDEX_NEW
-                    | git2::Status::INDEX_MODIFIED
-                    | git2::Status::INDEX_DELETED
-                    | git2::Status::INDEX_RENAMED
-                    | git2::Status::INDEX_TYPECHANGE,
-            ) {
-                let kind = if st.contains(git2::Status::INDEX_NEW) {
-                    FileChangeKind::Added
-                } else if st.contains(git2::Status::INDEX_MODIFIED) {
-                    FileChangeKind::Modified
-                } else if st.contains(git2::Status::INDEX_DELETED) {
-                    FileChangeKind::Deleted
-                } else if st.contains(git2::Status::INDEX_RENAMED) {
-                    FileChangeKind::Renamed
-                } else {
-                    FileChangeKind::TypeChange
-                };
-                let &(additions, deletions) = staged_stats.get(&path).unwrap_or(&(0, 0));
-                wt_status.staged.push(FileStatus {
-                    path: path.clone(),
-                    kind,
-                    old_path: None,
-                    additions,
-                    deletions,
-                });
-            }
-
-            if st.intersects(
-                git2::Status::WT_NEW
-                    | git2::Status::WT_MODIFIED
-                    | git2::Status::WT_DELETED
-                    | git2::Status::WT_RENAMED
-                    | git2::Status::WT_TYPECHANGE,
-            ) {
-                let kind = if st.contains(git2::Status::WT_NEW) {
-                    FileChangeKind::Untracked
-                } else if st.contains(git2::Status::WT_MODIFIED) {
-                    FileChangeKind::Modified
-                } else if st.contains(git2::Status::WT_DELETED) {
-                    FileChangeKind::Deleted
-                } else if st.contains(git2::Status::WT_RENAMED) {
-                    FileChangeKind::Renamed
-                } else {
-                    FileChangeKind::TypeChange
-                };
-                let &(additions, deletions) = unstaged_stats.get(&path).unwrap_or(&(0, 0));
-                wt_status.unstaged.push(FileStatus {
-                    path: path.clone(),
-                    kind,
-                    old_path: None,
-                    additions,
-                    deletions,
-                });
-            }
-
-            if st.contains(git2::Status::CONFLICTED) {
-                wt_status.unstaged.push(FileStatus {
-                    path,
-                    kind: FileChangeKind::Conflicted,
-                    old_path: None,
-                    additions: 0,
-                    deletions: 0,
-                });
-            }
-        }
-
-        wt_status
-    };
-
-    // Recent commits (uses branches and tags for ref labels)
+    // Recent commits — use git log subprocess for commit-graph acceleration.
+    // libgit2's revwalk doesn't use .git/objects/info/commit-graph, making it
+    // orders of magnitude slower on large repos like the Linux kernel.
     let (recent_commits, has_more_commits) = {
-        let limit = DEFAULT_COMMIT_LIMIT;
-        let mut commits = Vec::new();
+        let t_log = std::time::Instant::now();
+        let limit = commit_limit;
 
         let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
-
         if let Ok(head) = repo.head() {
             if let Some(oid) = head.target() {
                 ref_map.entry(oid).or_default().push(RefLabel::Head);
             }
         }
-
         for branch in &branches {
             if let Some(oid) = branch.tip_oid {
                 let label = if branch.is_remote {
@@ -378,7 +415,6 @@ fn gather_refresh_data_internal(
                 ref_map.entry(oid).or_default().push(label);
             }
         }
-
         for tag in &tags {
             ref_map
                 .entry(tag.oid)
@@ -386,70 +422,91 @@ fn gather_refresh_data_internal(
                 .push(RefLabel::Tag(tag.name.clone()));
         }
 
-        let mut revwalk = repo.revwalk()?;
-        let has_head = revwalk.push_head().is_ok();
-        for branch in &branches {
-            if let Some(oid) = branch.tip_oid {
-                revwalk.push(oid).ok();
-            }
-        }
-        if !has_head && branches.is_empty() {
-            return Ok(RefreshData {
-                head_branch,
-                head_detached,
-                repo_state,
-                branches,
-                tags,
-                remotes,
-                stashes,
-                worktrees,
-                status,
-                recent_commits: commits,
-                has_more_commits: false,
-                default_branch: None,
-            });
-        }
-        revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
+        // Record separator that won't appear in commit messages
+        const RS: &str = "\x1e";
+        const GS: &str = "\x1d";
+        // Format: oid, short_id, author_name, author_email, committer_name, committer_email, timestamp, parent_oids, summary, body
+        let format = format!(
+            "{}%H{}%h{}%an{}%ae{}%cn{}%ce{}%ct{}%P{}%s{}%b{}",
+            RS, GS, GS, GS, GS, GS, GS, GS, GS, GS, GS
+        );
 
+        let output = std::process::Command::new("git")
+            .current_dir(repo_path)
+            .args(["log", "--all", &format!("--format={}", format), &format!("-{}", limit + 1)])
+            .output()
+            .with_context(|| "Failed to run git log")?;
+
+        if !output.status.success() {
+            anyhow::bail!("git log failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut commits = Vec::new();
         let mut has_more = false;
-        for (count, oid_result) in revwalk.enumerate() {
-            if count >= limit {
+
+        for record in stdout.split(RS) {
+            let record = record.trim();
+            if record.is_empty() {
+                continue;
+            }
+            if commits.len() >= limit {
                 has_more = true;
                 break;
             }
-            let oid = oid_result?;
-            let commit = repo.find_commit(oid)?;
 
-            let author = commit.author();
-            let committer = commit.committer();
-            let time = Utc.timestamp_opt(commit.time().seconds(), 0).single();
+            let fields: Vec<&str> = record.splitn(11, GS).collect();
+            if fields.len() < 10 {
+                continue;
+            }
 
+            let oid = match git2::Oid::from_str(fields[0]) {
+                Ok(o) => o,
+                Err(_) => continue,
+            };
+            let short_id = fields[1].to_string();
+            let author_name = fields[2].to_string();
+            let author_email = fields[3].to_string();
+            let committer_name = fields[4].to_string();
+            let committer_email = fields[5].to_string();
+            let timestamp: i64 = fields[6].parse().unwrap_or(0);
+            let parent_oids: Vec<git2::Oid> = fields[7]
+                .split_whitespace()
+                .filter_map(|s| git2::Oid::from_str(s).ok())
+                .collect();
+            let summary = fields[8].to_string();
+            let body = if fields.len() > 9 { fields[9].trim() } else { "" };
+            let message = if body.is_empty() {
+                summary.clone()
+            } else {
+                format!("{}\n\n{}", summary, clean_co_author_lines(body))
+            };
+
+            let time = Utc.timestamp_opt(timestamp, 0).single();
             let refs = ref_map.remove(&oid).unwrap_or_default();
-
-            let raw_message = commit.message().unwrap_or("").to_string();
-            let (message, co_authors) = parse_co_authors(&raw_message);
 
             commits.push(CommitInfo {
                 oid,
-                short_id: format!("{:.7}", oid),
-                summary: commit.summary().unwrap_or("").to_string(),
+                short_id,
+                summary,
                 message,
                 author: Signature {
-                    name: author.name().unwrap_or("").to_string(),
-                    email: author.email().unwrap_or("").to_string(),
+                    name: author_name,
+                    email: author_email,
                 },
                 committer: Signature {
-                    name: committer.name().unwrap_or("").to_string(),
-                    email: committer.email().unwrap_or("").to_string(),
+                    name: committer_name,
+                    email: committer_email,
                 },
-                co_authors,
+                co_authors: Vec::new(),
                 time: time.unwrap_or_else(Utc::now),
-                parent_oids: commit.parent_ids().collect(),
+                parent_oids,
                 refs,
-                is_signed: commit.header_field_bytes("gpgsig").is_ok(),
+                is_signed: false,
             });
         }
 
+        log::debug!("git log completed in {:?}: {} commits", t_log.elapsed(), commits.len());
         (commits, has_more)
     };
 
@@ -477,28 +534,103 @@ fn gather_refresh_data_internal(
     })
 }
 
+/// Enrich a commit with is_signed and co_authors (deferred from the revwalk).
+pub fn enrich_commit_info(
+    repo_path: &Path,
+    oid: git2::Oid,
+) -> Result<(bool, Vec<Signature>)> {
+    let repo = Repository::open(repo_path)?;
+    let commit = repo.find_commit(oid)?;
+    let is_signed = commit.header_field_bytes("gpgsig").is_ok();
+    let raw_message = commit.message().unwrap_or("");
+    let co_authors = extract_co_authors(raw_message);
+    Ok((is_signed, co_authors))
+}
+
 use gpui::{AsyncApp, Context, Task, WeakEntity};
+use std::sync::Arc;
+
+const FIRST_BATCH_SIZE: usize = 100;
 
 impl GitProject {
     /// Refresh all state asynchronously on a background thread.
+    /// Uses two-phase loading: the first batch of commits loads quickly so the
+    /// UI appears populated during the splash animation, then the remainder
+    /// loads in the background.
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
+        let first_batch = FIRST_BATCH_SIZE.min(commit_limit);
         let t = std::time::Instant::now();
+
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Phase 1: lightweight refresh (skip ahead/behind) with a small commit batch
+            let repo_path_p1 = repo_path.clone();
             let data = cx
                 .background_executor()
-                .spawn(async move { gather_refresh_data(&repo_path) })
+                .spawn(async move { gather_refresh_data_lightweight(&repo_path_p1, first_batch) })
                 .await?;
+
+            let needs_more = data.has_more_commits && first_batch < commit_limit;
+            let branch_tips: Vec<(git2::Oid, bool, String)> = data
+                .branches
+                .iter()
+                .filter_map(|b| b.tip_oid.map(|oid| (oid, b.is_remote, b.name.clone())))
+                .collect();
+            let tag_tips: Vec<(git2::Oid, String)> =
+                data.tags.iter().map(|t| (t.oid, t.name.clone())).collect();
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     this.apply_refresh_data(data);
-                    log::info!("GitProject::refresh applied in {:?}", t.elapsed());
+                    log::info!("refresh phase 1 applied in {:?}: {} commits", t.elapsed(), this.recent_commits.len());
                     cx.emit(GitProjectEvent::StatusChanged);
+                    // Fire ahead/behind computation in the background (deferred from lightweight refresh)
+                    this.refresh_ahead_behind(cx);
                     cx.notify();
-                    Ok(())
+                    Ok::<(), anyhow::Error>(())
                 })
-            })?
+            })??;
+
+            // Phase 2: load remaining commits
+            if needs_more {
+                let remaining = commit_limit - first_batch;
+                let repo_path_p2 = repo_path.clone();
+                let (more_commits, has_more) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        load_more_commits_from_repo(
+                            &repo_path_p2,
+                            first_batch,
+                            remaining,
+                            &branch_tips,
+                            &tag_tips,
+                        )
+                    })
+                    .await?;
+
+                cx.update(|cx| {
+                    this.update(cx, |this, cx| {
+                        let existing_oids: std::collections::HashSet<git2::Oid> =
+                            this.recent_commits.iter().map(|c| c.oid).collect();
+                        let mut combined: Vec<CommitInfo> = (*this.recent_commits).clone();
+                        for commit in more_commits {
+                            if !existing_oids.contains(&commit.oid) {
+                                combined.push(commit);
+                            }
+                        }
+                        this.commit_offset = combined.len();
+                        this.has_more_commits = has_more;
+                        this.recent_commits = Arc::new(combined);
+                        log::info!("refresh phase 2 applied in {:?}: {} commits total", t.elapsed(), this.recent_commits.len());
+                        cx.emit(GitProjectEvent::StatusChanged);
+                        cx.notify();
+                        Ok(())
+                    })
+                })?
+            } else {
+                Ok(())
+            }
         })
     }
 }
@@ -512,14 +644,13 @@ pub(super) fn load_more_commits_from_repo(
     branch_tips: &[(git2::Oid, bool, String)],
     tag_tips: &[(git2::Oid, String)],
 ) -> Result<(Vec<CommitInfo>, bool)> {
-    let repo = Repository::open(repo_path)
-        .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
-
-    // Build ref-label map from the caller-supplied tips (avoids re-enumerating branches).
+    // Build ref-label map from the caller-supplied tips.
     let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
-    if let Ok(head) = repo.head() {
-        if let Some(oid) = head.target() {
-            ref_map.entry(oid).or_default().push(RefLabel::Head);
+    if let Ok(repo) = Repository::open(repo_path) {
+        if let Ok(head) = repo.head() {
+            if let Some(oid) = head.target() {
+                ref_map.entry(oid).or_default().push(RefLabel::Head);
+            }
         }
     }
     for (oid, is_remote, name) in branch_tips {
@@ -537,52 +668,91 @@ pub(super) fn load_more_commits_from_repo(
             .push(RefLabel::Tag(name.clone()));
     }
 
-    let mut revwalk = repo.revwalk()?;
-    let has_head = revwalk.push_head().is_ok();
-    for (oid, _, _) in branch_tips {
-        revwalk.push(*oid).ok();
-    }
-    if !has_head && branch_tips.is_empty() {
-        return Ok((Vec::new(), false));
-    }
-    revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
+    const RS: &str = "\x1e";
+    const GS: &str = "\x1d";
+    let format = format!(
+        "{}%H{}%h{}%an{}%ae{}%cn{}%ce{}%ct{}%P{}%s{}%b{}",
+        RS, GS, GS, GS, GS, GS, GS, GS, GS, GS, GS
+    );
 
+    let output = std::process::Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "log",
+            "--all",
+            &format!("--format={}", format),
+            &format!("--skip={}", skip),
+            &format!("-{}", limit + 1),
+        ])
+        .output()
+        .with_context(|| "Failed to run git log")?;
+
+    if !output.status.success() {
+        anyhow::bail!("git log failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut commits = Vec::new();
     let mut has_more = false;
-    for (count, oid_result) in revwalk.enumerate() {
-        let oid = oid_result?;
-        if count < skip {
+
+    for record in stdout.split(RS) {
+        let record = record.trim();
+        if record.is_empty() {
             continue;
         }
-        if count >= skip + limit {
+        if commits.len() >= limit {
             has_more = true;
             break;
         }
-        let commit = repo.find_commit(oid)?;
-        let author = commit.author();
-        let committer = commit.committer();
-        let time = Utc.timestamp_opt(commit.time().seconds(), 0).single();
+
+        let fields: Vec<&str> = record.splitn(11, GS).collect();
+        if fields.len() < 10 {
+            continue;
+        }
+
+        let oid = match git2::Oid::from_str(fields[0]) {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let short_id = fields[1].to_string();
+        let author_name = fields[2].to_string();
+        let author_email = fields[3].to_string();
+        let committer_name = fields[4].to_string();
+        let committer_email = fields[5].to_string();
+        let timestamp: i64 = fields[6].parse().unwrap_or(0);
+        let parent_oids: Vec<git2::Oid> = fields[7]
+            .split_whitespace()
+            .filter_map(|s| git2::Oid::from_str(s).ok())
+            .collect();
+        let summary = fields[8].to_string();
+        let body = if fields.len() > 9 { fields[9].trim() } else { "" };
+        let message = if body.is_empty() {
+            summary.clone()
+        } else {
+            format!("{}\n\n{}", summary, clean_co_author_lines(body))
+        };
+
+        let time = Utc.timestamp_opt(timestamp, 0).single();
         let refs = ref_map.remove(&oid).unwrap_or_default();
-        let raw_message = commit.message().unwrap_or("").to_string();
-        let (message, co_authors) = parse_co_authors(&raw_message);
+
         commits.push(CommitInfo {
             oid,
-            short_id: format!("{:.7}", oid),
-            summary: commit.summary().unwrap_or("").to_string(),
+            short_id,
+            summary,
             message,
             author: Signature {
-                name: author.name().unwrap_or("").to_string(),
-                email: author.email().unwrap_or("").to_string(),
+                name: author_name,
+                email: author_email,
             },
             committer: Signature {
-                name: committer.name().unwrap_or("").to_string(),
-                email: committer.email().unwrap_or("").to_string(),
+                name: committer_name,
+                email: committer_email,
             },
-            co_authors,
+            co_authors: Vec::new(),
             time: time.unwrap_or_else(Utc::now),
-            parent_oids: commit.parent_ids().collect(),
+            parent_oids,
             refs,
-            is_signed: commit.header_field_bytes("gpgsig").is_ok(),
+            is_signed: false,
         });
     }
 

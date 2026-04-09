@@ -210,6 +210,8 @@ pub struct AppSettings {
     /// throttle background update polling so restarts don't spam the API.
     #[serde(default)]
     pub last_update_check_at: Option<DateTime<Utc>>,
+    #[serde(default = "default_commit_limit")]
+    pub commit_limit: usize,
 }
 
 /// Current settings version. Increment when making breaking changes.
@@ -245,6 +247,10 @@ fn default_confirm_destructive() -> bool {
 
 fn default_auto_check_updates() -> bool {
     true
+}
+
+fn default_commit_limit() -> usize {
+    1000
 }
 
 /// A persisted local workspace snapshot.
@@ -467,6 +473,7 @@ impl Default for AppSettings {
             confirm_destructive_operations: default_confirm_destructive(),
             auto_check_updates: default_auto_check_updates(),
             last_update_check_at: None,
+            commit_limit: default_commit_limit(),
         }
     }
 }

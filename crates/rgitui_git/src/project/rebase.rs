@@ -21,6 +21,7 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let entry_count = entries.len();
         let operation_id = self.begin_operation(
@@ -116,13 +117,13 @@ impl GitProject {
                     let stderr = String::from_utf8_lossy(&output.stderr);
 
                     if output.status.success() {
-                        let data = gather_refresh_data(&repo_path)?;
+                        let data = gather_refresh_data(&repo_path, commit_limit)?;
                         Ok((
                             format!("Rebased {} commits successfully", entry_count),
                             data,
                         ))
                     } else if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
-                        let data = gather_refresh_data(&repo_path)?;
+                        let data = gather_refresh_data(&repo_path, commit_limit)?;
                         let detail: String = stderr.lines().take(3).collect::<Vec<_>>().join(" ");
                         Ok((
                             format!(

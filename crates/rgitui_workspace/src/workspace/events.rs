@@ -529,6 +529,8 @@ pub(super) fn subscribe_repo_opener(cx: &mut Context<Workspace>, repo_opener: &E
             RepoOpenerEvent::OpenRepo(path) => {
                 if let Err(e) = this.open_repo(path.clone(), cx) {
                     this.show_toast(format!("Failed to open: {}", e), ToastKind::Error, cx);
+                } else {
+                    this.refresh_all_tabs_prioritized(cx);
                 }
             }
             RepoOpenerEvent::Dismissed => {
@@ -665,6 +667,7 @@ pub(super) fn subscribe_project(
     let commit_panel = commit_panel.clone();
     let toolbar = toolbar.clone();
     let diff_cache = diff_cache.clone();
+    let has_prewarmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     cx.subscribe(project, {
         move |this, project, event: &GitProjectEvent, cx| match event {
@@ -745,7 +748,10 @@ pub(super) fn subscribe_project(
                     tb.set_ahead_behind(ahead, behind, cx);
                 });
 
-                // Pre-warm diff cache for the first 30 commits in the background.
+                // Pre-warm diff cache once for the first 30 commits.
+                if has_prewarmed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    // Already prewarmed — skip on subsequent StatusChanged events
+                } else {
                 let proj = project.read(cx);
                 let prewarm_oids: Vec<git2::Oid> = {
                     let cached = diff_cache.lock().unwrap();
@@ -785,6 +791,7 @@ pub(super) fn subscribe_project(
                     })
                     .detach();
                 }
+                } // end prewarm gate
             }
             GitProjectEvent::OperationUpdated(update) => {
                 let is_running = update.state == GitOperationState::Running;
@@ -1333,17 +1340,34 @@ pub(super) fn subscribe_graph(
                         let dv = diff_viewer.clone();
                         let dp = detail_panel_ref.clone();
                         let cached = cached.clone();
-                        if let Some(info) = &commit_info {
-                            dp.update(cx, |dp, cx| {
-                                dp.set_commit(info.clone(), (*cached).clone(), cx)
-                            });
-                        }
                         if let Some(first_file) = cached.files.first() {
                             let path = first_file.path.display().to_string();
                             let oid_str = commit_oid.to_string();
                             dv.update(cx, |dv, cx| {
                                 dv.set_diff(first_file.clone(), path, false, Some(&oid_str), cx)
                             });
+                        }
+                        // Enrich commit info (is_signed, co_authors) in background
+                        if let Some(mut info) = commit_info.clone() {
+                            let enrich_path = repo_path.clone();
+                            cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                                let enriched = cx
+                                    .background_executor()
+                                    .spawn(async move {
+                                        rgitui_git::enrich_commit_info(&enrich_path, commit_oid)
+                                    })
+                                    .await;
+                                if let Ok((is_signed, co_authors)) = enriched {
+                                    info.is_signed = is_signed;
+                                    info.co_authors = co_authors;
+                                }
+                                cx.update(|cx| {
+                                    dp.update(cx, |dp, cx| {
+                                        dp.set_commit(info, (*cached).clone(), cx)
+                                    });
+                                });
+                            })
+                            .detach();
                         }
                     } else {
                         // Cache miss — submit selected commit first so it gets
@@ -1352,21 +1376,34 @@ pub(super) fn subscribe_graph(
                         let dp = detail_panel_ref.clone();
                         let cache = diff_cache.clone();
                         let oid_str = commit_oid.to_string();
+                        let enrich_path = repo_path.clone();
 
                         cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                            let result = cx
+                            // Compute diff and enrich commit info in parallel
+                            let diff_task = cx
                                 .background_executor()
                                 .spawn(async move {
                                     rgitui_git::compute_commit_diff(&repo_path, commit_oid)
-                                })
-                                .await;
+                                });
+                            let enrich_task = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    rgitui_git::enrich_commit_info(&enrich_path, commit_oid)
+                                });
 
-                            cx.update(|cx| match result {
+                            let diff_result = diff_task.await;
+                            let enrich_result = enrich_task.await;
+
+                            cx.update(|cx| match diff_result {
                                 Ok(commit_diff) => {
                                     let diff_arc = Arc::new(commit_diff.clone());
                                     cache.lock().unwrap().insert(commit_oid, diff_arc.clone());
 
-                                    if let Some(info) = commit_info {
+                                    if let Some(mut info) = commit_info {
+                                        if let Ok((is_signed, co_authors)) = enrich_result {
+                                            info.is_signed = is_signed;
+                                            info.co_authors = co_authors;
+                                        }
                                         dp.update(cx, |dp, cx| {
                                             dp.set_commit(info, commit_diff.clone(), cx)
                                         });

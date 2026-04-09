@@ -46,13 +46,12 @@ pub use local_ops::branches_containing_commit;
 pub use reflog::{compute_reflog, ReflogEntryInfo};
 pub use refresh::gather_refresh_data;
 pub use refresh::gather_refresh_data_lightweight;
+pub use refresh::{enrich_commit_info, extract_co_authors};
 pub use search::git_grep;
 pub use submodule::{
     compute_submodules, submodule_init, submodule_init_all, submodule_update, submodule_update_all,
     SubmoduleInfo,
 };
-
-const DEFAULT_COMMIT_LIMIT: usize = 1000;
 
 fn parse_remote_tracking_ref(name: &str) -> Option<(String, String)> {
     let trimmed = name.strip_prefix("refs/remotes/").unwrap_or(name);
@@ -221,6 +220,8 @@ pub struct GitProject {
     next_operation_id: u64,
     /// Remote default branch (e.g. "main"), from `refs/remotes/origin/HEAD`.
     default_branch: Option<String>,
+    /// Maximum number of commits to load (configurable via settings).
+    commit_limit: usize,
 
     // Filesystem watcher (kept alive)
     _watcher: Option<RecommendedWatcher>,
@@ -249,12 +250,13 @@ impl GitProject {
             commit_offset: 0,
             next_operation_id: 1,
             default_branch: None,
+            commit_limit: 1000,
             _watcher: None,
         }
     }
 
     /// Open a repository at the given path.
-    pub fn open(path: PathBuf, cx: &mut Context<Self>) -> Result<Self> {
+    pub fn open(path: PathBuf, commit_limit: usize, cx: &mut Context<Self>) -> Result<Self> {
         let repo = Repository::open(&path)
             .with_context(|| format!("Failed to open repository at {}", path.display()))?;
 
@@ -276,6 +278,7 @@ impl GitProject {
             commit_offset: 0,
             next_operation_id: 1,
             default_branch: None,
+            commit_limit,
             _watcher: None,
         };
 
@@ -541,6 +544,7 @@ impl GitProject {
             .collect();
         let tag_tips: Vec<(git2::Oid, String)> =
             self.tags.iter().map(|t| (t.oid, t.name.clone())).collect();
+        let commit_limit = self.commit_limit;
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let (new_commits, has_more) = cx
@@ -549,7 +553,7 @@ impl GitProject {
                     refresh::load_more_commits_from_repo(
                         &repo_path,
                         skip,
-                        DEFAULT_COMMIT_LIMIT,
+                        commit_limit,
                         &branch_tips,
                         &tag_tips,
                     )

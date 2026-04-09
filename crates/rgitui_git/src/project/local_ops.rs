@@ -17,6 +17,7 @@ impl GitProject {
         let paths = paths.to_vec();
         let task_paths = paths.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stage,
@@ -43,7 +44,7 @@ impl GitProject {
                         }
                     }
                     index.write()?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -89,6 +90,7 @@ impl GitProject {
         let paths = paths.to_vec();
         let task_paths = paths.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Unstage,
@@ -121,7 +123,7 @@ impl GitProject {
                         }
                         index.write()?;
                     }
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -165,6 +167,7 @@ impl GitProject {
     pub fn stage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("stage_all");
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stage,
@@ -181,7 +184,7 @@ impl GitProject {
                     let mut index = repo.index()?;
                     index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
                     index.write()?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -221,6 +224,7 @@ impl GitProject {
     pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("unstage_all");
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Unstage,
@@ -238,7 +242,7 @@ impl GitProject {
                         let obj = head.peel(git2::ObjectType::Any)?;
                         repo.reset(&obj, git2::ResetType::Mixed, None)?;
                     }
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -286,6 +290,7 @@ impl GitProject {
         let task_message = message.clone();
         let commit_summary = message.lines().next().unwrap_or("").to_string();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Commit,
@@ -416,7 +421,7 @@ impl GitProject {
                         }
                     };
 
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((oid, data))
                 })
                 .await;
@@ -469,6 +474,7 @@ impl GitProject {
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Checkout,
             format!("Switching to '{}'...", name),
@@ -552,7 +558,7 @@ impl GitProject {
                     checkout_opts.safe();
                     repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
                     repo.set_head(&head_ref)?;
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     let msg = if is_tracking {
                         format!(
                             "Switched to new branch '{}' tracking '{}'",
@@ -607,6 +613,7 @@ impl GitProject {
     pub fn checkout_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("checkout_commit: oid={}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Checkout,
@@ -627,7 +634,7 @@ impl GitProject {
                     checkout_opts.safe();
                     repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
                     repo.set_head_detached(oid)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -675,6 +682,7 @@ impl GitProject {
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Checkout,
             format!("Checking out tag '{}'...", name),
@@ -696,7 +704,7 @@ impl GitProject {
                     checkout_opts.safe();
                     repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
                     repo.set_head_detached(oid)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -757,6 +765,7 @@ impl GitProject {
         let task_name = name.clone();
         let task_base_ref = base_ref.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Branch,
             format!("Creating branch '{}'...", name),
@@ -782,7 +791,7 @@ impl GitProject {
                         repo.head()?.peel_to_commit()?
                     };
                     repo.branch(&task_name, &target, false)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -828,6 +837,7 @@ impl GitProject {
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Branch,
             format!("Deleting branch '{}'...", name),
@@ -842,7 +852,7 @@ impl GitProject {
                     let repo = Repository::open(&repo_path)?;
                     let mut branch = repo.find_branch(&task_name, git2::BranchType::Local)?;
                     branch.delete()?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -891,6 +901,7 @@ impl GitProject {
         let task_old_name = old_name.clone();
         let task_new_name = new_name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Branch,
             format!("Renaming branch '{}'...", old_name),
@@ -905,7 +916,7 @@ impl GitProject {
                     let repo = Repository::open(&repo_path)?;
                     let mut branch = repo.find_branch(&task_old_name, git2::BranchType::Local)?;
                     branch.rename(&task_new_name, false)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -953,6 +964,7 @@ impl GitProject {
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Tag,
             format!("Creating tag '{}'...", name),
@@ -967,7 +979,7 @@ impl GitProject {
                     let repo = Repository::open(&repo_path)?;
                     let obj = repo.find_object(target_oid, None)?;
                     repo.tag_lightweight(&task_name, &obj, false)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1009,6 +1021,7 @@ impl GitProject {
         let name = name.to_string();
         let task_name = name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Tag,
             format!("Deleting tag '{}'...", name),
@@ -1022,7 +1035,7 @@ impl GitProject {
                 .spawn(async move {
                     let repo = Repository::open(&repo_path)?;
                     repo.tag_delete(&task_name)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1067,6 +1080,7 @@ impl GitProject {
         log::info!("stash_save");
         let message = message.map(String::from);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
@@ -1082,7 +1096,7 @@ impl GitProject {
                     let mut repo = Repository::open(&repo_path)?;
                     let sig = repo.signature()?;
                     repo.stash_save(&sig, message.as_deref().unwrap_or("WIP"), None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1122,6 +1136,7 @@ impl GitProject {
     pub fn stash_pop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("stash_pop: index={}", index);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
@@ -1136,7 +1151,7 @@ impl GitProject {
                 .spawn(async move {
                     let mut repo = Repository::open(&repo_path)?;
                     repo.stash_pop(index, None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1176,6 +1191,7 @@ impl GitProject {
     pub fn stash_apply(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("stash_apply: index={}", index);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
@@ -1190,7 +1206,7 @@ impl GitProject {
                 .spawn(async move {
                     let mut repo = Repository::open(&repo_path)?;
                     repo.stash_apply(index, None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1234,6 +1250,7 @@ impl GitProject {
     pub fn stash_drop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("stash_drop: index={}", index);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
@@ -1248,7 +1265,7 @@ impl GitProject {
                 .spawn(async move {
                     let mut repo = Repository::open(&repo_path)?;
                     repo.stash_drop(index)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1294,6 +1311,7 @@ impl GitProject {
     ) -> Task<Result<()>> {
         log::info!("stash_branch: branch={} index={}", branch_name, stash_index);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name_owned = branch_name.to_string();
         let current_branch = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -1336,7 +1354,7 @@ impl GitProject {
                     // Apply the stash to the new branch.
                     repo.stash_apply(stash_index, None)?;
 
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1395,6 +1413,7 @@ impl GitProject {
             cx,
         );
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -1431,7 +1450,7 @@ impl GitProject {
                     if has_tracked {
                         repo.checkout_head(Some(&mut checkout_opts))?;
                     }
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok::<_, anyhow::Error>(data)
                 })
                 .await;
@@ -1471,6 +1490,7 @@ impl GitProject {
     /// Uses `git clean -fd` after a dry-run to enumerate files.
     pub fn clean_untracked(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Clean,
@@ -1502,7 +1522,7 @@ impl GitProject {
 
                     if file_count == 0 {
                         // Nothing to clean
-                        return gather_refresh_data(&repo_path);
+                        return gather_refresh_data(&repo_path, commit_limit);
                     }
 
                     // Actually remove untracked files and directories
@@ -1517,7 +1537,7 @@ impl GitProject {
                         anyhow::bail!("git clean -f failed: {}", stderr.trim());
                     }
 
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1563,6 +1583,7 @@ impl GitProject {
     pub fn reset_hard(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("reset_hard");
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Reset,
@@ -1578,7 +1599,7 @@ impl GitProject {
                     let repo = Repository::open(&repo_path)?;
                     let head_commit = repo.head()?.peel_to_commit()?;
                     repo.reset(head_commit.as_object(), git2::ResetType::Hard, None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1623,6 +1644,7 @@ impl GitProject {
     pub fn reset_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("reset_to_commit: oid={}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
@@ -1639,7 +1661,7 @@ impl GitProject {
                     let repo = Repository::open(&repo_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Hard, None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1685,6 +1707,7 @@ impl GitProject {
     pub fn reset_soft(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("reset_soft: oid={}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
@@ -1701,7 +1724,7 @@ impl GitProject {
                     let repo = Repository::open(&repo_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Soft, None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1747,6 +1770,7 @@ impl GitProject {
     pub fn reset_mixed(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("reset_mixed: oid={}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
@@ -1763,7 +1787,7 @@ impl GitProject {
                     let repo = Repository::open(&repo_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Mixed, None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -1809,6 +1833,7 @@ impl GitProject {
     pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("revert_commit: oid={}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
@@ -1832,7 +1857,7 @@ impl GitProject {
                     if !has_conflicts {
                         repo.cleanup_state()?;
                     }
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((summary, data, has_conflicts))
                 })
                 .await;
@@ -1887,6 +1912,7 @@ impl GitProject {
     pub fn cherry_pick(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("cherry_pick: oid={}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
@@ -1910,7 +1936,7 @@ impl GitProject {
                     if !has_conflicts {
                         repo.cleanup_state()?;
                     }
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((summary, data, has_conflicts))
                 })
                 .await;
@@ -1966,6 +1992,7 @@ impl GitProject {
     pub fn abort_operation(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("abort_operation");
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let state_label = self.repo_state.label().to_string();
         let operation_id = self.begin_operation(
@@ -1996,7 +2023,7 @@ impl GitProject {
                         Some(git2::build::CheckoutBuilder::new().force()),
                     )?;
                     repo.cleanup_state()?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -2042,6 +2069,7 @@ impl GitProject {
     pub fn continue_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("continue_merge");
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
@@ -2102,7 +2130,7 @@ impl GitProject {
                     repo.cleanup_state()?;
 
                     let summary = message.lines().next().unwrap_or("Merge commit").to_string();
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((summary, data))
                 })
                 .await;
@@ -2146,6 +2174,7 @@ impl GitProject {
         let branch_name = branch_name.to_string();
         let task_branch_name = branch_name.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let current_branch = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
@@ -2232,7 +2261,7 @@ impl GitProject {
                         }
                     };
 
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((msg, data))
                 })
                 .await;
@@ -2297,13 +2326,14 @@ impl GitProject {
             cx,
         );
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let repo = Repository::open(&repo_path)?;
                     repo.remote_delete(&name)?;
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok::<_, anyhow::Error>((data, name))
                 })
                 .await;
@@ -2352,6 +2382,7 @@ impl GitProject {
     pub fn bisect_start(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("bisect_start");
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Bisect,
@@ -2375,7 +2406,7 @@ impl GitProject {
                         anyhow::bail!("git bisect start failed: {}", stderr.trim());
                     }
 
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -2423,6 +2454,7 @@ impl GitProject {
     ) -> Task<Result<()>> {
         log::info!("bisect_good: oid={:?}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid
             .map(|o| o.to_string()[..7].to_string())
@@ -2463,7 +2495,7 @@ impl GitProject {
                         None
                     };
 
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((message, data))
                 })
                 .await;
@@ -2530,6 +2562,7 @@ impl GitProject {
     ) -> Task<Result<()>> {
         log::info!("bisect_bad: oid={:?}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid
             .map(|o| o.to_string()[..7].to_string())
@@ -2570,7 +2603,7 @@ impl GitProject {
                         None
                     };
 
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((message, data))
                 })
                 .await;
@@ -2638,6 +2671,7 @@ impl GitProject {
     ) -> Task<Result<()>> {
         log::info!("bisect_skip: oid={:?}", oid);
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid
             .map(|o| o.to_string()[..7].to_string())
@@ -2689,7 +2723,7 @@ impl GitProject {
                         }
                     };
 
-                    let data = gather_refresh_data(&repo_path)?;
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((message, data))
                 })
                 .await;
@@ -2760,6 +2794,7 @@ impl GitProject {
     pub fn bisect_reset(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         log::info!("bisect_reset");
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Bisect,
@@ -2783,7 +2818,7 @@ impl GitProject {
                         anyhow::bail!("git bisect reset failed: {}", stderr.trim());
                     }
 
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -2842,6 +2877,7 @@ impl GitProject {
             cx,
         );
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
@@ -2863,7 +2899,7 @@ impl GitProject {
                     }
 
                     repo.worktree(&name, &path, Some(&opts))?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -2912,6 +2948,7 @@ impl GitProject {
             cx,
         );
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let display_path_async = display_path.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = cx
@@ -2928,7 +2965,7 @@ impl GitProject {
                         anyhow::bail!("git worktree remove failed: {}", stderr.trim());
                     }
 
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -2992,6 +3029,7 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let file_path = PathBuf::from(&path);
         let file_name = file_path
             .file_name()
@@ -3061,7 +3099,7 @@ impl GitProject {
                     index.add_path(&file_path)?;
                     index.write()?;
 
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 

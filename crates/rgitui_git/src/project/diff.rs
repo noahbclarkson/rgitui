@@ -637,6 +637,7 @@ impl GitProject {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Stage,
@@ -658,7 +659,7 @@ impl GitProject {
                         generate_hunk_patch_for_repo(&repo, &task_file_path, hunk_index, false)?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     repo.apply(&diff, git2::ApplyLocation::Index, None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -708,6 +709,7 @@ impl GitProject {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
             GitOperationKind::Unstage,
@@ -730,7 +732,7 @@ impl GitProject {
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     let mut opts = git2::ApplyOptions::new();
                     repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut opts))?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -782,6 +784,7 @@ impl GitProject {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let line_count = line_pairs.len();
         let line_pairs_owned = line_pairs.to_vec();
@@ -810,7 +813,7 @@ impl GitProject {
                     )?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     repo.apply(&diff, git2::ApplyLocation::Index, None)?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 
@@ -861,6 +864,7 @@ impl GitProject {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
         let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let line_count = line_pairs.len();
         let line_pairs_owned = line_pairs.to_vec();
@@ -891,7 +895,7 @@ impl GitProject {
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     let mut opts = git2::ApplyOptions::new();
                     repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut opts))?;
-                    gather_refresh_data(&repo_path)
+                    gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
 

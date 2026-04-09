@@ -107,6 +107,7 @@ impl GitProject {
             self._watcher = Some(watcher);
 
             let watcher_repo_path = repo_path.clone();
+            let watcher_commit_limit = self.commit_limit;
             let dirty_flag = dirty.clone();
             let git_fingerprint = last_git_fingerprint.clone();
             cx.spawn(async move |weak, cx: &mut AsyncApp| loop {
@@ -151,7 +152,7 @@ impl GitProject {
                     let path = watcher_repo_path.clone();
                     let data = cx
                         .background_executor()
-                        .spawn(async move { gather_refresh_data_lightweight(&path) })
+                        .spawn(async move { gather_refresh_data_lightweight(&path, watcher_commit_limit) })
                         .await;
 
                     let data = match data {

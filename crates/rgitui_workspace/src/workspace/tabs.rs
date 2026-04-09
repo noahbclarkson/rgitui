@@ -61,8 +61,13 @@ impl Workspace {
             anyhow::anyhow!("Failed to open repository at {}: {}", path.display(), e)
         })?;
 
+        let commit_limit = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| s.settings().commit_limit)
+            .unwrap_or(1000);
+
         let mut open_error: Option<String> = None;
-        let project = cx.new(|cx| match GitProject::open(path.clone(), cx) {
+        let project = cx.new(|cx| match GitProject::open(path.clone(), commit_limit, cx) {
             Ok(p) => p,
             Err(e) => {
                 log::error!("Failed to open git project at {}: {}", path.display(), e);
@@ -73,9 +78,7 @@ impl Workspace {
         if let Some(err) = open_error {
             anyhow::bail!("{}", err);
         }
-        project.update(cx, |proj, cx| {
-            proj.refresh(cx).detach();
-        });
+        // Refresh is orchestrated by the caller to prioritize the active tab.
 
         let graph = cx.new(rgitui_graph::GraphView::new);
         let diff_viewer = cx.new(rgitui_diff::DiffViewer::new);
@@ -254,6 +257,44 @@ impl Workspace {
         Ok(())
     }
 
+    /// Refresh all tabs, active tab first. Once the active tab completes,
+    /// the remaining tabs start refreshing in parallel.
+    pub fn refresh_all_tabs_prioritized(&self, cx: &mut Context<Self>) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let active = self.active_tab.min(self.tabs.len() - 1);
+
+        // Collect project entities for inactive tabs
+        let inactive_projects: Vec<gpui::Entity<rgitui_git::GitProject>> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != active)
+            .map(|(_, tab)| tab.project.clone())
+            .collect();
+
+        // Start active tab refresh; when it completes, start the rest
+        let active_project = self.tabs[active].project.clone();
+        let task = active_project.update(cx, |proj, cx| proj.refresh(cx));
+
+        cx.spawn(async move |_this, cx: &mut gpui::AsyncApp| {
+            if let Err(e) = task.await {
+                log::error!("Active tab refresh failed: {}", e);
+            }
+
+            // Now refresh remaining tabs in parallel
+            for proj in inactive_projects {
+                cx.update(|cx| {
+                    proj.update(cx, |proj, cx| {
+                        proj.refresh(cx).detach();
+                    });
+                });
+            }
+        })
+        .detach();
+    }
+
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         log::info!("close_tab: index={}", index);
         if index < self.tabs.len() {
@@ -318,6 +359,9 @@ impl Workspace {
         self.active_tab = snapshot
             .active_repo_index
             .min(self.tabs.len().saturating_sub(1));
+
+        self.refresh_all_tabs_prioritized(cx);
+
         self.set_status_message(format!("Opened workspace '{}'", snapshot.name), cx);
         self.persist_workspace_snapshot(cx);
         cx.notify();

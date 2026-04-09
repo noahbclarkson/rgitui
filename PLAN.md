@@ -759,6 +759,7 @@ _Last updated: 2026-04-03 15:31 UTC_
 1. **[MEDIUM] Interactive rebase visual polish** — drop indicator line while dragging
 2. **[LOW] Sidebar file tree virtualization** — O(n) construction per frame on large trees
 3. **[LOW] PR creation UI** — GitHub API client exists; needs create PR dialog
+4. **[MEDIUM] Switch file_history to git log subprocess** — `compute_file_history` in `crates/rgitui_git/src/project/file_history.rs` still uses libgit2's revwalk which is extremely slow on large repos (no commit-graph support). Switch to `git log --follow -- <path>` subprocess, same approach used for the main commit walk in `refresh.rs`. This will make file history instant on repos like the Linux kernel.
 
 ### Last Shipped
 - `48d8c0f`: fix(sidebar): resolve borrow checker E0502 in flatten_tree

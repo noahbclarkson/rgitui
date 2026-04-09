@@ -1348,6 +1348,8 @@ impl Workspace {
                         .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
                             if let Err(error) = this.open_repo(path.clone(), cx) {
                                 this.show_toast(error.to_string(), ToastKind::Error, cx);
+                            } else {
+                                this.refresh_all_tabs_prioritized(cx);
                             }
                         }))
                         .child(
