@@ -752,45 +752,45 @@ pub(super) fn subscribe_project(
                 if has_prewarmed.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     // Already prewarmed — skip on subsequent StatusChanged events
                 } else {
-                let proj = project.read(cx);
-                let prewarm_oids: Vec<git2::Oid> = {
-                    let cached = diff_cache.lock().unwrap();
-                    proj.recent_commits()
-                        .iter()
-                        .take(30)
-                        .map(|c| c.oid)
-                        .filter(|oid| !cached.contains(oid))
-                        .collect()
-                };
-                if !prewarm_oids.is_empty() {
-                    let repo_path = proj.repo_path().to_path_buf();
-                    let prewarm_cache = diff_cache.clone();
-                    log::debug!("diff_prewarm: starting for {} commits", prewarm_oids.len());
-                    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                        let tasks: Vec<_> = prewarm_oids
-                            .into_iter()
-                            .map(|oid| {
-                                let repo_path = repo_path.clone();
-                                cx.background_executor().spawn(async move {
-                                    let result =
-                                        rgitui_git::compute_commit_diff(&repo_path, oid);
-                                    (oid, result)
+                    let proj = project.read(cx);
+                    let prewarm_oids: Vec<git2::Oid> = {
+                        let cached = diff_cache.lock().unwrap();
+                        proj.recent_commits()
+                            .iter()
+                            .take(30)
+                            .map(|c| c.oid)
+                            .filter(|oid| !cached.contains(oid))
+                            .collect()
+                    };
+                    if !prewarm_oids.is_empty() {
+                        let repo_path = proj.repo_path().to_path_buf();
+                        let prewarm_cache = diff_cache.clone();
+                        log::debug!("diff_prewarm: starting for {} commits", prewarm_oids.len());
+                        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                            let tasks: Vec<_> = prewarm_oids
+                                .into_iter()
+                                .map(|oid| {
+                                    let repo_path = repo_path.clone();
+                                    cx.background_executor().spawn(async move {
+                                        let result =
+                                            rgitui_git::compute_commit_diff(&repo_path, oid);
+                                        (oid, result)
+                                    })
                                 })
-                            })
-                            .collect();
+                                .collect();
 
-                        let results = futures::future::join_all(tasks).await;
-                        let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
-                        log::debug!("diff_prewarm: complete, {} results cached", ok_count);
-                        let mut cache = prewarm_cache.lock().unwrap();
-                        for (oid, result) in results {
-                            if let Ok(commit_diff) = result {
-                                cache.insert(oid, Arc::new(commit_diff));
+                            let results = futures::future::join_all(tasks).await;
+                            let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
+                            log::debug!("diff_prewarm: complete, {} results cached", ok_count);
+                            let mut cache = prewarm_cache.lock().unwrap();
+                            for (oid, result) in results {
+                                if let Ok(commit_diff) = result {
+                                    cache.insert(oid, Arc::new(commit_diff));
+                                }
                             }
-                        }
-                    })
-                    .detach();
-                }
+                        })
+                        .detach();
+                    }
                 } // end prewarm gate
             }
             GitProjectEvent::OperationUpdated(update) => {

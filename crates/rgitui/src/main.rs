@@ -25,7 +25,10 @@ struct AppRoot {
 }
 
 impl AppRoot {
-    fn init_workspace(init: WorkspaceInit, cx: &mut Context<Self>) -> Entity<rgitui_workspace::Workspace> {
+    fn init_workspace(
+        init: WorkspaceInit,
+        cx: &mut Context<Self>,
+    ) -> Entity<rgitui_workspace::Workspace> {
         let workspace = cx.new(|cx| {
             let mut ws = rgitui_workspace::Workspace::new(cx);
             ws.set_crash_recovery_available(

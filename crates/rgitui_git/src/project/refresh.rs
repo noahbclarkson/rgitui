@@ -254,7 +254,10 @@ pub fn gather_refresh_data(repo_path: &Path, commit_limit: usize) -> Result<Refr
 /// Use this for filesystem watcher events where only file status needs updating.
 /// Ahead/behind values will be (0, 0) — they'll be recomputed on the next
 /// full refresh from a git operation (fetch/push/pull) or explicit user refresh.
-pub fn gather_refresh_data_lightweight(repo_path: &Path, commit_limit: usize) -> Result<RefreshData> {
+pub fn gather_refresh_data_lightweight(
+    repo_path: &Path,
+    commit_limit: usize,
+) -> Result<RefreshData> {
     log::debug!(
         "gather_refresh_data_lightweight: repo={}",
         repo_path.display()
@@ -433,12 +436,20 @@ fn gather_refresh_data_internal(
 
         let output = std::process::Command::new("git")
             .current_dir(repo_path)
-            .args(["log", "--all", &format!("--format={}", format), &format!("-{}", limit + 1)])
+            .args([
+                "log",
+                "--all",
+                &format!("--format={}", format),
+                &format!("-{}", limit + 1),
+            ])
             .output()
             .with_context(|| "Failed to run git log")?;
 
         if !output.status.success() {
-            anyhow::bail!("git log failed: {}", String::from_utf8_lossy(&output.stderr));
+            anyhow::bail!(
+                "git log failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -475,7 +486,11 @@ fn gather_refresh_data_internal(
                 .filter_map(|s| git2::Oid::from_str(s).ok())
                 .collect();
             let summary = fields[8].to_string();
-            let body = if fields.len() > 9 { fields[9].trim() } else { "" };
+            let body = if fields.len() > 9 {
+                fields[9].trim()
+            } else {
+                ""
+            };
             let message = if body.is_empty() {
                 summary.clone()
             } else {
@@ -506,7 +521,11 @@ fn gather_refresh_data_internal(
             });
         }
 
-        log::debug!("git log completed in {:?}: {} commits", t_log.elapsed(), commits.len());
+        log::debug!(
+            "git log completed in {:?}: {} commits",
+            t_log.elapsed(),
+            commits.len()
+        );
         (commits, has_more)
     };
 
@@ -535,10 +554,7 @@ fn gather_refresh_data_internal(
 }
 
 /// Enrich a commit with is_signed and co_authors (deferred from the revwalk).
-pub fn enrich_commit_info(
-    repo_path: &Path,
-    oid: git2::Oid,
-) -> Result<(bool, Vec<Signature>)> {
+pub fn enrich_commit_info(repo_path: &Path, oid: git2::Oid) -> Result<(bool, Vec<Signature>)> {
     let repo = Repository::open(repo_path)?;
     let commit = repo.find_commit(oid)?;
     let is_signed = commit.header_field_bytes("gpgsig").is_ok();
@@ -583,7 +599,11 @@ impl GitProject {
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     this.apply_refresh_data(data);
-                    log::info!("refresh phase 1 applied in {:?}: {} commits", t.elapsed(), this.recent_commits.len());
+                    log::info!(
+                        "refresh phase 1 applied in {:?}: {} commits",
+                        t.elapsed(),
+                        this.recent_commits.len()
+                    );
                     cx.emit(GitProjectEvent::StatusChanged);
                     // Fire ahead/behind computation in the background (deferred from lightweight refresh)
                     this.refresh_ahead_behind(cx);
@@ -622,7 +642,11 @@ impl GitProject {
                         this.commit_offset = combined.len();
                         this.has_more_commits = has_more;
                         this.recent_commits = Arc::new(combined);
-                        log::info!("refresh phase 2 applied in {:?}: {} commits total", t.elapsed(), this.recent_commits.len());
+                        log::info!(
+                            "refresh phase 2 applied in {:?}: {} commits total",
+                            t.elapsed(),
+                            this.recent_commits.len()
+                        );
                         cx.emit(GitProjectEvent::StatusChanged);
                         cx.notify();
                         Ok(())
@@ -688,7 +712,10 @@ pub(super) fn load_more_commits_from_repo(
         .with_context(|| "Failed to run git log")?;
 
     if !output.status.success() {
-        anyhow::bail!("git log failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -725,7 +752,11 @@ pub(super) fn load_more_commits_from_repo(
             .filter_map(|s| git2::Oid::from_str(s).ok())
             .collect();
         let summary = fields[8].to_string();
-        let body = if fields.len() > 9 { fields[9].trim() } else { "" };
+        let body = if fields.len() > 9 {
+            fields[9].trim()
+        } else {
+            ""
+        };
         let message = if body.is_empty() {
             summary.clone()
         } else {

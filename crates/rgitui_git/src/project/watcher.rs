@@ -152,7 +152,9 @@ impl GitProject {
                     let path = watcher_repo_path.clone();
                     let data = cx
                         .background_executor()
-                        .spawn(async move { gather_refresh_data_lightweight(&path, watcher_commit_limit) })
+                        .spawn(async move {
+                            gather_refresh_data_lightweight(&path, watcher_commit_limit)
+                        })
                         .await;
 
                     let data = match data {

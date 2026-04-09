@@ -67,14 +67,16 @@ impl Workspace {
             .unwrap_or(1000);
 
         let mut open_error: Option<String> = None;
-        let project = cx.new(|cx| match GitProject::open(path.clone(), commit_limit, cx) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Failed to open git project at {}: {}", path.display(), e);
-                open_error = Some(format!("Failed to open repository: {}", e));
-                GitProject::empty_at(path.clone())
-            }
-        });
+        let project = cx.new(
+            |cx| match GitProject::open(path.clone(), commit_limit, cx) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("Failed to open git project at {}: {}", path.display(), e);
+                    open_error = Some(format!("Failed to open repository: {}", e));
+                    GitProject::empty_at(path.clone())
+                }
+            },
+        );
         if let Some(err) = open_error {
             anyhow::bail!("{}", err);
         }
@@ -102,9 +104,24 @@ impl Workspace {
         let caches = super::ViewCaches::new();
 
         // Set up subscriptions for child component events
-        super::events::subscribe_project(cx, &project, &graph, &sidebar, &commit_panel, &toolbar, caches.diff.clone());
+        super::events::subscribe_project(
+            cx,
+            &project,
+            &graph,
+            &sidebar,
+            &commit_panel,
+            &toolbar,
+            caches.diff.clone(),
+        );
         super::events::subscribe_sidebar(cx, &project, &sidebar, &diff_viewer, &detail_panel);
-        super::events::subscribe_graph(cx, &project, &graph, &diff_viewer, &detail_panel, caches.diff.clone());
+        super::events::subscribe_graph(
+            cx,
+            &project,
+            &graph,
+            &diff_viewer,
+            &detail_panel,
+            caches.diff.clone(),
+        );
         super::events::subscribe_detail_panel(cx, &project, &diff_viewer, &detail_panel);
         super::events::subscribe_diff_viewer(cx, &project, &diff_viewer);
         super::events::subscribe_commit_panel(cx, &project, &self.ai.clone(), &commit_panel);
