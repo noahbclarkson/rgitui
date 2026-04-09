@@ -19,23 +19,13 @@ struct WorkspaceInit {
 struct AppRoot {
     splash: Option<Entity<rgitui_workspace::SplashScreen>>,
     workspace: Option<Entity<rgitui_workspace::Workspace>>,
-    pending_init: Option<WorkspaceInit>,
     transitioning: bool,
     needs_maximize: bool,
     focus: FocusHandle,
 }
 
 impl AppRoot {
-    fn transition_to_workspace(&mut self, cx: &mut Context<Self>) {
-        if self.transitioning || self.workspace.is_some() {
-            return;
-        }
-        self.transitioning = true;
-
-        let Some(init) = self.pending_init.take() else {
-            return;
-        };
-
+    fn init_workspace(init: WorkspaceInit, cx: &mut Context<Self>) -> Entity<rgitui_workspace::Workspace> {
         let workspace = cx.new(|cx| {
             let mut ws = rgitui_workspace::Workspace::new(cx);
             ws.set_crash_recovery_available(
@@ -66,17 +56,30 @@ impl AppRoot {
 
         workspace.update(cx, |ws, cx| {
             ws.start_background_tasks(cx);
-            ws.show_crash_recovery_toast(cx);
         });
 
-        self.workspace = Some(workspace);
+        workspace
+    }
+
+    fn show_workspace(&mut self, cx: &mut Context<Self>) {
+        if self.transitioning {
+            return;
+        }
+        self.transitioning = true;
+
+        if let Some(workspace) = &self.workspace {
+            workspace.update(cx, |ws, cx| {
+                ws.show_crash_recovery_toast(cx);
+            });
+        }
+
         self.splash = None;
         self.needs_maximize = true;
         cx.notify();
     }
 
     fn skip_splash(&mut self, cx: &mut Context<Self>) {
-        self.transition_to_workspace(cx);
+        self.show_workspace(cx);
     }
 }
 
@@ -85,18 +88,7 @@ impl Render for AppRoot {
         // Each branch returns a different concrete type due to GPUI's builder pattern.
         // Type-erase with into_any_element() to avoid a massive enum that overflows
         // the stack frame.
-        if let Some(workspace) = &self.workspace {
-            if self.needs_maximize {
-                self.needs_maximize = false;
-                window.set_window_title("rgitui");
-                window.zoom_window();
-            }
-            div()
-                .id("app-root-workspace")
-                .size_full()
-                .child(workspace.clone())
-                .into_any_element()
-        } else if let Some(splash) = &self.splash {
+        if let Some(splash) = &self.splash {
             if !self.focus.is_focused(window) {
                 self.focus.focus(window, cx);
             }
@@ -114,6 +106,17 @@ impl Render for AppRoot {
                     this.skip_splash(cx);
                 }))
                 .child(splash.clone())
+                .into_any_element()
+        } else if let Some(workspace) = &self.workspace {
+            if self.needs_maximize {
+                self.needs_maximize = false;
+                window.set_window_title("rgitui");
+                window.zoom_window();
+            }
+            div()
+                .id("app-root-workspace")
+                .size_full()
+                .child(workspace.clone())
                 .into_any_element()
         } else {
             div().id("app-root-empty").size_full().into_any_element()
@@ -293,14 +296,18 @@ fn main() {
                     was_clean_exit,
                 };
 
-                // Transition after 1.5s minimum animation time.
+                // Start loading repos immediately so refresh + diff prewarm
+                // run in parallel with the splash animation.
+                let workspace = AppRoot::init_workspace(init, cx);
+
+                // Show the workspace after 1.5s minimum animation time.
                 cx.spawn(
                     async move |this: gpui::WeakEntity<AppRoot>, cx: &mut gpui::AsyncApp| {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(1500))
                             .await;
                         this.update(cx, |this: &mut AppRoot, cx| {
-                            this.transition_to_workspace(cx);
+                            this.show_workspace(cx);
                         })
                         .ok();
                     },
@@ -309,8 +316,7 @@ fn main() {
 
                 AppRoot {
                     splash: Some(splash),
-                    workspace: None,
-                    pending_init: Some(init),
+                    workspace: Some(workspace),
                     transitioning: false,
                     needs_maximize: false,
                     focus: cx.focus_handle(),

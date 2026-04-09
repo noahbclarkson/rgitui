@@ -1,7 +1,6 @@
 use anyhow::Result;
 use git2::{DiffOptions, Repository};
 use std::path::{Path, PathBuf};
-use std::thread;
 
 use crate::types::*;
 
@@ -327,92 +326,24 @@ pub(crate) fn generate_line_patch_for_repo(
     Ok(patch_text)
 }
 
-/// Serialize a git2::Diff to a byte buffer using DiffFormat::Patch.
-fn serialize_diff_to_patch_bytes(diff: &git2::Diff) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
-        match line.origin() {
-            // File header and hunk header: content already contains the full line
-            'F' | 'H' => {}
-            // Content lines (+/-/space): prepend the sigil character
-            c => buf.push(c as u8),
-        }
-        buf.extend_from_slice(line.content());
-        true
-    })?;
-    Ok(buf)
-}
-
 /// Parse a git2::Diff into a CommitDiff using structured Patch iteration.
-/// Parallel processing kicks in when there are enough files to justify thread overhead.
+/// Cross-commit parallelism is handled by the caller; this function processes
+/// a single diff sequentially to avoid serialize/re-parse overhead.
 pub(crate) fn parse_multi_file_diff(diff: &git2::Diff) -> Result<CommitDiff> {
-    let stats = diff.stats()?;
     let num_patches = diff.deltas().len();
-
-    // Threshold: parallelization overhead (thread spawn + diff re-parse) only
-    // pays off when there are enough patches to amortize it.
-    const PARALLEL_THRESHOLD: usize = 8;
-
-    let files: Vec<FileDiff> = if num_patches < PARALLEL_THRESHOLD {
-        // Sequential path — no thread overhead.
-        let mut files = Vec::with_capacity(num_patches);
-        for i in 0..num_patches {
-            if let Some(mut patch) = git2::Patch::from_diff(diff, i)? {
-                let file_diff = parse_single_patch(&mut patch)?;
-                files.push(file_diff);
-            }
+    let mut files = Vec::with_capacity(num_patches);
+    for i in 0..num_patches {
+        if let Some(mut patch) = git2::Patch::from_diff(diff, i)? {
+            files.push(parse_single_patch(&mut patch)?);
         }
-        files
-    } else {
-        // Parallel path — serialize once to a patch byte stream, then
-        // re-parse in each thread. This avoids needing repo access in threads.
-        let diff_bytes = serialize_diff_to_patch_bytes(diff)?;
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| std::cmp::max(2, n.get().min(num_patches)))
-            .unwrap_or(4);
-        let chunk_size = num_patches.div_ceil(num_threads);
+    }
 
-        let chunk_results: Vec<Vec<FileDiff>> = thread::scope(|s| {
-            let handles: Vec<_> = (0..num_threads)
-                .map(|t| {
-                    let buf = diff_bytes.clone();
-                    s.spawn(move || {
-                        // Re-parse the serialized diff in this thread.
-                        let diff = match git2::Diff::from_buffer(&buf) {
-                            Ok(d) => d,
-                            Err(_) => return Vec::new(),
-                        };
-                        let start = t * chunk_size;
-                        let end = std::cmp::min(start + chunk_size, num_patches);
-                        if start >= num_patches {
-                            return Vec::new();
-                        }
-                        let mut results = Vec::with_capacity(end.saturating_sub(start));
-                        for i in start..end {
-                            if let Some(mut patch) = git2::Patch::from_diff(&diff, i).ok().flatten()
-                            {
-                                if let Ok(file_diff) = parse_single_patch(&mut patch) {
-                                    results.push(file_diff);
-                                }
-                            }
-                        }
-                        results
-                    })
-                })
-                .collect();
-
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap_or_default())
-                .collect()
-        });
-
-        chunk_results.into_iter().flatten().collect()
-    };
+    let total_additions = files.iter().map(|f| f.additions).sum();
+    let total_deletions = files.iter().map(|f| f.deletions).sum();
 
     Ok(CommitDiff {
-        total_additions: stats.insertions(),
-        total_deletions: stats.deletions(),
+        total_additions,
+        total_deletions,
         files,
     })
 }

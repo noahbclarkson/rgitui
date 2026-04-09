@@ -96,10 +96,12 @@ impl Workspace {
             s.set_repo_name(repo_display_name, cx);
         });
 
+        let caches = super::ViewCaches::new();
+
         // Set up subscriptions for child component events
-        super::events::subscribe_project(cx, &project, &graph, &sidebar, &commit_panel, &toolbar);
+        super::events::subscribe_project(cx, &project, &graph, &sidebar, &commit_panel, &toolbar, caches.diff.clone());
         super::events::subscribe_sidebar(cx, &project, &sidebar, &diff_viewer, &detail_panel);
-        super::events::subscribe_graph(cx, &project, &graph, &diff_viewer, &detail_panel);
+        super::events::subscribe_graph(cx, &project, &graph, &diff_viewer, &detail_panel, caches.diff.clone());
         super::events::subscribe_detail_panel(cx, &project, &diff_viewer, &detail_panel);
         super::events::subscribe_diff_viewer(cx, &project, &diff_viewer);
         super::events::subscribe_commit_panel(cx, &project, &self.ai.clone(), &commit_panel);
@@ -239,7 +241,7 @@ impl Workspace {
             global_search_view,
             right_panel_mode: RightPanelMode::Details,
             bottom_panel_mode: BottomPanelMode::Diff,
-            caches: super::ViewCaches::new(),
+            caches,
         });
         self.active_tab = self.tabs.len() - 1;
         log::info!("open_repo: opened as tab {}", self.tabs.len() - 1);

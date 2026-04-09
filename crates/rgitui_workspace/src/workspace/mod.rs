@@ -84,6 +84,9 @@ pub(super) struct ViewCaches {
     pub history: std::sync::Arc<
         std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::CommitInfo>>>,
     >,
+    pub diff: std::sync::Arc<
+        std::sync::Mutex<crate::cache::LruCache<git2::Oid, std::sync::Arc<rgitui_git::CommitDiff>>>,
+    >,
 }
 
 impl ViewCaches {
@@ -91,6 +94,7 @@ impl ViewCaches {
         Self {
             blame: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(8))),
             history: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(8))),
+            diff: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(200))),
         }
     }
 }
