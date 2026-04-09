@@ -601,6 +601,7 @@ impl GitProject {
                 .await?;
 
             let needs_more = data.has_more_commits && first_batch < commit_limit;
+            let user_email_for_commits = data.current_user_email.clone();
             let branch_tips: Vec<(git2::Oid, bool, String)> = data
                 .branches
                 .iter()
@@ -629,6 +630,7 @@ impl GitProject {
             if needs_more {
                 let remaining = commit_limit - first_batch;
                 let repo_path_p2 = repo_path.clone();
+                let user_email_p2 = user_email_for_commits.clone();
                 let (more_commits, has_more) = cx
                     .background_executor()
                     .spawn(async move {
@@ -638,6 +640,7 @@ impl GitProject {
                             remaining,
                             &branch_tips,
                             &tag_tips,
+                            user_email_p2.as_deref(),
                         )
                     })
                     .await?;
@@ -680,6 +683,7 @@ pub(super) fn load_more_commits_from_repo(
     limit: usize,
     branch_tips: &[(git2::Oid, bool, String)],
     tag_tips: &[(git2::Oid, String)],
+    author_filter: Option<&str>,
 ) -> Result<(Vec<CommitInfo>, bool)> {
     // Build ref-label map from the caller-supplied tips.
     let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
@@ -712,17 +716,14 @@ pub(super) fn load_more_commits_from_repo(
         RS, GS, GS, GS, GS, GS, GS, GS, GS, GS, GS
     );
 
-    let output = git_command()
-        .current_dir(repo_path)
-        .args([
-            "log",
-            "--all",
-            &format!("--format={}", format),
-            &format!("--skip={}", skip),
-            &format!("-{}", limit + 1),
-        ])
-        .output()
-        .with_context(|| "Failed to run git log")?;
+    let mut cmd = git_command();
+    cmd.current_dir(repo_path)
+        .args(["log", "--all", &format!("--format={}", format)]);
+    if let Some(author) = author_filter {
+        cmd.arg(format!("--author={}", author));
+    }
+    cmd.args([&format!("--skip={}", skip), &format!("-{}", limit + 1)]);
+    let output = cmd.output().with_context(|| "Failed to run git log")?;
 
     if !output.status.success() {
         anyhow::bail!(
@@ -940,7 +941,7 @@ mod load_more_tests {
         // Load page 2 (skip first 3, take up to 2)
         let branch_tips = vec![(tip, false, "main".to_string())];
         let (commits, has_more) =
-            load_more_commits_from_repo(&path, 3, 2, &branch_tips, &[]).unwrap();
+            load_more_commits_from_repo(&path, 3, 2, &branch_tips, &[], None).unwrap();
         // 5 commits total, skip 3 → 2 remaining, no more after that
         assert_eq!(commits.len(), 2);
         assert!(!has_more);
@@ -952,7 +953,7 @@ mod load_more_tests {
         let branch_tips = vec![(tip, false, "main".to_string())];
         // skip 0, limit 3 → should have more
         let (commits, has_more) =
-            load_more_commits_from_repo(&path, 0, 3, &branch_tips, &[]).unwrap();
+            load_more_commits_from_repo(&path, 0, 3, &branch_tips, &[], None).unwrap();
         assert_eq!(commits.len(), 3);
         assert!(has_more);
     }
@@ -963,7 +964,7 @@ mod load_more_tests {
         let branch_tips = vec![(tip, false, "main".to_string())];
         // skip past all commits
         let (commits, has_more) =
-            load_more_commits_from_repo(&path, 10, 5, &branch_tips, &[]).unwrap();
+            load_more_commits_from_repo(&path, 10, 5, &branch_tips, &[], None).unwrap();
         assert!(commits.is_empty());
         assert!(!has_more);
     }

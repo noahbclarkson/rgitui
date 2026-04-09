@@ -124,6 +124,8 @@ pub enum GraphViewEvent {
     ResetToCommit(git2::Oid, String),
     /// Request to load more commits beyond the current set.
     LoadMoreCommits,
+    /// Toggle "My Commits" filter — show only commits authored by the current user.
+    ToggleMyCommits,
     /// The virtual "working tree" row was selected.
     WorkingTreeSelected,
     /// Mark commit as "good" during bisect.
@@ -181,6 +183,8 @@ pub struct GraphView {
     show_graph_lanes: bool,
     show_ref_badges: bool,
     show_author_email: bool,
+    /// Whether "My Commits" filter is active — show only commits by the current user.
+    my_commits_active: bool,
     /// Cached bounds of the graph container div, used to convert window-relative
     /// click positions to container-relative coordinates for context menu placement.
     container_bounds: Bounds<Pixels>,
@@ -244,6 +248,7 @@ impl GraphView {
             show_graph_lanes: true,
             show_ref_badges: true,
             show_author_email: false,
+            my_commits_active: false,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
         }
     }
@@ -257,6 +262,11 @@ impl GraphView {
     /// Check if the graph view is currently focused.
     pub fn is_focused(&self, window: &Window) -> bool {
         self.graph_focus.is_focused(window)
+    }
+
+    /// Whether "My Commits" filter is currently active.
+    pub fn my_commits_active(&self) -> bool {
+        self.my_commits_active
     }
 
     pub fn set_commits(&mut self, commits: Arc<Vec<CommitInfo>>, cx: &mut Context<Self>) {
@@ -882,12 +892,14 @@ impl Render for GraphView {
         let author_col_width = cx.global::<SettingsState>().settings().author_column_width;
         let date_col_width = cx.global::<SettingsState>().settings().date_column_width;
         let show_author_email = self.show_author_email;
+        let my_commits_active = self.my_commits_active;
 
         // Helper to get global position
         let entity = cx.entity();
 
         // Header row (not virtualized — always visible)
         let view_settings_toggle = cx.weak_entity();
+        let view_my_commits_toggle = cx.weak_entity();
         let mut header = div()
             .h_flex()
             .items_center()
@@ -1063,40 +1075,89 @@ impl Render for GraphView {
             );
         }
 
-        header = header.child(
-            div()
-                .id("settings-gear-btn")
-                .flex_shrink_0()
-                .w(px(22.))
-                .h(px(22.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(3.))
-                .cursor(CursorStyle::PointingHand)
-                .hover(|s| s.bg(hover_bg))
-                .active(|s| s.bg(active_bg))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+        let my_commits_icon_color = if my_commits_active {
+            Color::Accent
+        } else {
+            Color::Muted
+        };
+
+        let my_commits_tooltip: SharedString = if my_commits_active {
+            "Showing only your commits. Click to show all commits.".into()
+        } else {
+            "Show only your commits. Click to filter by current user.".into()
+        };
+
+        header = header
+            .child(
+                div()
+                    .id("my-commits-btn")
+                    .flex_shrink_0()
+                    .w(px(22.))
+                    .h(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.))
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|s| s.bg(hover_bg))
+                    .active(|s| s.bg(active_bg))
+                    .tooltip(Tooltip::text(my_commits_tooltip))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                            cx.stop_propagation();
+                        },
+                    )
+                    .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                         cx.stop_propagation();
-                    },
-                )
-                .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                    cx.stop_propagation();
-                    view_settings_toggle
-                        .update(cx, |this: &mut GraphView, cx| {
-                            this.show_settings_popover = !this.show_settings_popover;
-                            cx.notify();
-                        })
-                        .ok();
-                })
-                .child(
-                    Icon::new(IconName::Settings)
-                        .size(IconSize::XSmall)
-                        .color(Color::Muted),
-                ),
-        );
+                        view_my_commits_toggle
+                            .update(cx, |this: &mut GraphView, cx| {
+                                this.my_commits_active = !this.my_commits_active;
+                                cx.emit(GraphViewEvent::ToggleMyCommits);
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .child(
+                        Icon::new(IconName::User)
+                            .size(IconSize::XSmall)
+                            .color(my_commits_icon_color),
+                    ),
+            )
+            .child(
+                div()
+                    .id("settings-gear-btn")
+                    .flex_shrink_0()
+                    .w(px(22.))
+                    .h(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.))
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|s| s.bg(hover_bg))
+                    .active(|s| s.bg(active_bg))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                            cx.stop_propagation();
+                        },
+                    )
+                    .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                        view_settings_toggle
+                            .update(cx, |this: &mut GraphView, cx| {
+                                this.show_settings_popover = !this.show_settings_popover;
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .child(
+                        Icon::new(IconName::Settings)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            );
 
         let now_utc = chrono::Utc::now();
 

@@ -226,6 +226,8 @@ pub struct GitProject {
     /// Current Git user email, read from repo config then global config.
     /// Used for "My Branches" / "My Commits" filtering.
     current_user_email: Option<String>,
+    /// Author filter for "My Commits" — when set, only commits by this author are loaded.
+    commit_author_filter: Option<String>,
     /// Maximum number of commits to load (configurable via settings).
     commit_limit: usize,
 
@@ -257,6 +259,7 @@ impl GitProject {
             next_operation_id: 1,
             default_branch: None,
             current_user_email: None,
+            commit_author_filter: None,
             commit_limit: 1000,
             _watcher: None,
         }
@@ -286,6 +289,7 @@ impl GitProject {
             next_operation_id: 1,
             default_branch: None,
             current_user_email: None,
+            commit_author_filter: None,
             commit_limit,
             _watcher: None,
         };
@@ -539,6 +543,19 @@ impl GitProject {
         self.current_user_email.as_deref()
     }
 
+    /// Set the author filter for "My Commits" mode. When `Some(email)`,
+    /// only commits authored by this email are loaded. Clears existing commits
+    /// and resets the offset so the next load fetches from the beginning.
+    pub fn set_commit_author_filter(&mut self, email: Option<String>) {
+        if self.commit_author_filter != email {
+            self.commit_author_filter = email;
+            // Reset commit list so next load starts fresh with the filter applied.
+            self.recent_commits = Arc::new(Vec::new());
+            self.commit_offset = 0;
+            self.has_more_commits = true;
+        }
+    }
+
     /// How many commits are currently loaded.
     pub fn loaded_commit_count(&self) -> usize {
         self.recent_commits.len()
@@ -559,6 +576,7 @@ impl GitProject {
         let tag_tips: Vec<(git2::Oid, String)> =
             self.tags.iter().map(|t| (t.oid, t.name.clone())).collect();
         let commit_limit = self.commit_limit;
+        let author_filter = self.commit_author_filter.clone();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let (new_commits, has_more) = cx
@@ -570,6 +588,7 @@ impl GitProject {
                         commit_limit,
                         &branch_tips,
                         &tag_tips,
+                        author_filter.as_deref(),
                     )
                 })
                 .await?;

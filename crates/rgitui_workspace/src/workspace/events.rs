@@ -1299,6 +1299,8 @@ pub(super) fn subscribe_graph(
     let diff_viewer = diff_viewer.clone();
     let detail_panel_ref = detail_panel.clone();
 
+    let graph_entity = graph.clone();
+
     cx.subscribe(graph, {
         move |this, _graph, event: &GraphViewEvent, cx| {
             match event {
@@ -1621,6 +1623,25 @@ pub(super) fn subscribe_graph(
                         cx,
                     );
                     project.update(cx, |proj, cx| {
+                        proj.load_more_commits(cx).detach();
+                    });
+                }
+                GraphViewEvent::ToggleMyCommits => {
+                    let is_active = graph_entity.update(cx, |g, _| g.my_commits_active());
+                    let user_email = project.read(cx).current_user_email().map(String::from);
+                    let already_loaded = project.read(cx).loaded_commit_count();
+                    let msg = if is_active {
+                        format!("Filtering to your commits ({} loaded)...", already_loaded)
+                    } else {
+                        "Showing all commits.".into()
+                    };
+                    this.show_toast(&msg, ToastKind::Info, cx);
+                    project.update(cx, |proj, cx| {
+                        if is_active {
+                            proj.set_commit_author_filter(user_email);
+                        } else {
+                            proj.set_commit_author_filter(None);
+                        }
                         proj.load_more_commits(cx).detach();
                     });
                 }
