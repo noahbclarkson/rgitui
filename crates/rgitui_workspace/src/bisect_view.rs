@@ -32,8 +32,6 @@ pub enum BisectViewEvent {
     Skip(String),
 }
 
-impl BisectViewEvent {}
-
 /// A bisect viewer panel that shows the git bisect log.
 pub struct BisectView {
     entries: Arc<Vec<BisectLogEntry>>,

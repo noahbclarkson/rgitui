@@ -109,7 +109,23 @@ pub fn is_bisect_in_progress(repo_path: &Path) -> bool {
     }
 }
 
-#[allow(clippy::items_after_test_module)]
+impl GitProject {
+    /// Get bisect log entries for the repository.
+    pub fn bisect_log(&self) -> Result<Vec<BisectLogEntry>> {
+        compute_bisect_log(self.repo_path())
+    }
+
+    /// Get bisect log entries asynchronously.
+    pub fn bisect_log_async(&self, cx: &mut Context<Self>) -> Task<Result<Vec<BisectLogEntry>>> {
+        let repo_path = self.repo_path().to_path_buf();
+        cx.spawn(async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.background_executor()
+                .spawn(async move { compute_bisect_log(&repo_path) })
+                .await
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,22 +165,5 @@ mod tests {
         assert!(parse_bisect_line("not a comment").is_none());
         assert!(parse_bisect_line("# some other comment").is_none());
         assert!(parse_bisect_line("").is_none());
-    }
-}
-
-impl GitProject {
-    /// Get bisect log entries for the repository.
-    pub fn bisect_log(&self) -> Result<Vec<BisectLogEntry>> {
-        compute_bisect_log(self.repo_path())
-    }
-
-    /// Get bisect log entries asynchronously.
-    pub fn bisect_log_async(&self, cx: &mut Context<Self>) -> Task<Result<Vec<BisectLogEntry>>> {
-        let repo_path = self.repo_path().to_path_buf();
-        cx.spawn(async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.background_executor()
-                .spawn(async move { compute_bisect_log(&repo_path) })
-                .await
-        })
     }
 }
