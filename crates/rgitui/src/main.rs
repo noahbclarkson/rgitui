@@ -202,7 +202,41 @@ fn load_embedded_fonts(cx: &App) {
     }
 }
 
+/// Print diagnostic info about embedded fonts and exit.
+/// Used to help debug text rendering issues (GitHub Issue #9).
+fn run_diagnostics() {
+    println!("rgitui diagnostics");
+    println!("==================");
+    println!("version: {}", env!("CARGO_PKG_VERSION"));
+    println!("embedded fonts:");
+
+    let font_paths: Vec<_> = Assets::iter()
+        .filter(|p| p.starts_with("fonts/") && p.ends_with(".ttf"))
+        .collect();
+
+    if font_paths.is_empty() {
+        println!("  (none found — this is the bug!)");
+    } else {
+        for path in &font_paths {
+            let data = Assets::get(path).map(|d| d.data.len()).unwrap_or(0);
+            println!("  {} ({} bytes)", path, data);
+        }
+    }
+    println!("total: {} font file(s)", font_paths.len());
+    println!();
+    println!("If no fonts are listed above, your build is missing font assets.");
+    println!("On macOS if fonts ARE listed but text doesn't render, this is");
+    println!("a GPU/font subsystem issue — please copy this output when filing");
+    println!("a GitHub issue.");
+}
+
 fn main() {
+    // --diagnose flag: print font info and exit (before app init)
+    if std::env::args().nth(1).as_deref() == Some("--diagnose") {
+        run_diagnostics();
+        return;
+    }
+
     env_logger::init();
     std::panic::set_hook(Box::new(|panic_info| {
         log::error!("panic: {}", panic_info);
