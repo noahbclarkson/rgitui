@@ -2643,30 +2643,34 @@ impl Render for Sidebar {
                                         .child(div().flex_1())
                                         .child(
                                             div()
-                                                .id(ElementId::NamedInteger("unstage-action".into(), i as u64))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .w(px(18.))
-                                                .h(px(18.))
-                                                .rounded(px(3.))
-                                                .invisible()
-                                                .group_hover("sidebar-file-row", |s| s.visible())
-                                                .text_xs()
-                                                .text_color(Color::Added.color(cx))
-                                                .hover(|s| s.bg(colors.ghost_element_hover))
-                                                .cursor_pointer()
-                                                .tooltip(Tooltip::text("Unstage file"))
-                                                .on_click({
-                                                    let w_unstg = w.clone();
-                                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                                    w_unstg.clone().update(cx, |_, cx| {
-                                                        cx.emit(SidebarEvent::UnstageFile(
-                                                            file_path_unstage.clone(),
-                                                        ));
-                                                    }).ok();
-                                                }})
-                                                .child(rgitui_ui::Icon::new(IconName::Minus)),
+                                                .pr(px(2.))
+                                                .child(
+                                                    div()
+                                                        .id(ElementId::NamedInteger("unstage-action".into(), i as u64))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(18.))
+                                                        .h(px(18.))
+                                                        .rounded(px(3.))
+                                                        .invisible()
+                                                        .group_hover("sidebar-file-row", |s| s.visible())
+                                                        .text_xs()
+                                                        .text_color(Color::Added.color(cx))
+                                                        .hover(|s| s.bg(colors.ghost_element_hover))
+                                                        .cursor_pointer()
+                                                        .tooltip(Tooltip::text("Unstage file"))
+                                                        .on_click({
+                                                            let w_unstg = w.clone();
+                                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                            w_unstg.clone().update(cx, |_, cx| {
+                                                                cx.emit(SidebarEvent::UnstageFile(
+                                                                    file_path_unstage.clone(),
+                                                                ));
+                                                            }).ok();
+                                                        }})
+                                                        .child(rgitui_ui::Icon::new(IconName::Minus)),
+                                                ),
                                         )
                                         .into_any_element()
                                 }
@@ -2920,60 +2924,66 @@ impl Render for Sidebar {
                                                 .truncate(),
                                         )
                                         .child(div().flex_1())
-                                        // Discard button for unstaged files
+                                        // Action buttons for unstaged files (wrapped for right padding)
                                         .child(
                                             div()
-                                                .id(ElementId::NamedInteger("discard-action".into(), i as u64))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .w(px(18.))
-                                                .h(px(18.))
-                                                .rounded(px(3.))
-                                                .invisible()
-                                                .group_hover("sidebar-file-row", |s| s.visible())
-                                                .text_xs()
-                                                .text_color(Color::Deleted.color(cx))
-                                                .hover(|s| s.bg(colors.ghost_element_hover))
-                                                .cursor_pointer()
-                                                .tooltip(Tooltip::text("Discard changes (Ctrl+Z)"))
-                                                .on_click({
-                                                    let w_dis = w.clone();
-                                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                                    w_dis.clone().update(cx, |_, cx| {
-                                                        cx.emit(SidebarEvent::DiscardFile(
-                                                            file_path_for_emit.clone(),
-                                                        ));
-                                                    }).ok();
-                                                }})
-                                                .child("x"),
-                                        )
-                                        .child(
-                                            div()
-                                                .id(ElementId::NamedInteger("stage-action".into(), i as u64))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .w(px(18.))
-                                                .h(px(18.))
-                                                .rounded(px(3.))
-                                                .invisible()
-                                                .group_hover("sidebar-file-row", |s| s.visible())
-                                                .text_xs()
-                                                .text_color(Color::Added.color(cx))
-                                                .hover(|s| s.bg(colors.ghost_element_hover))
-                                                .cursor_pointer()
-                                                .tooltip(Tooltip::text("Stage file"))
-                                                .on_click({
-                                                    let w_stg = w.clone();
-                                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                                    w_stg.clone().update(cx, |_, cx| {
-                                                        cx.emit(SidebarEvent::StageFile(
-                                                            file_path_stage.clone(),
-                                                        ));
-                                                    }).ok();
-                                                }})
-                                                .child(rgitui_ui::Icon::new(IconName::Plus)),
+                                                .pr(px(2.))
+                                                .h_flex()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .id(ElementId::NamedInteger("discard-action".into(), i as u64))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(18.))
+                                                        .h(px(18.))
+                                                        .rounded(px(3.))
+                                                        .invisible()
+                                                        .group_hover("sidebar-file-row", |s| s.visible())
+                                                        .text_xs()
+                                                        .text_color(Color::Deleted.color(cx))
+                                                        .hover(|s| s.bg(colors.ghost_element_hover))
+                                                        .cursor_pointer()
+                                                        .tooltip(Tooltip::text("Discard changes (Ctrl+Z)"))
+                                                        .on_click({
+                                                            let w_dis = w.clone();
+                                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                            w_dis.clone().update(cx, |_, cx| {
+                                                                cx.emit(SidebarEvent::DiscardFile(
+                                                                    file_path_for_emit.clone(),
+                                                                ));
+                                                            }).ok();
+                                                        }})
+                                                        .child("x"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id(ElementId::NamedInteger("stage-action".into(), i as u64))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(18.))
+                                                        .h(px(18.))
+                                                        .rounded(px(3.))
+                                                        .invisible()
+                                                        .group_hover("sidebar-file-row", |s| s.visible())
+                                                        .text_xs()
+                                                        .text_color(Color::Added.color(cx))
+                                                        .hover(|s| s.bg(colors.ghost_element_hover))
+                                                        .cursor_pointer()
+                                                        .tooltip(Tooltip::text("Stage file"))
+                                                        .on_click({
+                                                            let w_stg = w.clone();
+                                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                            w_stg.clone().update(cx, |_, cx| {
+                                                                cx.emit(SidebarEvent::StageFile(
+                                                                    file_path_stage.clone(),
+                                                                ));
+                                                            }).ok();
+                                                        }})
+                                                        .child(rgitui_ui::Icon::new(IconName::Plus)),
+                                                ),
                                         )
                                         .into_any_element()
                                 }
