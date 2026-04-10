@@ -195,6 +195,10 @@ pub struct GraphView {
     /// Cached bounds of the graph container div, used to convert window-relative
     /// click positions to container-relative coordinates for context menu placement.
     container_bounds: Bounds<Pixels>,
+    /// OID of the commit currently being dragged (for drag-to-rebase).
+    dragging_oid: Option<git2::Oid>,
+    /// Whether a drag-to-rebase was just completed (suppresses click-to-select).
+    suppress_next_click: bool,
 }
 
 impl EventEmitter<GraphViewEvent> for GraphView {}
@@ -257,6 +261,8 @@ impl GraphView {
             show_author_email: false,
             my_commits_active: false,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
+            dragging_oid: None,
+            suppress_next_click: false,
         }
     }
 
@@ -455,6 +461,25 @@ impl GraphView {
             commit_index: index,
             position,
         });
+        cx.notify();
+    }
+
+    // ── Drag-to-rebase ────────────────────────────────────────────────
+
+    /// Begin dragging a commit (called on mousedown of the grip handle).
+    fn start_drag(&mut self, oid: git2::Oid, cx: &mut Context<Self>) {
+        self.dragging_oid = Some(oid);
+        self.suppress_next_click = true;
+        cx.notify();
+    }
+
+    /// Complete the drag and emit InteractiveRebase for the dragged commit.
+    fn end_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(oid) = self.dragging_oid else {
+            return;
+        };
+        self.dragging_oid = None;
+        cx.emit(GraphViewEvent::InteractiveRebase(oid));
         cx.notify();
     }
 
@@ -667,6 +692,9 @@ impl GraphView {
             .is_focused(window)
         {
             if event.keystroke.key.as_str() == "escape" {
+                // Cancel any in-progress drag-to-rebase.
+                self.dragging_oid = None;
+                self.suppress_next_click = false;
                 self.show_search = false;
                 self.search_editor
                     .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
@@ -1172,6 +1200,8 @@ impl Render for GraphView {
         let now_utc = chrono::Utc::now();
 
         // The virtualized list
+        // Capture drag state for drag-to-rebase grip rendering.
+        let dragging_oid = self.dragging_oid;
         let list = uniform_list(
             "graph-commit-list",
             total_list_items,
@@ -1329,6 +1359,12 @@ impl Render for GraphView {
                                 move |event: &ClickEvent, _window: &mut Window, cx: &mut App| {
                                     view_clone
                                         .update(cx, |this, cx| {
+                                            // Suppress click if a drag-to-rebase was just completed.
+                                            if this.suppress_next_click {
+                                                this.suppress_next_click = false;
+                                                cx.notify();
+                                                return;
+                                            }
                                             this.dismiss_context_menu(cx);
                                             if event.click_count() >= 2 {
                                                 // Double-click: checkout this commit
@@ -1667,6 +1703,37 @@ impl Render for GraphView {
                         );
                         }
 
+                        // ── Drag-to-rebase grip ──────────────────────────────────
+                        let is_dragging_this = dragging_oid == Some(oid);
+                        // Opacity: dim when dragging this row; subtle when not dragging; hidden when not.
+                        let grip_opacity = if is_dragging_this { 0.3 } else { 0.0 };
+                        let grip_tooltip = Tooltip::text("Drag to rebase");
+                        let entity_for_grip = view.clone();
+                        let oid_for_grip = oid;
+                        row = row.child(
+                            div()
+                                .id(ElementId::NamedInteger("rebase-grip".into(), i as u64))
+                                .w(px(16.))
+                                .h_flex()
+                                .items_center()
+                                .justify_center()
+                                .flex_shrink_0()
+                                .cursor(CursorStyle::PointingHand)
+                                .opacity(grip_opacity)
+                                .hover(|s| s.opacity(0.7))
+                                .tooltip(grip_tooltip)
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                                        entity_for_grip
+                                            .update(cx, |this, cx| {
+                                                this.start_drag(oid_for_grip, cx);
+                                            })
+                                            .ok();
+                                    },
+                                ),
+                        );
+
                         row = row.child(
                             div().w(px(80.)).flex_shrink_0().child(
                                 Label::new(hash_display)
@@ -1842,6 +1909,20 @@ impl Render for GraphView {
                 this.graph_focus.focus(window, cx);
                 cx.notify();
             }))
+            // Drag-to-rebase: track mouse moves while a commit drag is in progress.
+            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, _cx| {
+                // Drag hover tracking would require scroll offset — skip for now.
+                // The drag still works: mousedown on grip → mouseup fires InteractiveRebase.
+                let _ = this;
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                    if this.dragging_oid.is_some() {
+                        this.end_drag(cx);
+                    }
+                }),
+            )
             .child(header);
 
         // Search bar (shown when search is active)
