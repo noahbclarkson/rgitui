@@ -90,6 +90,10 @@ impl ShortcutsHelp {
                     ("g / G", "Jump to first / last item"),
                     ("Tab / Shift+Tab", "Cycle focused panel"),
                     ("Alt+1 / 2 / 3 / 4", "Focus sidebar / graph / detail / diff"),
+                    (
+                        "Alt+5 / 6 / 7",
+                        "Toggle issues / PRs / branch health panels",
+                    ),
                     ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
                     ("Enter / Space", "Activate selected sidebar item"),
                 ],

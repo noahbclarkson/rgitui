@@ -146,6 +146,9 @@ pub enum CommandId {
     BisectReset,
     BisectSkip,
     GlobalSearch,
+    ToggleIssues,
+    TogglePullRequests,
+    ToggleBranchHealth,
 }
 
 impl CommandId {
@@ -201,6 +204,9 @@ impl CommandId {
             Self::BisectReset => "bisect_reset",
             Self::BisectSkip => "bisect_skip",
             Self::GlobalSearch => "global_search",
+            Self::ToggleIssues => "toggle_issues",
+            Self::TogglePullRequests => "toggle_pull_requests",
+            Self::ToggleBranchHealth => "toggle_branch_health",
         }
     }
 
@@ -256,6 +262,9 @@ impl CommandId {
             Self::BisectReset => "bisect reset",
             Self::BisectSkip => "bisect skip (current)",
             Self::GlobalSearch => "global search",
+            Self::ToggleIssues => "toggle issues panel",
+            Self::TogglePullRequests => "toggle pull requests panel",
+            Self::ToggleBranchHealth => "toggle branch health panel",
         }
     }
 }
@@ -321,6 +330,9 @@ impl TryFrom<&str> for CommandId {
             "bisect_reset" => Ok(Self::BisectReset),
             "bisect_skip" => Ok(Self::BisectSkip),
             "global_search" => Ok(Self::GlobalSearch),
+            "toggle_issues" => Ok(Self::ToggleIssues),
+            "toggle_pull_requests" => Ok(Self::TogglePullRequests),
+            "toggle_branch_health" => Ok(Self::ToggleBranchHealth),
             _ => Err(()),
         }
     }
@@ -594,6 +606,24 @@ impl CommandPalette {
                 "Search: Global Search",
                 Some("Ctrl+Shift+F"),
                 "Search",
+            ),
+            PaletteCommand::new(
+                CommandId::ToggleIssues,
+                "View: Issues Panel",
+                Some("Alt+5"),
+                "View",
+            ),
+            PaletteCommand::new(
+                CommandId::TogglePullRequests,
+                "View: Pull Requests Panel",
+                Some("Alt+6"),
+                "View",
+            ),
+            PaletteCommand::new(
+                CommandId::ToggleBranchHealth,
+                "View: Branch Health Panel",
+                Some("Alt+7"),
+                "View",
             ),
         ];
 

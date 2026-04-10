@@ -543,6 +543,18 @@ impl Workspace {
                     self.focus_panel(FocusedPanel::DiffViewer, window, cx);
                     return;
                 }
+                "5" => {
+                    self.execute_command(CommandId::ToggleIssues, cx);
+                    return;
+                }
+                "6" => {
+                    self.execute_command(CommandId::TogglePullRequests, cx);
+                    return;
+                }
+                "7" => {
+                    self.execute_command(CommandId::ToggleBranchHealth, cx);
+                    return;
+                }
                 _ => {}
             }
         }

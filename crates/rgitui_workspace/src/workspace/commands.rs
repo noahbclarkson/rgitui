@@ -2,7 +2,7 @@ use gpui::Context;
 
 use crate::{CommandId, CommitPanelEvent, ConfirmAction, ToastKind};
 
-use super::{BottomPanelMode, ProjectTab, ViewCaches, Workspace};
+use super::{BottomPanelMode, ProjectTab, RightPanelMode, ViewCaches, Workspace};
 
 impl Workspace {
     pub(super) fn execute_command(&mut self, cmd: CommandId, cx: &mut Context<Self>) {
@@ -417,6 +417,52 @@ impl Workspace {
                     tab.project.update(cx, |proj, cx| {
                         proj.bisect_skip(None, cx).detach();
                     });
+                }
+            }
+            CommandId::ToggleIssues => {
+                if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+                    if active_tab.right_panel_mode == RightPanelMode::Issues {
+                        active_tab.right_panel_mode = RightPanelMode::Details;
+                    } else {
+                        active_tab.right_panel_mode = RightPanelMode::Issues;
+                        let ip = active_tab.issues_panel.clone();
+                        ip.update(cx, |panel, cx| {
+                            if !panel.has_issues_loaded() && !panel.is_loading() {
+                                panel.fetch_issues(cx);
+                            }
+                        });
+                    }
+                    cx.notify();
+                }
+            }
+            CommandId::TogglePullRequests => {
+                if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+                    if active_tab.right_panel_mode == RightPanelMode::PullRequests {
+                        active_tab.right_panel_mode = RightPanelMode::Details;
+                    } else {
+                        active_tab.right_panel_mode = RightPanelMode::PullRequests;
+                        let pp = active_tab.prs_panel.clone();
+                        pp.update(cx, |panel, cx| {
+                            if !panel.has_prs_loaded() {
+                                panel.fetch_prs(cx);
+                            }
+                        });
+                    }
+                    cx.notify();
+                }
+            }
+            CommandId::ToggleBranchHealth => {
+                if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+                    if active_tab.right_panel_mode == RightPanelMode::BranchHealth {
+                        active_tab.right_panel_mode = RightPanelMode::Details;
+                    } else {
+                        active_tab.right_panel_mode = RightPanelMode::BranchHealth;
+                        let bh = active_tab.branch_health_panel.clone();
+                        bh.update(cx, |panel, cx| {
+                            panel.refresh(cx);
+                        });
+                    }
+                    cx.notify();
                 }
             }
             CommandId::Settings
