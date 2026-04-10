@@ -6,15 +6,17 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ## Current Focus
 
-**This cycle (2026-04-09 21:11 UTC):**
+**This cycle (2026-04-10 00:17 UTC):**
 
 **Build:** ✅ All tests pass, clippy 0 warnings, fmt clean.
 
-**Shipped:** `1c5fdfa` — feat(graph): add filter to only show my commits. The commit graph now has a "My Commits" toggle (user icon) in the header. When clicked, it adds an `--author` filter to the underlying `git log` command so users can quickly see just their own history.
+**Shipped:** `f50abd6` — fix(format): collapse multiline wt_head_node_lane chain to single line. The `52c7065` commit (fix(graph): correct working tree row lane placement) had a rustfmt violation in the chain call. Fixed in a one-line commit and pushed.
 
-**Issues:** #9 (investigating macOS font rendering — waiting on user terminal output), #7 (wontfix).
+**CI:** `52c7065` had a failing Check formatting step. `f50abd6` should fix it (CI run in progress).
 
-**Next:** Look into allowing users to drag commits in the history for a quick interactive rebase.
+**Issues:** #9 (macOS text missing — investigating), #7 (macOS Gatekeeper xattr -cr — known platform requirement, wontfix without user demand).
+
+**Next:** Wait for CI green on `f50abd6`, then tackle drag-commits-for-rebase from backlog.
 
 ---
 
