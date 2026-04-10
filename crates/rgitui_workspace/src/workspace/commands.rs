@@ -36,38 +36,6 @@ impl Workspace {
             CommandId::Undo => {
                 self.execute_undo(cx);
             }
-            CommandId::PushAll => {
-                let count = self.tabs.len();
-                if count == 0 {
-                    return;
-                }
-                self.show_toast(
-                    format!("Pushing to all {} repositories...", count),
-                    ToastKind::Info,
-                    cx,
-                );
-                for tab in &self.tabs {
-                    tab.project.update(cx, |proj, cx| {
-                        proj.push_default(false, cx).detach();
-                    });
-                }
-            }
-            CommandId::PullAll => {
-                let count = self.tabs.len();
-                if count == 0 {
-                    return;
-                }
-                self.show_toast(
-                    format!("Pulling in all {} repositories...", count),
-                    ToastKind::Info,
-                    cx,
-                );
-                for tab in &self.tabs {
-                    tab.project.update(cx, |proj, cx| {
-                        proj.pull_default(cx).detach();
-                    });
-                }
-            }
             cmd => {
                 let Some(tab) = self.tabs.get(self.active_tab).cloned() else {
                     return;
@@ -99,10 +67,6 @@ impl Workspace {
                     proj.push_default(false, cx).detach();
                 });
             }
-            // PushAll and PullAll are handled in execute_command (iterates all tabs).
-            // Adding no-op arms here to satisfy exhaustiveness checker since
-            // the cmd=> catchall can theoretically pass them to execute_tab_command.
-            CommandId::PushAll | CommandId::PullAll => {}
             CommandId::Commit => {
                 tab.commit_panel.update(cx, |cp, cx| {
                     let msg = cp.message(cx);
