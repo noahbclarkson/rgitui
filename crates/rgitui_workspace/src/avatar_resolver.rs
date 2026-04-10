@@ -104,35 +104,6 @@ async fn resolve_single(name: &str, email: &str, http: &Arc<dyn HttpClient>) -> 
         }));
     }
 
-    if !name.is_empty() && !name.contains(' ') {
-        let name_url = format!("https://github.com/{}.png?size=48", name);
-        let http = http.clone();
-        batch1.push(Box::pin(async move {
-            if check_url_with_timeout(&http, &name_url).await {
-                Some(name_url)
-            } else {
-                None
-            }
-        }));
-    }
-
-    if let Some(local) = email.split('@').next() {
-        if !local.is_empty() && local != name {
-            let clean = local.split('+').next_back().unwrap_or(local);
-            if !clean.is_empty() {
-                let local_url = format!("https://github.com/{}.png?size=48", clean);
-                let http = http.clone();
-                batch1.push(Box::pin(async move {
-                    if check_url_with_timeout(&http, &local_url).await {
-                        Some(local_url)
-                    } else {
-                        None
-                    }
-                }));
-            }
-        }
-    }
-
     {
         let gravatar = gravatar_url(email, 48);
         let http = http.clone();
