@@ -4,19 +4,17 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ---
 
-## Current Focus (2026-04-10 02:05 UTC)
+## Current Focus (2026-04-10 04:50 UTC)
 
-**Build:** ✅ `b566e4d` builds clean, 337+ tests pass, clippy 0 warnings, fmt clean.
+**Build:** ✅ `19cff25` builds clean, 337+ tests pass, clippy 0 warnings, fmt clean.
 
-**Shipped:** `b566e4d` — feat(ui): show GPG signed badge on signed commits in graph view.
-`CommitInfo.is_signed` was already populated from gpgsig header but not rendered.
-Added "✓ Signed" badge (green/bold) next to commit message in graph rows.
+**Shipped:** `19cff25` — feat(rebase): add Interactive Rebase to graph context menu.
+The interactive rebase UI and git backend logic were implemented but inaccessible from the graph view. Right-clicking a commit now correctly calculates the range from HEAD to the selected commit and triggers the overlay.
 
 **Issues:**
-- **#9** (macOS text missing) — Noah confirms fixed in latest commits, 0.1.3 release pending.
-- **#7** (Gatekeeper) — OS-level, not a code bug.
+- **#9** (macOS text missing) — CLOSED. Was fixed in v0.1.3.
 
-**Next:** v0.1.3 release prep — bump version strings, push release tag. Await direction from Noah.
+**Next:** Drag commits in history to initiate interactive rebase.
 
 ---
 
@@ -25,8 +23,9 @@ Added "✓ Signed" badge (green/bold) next to commit message in graph rows.
 ### Features
 1. ✅ **Filter to my branches/commits** — done
 2. **Drag commits in history** → quick rebase (initiate interactive rebase by dragging in graph)
-3. **Worktree change graph** — pending changes as nodes across all worktrees in graph view
-4. ✅ **Loading UX** — animated splash screen already implemented and working
+3. ✅ **Interactive Rebase Context Menu** — done
+4. **Worktree change graph** — pending changes as nodes across all worktrees in graph view
+5. ✅ **Loading UX** — animated splash screen already implemented and working
 
 ### Performance
 5. **5s Linux load investigation** — verify preload is actually working, profile cache behavior
@@ -39,4 +38,4 @@ Added "✓ Signed" badge (green/bold) next to commit message in graph rows.
 
 ## Release Tracker
 
-- **v0.1.3** — Pending (fixes #9 macOS text rendering). Ready to tag when Noah pushes.
+- **v0.1.3** — Released! (fixes #9 macOS text rendering, includes GPG badge).

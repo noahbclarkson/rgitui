@@ -451,11 +451,9 @@ impl Render for CreatePrDialog {
                             .justify_between()
                             .items_center()
                             .child(
-                                Label::new(
-                                    "Enter to create | Shift+Enter to create | Esc to cancel",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Placeholder),
+                                Label::new("Shift+Enter to create | Esc to cancel")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Placeholder),
                             )
                             .child(
                                 div()
