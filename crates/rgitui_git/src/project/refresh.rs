@@ -93,6 +93,7 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
             .ok()
             .and_then(|h| h.shorthand().map(String::from)),
         head_oid: repo.head().ok().and_then(|h| h.target()),
+        status: None,
     });
 
     // List all worktrees from the main repo
@@ -124,6 +125,7 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
                     is_current: false,
                     branch,
                     head_oid,
+                    status: None,
                 });
             }
         }
@@ -400,9 +402,31 @@ fn gather_refresh_data_internal(
             stashes
         });
 
-        let worktrees = gather_worktrees(&repo);
+        let mut worktrees = gather_worktrees(&repo);
+        let mut worktree_status_handles = Vec::new();
+        for (idx, worktree) in worktrees.iter().enumerate() {
+            if worktree.is_current {
+                continue;
+            }
+            let worktree_path = worktree.path.clone();
+            worktree_status_handles.push((
+                idx,
+                s.spawn(move || compute_working_tree_status(&worktree_path)),
+            ));
+        }
 
         let status = status_handle.join().unwrap().unwrap_or_default();
+        if let Some(current_worktree) = worktrees.iter_mut().find(|wt| wt.is_current) {
+            current_worktree.status = Some(status.clone());
+        }
+
+        for (idx, handle) in worktree_status_handles {
+            worktrees[idx].status = handle
+                .join()
+                .unwrap_or_else(|_| Ok(Default::default()))
+                .ok();
+        }
+
         let stashes = stash_handle.join().unwrap_or_default();
         (status, stashes, worktrees)
     });

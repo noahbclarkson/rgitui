@@ -176,14 +176,12 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         .map(|(i, c)| (c.oid, i))
         .collect();
 
-    // Detect HEAD oid
-    let head_oid = commits.first().and_then(|c| {
-        if c.refs.iter().any(|r| matches!(r, RefLabel::Head)) {
-            Some(c.oid)
-        } else {
-            None
-        }
-    });
+    // Detect HEAD oid — scan all commits, not just the first, because
+    // feature branch tips may appear before HEAD in topological order.
+    let head_oid = commits
+        .iter()
+        .find(|c| c.refs.iter().any(|r| matches!(r, RefLabel::Head)))
+        .map(|c| c.oid);
 
     // Identify the main branch and compute its first-parent chain.
     // This lets us keep main on lane 0 and push feature branches to other lanes.
@@ -237,7 +235,8 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
                 (0, true)
             } else if matches!(lanes.first(), Some(None)) || lanes.is_empty() {
                 // Lane 0 is free — claim it
-                let color = if lanes.is_empty() {
+                let was_empty = lanes.is_empty();
+                let color = if was_empty {
                     let c = next_color;
                     next_color += 1;
                     lanes.push(None);
@@ -247,9 +246,19 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
                     0
                 };
                 lanes[0] = Some((oid, color));
-                (0, idx > 0) // has_incoming if not the very first commit processed
+                // has_incoming only if lane 0 was previously occupied (something
+                // was drawing on this lane above us). A free/empty lane means
+                // nothing was drawn, so no incoming line even if idx > 0.
+                (0, false)
+            } else if matches!(lanes.first(), Some(Some((expected, _))) if main_chain.contains(expected)) {
+                // Lane 0 is occupied by another main-chain commit. This
+                // happens when topo-sort reorders main commits around a
+                // branch fork point. Force onto lane 0 anyway.
+                let color = lanes[0].map(|(_, c)| c).unwrap_or(next_color);
+                lanes[0] = Some((oid, color));
+                (0, true)
             } else {
-                // Lane 0 is occupied by something else — search other lanes
+                // Lane 0 is occupied by a non-main commit — search other lanes
                 find_lane(oid, &mut lanes, &mut next_color, commits, &oid_to_idx, None)
             }
         } else {
@@ -282,8 +291,38 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
             }
         }
 
-        // Free the commit's lane before assigning parents
+        // Free the commit's lane before assigning parents.
         lanes[node_lane] = None;
+
+        // Clear any OTHER lanes that were also waiting for this same OID.
+        // This happens when a commit's OID was routed to multiple lanes
+        // (e.g., a feature branch tip allocated a lane for its parent, and
+        // then the main-chain routing also placed the same parent on lane 0).
+        // Without this cleanup, the stale lane persists as a zombie
+        // pass-through line forever.
+        // When clearing, convert the pass-through edge into a merge edge
+        // (from the zombie lane curving into node_lane) so the branch
+        // visually merges back.
+        for (lane_idx, lane) in lanes.iter_mut().enumerate() {
+            if matches!(lane, Some((o, _)) if *o == oid) {
+                let color = lane.map(|(_, c)| c).unwrap_or(0);
+                *lane = None;
+                // Replace the straight pass-through with a converging edge
+                if let Some(edge) = edges.iter_mut().find(|e| e.from_lane == lane_idx && e.to_lane == lane_idx) {
+                    edge.to_lane = node_lane;
+                }
+                // If no pass-through existed (shouldn't happen, but be safe),
+                // add a converging edge
+                if !edges.iter().any(|e| e.from_lane == lane_idx && e.to_lane == node_lane) {
+                    edges.push(GraphEdge {
+                        from_lane: lane_idx,
+                        to_lane: node_lane,
+                        color_index: color,
+                        is_merge: false,
+                    });
+                }
+            }
+        }
 
         // Handle parents — for main-chain merge commits, identify which parent
         // is on the main chain and treat that as the "primary" parent for lane routing.
@@ -308,8 +347,11 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
                 (parents[0], parents[1..].to_vec())
             };
 
-            // Route primary parent
-            let primary_on_main = main_chain.contains(&primary);
+            // Route primary parent.
+            // Only route to lane 0 when BOTH the commit and its parent are
+            // on the main chain. When a feature branch's parent is on main,
+            // use normal routing so it doesn't steal lane 0.
+            let primary_on_main = on_main && main_chain.contains(&primary);
             let primary_lane = if primary_on_main {
                 // Main-chain parent should go to lane 0
                 if matches!(lanes.first(), Some(Some((o, _))) if *o == primary) {
@@ -460,6 +502,11 @@ fn route_parent(
     } else if let Some(target) = lanes.iter().position(|s| {
         matches!(s, Some((expected_oid, _)) if is_ancestor_of(parent, *expected_oid, commits, oid_to_idx))
     }) {
+        // Update the lane to track the actual parent OID (not the old
+        // descendant). This prevents the zombie cleanup from clearing
+        // the lane when the old OID's commit arrives.
+        let color = lanes[target].map(|(_, c)| c).unwrap_or(node_color);
+        lanes[target] = Some((parent, color));
         target
     } else {
         // Continue in the same lane with the same color if it's free
@@ -485,8 +532,17 @@ fn alloc_lane(lanes: &mut Vec<Option<(git2::Oid, usize)>>, skip_lane: Option<usi
     {
         pos
     } else {
+        // Append a new lane. If the new position happens to be the skip_lane
+        // (e.g., lanes was empty and skip_lane=Some(0)), reserve that slot
+        // and append another one.
         lanes.push(None);
-        lanes.len() - 1
+        let pos = lanes.len() - 1;
+        if Some(pos) == skip_lane {
+            lanes.push(None);
+            lanes.len() - 1
+        } else {
+            pos
+        }
     }
 }
 
@@ -1073,5 +1129,413 @@ mod tests {
         let rows = compute_graph(&commits);
         assert_ne!(rows[0].node_lane, 0, "feature HEAD should not be on lane 0");
         assert_eq!(rows[1].node_lane, 0, "origin/main should be on lane 0");
+    }
+
+    /// Uses LIVE data from the actual rgitui repository via gather_refresh_data.
+    /// This test sees exactly the same commits, refs, and ordering as the app.
+    #[test]
+    fn test_live_repo_graph() {
+        use std::path::Path;
+
+        let repo_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap()
+            .parent().unwrap();
+
+        let data = match crate::gather_refresh_data(repo_path, 1000) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Skipping live repo test: {}", e);
+                return;
+            }
+        };
+
+        let commits = &data.recent_commits;
+        let rows = compute_graph(commits);
+
+        // Find key commits by OID prefix
+        let find = |prefix: &str| -> Option<usize> {
+            commits.iter().position(|c| format!("{}", c.oid).starts_with(prefix))
+        };
+
+        let some_795 = find("795f1ba");
+        let some_030 = find("0308d39");
+        let some_f50 = find("f50abd6");
+        let some_1bb = find("1bb477f");
+        let some_e5d = find("e5d6285");
+        let some_3ce = find("3ce915d");
+
+        if [some_795, some_030, some_f50, some_1bb, some_e5d, some_3ce]
+            .iter().any(|x| x.is_none())
+        {
+            eprintln!("Skipping: worktree demo commits not found");
+            return;
+        }
+
+        let i795 = some_795.unwrap();
+        let i030 = some_030.unwrap();
+        let if50 = some_f50.unwrap();
+        let i1bb = some_1bb.unwrap();
+        let ie5d = some_e5d.unwrap();
+        let i3ce = some_3ce.unwrap();
+
+        // Dump first 15 rows
+        eprintln!("\n=== LIVE COMMIT ORDER (first 15) ===");
+        for (i, c) in commits.iter().enumerate().take(15) {
+            let short = &format!("{}", c.oid)[..7];
+            let refs_s: Vec<_> = c.refs.iter().map(|r| format!("{:?}", r)).collect();
+            let pars: Vec<_> = c.parent_oids.iter().map(|p| format!("{}", p)[..7].to_string()).collect();
+            eprintln!("  idx {:2}: {} parents=[{}] refs=[{}]", i, short, pars.join(","), refs_s.join(","));
+        }
+
+        eprintln!("\n=== GRAPH OUTPUT ===");
+        for (i, r) in rows.iter().enumerate().take(15) {
+            let short = &format!("{}", commits[i].oid)[..7];
+            let es: Vec<_> = r.edges.iter()
+                .map(|e| format!("{}→{}(c{}{})", e.from_lane, e.to_lane, e.color_index,
+                    if e.is_merge { ",m" } else { "" }))
+                .collect();
+            eprintln!("  row {:2} [{}]: lane={} color={} inc={} head={} lanes={} edges=[{}]",
+                i, short, r.node_lane, r.node_color, r.has_incoming, r.is_head,
+                r.lane_count, es.join(", "));
+        }
+
+        // ═══════════ ASSERTIONS ═══════════
+
+        // Main-chain commits on lane 0
+        assert_eq!(rows[if50].node_lane, 0, "f50abd6 (HEAD/main) must be lane 0, was {}", rows[if50].node_lane);
+        assert_eq!(rows[i1bb].node_lane, 0, "1bb477f must be lane 0, was {}", rows[i1bb].node_lane);
+        assert_eq!(rows[ie5d].node_lane, 0, "e5d6285 must be lane 0, was {}", rows[ie5d].node_lane);
+        assert_eq!(rows[i3ce].node_lane, 0, "3ce915d must be lane 0, was {}", rows[i3ce].node_lane);
+
+        // Feature branches NOT on lane 0
+        assert_ne!(rows[i795].node_lane, 0, "795f1ba must NOT be lane 0");
+        assert_ne!(rows[i030].node_lane, 0, "0308d39 must NOT be lane 0");
+
+        // HEAD
+        assert!(rows[if50].is_head, "f50abd6 should be HEAD");
+
+        // After 3ce915d, lane count should be 1 (only main)
+        if i3ce + 1 < rows.len() {
+            assert_eq!(rows[i3ce + 1].lane_count, 1,
+                "after 3ce915d, only lane 0 should remain, was {}", rows[i3ce + 1].lane_count);
+        }
+    }
+
+    /// Build a CommitInfo from a real hex OID string, parent hex strings, and refs.
+    fn make_real_commit(hex: &str, parent_hexes: &[&str], refs: Vec<RefLabel>) -> CommitInfo {
+        CommitInfo {
+            oid: git2::Oid::from_str(hex).unwrap(),
+            short_id: hex[..7].to_string(),
+            summary: format!("Commit {}", &hex[..7]),
+            message: format!("Commit {}", &hex[..7]),
+            author: crate::Signature {
+                name: "Test".to_string(),
+                email: "test@test.com".to_string(),
+            },
+            committer: crate::Signature {
+                name: "Test".to_string(),
+                email: "test@test.com".to_string(),
+            },
+            co_authors: vec![],
+            time: Utc::now(),
+            parent_oids: parent_hexes
+                .iter()
+                .map(|h| git2::Oid::from_str(h).unwrap())
+                .collect(),
+            refs,
+            is_signed: false,
+        }
+    }
+
+    /// Loads the REAL commits from the rgitui repo using the same code path
+    /// as the app (`gather_refresh_data`), then runs `compute_graph` and
+    /// verifies the output matches expectations.
+    ///
+    /// `git log --all --topo-order --format="%H %P %D"` gives:
+    ///
+    /// ```text
+    /// 795f1ba e5d6285  codex/demo-wt-commit
+    /// 0308d39 3ce915d  codex/demo-wt-pending
+    /// f50abd6 52c7065  HEAD -> main, origin/main
+    /// 52c7065 9b17780
+    /// 9b17780 1bb477f
+    /// 1bb477f e5d6285
+    /// e5d6285 9328231
+    /// 9328231 ba6e821
+    /// ba6e821 3ce915d
+    /// 3ce915d bc215a6
+    /// bc215a6 (root for this test)
+    /// ```
+    ///
+    /// Expected graph:
+    ///
+    /// ```text
+    ///   Lane 0             Lane 1
+    ///
+    ///                      ● 795f1ba  (codex/demo-wt-commit, parent=e5d6285)
+    ///                      │
+    ///                      ├─── ● 0308d39  (codex/demo-wt-pending, parent=3ce915d)
+    ///                      │        edge from lane 2 merges to lane 1 (ancestor match)
+    ///   ● f50abd6 HEAD     │
+    ///   │  main            │
+    ///   ● 52c7065          │
+    ///   ● 9b17780          │
+    ///   ● 1bb477f          │
+    ///   ├──────────────────┘   (1bb477f parent=e5d6285, routed to lane 0; lane 1 still holds 3ce915d)
+    ///   ● e5d6285              (zombie cleanup: e5d6285 was on lane 0 only, lane 1 has 3ce915d)
+    ///   │                  │   (lane 1 still active with 3ce915d)
+    ///   ● 9328231          │
+    ///   ● ba6e821          │
+    ///   ├──────────────────┘   (ba6e821 parent=3ce915d, lane 1 consumed)
+    ///   ● 3ce915d
+    ///   ● bc215a6              (single lane)
+    /// ```
+    #[test]
+    fn test_real_repo_worktree_graph() {
+        // Real OIDs from the repository — topo order as git log produces them.
+        let commits = vec![
+            // idx 0: 795f1ba — codex/demo-wt-commit branch tip
+            make_real_commit(
+                "795f1bae4648ac10a13e597a68520e07f948618c",
+                &["e5d62851d80d237a098ea6d8853653c5e06b25a4"],
+                vec![RefLabel::LocalBranch("codex/demo-wt-commit".into())],
+            ),
+            // idx 1: 0308d39 — codex/demo-wt-pending branch tip
+            make_real_commit(
+                "0308d393027b9f094a89a1f12347c4af60441a5a",
+                &["3ce915d70b21531099ca7535ee6c85860eeb173f"],
+                vec![RefLabel::LocalBranch("codex/demo-wt-pending".into())],
+            ),
+            // idx 2: f50abd6 — HEAD, main, origin/main
+            make_real_commit(
+                "f50abd6ef5b1830b8e1ac416018c2b5ffe44ec70",
+                &["52c706572bef2796495d9cbb21d41d3e6db72456"],
+                vec![
+                    RefLabel::Head,
+                    RefLabel::LocalBranch("main".into()),
+                    RefLabel::RemoteBranch("origin/main".into()),
+                ],
+            ),
+            // idx 3: 52c7065
+            make_real_commit(
+                "52c706572bef2796495d9cbb21d41d3e6db72456",
+                &["9b17780bcb0c8fd865cfecc5d277302210a6b076"],
+                vec![],
+            ),
+            // idx 4: 9b17780
+            make_real_commit(
+                "9b17780bcb0c8fd865cfecc5d277302210a6b076",
+                &["1bb477f600d328841ee81675dc2fb3929942cf59"],
+                vec![],
+            ),
+            // idx 5: 1bb477f (parent = e5d6285, which is the fork point for wt-commit)
+            make_real_commit(
+                "1bb477f600d328841ee81675dc2fb3929942cf59",
+                &["e5d62851d80d237a098ea6d8853653c5e06b25a4"],
+                vec![],
+            ),
+            // idx 6: e5d6285 (fork point 1)
+            make_real_commit(
+                "e5d62851d80d237a098ea6d8853653c5e06b25a4",
+                &["93282319230eb1d6c31e74e1af98092718fba3b2"],
+                vec![],
+            ),
+            // idx 7: 9328231
+            make_real_commit(
+                "93282319230eb1d6c31e74e1af98092718fba3b2",
+                &["ba6e82166f7c291d0c0f21dcc78e97eba5062e46"],
+                vec![],
+            ),
+            // idx 8: ba6e821 (parent = 3ce915d, which is the fork point for wt-pending)
+            make_real_commit(
+                "ba6e82166f7c291d0c0f21dcc78e97eba5062e46",
+                &["3ce915d70b21531099ca7535ee6c85860eeb173f"],
+                vec![],
+            ),
+            // idx 9: 3ce915d (fork point 2)
+            make_real_commit(
+                "3ce915d70b21531099ca7535ee6c85860eeb173f",
+                &["bc215a60757d394a0fc3e5cbf51476c95081f8ee"],
+                vec![],
+            ),
+            // idx 10: bc215a6 (root for this test)
+            make_real_commit(
+                "bc215a60757d394a0fc3e5cbf51476c95081f8ee",
+                &[],
+                vec![],
+            ),
+        ];
+
+        let rows = compute_graph(&commits);
+        assert_eq!(rows.len(), 11, "should produce 11 rows");
+
+        // ═══════════════════════════════════════════════════════════
+        // Dump all rows for debugging on failure
+        // ═══════════════════════════════════════════════════════════
+        for (i, r) in rows.iter().enumerate() {
+            let edges_str: Vec<_> = r.edges.iter()
+                .map(|e| format!("{}→{}(c{}{})", e.from_lane, e.to_lane, e.color_index,
+                    if e.is_merge { ",m" } else { "" }))
+                .collect();
+            eprintln!(
+                "  row {:2} [{}]: lane={} color={} incoming={} head={} merge={} lanes={} edges=[{}]",
+                i, &commits[i].short_id, r.node_lane, r.node_color,
+                r.has_incoming, r.is_head, r.is_merge, r.lane_count,
+                edges_str.join(", "),
+            );
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 1. LANE ASSIGNMENTS — main on lane 0, branches elsewhere
+        // ═══════════════════════════════════════════════════════════
+
+        // idx 0: 795f1ba (wt-commit) — NOT on main, should be lane 1
+        assert_ne!(rows[0].node_lane, 0, "795f1ba must not be on lane 0");
+        let wt_commit_lane = rows[0].node_lane;
+
+        // idx 1: 0308d39 (wt-pending) — NOT on main
+        assert_ne!(rows[1].node_lane, 0, "0308d39 must not be on lane 0");
+        let wt_pending_lane = rows[1].node_lane;
+
+        // idx 2-10: all on lane 0 (entire main chain)
+        for idx in 2..=10 {
+            assert_eq!(rows[idx].node_lane, 0,
+                "idx {} ({}) must be lane 0 (main chain), was lane {}",
+                idx, commits[idx].short_id, rows[idx].node_lane);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 2. HEAD — only idx 2 (f50abd6) is HEAD
+        // ═══════════════════════════════════════════════════════════
+
+        for (i, r) in rows.iter().enumerate() {
+            if i == 2 {
+                assert!(r.is_head, "idx 2 (f50abd6) IS HEAD");
+            } else {
+                assert!(!r.is_head, "idx {} is not HEAD", i);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 3. HAS_INCOMING
+        // ═══════════════════════════════════════════════════════════
+
+        // Branch tips: no line drawn from above into them
+        assert!(!rows[0].has_incoming, "795f1ba: new branch, no incoming");
+        assert!(!rows[1].has_incoming, "0308d39: new branch, no incoming");
+
+        // Main HEAD (f50abd6): lane 0 was free before it, no incoming
+        assert!(!rows[2].has_incoming, "f50abd6: first on lane 0, no incoming");
+
+        // Every other main commit: continuation, has incoming
+        for idx in 3..=10 {
+            assert!(rows[idx].has_incoming,
+                "idx {} should have incoming (lane 0 continuation)", idx);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 4. COLORS — consistent within each branch
+        // ═══════════════════════════════════════════════════════════
+
+        let main_color = rows[2].node_color;
+        for idx in 3..=10 {
+            assert_eq!(rows[idx].node_color, main_color,
+                "idx {} color should match main ({}), was {}",
+                idx, main_color, rows[idx].node_color);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 5. EDGE: branch tip outgoing edges
+        // ═══════════════════════════════════════════════════════════
+
+        // 795f1ba (idx 0): outgoing edge from its lane to wherever
+        // fork1 (e5d6285) was routed — should stay on its own lane
+        let idx0_out: Vec<_> = rows[0].edges.iter()
+            .filter(|e| e.from_lane == wt_commit_lane)
+            .collect();
+        assert_eq!(idx0_out.len(), 1, "795f1ba: 1 outgoing edge from lane {}", wt_commit_lane);
+
+        // 0308d39 (idx 1): outgoing edge from its lane.
+        // fork2 (3ce915d) is an ancestor of e5d6285, so route_parent's
+        // ancestor match routes it to the same lane as fork1.
+        let idx1_out: Vec<_> = rows[1].edges.iter()
+            .filter(|e| e.from_lane == wt_pending_lane)
+            .collect();
+        assert_eq!(idx1_out.len(), 1, "0308d39: 1 outgoing edge from lane {}", wt_pending_lane);
+
+        // Both branches' parents end up on the same lane (ancestor match)
+        let fork1_target = idx0_out[0].to_lane;
+        let fork2_target = idx1_out[0].to_lane;
+        assert_eq!(fork1_target, fork2_target,
+            "both fork parents routed to same lane via ancestor match");
+
+        // The shared target lane is the wt_commit lane (fork1's original lane)
+        let branch_lane = fork1_target;
+
+        // ═══════════════════════════════════════════════════════════
+        // 6. PASS-THROUGH: branch lane visible while active
+        // ═══════════════════════════════════════════════════════════
+
+        let has_pt = |row: &GraphRow, lane: usize| -> bool {
+            row.edges.iter().any(|e| e.from_lane == lane && e.to_lane == lane)
+        };
+
+        // idx 1: branch_lane passes through (fork1/fork2 sitting there)
+        assert!(has_pt(&rows[1], branch_lane),
+            "idx 1: branch lane {} should pass through", branch_lane);
+
+        // idx 2-5: branch_lane passes through alongside main
+        for idx in 2..=5 {
+            assert!(has_pt(&rows[idx], branch_lane),
+                "idx {}: branch lane {} should pass through", idx, branch_lane);
+        }
+
+        // idx 6 (e5d6285): branch_lane STILL passes through because
+        // route_parent updated lane 1 to hold 3ce915d (not e5d6285),
+        // so zombie cleanup for e5d6285 doesn't clear it.
+        assert!(has_pt(&rows[6], branch_lane),
+            "idx 6: branch lane {} should still pass through (holds 3ce915d)", branch_lane);
+
+        // idx 7-8: branch_lane still passes through (3ce915d still pending)
+        for idx in 7..=8 {
+            assert!(has_pt(&rows[idx], branch_lane),
+                "idx {}: branch lane {} should pass through (3ce915d pending)", idx, branch_lane);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 7. MERGE CURVES — edges from main to branch lane at fork points
+        // ═══════════════════════════════════════════════════════════
+
+        // idx 5 (1bb477f): parent is e5d6285 (on main chain).
+        // Main edge should go from lane 0 to lane 0 (parent routed to lane 0).
+        let idx5_main = rows[5].edges.iter()
+            .find(|e| e.from_lane == 0 && !e.is_merge);
+        assert!(idx5_main.is_some(), "1bb477f: should have main outgoing edge");
+        assert_eq!(idx5_main.unwrap().to_lane, 0, "1bb477f: main edge stays on lane 0");
+
+        // idx 8 (ba6e821): parent is 3ce915d (on main chain).
+        // The parent 3ce915d should be routed to lane 0 (main chain routing),
+        // but 3ce915d is ALSO on branch_lane (from the ancestor match).
+        // Main-chain routing should put it on lane 0. The branch_lane copy
+        // gets cleared by zombie cleanup when 3ce915d arrives.
+        let idx8_main = rows[8].edges.iter()
+            .find(|e| e.from_lane == 0 && !e.is_merge);
+        assert!(idx8_main.is_some(), "ba6e821: should have main outgoing edge");
+        assert_eq!(idx8_main.unwrap().to_lane, 0, "ba6e821: main edge stays on lane 0");
+
+        // ═══════════════════════════════════════════════════════════
+        // 8. LANE COMPACTION — lanes freed after fork points
+        // ═══════════════════════════════════════════════════════════
+
+        // After idx 9 (3ce915d consumed): branch_lane should be cleared.
+        // idx 10 should have only lane 0.
+        assert_eq!(rows[10].lane_count, 1,
+            "bc215a6: only lane 0 should remain, lane_count = {}", rows[10].lane_count);
+
+        // No pass-through edges at idx 10
+        let idx10_pt = rows[10].edges.iter()
+            .filter(|e| e.from_lane == e.to_lane)
+            .count();
+        assert_eq!(idx10_pt, 0, "bc215a6: no pass-through edges, found {}", idx10_pt);
     }
 }

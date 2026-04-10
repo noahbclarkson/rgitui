@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Range;
+use std::path::Path;
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -678,8 +679,17 @@ impl Sidebar {
         if self.worktrees == worktrees {
             return;
         }
+        let previously_selected_path = self.selected_worktree.and_then(|index| {
+            self.worktrees
+                .get(index)
+                .map(|worktree| worktree.path.clone())
+        });
         self.worktrees = worktrees;
-        self.selected_worktree = None;
+        self.selected_worktree = previously_selected_path.and_then(|path| {
+            self.worktrees
+                .iter()
+                .position(|worktree| worktree.path == path)
+        });
         self.rebuild_nav_items();
 
         // Rebuild flattened worktrees for virtualized rendering.
@@ -687,6 +697,18 @@ impl Sidebar {
         self.flattened_worktrees.extend(0..self.worktrees.len());
 
         cx.notify();
+    }
+
+    pub fn set_selected_worktree_by_path(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
+        let next = path.and_then(|path| {
+            self.worktrees
+                .iter()
+                .position(|worktree| worktree.path == path)
+        });
+        if self.selected_worktree != next {
+            self.selected_worktree = next;
+            cx.notify();
+        }
     }
 
     pub fn update_status(
