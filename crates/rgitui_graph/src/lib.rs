@@ -368,7 +368,7 @@ impl GraphView {
                 } else if prev_selected_index
                     .is_some_and(|index| this.worktree_row_set.contains(&index))
                 {
-                    if !prev_selected_index.is_some_and(|index| index < this.total_list_items()) {
+                    if prev_selected_index.is_some_and(|index| index >= this.total_list_items()) {
                         this.selected_index = None;
                     } else {
                         this.selected_index = prev_selected_index;
@@ -465,9 +465,7 @@ impl GraphView {
         anchored.sort_by(|(ci_a, pos_a), (ci_b, pos_b)| {
             let a_current = self.worktree_infos[pos_a.worktree_idx].is_current;
             let b_current = self.worktree_infos[pos_b.worktree_idx].is_current;
-            b_current
-                .cmp(&a_current)
-                .then_with(|| ci_a.cmp(ci_b))
+            b_current.cmp(&a_current).then_with(|| ci_a.cmp(ci_b))
         });
 
         // Detect lane collisions among anchored worktree rows and assign

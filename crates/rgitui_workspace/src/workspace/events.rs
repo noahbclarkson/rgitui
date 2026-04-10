@@ -76,7 +76,7 @@ pub(super) fn update_commit_panel_for_active_worktree(
     };
     let staged_count = {
         let proj = tab.project.read(cx);
-        let (status, _) = active_worktree_status(tab, &proj);
+        let (status, _) = active_worktree_status(tab, proj);
         status.staged.len()
     };
     tab.commit_panel.update(cx, |commit_panel, cx| {
@@ -93,7 +93,7 @@ pub(super) fn update_toolbar_for_active_worktree(
     };
     let (has_changes, has_stashes, ahead, behind, has_github_token) = {
         let proj = tab.project.read(cx);
-        let (status, _) = active_worktree_status(tab, &proj);
+        let (status, _) = active_worktree_status(tab, proj);
         let has_changes = !status.staged.is_empty() || !status.unstaged.is_empty();
         let has_stashes = !proj.stashes().is_empty();
         let (ahead, behind) = proj
@@ -120,7 +120,7 @@ pub(super) fn update_sidebar_for_active_worktree(
     };
     let (status, selected_path) = {
         let proj = tab.project.read(cx);
-        active_worktree_status(tab, &proj)
+        active_worktree_status(tab, proj)
     };
     tab.sidebar.update(cx, |sidebar, cx| {
         sidebar.update_status(status.staged.clone(), status.unstaged.clone(), cx);

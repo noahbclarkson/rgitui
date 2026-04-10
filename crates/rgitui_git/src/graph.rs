@@ -250,7 +250,8 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
                 // was drawing on this lane above us). A free/empty lane means
                 // nothing was drawn, so no incoming line even if idx > 0.
                 (0, false)
-            } else if matches!(lanes.first(), Some(Some((expected, _))) if main_chain.contains(expected)) {
+            } else if matches!(lanes.first(), Some(Some((expected, _))) if main_chain.contains(expected))
+            {
                 // Lane 0 is occupied by another main-chain commit. This
                 // happens when topo-sort reorders main commits around a
                 // branch fork point. Force onto lane 0 anyway.
@@ -308,12 +309,18 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
                 let color = lane.map(|(_, c)| c).unwrap_or(0);
                 *lane = None;
                 // Replace the straight pass-through with a converging edge
-                if let Some(edge) = edges.iter_mut().find(|e| e.from_lane == lane_idx && e.to_lane == lane_idx) {
+                if let Some(edge) = edges
+                    .iter_mut()
+                    .find(|e| e.from_lane == lane_idx && e.to_lane == lane_idx)
+                {
                     edge.to_lane = node_lane;
                 }
                 // If no pass-through existed (shouldn't happen, but be safe),
                 // add a converging edge
-                if !edges.iter().any(|e| e.from_lane == lane_idx && e.to_lane == node_lane) {
+                if !edges
+                    .iter()
+                    .any(|e| e.from_lane == lane_idx && e.to_lane == node_lane)
+                {
                     edges.push(GraphEdge {
                         from_lane: lane_idx,
                         to_lane: node_lane,
@@ -1138,8 +1145,10 @@ mod tests {
         use std::path::Path;
 
         let repo_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap()
-            .parent().unwrap();
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
 
         let data = match crate::gather_refresh_data(repo_path, 1000) {
             Ok(d) => d,
@@ -1154,7 +1163,9 @@ mod tests {
 
         // Find key commits by OID prefix
         let find = |prefix: &str| -> Option<usize> {
-            commits.iter().position(|c| format!("{}", c.oid).starts_with(prefix))
+            commits
+                .iter()
+                .position(|c| format!("{}", c.oid).starts_with(prefix))
         };
 
         let some_795 = find("795f1ba");
@@ -1165,7 +1176,8 @@ mod tests {
         let some_3ce = find("3ce915d");
 
         if [some_795, some_030, some_f50, some_1bb, some_e5d, some_3ce]
-            .iter().any(|x| x.is_none())
+            .iter()
+            .any(|x| x.is_none())
         {
             eprintln!("Skipping: worktree demo commits not found");
             return;
@@ -1183,29 +1195,72 @@ mod tests {
         for (i, c) in commits.iter().enumerate().take(15) {
             let short = &format!("{}", c.oid)[..7];
             let refs_s: Vec<_> = c.refs.iter().map(|r| format!("{:?}", r)).collect();
-            let pars: Vec<_> = c.parent_oids.iter().map(|p| format!("{}", p)[..7].to_string()).collect();
-            eprintln!("  idx {:2}: {} parents=[{}] refs=[{}]", i, short, pars.join(","), refs_s.join(","));
+            let pars: Vec<_> = c
+                .parent_oids
+                .iter()
+                .map(|p| format!("{}", p)[..7].to_string())
+                .collect();
+            eprintln!(
+                "  idx {:2}: {} parents=[{}] refs=[{}]",
+                i,
+                short,
+                pars.join(","),
+                refs_s.join(",")
+            );
         }
 
         eprintln!("\n=== GRAPH OUTPUT ===");
         for (i, r) in rows.iter().enumerate().take(15) {
             let short = &format!("{}", commits[i].oid)[..7];
-            let es: Vec<_> = r.edges.iter()
-                .map(|e| format!("{}→{}(c{}{})", e.from_lane, e.to_lane, e.color_index,
-                    if e.is_merge { ",m" } else { "" }))
+            let es: Vec<_> = r
+                .edges
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{}→{}(c{}{})",
+                        e.from_lane,
+                        e.to_lane,
+                        e.color_index,
+                        if e.is_merge { ",m" } else { "" }
+                    )
+                })
                 .collect();
-            eprintln!("  row {:2} [{}]: lane={} color={} inc={} head={} lanes={} edges=[{}]",
-                i, short, r.node_lane, r.node_color, r.has_incoming, r.is_head,
-                r.lane_count, es.join(", "));
+            eprintln!(
+                "  row {:2} [{}]: lane={} color={} inc={} head={} lanes={} edges=[{}]",
+                i,
+                short,
+                r.node_lane,
+                r.node_color,
+                r.has_incoming,
+                r.is_head,
+                r.lane_count,
+                es.join(", ")
+            );
         }
 
         // ═══════════ ASSERTIONS ═══════════
 
         // Main-chain commits on lane 0
-        assert_eq!(rows[if50].node_lane, 0, "f50abd6 (HEAD/main) must be lane 0, was {}", rows[if50].node_lane);
-        assert_eq!(rows[i1bb].node_lane, 0, "1bb477f must be lane 0, was {}", rows[i1bb].node_lane);
-        assert_eq!(rows[ie5d].node_lane, 0, "e5d6285 must be lane 0, was {}", rows[ie5d].node_lane);
-        assert_eq!(rows[i3ce].node_lane, 0, "3ce915d must be lane 0, was {}", rows[i3ce].node_lane);
+        assert_eq!(
+            rows[if50].node_lane, 0,
+            "f50abd6 (HEAD/main) must be lane 0, was {}",
+            rows[if50].node_lane
+        );
+        assert_eq!(
+            rows[i1bb].node_lane, 0,
+            "1bb477f must be lane 0, was {}",
+            rows[i1bb].node_lane
+        );
+        assert_eq!(
+            rows[ie5d].node_lane, 0,
+            "e5d6285 must be lane 0, was {}",
+            rows[ie5d].node_lane
+        );
+        assert_eq!(
+            rows[i3ce].node_lane, 0,
+            "3ce915d must be lane 0, was {}",
+            rows[i3ce].node_lane
+        );
 
         // Feature branches NOT on lane 0
         assert_ne!(rows[i795].node_lane, 0, "795f1ba must NOT be lane 0");
@@ -1216,8 +1271,12 @@ mod tests {
 
         // After 3ce915d, lane count should be 1 (only main)
         if i3ce + 1 < rows.len() {
-            assert_eq!(rows[i3ce + 1].lane_count, 1,
-                "after 3ce915d, only lane 0 should remain, was {}", rows[i3ce + 1].lane_count);
+            assert_eq!(
+                rows[i3ce + 1].lane_count,
+                1,
+                "after 3ce915d, only lane 0 should remain, was {}",
+                rows[i3ce + 1].lane_count
+            );
         }
     }
 
@@ -1359,11 +1418,7 @@ mod tests {
                 vec![],
             ),
             // idx 10: bc215a6 (root for this test)
-            make_real_commit(
-                "bc215a60757d394a0fc3e5cbf51476c95081f8ee",
-                &[],
-                vec![],
-            ),
+            make_real_commit("bc215a60757d394a0fc3e5cbf51476c95081f8ee", &[], vec![]),
         ];
 
         let rows = compute_graph(&commits);
@@ -1373,9 +1428,18 @@ mod tests {
         // Dump all rows for debugging on failure
         // ═══════════════════════════════════════════════════════════
         for (i, r) in rows.iter().enumerate() {
-            let edges_str: Vec<_> = r.edges.iter()
-                .map(|e| format!("{}→{}(c{}{})", e.from_lane, e.to_lane, e.color_index,
-                    if e.is_merge { ",m" } else { "" }))
+            let edges_str: Vec<_> = r
+                .edges
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{}→{}(c{}{})",
+                        e.from_lane,
+                        e.to_lane,
+                        e.color_index,
+                        if e.is_merge { ",m" } else { "" }
+                    )
+                })
                 .collect();
             eprintln!(
                 "  row {:2} [{}]: lane={} color={} incoming={} head={} merge={} lanes={} edges=[{}]",
@@ -1399,9 +1463,11 @@ mod tests {
 
         // idx 2-10: all on lane 0 (entire main chain)
         for idx in 2..=10 {
-            assert_eq!(rows[idx].node_lane, 0,
+            assert_eq!(
+                rows[idx].node_lane, 0,
                 "idx {} ({}) must be lane 0 (main chain), was lane {}",
-                idx, commits[idx].short_id, rows[idx].node_lane);
+                idx, commits[idx].short_id, rows[idx].node_lane
+            );
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -1425,12 +1491,18 @@ mod tests {
         assert!(!rows[1].has_incoming, "0308d39: new branch, no incoming");
 
         // Main HEAD (f50abd6): lane 0 was free before it, no incoming
-        assert!(!rows[2].has_incoming, "f50abd6: first on lane 0, no incoming");
+        assert!(
+            !rows[2].has_incoming,
+            "f50abd6: first on lane 0, no incoming"
+        );
 
         // Every other main commit: continuation, has incoming
         for idx in 3..=10 {
-            assert!(rows[idx].has_incoming,
-                "idx {} should have incoming (lane 0 continuation)", idx);
+            assert!(
+                rows[idx].has_incoming,
+                "idx {} should have incoming (lane 0 continuation)",
+                idx
+            );
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -1439,9 +1511,11 @@ mod tests {
 
         let main_color = rows[2].node_color;
         for idx in 3..=10 {
-            assert_eq!(rows[idx].node_color, main_color,
+            assert_eq!(
+                rows[idx].node_color, main_color,
                 "idx {} color should match main ({}), was {}",
-                idx, main_color, rows[idx].node_color);
+                idx, main_color, rows[idx].node_color
+            );
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -1450,24 +1524,40 @@ mod tests {
 
         // 795f1ba (idx 0): outgoing edge from its lane to wherever
         // fork1 (e5d6285) was routed — should stay on its own lane
-        let idx0_out: Vec<_> = rows[0].edges.iter()
+        let idx0_out: Vec<_> = rows[0]
+            .edges
+            .iter()
             .filter(|e| e.from_lane == wt_commit_lane)
             .collect();
-        assert_eq!(idx0_out.len(), 1, "795f1ba: 1 outgoing edge from lane {}", wt_commit_lane);
+        assert_eq!(
+            idx0_out.len(),
+            1,
+            "795f1ba: 1 outgoing edge from lane {}",
+            wt_commit_lane
+        );
 
         // 0308d39 (idx 1): outgoing edge from its lane.
         // fork2 (3ce915d) is an ancestor of e5d6285, so route_parent's
         // ancestor match routes it to the same lane as fork1.
-        let idx1_out: Vec<_> = rows[1].edges.iter()
+        let idx1_out: Vec<_> = rows[1]
+            .edges
+            .iter()
             .filter(|e| e.from_lane == wt_pending_lane)
             .collect();
-        assert_eq!(idx1_out.len(), 1, "0308d39: 1 outgoing edge from lane {}", wt_pending_lane);
+        assert_eq!(
+            idx1_out.len(),
+            1,
+            "0308d39: 1 outgoing edge from lane {}",
+            wt_pending_lane
+        );
 
         // Both branches' parents end up on the same lane (ancestor match)
         let fork1_target = idx0_out[0].to_lane;
         let fork2_target = idx1_out[0].to_lane;
-        assert_eq!(fork1_target, fork2_target,
-            "both fork parents routed to same lane via ancestor match");
+        assert_eq!(
+            fork1_target, fork2_target,
+            "both fork parents routed to same lane via ancestor match"
+        );
 
         // The shared target lane is the wt_commit lane (fork1's original lane)
         let branch_lane = fork1_target;
@@ -1477,29 +1567,45 @@ mod tests {
         // ═══════════════════════════════════════════════════════════
 
         let has_pt = |row: &GraphRow, lane: usize| -> bool {
-            row.edges.iter().any(|e| e.from_lane == lane && e.to_lane == lane)
+            row.edges
+                .iter()
+                .any(|e| e.from_lane == lane && e.to_lane == lane)
         };
 
         // idx 1: branch_lane passes through (fork1/fork2 sitting there)
-        assert!(has_pt(&rows[1], branch_lane),
-            "idx 1: branch lane {} should pass through", branch_lane);
+        assert!(
+            has_pt(&rows[1], branch_lane),
+            "idx 1: branch lane {} should pass through",
+            branch_lane
+        );
 
         // idx 2-5: branch_lane passes through alongside main
         for idx in 2..=5 {
-            assert!(has_pt(&rows[idx], branch_lane),
-                "idx {}: branch lane {} should pass through", idx, branch_lane);
+            assert!(
+                has_pt(&rows[idx], branch_lane),
+                "idx {}: branch lane {} should pass through",
+                idx,
+                branch_lane
+            );
         }
 
         // idx 6 (e5d6285): branch_lane STILL passes through because
         // route_parent updated lane 1 to hold 3ce915d (not e5d6285),
         // so zombie cleanup for e5d6285 doesn't clear it.
-        assert!(has_pt(&rows[6], branch_lane),
-            "idx 6: branch lane {} should still pass through (holds 3ce915d)", branch_lane);
+        assert!(
+            has_pt(&rows[6], branch_lane),
+            "idx 6: branch lane {} should still pass through (holds 3ce915d)",
+            branch_lane
+        );
 
         // idx 7-8: branch_lane still passes through (3ce915d still pending)
         for idx in 7..=8 {
-            assert!(has_pt(&rows[idx], branch_lane),
-                "idx {}: branch lane {} should pass through (3ce915d pending)", idx, branch_lane);
+            assert!(
+                has_pt(&rows[idx], branch_lane),
+                "idx {}: branch lane {} should pass through (3ce915d pending)",
+                idx,
+                branch_lane
+            );
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -1508,20 +1614,38 @@ mod tests {
 
         // idx 5 (1bb477f): parent is e5d6285 (on main chain).
         // Main edge should go from lane 0 to lane 0 (parent routed to lane 0).
-        let idx5_main = rows[5].edges.iter()
+        let idx5_main = rows[5]
+            .edges
+            .iter()
             .find(|e| e.from_lane == 0 && !e.is_merge);
-        assert!(idx5_main.is_some(), "1bb477f: should have main outgoing edge");
-        assert_eq!(idx5_main.unwrap().to_lane, 0, "1bb477f: main edge stays on lane 0");
+        assert!(
+            idx5_main.is_some(),
+            "1bb477f: should have main outgoing edge"
+        );
+        assert_eq!(
+            idx5_main.unwrap().to_lane,
+            0,
+            "1bb477f: main edge stays on lane 0"
+        );
 
         // idx 8 (ba6e821): parent is 3ce915d (on main chain).
         // The parent 3ce915d should be routed to lane 0 (main chain routing),
         // but 3ce915d is ALSO on branch_lane (from the ancestor match).
         // Main-chain routing should put it on lane 0. The branch_lane copy
         // gets cleared by zombie cleanup when 3ce915d arrives.
-        let idx8_main = rows[8].edges.iter()
+        let idx8_main = rows[8]
+            .edges
+            .iter()
             .find(|e| e.from_lane == 0 && !e.is_merge);
-        assert!(idx8_main.is_some(), "ba6e821: should have main outgoing edge");
-        assert_eq!(idx8_main.unwrap().to_lane, 0, "ba6e821: main edge stays on lane 0");
+        assert!(
+            idx8_main.is_some(),
+            "ba6e821: should have main outgoing edge"
+        );
+        assert_eq!(
+            idx8_main.unwrap().to_lane,
+            0,
+            "ba6e821: main edge stays on lane 0"
+        );
 
         // ═══════════════════════════════════════════════════════════
         // 8. LANE COMPACTION — lanes freed after fork points
@@ -1529,13 +1653,22 @@ mod tests {
 
         // After idx 9 (3ce915d consumed): branch_lane should be cleared.
         // idx 10 should have only lane 0.
-        assert_eq!(rows[10].lane_count, 1,
-            "bc215a6: only lane 0 should remain, lane_count = {}", rows[10].lane_count);
+        assert_eq!(
+            rows[10].lane_count, 1,
+            "bc215a6: only lane 0 should remain, lane_count = {}",
+            rows[10].lane_count
+        );
 
         // No pass-through edges at idx 10
-        let idx10_pt = rows[10].edges.iter()
+        let idx10_pt = rows[10]
+            .edges
+            .iter()
             .filter(|e| e.from_lane == e.to_lane)
             .count();
-        assert_eq!(idx10_pt, 0, "bc215a6: no pass-through edges, found {}", idx10_pt);
+        assert_eq!(
+            idx10_pt, 0,
+            "bc215a6: no pass-through edges, found {}",
+            idx10_pt
+        );
     }
 }
