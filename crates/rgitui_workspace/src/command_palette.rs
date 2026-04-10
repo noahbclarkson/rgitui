@@ -99,6 +99,8 @@ pub enum CommandId {
     Fetch,
     Pull,
     Push,
+    PushAll,
+    PullAll,
     ForcePush,
     Commit,
     StageAll,
@@ -152,6 +154,8 @@ impl CommandId {
             Self::Fetch => "fetch",
             Self::Pull => "pull",
             Self::Push => "push",
+            Self::PushAll => "push_all",
+            Self::PullAll => "pull_all",
             Self::ForcePush => "force_push",
             Self::Commit => "commit",
             Self::StageAll => "stage_all",
@@ -205,6 +209,8 @@ impl CommandId {
             Self::Fetch => "fetch",
             Self::Pull => "pull",
             Self::Push => "push",
+            Self::PushAll => "push all",
+            Self::PullAll => "pull all",
             Self::ForcePush => "force push",
             Self::Commit => "commit",
             Self::StageAll => "stage all",
@@ -268,6 +274,8 @@ impl TryFrom<&str> for CommandId {
             "fetch" => Ok(Self::Fetch),
             "pull" => Ok(Self::Pull),
             "push" => Ok(Self::Push),
+            "push_all" => Ok(Self::PushAll),
+            "pull_all" => Ok(Self::PullAll),
             "force_push" => Ok(Self::ForcePush),
             "commit" => Ok(Self::Commit),
             "stage_all" => Ok(Self::StageAll),
@@ -388,6 +396,10 @@ impl CommandPalette {
             PaletteCommand::new(CommandId::Pull, "Git: Pull", None, "Git")
                 .with_predicate(has_remotes),
             PaletteCommand::new(CommandId::Push, "Git: Push", None, "Git")
+                .with_predicate(has_remotes),
+            PaletteCommand::new(CommandId::PushAll, "Git: Push All", None, "Git")
+                .with_predicate(has_remotes),
+            PaletteCommand::new(CommandId::PullAll, "Git: Pull All", None, "Git")
                 .with_predicate(has_remotes),
             PaletteCommand::new(CommandId::ForcePush, "Git: Force Push", None, "Git")
                 .with_predicate(has_remotes),
