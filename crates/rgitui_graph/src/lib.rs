@@ -861,11 +861,7 @@ impl Render for GraphView {
         let total_list_items = self.total_list_items();
 
         // Extract HEAD commit's lane info so the working tree row connects to it
-        let wt_head_node_lane = self
-            .graph_rows
-            .first()
-            .map(|r| r.node_lane)
-            .unwrap_or(0);
+        let wt_head_node_lane = self.graph_rows.first().map(|r| r.node_lane).unwrap_or(0);
 
         // Search state for the render closure — use pre-computed Arc for O(1) clone
         let filter_match_set = Arc::clone(&self.filter_match_set_arc);
