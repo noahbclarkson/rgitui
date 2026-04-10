@@ -4,37 +4,39 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ---
 
-## Current Focus
+## Current Focus (2026-04-10 02:05 UTC)
 
-**This cycle (2026-04-10 00:17 UTC):**
+**Build:** ✅ `b566e4d` builds clean, 337+ tests pass, clippy 0 warnings, fmt clean.
 
-**Build:** ✅ All tests pass, clippy 0 warnings, fmt clean.
+**Shipped:** `b566e4d` — feat(ui): show GPG signed badge on signed commits in graph view.
+`CommitInfo.is_signed` was already populated from gpgsig header but not rendered.
+Added "✓ Signed" badge (green/bold) next to commit message in graph rows.
 
-**Shipped:** `f50abd6` — fix(format): collapse multiline wt_head_node_lane chain to single line. The `52c7065` commit (fix(graph): correct working tree row lane placement) had a rustfmt violation in the chain call. Fixed in a one-line commit and pushed.
+**Issues:**
+- **#9** (macOS text missing) — Noah confirms fixed in latest commits, 0.1.3 release pending.
+- **#7** (Gatekeeper) — OS-level, not a code bug.
 
-**CI:** `52c7065` had a failing Check formatting step. `f50abd6` should fix it (CI run in progress).
-
-**Issues:** #9 (macOS text missing — investigating), #7 (macOS Gatekeeper xattr -cr — known platform requirement, wontfix without user demand).
-
-**Next:** Wait for CI green on `f50abd6`, then tackle drag-commits-for-rebase from backlog.
-
----
-
-**Previous cycles:**
-See MEMORY.md and daily logs for historical records. All core P0 bugs resolved.
+**Next:** v0.1.3 release prep — bump version strings, push release tag. Await direction from Noah.
 
 ---
 
 ## Backlog
 
 ### Features
-1. **Filter to my branches/commits** — toggle "only branches where I'm HEAD" and "only my commits" (DONE)
-2. **Drag commits in history** → quick rebase (extends existing interactive rebase drag)
+1. ✅ **Filter to my branches/commits** — done
+2. **Drag commits in history** → quick rebase (initiate interactive rebase by dragging in graph)
 3. **Worktree change graph** — pending changes as nodes across all worktrees in graph view
-4. **Loading UX** — blank screen → animated splash/progress indicator during initial load
+4. ✅ **Loading UX** — animated splash screen already implemented and working
 
 ### Performance
 5. **5s Linux load investigation** — verify preload is actually working, profile cache behavior
 
 ### Issues
-- **#9** (macOS font rendering) — investigating, waiting on user terminal output
+- **#9** (macOS text missing) — FIXED in `e5d6285` (font-kit + Lilex fallback font). Noah confirms.
+- **#7** (Gatekeeper) — OS-level, not code.
+
+---
+
+## Release Tracker
+
+- **v0.1.3** — Pending (fixes #9 macOS text rendering). Ready to tag when Noah pushes.
