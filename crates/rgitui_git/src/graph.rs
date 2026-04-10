@@ -1497,9 +1497,9 @@ mod tests {
         );
 
         // Every other main commit: continuation, has incoming
-        for idx in 3..=10 {
+        for (idx, r) in rows.iter().enumerate().skip(3).take(8) {
             assert!(
-                rows[idx].has_incoming,
+                r.has_incoming,
                 "idx {} should have incoming (lane 0 continuation)",
                 idx
             );
@@ -1510,11 +1510,11 @@ mod tests {
         // ═══════════════════════════════════════════════════════════
 
         let main_color = rows[2].node_color;
-        for idx in 3..=10 {
+        for (idx, r) in rows.iter().enumerate().skip(3).take(8) {
             assert_eq!(
-                rows[idx].node_color, main_color,
-                "idx {} color should match main ({}), was {}",
-                idx, main_color, rows[idx].node_color
+                r.node_color, main_color,
+                "idx {} color should match main ({}), was {:?}",
+                idx, main_color, r.node_color
             );
         }
 
@@ -1580,9 +1580,9 @@ mod tests {
         );
 
         // idx 2-5: branch_lane passes through alongside main
-        for idx in 2..=5 {
+        for (idx, r) in rows.iter().enumerate().skip(2).take(4) {
             assert!(
-                has_pt(&rows[idx], branch_lane),
+                has_pt(r, branch_lane),
                 "idx {}: branch lane {} should pass through",
                 idx,
                 branch_lane
@@ -1599,9 +1599,9 @@ mod tests {
         );
 
         // idx 7-8: branch_lane still passes through (3ce915d still pending)
-        for idx in 7..=8 {
+        for (idx, r) in rows.iter().enumerate().skip(7).take(2) {
             assert!(
-                has_pt(&rows[idx], branch_lane),
+                has_pt(r, branch_lane),
                 "idx {}: branch lane {} should pass through (3ce915d pending)",
                 idx,
                 branch_lane
