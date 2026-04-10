@@ -3224,6 +3224,8 @@ pub fn branches_containing_commit(
                 behind: 0,
                 tip_oid: Some(tip_oid),
                 author_email: None,
+                last_commit_time: None,
+                is_merged_into_main: None,
             });
             continue;
         }
@@ -3246,6 +3248,8 @@ pub fn branches_containing_commit(
                     behind: 0,
                     tip_oid: Some(tip_oid),
                     author_email: None,
+                    last_commit_time: None,
+                    is_merged_into_main: None,
                 });
             }
         }

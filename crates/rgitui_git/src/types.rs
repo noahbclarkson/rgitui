@@ -69,6 +69,11 @@ pub struct BranchInfo {
     pub tip_oid: Option<git2::Oid>,
     /// Author email of the tip commit — used to filter "My Branches".
     pub author_email: Option<String>,
+    /// Unix timestamp of the tip commit, if available.
+    pub last_commit_time: Option<i64>,
+    /// Whether this branch is merged into the default branch (main/master).
+    /// None = not yet computed, Some(false) = checked and not merged, Some(true) = merged.
+    pub is_merged_into_main: Option<bool>,
 }
 
 /// Information about a tag.

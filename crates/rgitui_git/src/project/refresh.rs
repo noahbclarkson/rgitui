@@ -290,7 +290,11 @@ fn gather_refresh_data_internal(
         .and_then(|cfg| cfg.get_string("user.email").ok());
 
     // Branches
-    let mut branches = Vec::new();
+    // Branches — two-pass approach:
+    // Pass 1: collect basic info + last_commit_time
+    // Then find main branch tip OID
+    // Pass 2: compute is_merged_into_main using git ancestry check
+    let mut branches: Vec<BranchInfo> = Vec::new();
     {
         let branch_iter = repo.branches(None)?;
         for branch_result in branch_iter {
@@ -324,6 +328,15 @@ fn gather_refresh_data_internal(
                 (0, 0)
             };
 
+            let last_commit_time =
+                tip_oid.and_then(|oid| repo.find_commit(oid).ok().map(|c| c.time().seconds()));
+
+            let author_email = tip_oid.and_then(|oid| {
+                repo.find_commit(oid)
+                    .ok()
+                    .and_then(|c| c.author().email().map(String::from))
+            });
+
             branches.push(BranchInfo {
                 name,
                 is_head,
@@ -332,11 +345,9 @@ fn gather_refresh_data_internal(
                 ahead,
                 behind,
                 tip_oid,
-                author_email: tip_oid.and_then(|oid| {
-                    repo.find_commit(oid)
-                        .ok()
-                        .and_then(|c| c.author().email().map(String::from))
-                }),
+                author_email,
+                last_commit_time,
+                is_merged_into_main: None,
             });
         }
 
@@ -346,6 +357,52 @@ fn gather_refresh_data_internal(
                 .then(a.is_remote.cmp(&b.is_remote))
                 .then(a.name.cmp(&b.name))
         });
+
+        // Find the main branch tip OID.
+        // Priority: local main > local master > remote origin/main > remote origin/master
+        let main_tip = branches
+            .iter()
+            .find(|b| !b.is_remote && b.name == "main")
+            .and_then(|b| b.tip_oid)
+            .or_else(|| {
+                branches
+                    .iter()
+                    .find(|b| !b.is_remote && b.name == "master")
+                    .and_then(|b| b.tip_oid)
+            })
+            .or_else(|| {
+                branches
+                    .iter()
+                    .find(|b| b.is_remote && b.name == "origin/main")
+                    .and_then(|b| b.tip_oid)
+            })
+            .or_else(|| {
+                branches
+                    .iter()
+                    .find(|b| b.is_remote && b.name == "origin/master")
+                    .and_then(|b| b.tip_oid)
+            });
+
+        // Pass 2: compute is_merged_into_main for local branches
+        if let Some(main_tip_oid) = main_tip {
+            for branch in branches.iter_mut() {
+                if branch.is_remote {
+                    continue;
+                }
+                if branch.is_head {
+                    // The HEAD branch: merged if it points to the same commit as main
+                    branch.is_merged_into_main = Some(branch.tip_oid == main_tip);
+                    continue;
+                }
+                // A branch is merged into main if main_tip is an ancestor of branch.tip
+                // (i.e. the branch tip is reachable from main)
+                let is_merged = branch.tip_oid.is_some_and(|tip_oid| {
+                    repo.graph_descendant_of(main_tip_oid, tip_oid)
+                        .unwrap_or(false)
+                });
+                branch.is_merged_into_main = Some(is_merged);
+            }
+        }
     }
 
     // Tags

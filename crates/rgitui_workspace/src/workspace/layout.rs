@@ -811,9 +811,12 @@ impl Render for Workspace {
                                     active_tab.right_panel_mode == RightPanelMode::Issues;
                                 let is_prs =
                                     active_tab.right_panel_mode == RightPanelMode::PullRequests;
+                                let is_bh =
+                                    active_tab.right_panel_mode == RightPanelMode::BranchHealth;
                                 let ws_details = cx.entity().downgrade();
                                 let ws_issues = cx.entity().downgrade();
                                 let ws_prs = cx.entity().downgrade();
+                                let ws_bh = cx.entity().downgrade();
                                 div()
                                     .h_flex()
                                     .w_full()
@@ -945,6 +948,42 @@ impl Render for Workspace {
                                                     }),
                                             ),
                                     )
+                                    .child(
+                                        div()
+                                            .id("right-tab-branch-health")
+                                            .h_flex()
+                                            .h_full()
+                                            .px(px(10.))
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .when(is_bh, |el| {
+                                                el.border_b_2().border_color(colors.text_accent)
+                                            })
+                                            .hover(|s| s.bg(colors.ghost_element_hover))
+                                            .on_click(move |_: &ClickEvent, _, cx| {
+                                                ws_bh
+                                                    .update(cx, |ws, cx| {
+                                                        if let Some(tab) =
+                                                            ws.tabs.get_mut(ws.active_tab)
+                                                        {
+                                                            tab.right_panel_mode =
+                                                                RightPanelMode::BranchHealth;
+                                                            cx.notify();
+                                                        }
+                                                    })
+                                                    .ok();
+                                            })
+                                            .child(
+                                                Label::new("Branch Health")
+                                                    .size(LabelSize::XSmall)
+                                                    .weight(gpui::FontWeight::SEMIBOLD)
+                                                    .color(if is_bh {
+                                                        Color::Default
+                                                    } else {
+                                                        Color::Muted
+                                                    }),
+                                            ),
+                                    )
                             })
                             // Panel content area — shows either details or issues
                             .child(
@@ -967,6 +1006,10 @@ impl Render for Workspace {
                                     .when(
                                         active_tab.right_panel_mode == RightPanelMode::PullRequests,
                                         |el| el.child(active_tab.prs_panel.clone()),
+                                    )
+                                    .when(
+                                        active_tab.right_panel_mode == RightPanelMode::BranchHealth,
+                                        |el| el.child(active_tab.branch_health_panel.clone()),
                                     ),
                             )
                             // Resize handle between detail and commit input

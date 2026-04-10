@@ -4,15 +4,16 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ---
 
-## Current Focus (2026-04-10 04:50 UTC)
+## Current Focus (2026-04-10 07:21 UTC)
 
-**Build:** ✅ `19cff25` builds clean, 337+ tests pass, clippy 0 warnings, fmt clean.
+**Build:** ✅ `4ee179f` builds clean, all tests pass, clippy 0 warnings.
 
-**Shipped:** `19cff25` — feat(rebase): add Interactive Rebase to graph context menu.
-The interactive rebase UI and git backend logic were implemented but inaccessible from the graph view. Right-clicking a commit now correctly calculates the range from HEAD to the selected commit and triggers the overlay.
+**Shipped:** `4ee179f` — fix(avatar): stop treating random strings as GitHub usernames.
+The app was extracting the local-part of git emails or commit author names and hitting `github.com/name.png`. If it accidentally matched a username, it loaded their avatar; if not, GitHub often redirects `.png` to a default placeholder. This has been removed. Gravatar, exact noreply emails, and the official GitHub API search remain in place.
 
 **Issues:**
-- **#9** (macOS text missing) — CLOSED. Was fixed in v0.1.3.
+- **#10** (Placeholder/random avatars) — FIXED and closed.
+- **#7** (Gatekeeper) — OPEN. Wontfix, OS-level.
 
 **Next:** Drag commits in history to initiate interactive rebase.
 

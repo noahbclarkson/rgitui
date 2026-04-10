@@ -3335,6 +3335,8 @@ mod tests {
             behind: 0,
             tip_oid: None,
             author_email: None,
+            last_commit_time: None,
+            is_merged_into_main: None,
         }
     }
 
