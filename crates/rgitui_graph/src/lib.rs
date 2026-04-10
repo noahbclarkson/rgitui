@@ -1687,6 +1687,15 @@ impl Render for GraphView {
                                 }
                             }
 
+                            // GPG signed commit badge
+                            if commit.is_signed {
+                                message_col = message_col.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .child(Badge::new("✓ Signed").color(Color::Success).bold()),
+                                );
+                            }
+
                             let summary_label = if is_head_row {
                                 Label::new(summary)
                                     .size(LabelSize::Small)
