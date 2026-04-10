@@ -4,8 +4,8 @@ use gpui::{
     KeyDownEvent, Render, SharedString, Window,
 };
 use rgitui_settings::{
-    config_dir, AiSettings, AutoFetchInterval, Compactness, DiffViewMode, GitProviderSettings,
-    GraphStyle, SettingsState,
+    config_dir, AiSettings, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
+    GitProviderSettings, GraphStyle, SettingsState,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
@@ -307,7 +307,7 @@ impl SettingsModal {
             let settings = state.settings().clone();
             let themes: Vec<String> = cx
                 .global::<ThemeState>()
-                .available_themes()
+                .themes_for_appearance(settings.appearance_mode)
                 .iter()
                 .map(|t| t.name.clone())
                 .collect();
@@ -804,6 +804,26 @@ impl SettingsModal {
                 .iter()
                 .position(|app| app.command == editor_cmd)
         };
+    }
+
+    fn set_appearance_mode(&mut self, mode: AppearanceMode, cx: &mut Context<Self>) {
+        cx.update_global::<SettingsState, _>(|state, _cx| {
+            state.settings_mut().appearance_mode = mode;
+            if let Err(e) = state.save() {
+                log::error!("Failed to save settings: {}", e);
+            }
+        });
+
+        let available_themes = cx.global::<ThemeState>().themes_for_appearance(mode);
+        self.available_themes = available_themes.iter().map(|t| t.name.clone()).collect();
+
+        if !self.available_themes.contains(&self.selected_theme) {
+            if let Some(first_theme) = available_themes.first() {
+                let name = first_theme.name.clone();
+                self.apply_theme(name, cx);
+            }
+        }
+        cx.notify();
     }
 
     fn apply_theme(&mut self, theme_name: String, cx: &mut Context<Self>) {
@@ -1715,6 +1735,54 @@ impl SettingsModal {
             "Appearance",
             "Customize the look and feel of the application.",
         ));
+
+        // Appearance Mode (Auto/Light/Dark)
+        let mut app_card = Self::setting_card(cx);
+        app_card = app_card.child(Self::setting_label(
+            "Appearance Mode",
+            "Choose whether to show light or dark themes, or auto-detect.",
+        ));
+
+        let appearance_mode = cx.global::<SettingsState>().settings().appearance_mode;
+        let mut app_options = div().h_flex().w_full().gap(px(8.));
+
+        for (mode, label, icon) in [
+            (AppearanceMode::Auto, "Auto", IconName::Info),
+            (AppearanceMode::Light, "Light", IconName::Info), // Replace with Sun/Moon icons if available
+            (AppearanceMode::Dark, "Dark", IconName::Info),
+        ] {
+            let is_selected = mode == appearance_mode;
+            let colors_clone = colors.clone();
+
+            let mode_str = format!("appearance-mode-{}", mode);
+            app_options = app_options.child(
+                div()
+                    .id(mode_str)
+                    .h_flex()
+                    .px(px(12.))
+                    .py(px(6.))
+                    .gap(px(6.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .when(is_selected, |el| {
+                        el.bg(colors_clone.ghost_element_selected)
+                            .border_1()
+                            .border_color(colors_clone.border_focused)
+                    })
+                    .when(!is_selected, |el| {
+                        el.border_1()
+                            .border_color(colors_clone.border_variant)
+                            .hover(|s| s.bg(colors_clone.ghost_element_hover))
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.set_appearance_mode(mode, cx);
+                    }))
+                    .child(Icon::new(icon).size(IconSize::Small))
+                    .child(Label::new(label).size(LabelSize::Small)),
+            );
+        }
+        app_card = app_card.child(app_options);
+        section = section.child(app_card);
 
         // Theme grid
         let mut card = Self::setting_card(cx);

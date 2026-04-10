@@ -62,6 +62,7 @@ pub enum IconName {
     // Status
     Info,
     CheckCircle,
+    HalfCircle,
     XCircle,
     AlertTriangle,
     Lock,
@@ -125,6 +126,7 @@ impl IconName {
             IconName::Sparkle => "icons/sparkle.svg",
             IconName::Info => "icons/info.svg",
             IconName::CheckCircle => "icons/check-circle.svg",
+            IconName::HalfCircle => "icons/half-circle.svg",
             IconName::XCircle => "icons/x-circle.svg",
             IconName::AlertTriangle => "icons/alert-triangle.svg",
             IconName::Lock => "icons/lock.svg",

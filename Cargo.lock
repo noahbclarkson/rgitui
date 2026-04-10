@@ -5174,6 +5174,7 @@ dependencies = [
  "dirs 6.0.0",
  "gpui",
  "log",
+ "rgitui_settings",
  "serde",
  "serde_json",
 ]

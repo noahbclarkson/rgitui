@@ -14,3 +14,4 @@ serde_json.workspace = true
 anyhow.workspace = true
 log.workspace = true
 dirs.workspace = true
+rgitui_settings.workspace = true

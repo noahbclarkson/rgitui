@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use gpui::{point, px, App, BoxShadow, Global, Hsla, Styled};
+use rgitui_settings::AppearanceMode;
 
 use crate::colors::{
     catppuccin_latte_colors, catppuccin_latte_status, catppuccin_mocha_colors,
@@ -38,8 +39,31 @@ impl ThemeState {
         &self.active
     }
 
+    pub fn appearance(&self) -> Appearance {
+        self.active.appearance
+    }
+
     pub fn available_themes(&self) -> &[Arc<Theme>] {
         &self.available
+    }
+
+    /// Returns themes filtered by the given appearance mode.
+    pub fn themes_for_appearance(&self, mode: AppearanceMode) -> Vec<Arc<Theme>> {
+        match mode {
+            AppearanceMode::Auto => self.available.clone(),
+            AppearanceMode::Light => self
+                .available
+                .iter()
+                .filter(|t| t.appearance == Appearance::Light)
+                .cloned()
+                .collect(),
+            AppearanceMode::Dark => self
+                .available
+                .iter()
+                .filter(|t| t.appearance == Appearance::Dark)
+                .cloned()
+                .collect(),
+        }
     }
 
     pub fn set_theme_by_name(&mut self, name: &str) {

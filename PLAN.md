@@ -4,15 +4,17 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ---
 
-## Current Focus (2026-04-10 07:21 UTC)
+## Current Focus (2026-04-10 08:05 UTC)
 
-**Build:** ✅ `4ee179f` builds clean, all tests pass, clippy 0 warnings.
+**Build:** ✅ `bdca9ba` builds clean, all tests pass, clippy 0 warnings.
 
-**Shipped:** `4ee179f` — fix(avatar): stop treating random strings as GitHub usernames.
-The app was extracting the local-part of git emails or commit author names and hitting `github.com/name.png`. If it accidentally matched a username, it loaded their avatar; if not, GitHub often redirects `.png` to a default placeholder. This has been removed. Gravatar, exact noreply emails, and the official GitHub API search remain in place.
+**Shipped:** `bdca9ba` — feat(health): add branch health dashboard showing stale, diverged, unmerged branches.
+Added a new `BranchHealthPanel` in the right tab group to help users quickly clean up their repository. It computes `last_commit_time` and `is_merged_into_main` in the background git worker during branch refresh. Filters allow users to view:
+- **Unmerged**: Local branches not yet merged into `main`/`master`.
+- **Stale**: Branches with no new commits in 30+ days.
+- **Diverged**: Branches that have commits ahead AND behind their upstream.
 
 **Issues:**
-- **#10** (Placeholder/random avatars) — FIXED and closed.
 - **#7** (Gatekeeper) — OPEN. Wontfix, OS-level.
 
 **Next:** Drag commits in history to initiate interactive rebase.
@@ -30,10 +32,6 @@ The app was extracting the local-part of git emails or commit author names and h
 
 ### Performance
 5. **5s Linux load investigation** — verify preload is actually working, profile cache behavior
-
-### Issues
-- **#9** (macOS text missing) — FIXED in `e5d6285` (font-kit + Lilex fallback font). Noah confirms.
-- **#7** (Gatekeeper) — OS-level, not code.
 
 ---
 

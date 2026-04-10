@@ -38,6 +38,38 @@ impl fmt::Display for DiffViewMode {
     }
 }
 
+/// Controls whether light or dark themes are shown in the theme picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AppearanceMode {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+impl fmt::Display for AppearanceMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppearanceMode::Auto => write!(f, "Auto"),
+            AppearanceMode::Light => write!(f, "Light"),
+            AppearanceMode::Dark => write!(f, "Dark"),
+        }
+    }
+}
+
+impl FromStr for AppearanceMode {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "auto" => Ok(AppearanceMode::Auto),
+            "light" => Ok(AppearanceMode::Light),
+            "dark" => Ok(AppearanceMode::Dark),
+            _ => Err(format!("Unknown appearance mode: {}", s)),
+        }
+    }
+}
+
 impl FromStr for DiffViewMode {
     type Err = String;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
@@ -182,6 +214,8 @@ pub struct AppSettings {
     pub clean_exit: bool,
     #[serde(default)]
     pub compactness: Compactness,
+    #[serde(default = "default_appearance_mode")]
+    pub appearance_mode: AppearanceMode,
     #[serde(default)]
     pub terminal_command: String,
     #[serde(default)]
@@ -219,6 +253,10 @@ const CURRENT_SETTINGS_VERSION: u32 = 2;
 
 fn default_settings_version() -> u32 {
     CURRENT_SETTINGS_VERSION
+}
+
+fn default_appearance_mode() -> AppearanceMode {
+    AppearanceMode::Auto
 }
 
 fn default_font_size() -> u32 {
@@ -460,6 +498,7 @@ impl Default for AppSettings {
             active_workspace_id: None,
             clean_exit: true, // First run is considered clean
             compactness: Compactness::default(),
+            appearance_mode: default_appearance_mode(),
             terminal_command: String::new(),
             editor_command: String::new(),
             font_size: default_font_size(),
