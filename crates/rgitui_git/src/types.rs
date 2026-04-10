@@ -107,6 +107,8 @@ pub struct WorktreeInfo {
     pub branch: Option<String>,
     /// OID of the HEAD commit in this worktree.
     pub head_oid: Option<git2::Oid>,
+    /// Cached pending-change status for this worktree, if available.
+    pub status: Option<WorkingTreeStatus>,
 }
 
 /// Information about a stash entry.
@@ -158,7 +160,7 @@ pub struct FileStatus {
 }
 
 /// Summary of all working tree changes.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkingTreeStatus {
     pub staged: Vec<FileStatus>,
     pub unstaged: Vec<FileStatus>,

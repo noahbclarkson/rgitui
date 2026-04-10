@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -128,8 +129,11 @@ pub enum GraphViewEvent {
     LoadMoreCommits,
     /// Toggle "My Commits" filter — show only commits authored by the current user.
     ToggleMyCommits,
-    /// The virtual "working tree" row was selected.
-    WorkingTreeSelected,
+    /// A worktree node row was selected.
+    WorktreeNodeSelected {
+        worktree_path: PathBuf,
+        name: String,
+    },
     /// Mark commit as "good" during bisect.
     BisectGood(git2::Oid),
     /// Mark commit as "bad" during bisect.
@@ -139,6 +143,27 @@ pub enum GraphViewEvent {
     /// interactive rebase editor, allowing the user to reorder, squash, fixup,
     /// reword, or drop them.
     InteractiveRebase(git2::Oid),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorktreeGraphInfo {
+    pub name: String,
+    pub is_current: bool,
+    pub head_oid: Option<git2::Oid>,
+    pub staged_count: usize,
+    pub unstaged_count: usize,
+    pub combined_breakdown: HashMap<FileChangeKind, usize>,
+    pub worktree_path: PathBuf,
+    pub branch: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct WorktreeRowPosition {
+    worktree_idx: usize,
+    list_index: usize,
+    commit_index: Option<usize>,
+    node_lane: usize,
+    color_index: usize,
 }
 
 /// State for the right-click context menu.
@@ -175,11 +200,10 @@ pub struct GraphView {
     pending_search_query: Option<SharedString>,
     cached_graph_hash: u64,
     search_debounce_task: Option<gpui::Task<()>>,
-    staged_count: usize,
-    unstaged_count: usize,
-    staged_breakdown: HashMap<FileChangeKind, usize>,
-    unstaged_breakdown: HashMap<FileChangeKind, usize>,
-    cached_merge_breakdown: HashMap<FileChangeKind, usize>,
+    worktree_infos: Vec<WorktreeGraphInfo>,
+    worktree_row_positions: Vec<WorktreeRowPosition>,
+    worktree_row_set: HashSet<usize>,
+    virtual_rows_prefix: Vec<usize>,
     show_settings_popover: bool,
     /// SHA display length: 0 = default short (7), or specific length (7/8/10/12/40).
     sha_display_length: u8,
@@ -245,11 +269,10 @@ impl GraphView {
             pending_search_query: None,
             cached_graph_hash: 0,
             search_debounce_task: None,
-            staged_count: 0,
-            unstaged_count: 0,
-            staged_breakdown: HashMap::new(),
-            unstaged_breakdown: HashMap::new(),
-            cached_merge_breakdown: HashMap::new(),
+            worktree_infos: Vec::new(),
+            worktree_row_positions: Vec::new(),
+            worktree_row_set: HashSet::new(),
+            virtual_rows_prefix: Vec::new(),
             show_settings_popover: false,
             sha_display_length: 0,
             show_author_column: true,
@@ -303,11 +326,13 @@ impl GraphView {
 
         // Preserve selection by OID across refreshes
         let prev_selected_oid = self.selected_oid;
+        let prev_selected_index = self.selected_index;
 
         // Store commits immediately so other state (search, working tree row) stays in sync.
         // The old graph_rows remain in place until the background computation finishes,
         // so the UI renders the previous graph during computation rather than going blank.
         self.commits = commits.clone();
+        self.recompute_worktree_positions();
 
         // Spawn graph computation on the background executor.
         let commits_for_bg = commits;
@@ -330,19 +355,24 @@ impl GraphView {
                     this.graph_rows.len(),
                     this.global_max_lane
                 );
+                this.recompute_worktree_positions();
 
                 // Restore selection if the previously selected commit still exists
-                let offset = this.working_tree_offset();
                 if let Some(prev_oid) = prev_selected_oid {
                     if let Some(new_index) = this.commits.iter().position(|c| c.oid == prev_oid) {
-                        this.selected_index = Some(new_index + offset);
+                        this.selected_index = this.list_index_for_commit_index(new_index);
                     } else {
                         this.selected_index = None;
                         this.selected_oid = None;
                     }
-                } else if this.selected_index == Some(0) && offset > 0 {
-                    // Working tree row was selected; keep it selected
-                    this.selected_index = Some(0);
+                } else if prev_selected_index
+                    .is_some_and(|index| this.worktree_row_set.contains(&index))
+                {
+                    if !prev_selected_index.is_some_and(|index| index < this.total_list_items()) {
+                        this.selected_index = None;
+                    } else {
+                        this.selected_index = prev_selected_index;
+                    }
                 } else {
                     this.selected_index = None;
                 }
@@ -354,10 +384,11 @@ impl GraphView {
                 // Check if a pending scroll target has just been loaded.
                 if let Some(pending_oid) = this.pending_scroll_oid {
                     if let Some(index) = this.commits.iter().position(|c| c.oid == pending_oid) {
-                        let list_index = index + offset;
-                        this.select_list_index(list_index, cx);
-                        this.scroll_handle
-                            .scroll_to_item(list_index, ScrollStrategy::Top);
+                        if let Some(list_index) = this.list_index_for_commit_index(index) {
+                            this.select_list_index(list_index, cx);
+                            this.scroll_handle
+                                .scroll_to_item(list_index, ScrollStrategy::Top);
+                        }
                     }
                     if this.all_commits_loaded {
                         this.pending_scroll_oid = None;
@@ -376,63 +407,166 @@ impl GraphView {
         self.all_commits_loaded = loaded;
     }
 
-    /// Update the working tree status counts and file-type breakdowns.
-    pub fn set_working_tree_status(
-        &mut self,
-        staged: usize,
-        unstaged: usize,
-        staged_breakdown: HashMap<FileChangeKind, usize>,
-        unstaged_breakdown: HashMap<FileChangeKind, usize>,
-        cx: &mut Context<Self>,
-    ) {
-        let changed = self.staged_count != staged
-            || self.unstaged_count != unstaged
-            || self.staged_breakdown != staged_breakdown
-            || self.unstaged_breakdown != unstaged_breakdown;
-        self.staged_count = staged;
-        self.unstaged_count = unstaged;
-        self.cached_merge_breakdown = merge_breakdowns(&staged_breakdown, &unstaged_breakdown);
-        self.staged_breakdown = staged_breakdown;
-        self.unstaged_breakdown = unstaged_breakdown;
-        if changed {
-            log::debug!(
-                "GraphView: working tree status changed: staged={} unstaged={}",
-                staged,
-                unstaged
-            );
-            cx.notify();
+    /// Update the worktree node data shown in the graph.
+    pub fn set_worktree_statuses(&mut self, infos: Vec<WorktreeGraphInfo>, cx: &mut Context<Self>) {
+        let filtered: Vec<WorktreeGraphInfo> = infos
+            .into_iter()
+            .filter(|info| info.staged_count > 0 || info.unstaged_count > 0)
+            .collect();
+        self.worktree_infos = filtered;
+        self.recompute_worktree_positions();
+        cx.notify();
+    }
+
+    fn recompute_worktree_positions(&mut self) {
+        self.worktree_row_positions.clear();
+        self.worktree_row_set.clear();
+        self.virtual_rows_prefix.clear();
+
+        let visible_commit_count = self.commits.len().min(self.graph_rows.len());
+        let mut anchored = Vec::new();
+        let mut orphan_indices = Vec::new();
+
+        for (worktree_idx, info) in self.worktree_infos.iter().enumerate() {
+            match info.head_oid {
+                Some(oid) => {
+                    if let Some(commit_index) = self.commits.iter().position(|c| c.oid == oid) {
+                        if let Some(graph_row) = self.graph_rows.get(commit_index) {
+                            anchored.push((
+                                commit_index,
+                                WorktreeRowPosition {
+                                    worktree_idx,
+                                    list_index: 0,
+                                    commit_index: Some(commit_index),
+                                    node_lane: graph_row.node_lane,
+                                    color_index: graph_row.node_color,
+                                },
+                            ));
+                        } else if commit_index < visible_commit_count {
+                            anchored.push((
+                                commit_index,
+                                WorktreeRowPosition {
+                                    worktree_idx,
+                                    list_index: 0,
+                                    commit_index: Some(commit_index),
+                                    node_lane: 0,
+                                    color_index: 0,
+                                },
+                            ));
+                        }
+                    }
+                }
+                None => orphan_indices.push(worktree_idx),
+            }
+        }
+
+        // Sort anchored worktrees: current/main worktree first (so it gets
+        // list_index 0 and wins lane collisions), then by commit_index.
+        anchored.sort_by(|(ci_a, pos_a), (ci_b, pos_b)| {
+            let a_current = self.worktree_infos[pos_a.worktree_idx].is_current;
+            let b_current = self.worktree_infos[pos_b.worktree_idx].is_current;
+            b_current
+                .cmp(&a_current)
+                .then_with(|| ci_a.cmp(ci_b))
+        });
+
+        // Detect lane collisions among anchored worktree rows and assign
+        // unique lanes so that two worktrees whose HEAD commits share a lane
+        // don't overlap visually. The current worktree is first so it keeps
+        // its natural lane (lane 0 for main).
+        let mut used_lanes: HashSet<usize> = HashSet::new();
+        let mut next_extra_lane = self.global_max_lane + 1;
+        for (_commit_index, position) in anchored.iter_mut() {
+            if !used_lanes.insert(position.node_lane) {
+                // Collision — assign a fresh lane beyond the current max.
+                position.node_lane = next_extra_lane;
+                position.color_index = next_extra_lane;
+                next_extra_lane += 1;
+            }
+        }
+
+        for (list_index, worktree_idx) in orphan_indices.into_iter().enumerate() {
+            self.worktree_row_positions.push(WorktreeRowPosition {
+                worktree_idx,
+                list_index,
+                commit_index: None,
+                node_lane: next_extra_lane,
+                color_index: 0,
+            });
+            next_extra_lane += 1;
+        }
+
+        // Re-sort by commit_index ascending for list_index placement.
+        // (The earlier sort was by is_current-first for lane collision priority,
+        // but placement must follow commit order to avoid list_index collisions.)
+        anchored.sort_by_key(|(commit_index, _)| *commit_index);
+
+        // Place virtual rows immediately above their HEAD commit.
+        let mut virtual_rows_before = self.worktree_row_positions.len(); // orphans already placed
+        for (commit_index, mut position) in anchored {
+            position.list_index = commit_index + virtual_rows_before;
+            self.worktree_row_positions.push(position);
+            virtual_rows_before += 1;
+        }
+
+        self.worktree_row_positions
+            .sort_by_key(|position| position.list_index);
+        for position in &self.worktree_row_positions {
+            self.worktree_row_set.insert(position.list_index);
+        }
+
+        let total_items = visible_commit_count + self.worktree_row_positions.len();
+        self.virtual_rows_prefix = vec![0; total_items];
+        let mut virtual_count = 0;
+        for list_index in 0..total_items {
+            if self.worktree_row_set.contains(&list_index) {
+                virtual_count += 1;
+            }
+            self.virtual_rows_prefix[list_index] = virtual_count;
         }
     }
 
-    /// Whether we show the virtual working tree row (only when there are uncommitted changes).
-    fn has_working_tree_row(&self) -> bool {
-        !self.commits.is_empty() && (self.staged_count > 0 || self.unstaged_count > 0)
+    fn worktree_row_at_list_index(&self, list_index: usize) -> Option<&WorktreeRowPosition> {
+        self.worktree_row_positions
+            .iter()
+            .find(|position| position.list_index == list_index)
     }
 
-    /// The offset added to commit indices when the working tree row is visible.
-    fn working_tree_offset(&self) -> usize {
-        if self.has_working_tree_row() {
-            1
-        } else {
-            0
+    fn commit_index_for_list_index(&self, list_index: usize) -> Option<usize> {
+        if self.worktree_row_set.contains(&list_index) {
+            return None;
         }
+        self.virtual_rows_prefix
+            .get(list_index)
+            .map(|virtual_count| list_index - *virtual_count)
     }
 
-    /// Total number of list items (working tree row + commits).
+    fn list_index_for_commit_index(&self, commit_index: usize) -> Option<usize> {
+        if commit_index >= self.commits.len().min(self.graph_rows.len()) {
+            return None;
+        }
+        let virtual_rows_before = self
+            .worktree_row_positions
+            .iter()
+            .enumerate()
+            .filter(|(ordinal, position)| {
+                position.list_index.saturating_sub(*ordinal) <= commit_index
+            })
+            .count();
+        Some(commit_index + virtual_rows_before)
+    }
+
+    /// Total number of list items (virtual worktree rows + commits).
     /// Uses the minimum of commits and graph_rows to avoid index-out-of-bounds
     /// while graph computation is still running on the background thread.
     fn total_list_items(&self) -> usize {
-        self.commits.len().min(self.graph_rows.len()) + self.working_tree_offset()
+        self.commits.len().min(self.graph_rows.len()) + self.worktree_row_positions.len()
     }
 
     pub fn selected_commit(&self) -> Option<&CommitInfo> {
         self.selected_index.and_then(|i| {
-            let offset = self.working_tree_offset();
-            if i < offset {
-                None
-            } else {
-                self.commits.get(i - offset)
-            }
+            self.commit_index_for_list_index(i)
+                .and_then(|commit_index| self.commits.get(commit_index))
         })
     }
 
@@ -485,12 +619,12 @@ impl GraphView {
 
     /// Scroll to the commit with the given OID, selecting it and emitting CommitSelected.
     pub fn scroll_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) {
-        let offset = self.working_tree_offset();
         if let Some(index) = self.commits.iter().position(|c| c.oid == oid) {
-            let list_index = index + offset;
-            self.select_list_index(list_index, cx);
-            self.scroll_handle
-                .scroll_to_item(list_index, ScrollStrategy::Top);
+            if let Some(list_index) = self.list_index_for_commit_index(index) {
+                self.select_list_index(list_index, cx);
+                self.scroll_handle
+                    .scroll_to_item(list_index, ScrollStrategy::Top);
+            }
         } else if !self.all_commits_loaded {
             // Commit not in loaded list — set as pending and trigger loading.
             self.pending_scroll_oid = Some(oid);
@@ -506,18 +640,23 @@ impl GraphView {
 
     /// Select an item by its index in the uniform list (accounts for working tree row).
     fn select_list_index(&mut self, list_index: usize, cx: &mut Context<Self>) {
-        let offset = self.working_tree_offset();
         let total = self.total_list_items();
         if list_index >= total {
             return;
         }
         self.selected_index = Some(list_index);
-        if list_index < offset {
-            // Working tree row selected
+        if let Some(worktree_idx) = self
+            .worktree_row_at_list_index(list_index)
+            .map(|position| position.worktree_idx)
+        {
             self.selected_oid = None;
-            cx.emit(GraphViewEvent::WorkingTreeSelected);
-        } else {
-            let commit_index = list_index - offset;
+            if let Some(worktree_info) = self.worktree_infos.get(worktree_idx) {
+                cx.emit(GraphViewEvent::WorktreeNodeSelected {
+                    worktree_path: worktree_info.worktree_path.clone(),
+                    name: worktree_info.name.clone(),
+                });
+            }
+        } else if let Some(commit_index) = self.commit_index_for_list_index(list_index) {
             if let Some(commit) = self.commits.get(commit_index) {
                 self.selected_oid = Some(commit.oid);
                 cx.emit(GraphViewEvent::CommitSelected(commit.oid));
@@ -643,10 +782,11 @@ impl GraphView {
         }
         self.current_match = (self.current_match + 1) % self.filter_matches.len();
         let commit_index = self.filter_matches[self.current_match];
-        let list_index = commit_index + self.working_tree_offset();
-        self.select_list_index(list_index, cx);
-        self.scroll_handle
-            .scroll_to_item(list_index, ScrollStrategy::Top);
+        if let Some(list_index) = self.list_index_for_commit_index(commit_index) {
+            self.select_list_index(list_index, cx);
+            self.scroll_handle
+                .scroll_to_item(list_index, ScrollStrategy::Top);
+        }
     }
 
     /// Jump to the previous search match.
@@ -660,10 +800,11 @@ impl GraphView {
             self.current_match -= 1;
         }
         let commit_index = self.filter_matches[self.current_match];
-        let list_index = commit_index + self.working_tree_offset();
-        self.select_list_index(list_index, cx);
-        self.scroll_handle
-            .scroll_to_item(list_index, ScrollStrategy::Top);
+        if let Some(list_index) = self.list_index_for_commit_index(commit_index) {
+            self.select_list_index(list_index, cx);
+            self.scroll_handle
+                .scroll_to_item(list_index, ScrollStrategy::Top);
+        }
     }
 
     /// Jump to first match after updating the search filter.
@@ -671,10 +812,11 @@ impl GraphView {
         if !self.filter_matches.is_empty() {
             self.current_match = 0;
             let commit_index = self.filter_matches[0];
-            let list_index = commit_index + self.working_tree_offset();
-            self.select_list_index(list_index, cx);
-            self.scroll_handle
-                .scroll_to_item(list_index, ScrollStrategy::Top);
+            if let Some(list_index) = self.list_index_for_commit_index(commit_index) {
+                self.select_list_index(list_index, cx);
+                self.scroll_handle
+                    .scroll_to_item(list_index, ScrollStrategy::Top);
+            }
         }
     }
 
@@ -771,11 +913,9 @@ impl GraphView {
                 }
             "y" | "Y" if !ctrl && !keystroke.modifiers.shift => {
                 // Copy SHA of selected commit (standard GitKraken shortcut)
-                if let Some(idx) = self.selected_index {
-                    if let Some(commit) = self.commits.get(idx) {
-                        let sha = format!("{}", commit.oid);
-                        cx.emit(GraphViewEvent::CopyCommitSha(sha));
-                    }
+                if let Some(commit) = self.selected_commit() {
+                    let sha = format!("{}", commit.oid);
+                    cx.emit(GraphViewEvent::CopyCommitSha(sha));
                 }
             }
             _ => {}
@@ -793,7 +933,7 @@ impl Render for GraphView {
         );
         let colors = cx.colors();
 
-        if self.commits.is_empty() {
+        if self.total_list_items() == 0 {
             return div()
                 .id("graph-view")
                 .v_flex()
@@ -886,17 +1026,13 @@ impl Render for GraphView {
         let commits = self.commits.clone();
         let graph_rows = self.graph_rows.clone();
         let selected_index = self.selected_index;
+        let worktree_infos = self.worktree_infos.clone();
+        let worktree_row_positions = self.worktree_row_positions.clone();
+        let worktree_row_set = self.worktree_row_set.clone();
+        let virtual_rows_prefix = self.virtual_rows_prefix.clone();
         let view: WeakEntity<GraphView> = cx.weak_entity();
 
-        // Working tree state for the closure
-        let wt_offset = self.working_tree_offset();
-        let wt_staged_count = self.staged_count;
-        let wt_unstaged_count = self.unstaged_count;
-        let wt_combined_breakdown = self.cached_merge_breakdown.clone();
         let total_list_items = self.total_list_items();
-
-        // Extract HEAD commit's lane info so the working tree row connects to it
-        let wt_head_node_lane = self.graph_rows.first().map(|r| r.node_lane).unwrap_or(0);
 
         // Search state for the render closure — use pre-computed Arc for O(1) clone
         let filter_match_set = Arc::clone(&self.filter_match_set_arc);
@@ -914,9 +1050,15 @@ impl Render for GraphView {
         let graph_style = cx.global::<SettingsState>().settings().graph_style;
         let compact_mul = compactness.multiplier();
         let row_height = compactness.spacing(self.row_height);
+        let worktree_max_lane = worktree_row_positions
+            .iter()
+            .map(|position| position.node_lane)
+            .max()
+            .unwrap_or(0);
+        let graph_lane_count = self.global_max_lane.max(worktree_max_lane + 1);
 
         let graph_col_width =
-            ((self.global_max_lane as f32 + 1.0) * lane_width + graph_padding_left).max(80.0);
+            ((graph_lane_count as f32 + 1.0) * lane_width + graph_padding_left).max(80.0);
 
         // Column visibility settings
         let show_author_column = self.show_author_column;
@@ -1208,21 +1350,78 @@ impl Render for GraphView {
             move |range: Range<usize>, _window: &mut Window, cx: &mut App| {
                 range
                     .map(|i| {
-                        // Working tree virtual row
-                        if i < wt_offset {
+                        if let Some(position) = worktree_row_positions
+                            .iter()
+                            .find(|position| position.list_index == i)
+                        {
+                            let info = &worktree_infos[position.worktree_idx];
+                            let is_orphan = info.head_oid.is_none();
+                            let row_node_color = if info.is_current || is_orphan {
+                                working_tree_node_color
+                            } else {
+                                rgitui_theme::lane_color(position.color_index)
+                            };
+                            let row_bg = if info.is_current || is_orphan {
+                                working_tree_bg
+                            } else {
+                                gpui::Hsla {
+                                    a: 0.06,
+                                    ..row_node_color
+                                }
+                            };
+                            let row_border_color = if info.is_current || is_orphan {
+                                working_tree_border_color
+                            } else {
+                                gpui::Hsla {
+                                    a: 0.6,
+                                    ..row_node_color
+                                }
+                            };
+                            // The worktree virtual row sits immediately above its
+                            // HEAD commit. We need to draw pass-through lines for
+                            // other branches' lanes that cross this row vertically,
+                            // otherwise there's a visible gap in those lines.
+                            // We use the HEAD commit's straight pass-through edges,
+                            // excluding the worktree's own node lane.
+                            let wt_node_lane = position.node_lane;
+                            let (has_head_incoming, pass_through_edges) = position
+                                .commit_index
+                                .and_then(|ci| graph_rows.get(ci))
+                                .map(|gr| {
+                                    (
+                                        gr.has_incoming,
+                                        gr.edges
+                                            .iter()
+                                            .filter(|edge| {
+                                                edge.from_lane == edge.to_lane
+                                                    && edge.from_lane != gr.node_lane
+                                                    && edge.from_lane != wt_node_lane
+                                            })
+                                            .cloned()
+                                            .collect(),
+                                    )
+                                })
+                                .unwrap_or_else(|| (false, Vec::new()));
+
                             return render_working_tree_row(WorkingTreeRowParams {
                                 list_index: i,
                                 selected: selected_index == Some(i),
-                                staged_count: wt_staged_count,
-                                unstaged_count: wt_unstaged_count,
-                                combined_breakdown: wt_combined_breakdown.clone(),
+                                staged_count: info.staged_count,
+                                unstaged_count: info.unstaged_count,
+                                combined_breakdown: info.combined_breakdown.clone(),
+                                worktree_name: info.name.clone(),
+                                branch_name: info.branch.clone(),
+                                is_current_worktree: info.is_current,
+                                is_orphan_worktree: is_orphan,
+                                has_head_incoming,
+                                pass_through_edges,
                                 row_height,
                                 lane_width,
                                 graph_padding_left,
                                 graph_col_width,
-                                working_tree_bg,
-                                working_tree_border_color,
-                                node_color: working_tree_node_color,
+                                working_tree_bg: row_bg,
+                                working_tree_border_color: row_border_color,
+                                node_color: row_node_color,
                                 selected_bg,
                                 hover_bg,
                                 active_bg,
@@ -1237,11 +1436,15 @@ impl Render for GraphView {
                                 show_graph_lanes,
                                 compact_mul,
                                 has_context_menu,
-                                head_node_lane: wt_head_node_lane,
+                                head_node_lane: position.node_lane,
                             });
                         }
 
-                        let commit_idx = i - wt_offset;
+                        let vr_count = virtual_rows_prefix.get(i).copied().unwrap_or(0);
+                        let commit_idx = i - vr_count;
+                        if commit_idx >= commits.len() || commit_idx >= graph_rows.len() {
+                            return div().into_any_element();
+                        }
                         let commit = &commits[commit_idx];
                         let oid = commit.oid;
                         let graph_row = &graph_rows[commit_idx];
@@ -1273,8 +1476,9 @@ impl Render for GraphView {
                         let node_x = node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
 
                         let node_color = rgitui_theme::lane_color(graph_row.node_color);
-                        let has_incoming = graph_row.has_incoming
-                            || (commit_idx == 0 && wt_offset > 0);
+                        let has_virtual_row_above =
+                            i > 0 && worktree_row_set.contains(&(i - 1));
+                        let has_incoming = graph_row.has_incoming || has_virtual_row_above;
 
                         // Author initials for avatar (extract small strings, not the whole CommitInfo)
                         let initials: SharedString = commit
@@ -1370,10 +1574,7 @@ impl Render for GraphView {
                                                 // Double-click: checkout this commit
                                                 cx.emit(GraphViewEvent::CheckoutCommit(oid));
                                             } else {
-                                                let offset = this.working_tree_offset();
-                                                let commit_index = i - offset;
-                                                let list_index = commit_index + offset;
-                                                this.select_list_index(list_index, cx);
+                                                this.select_list_index(i, cx);
                                             }
                                         })
                                         .ok();
@@ -1424,11 +1625,10 @@ impl Render for GraphView {
 
                                             // 1. Approach segment: incoming line from row above → dot center.
                                             if has_incoming {
-                                                // For the HEAD row below the working tree,
-                                                // start at the row top so the blue branch
-                                                // line doesn't paint over the yellow
-                                                // working-tree line above.
-                                                let approach_top = if commit_idx == 0 && wt_offset > 0 {
+                                                // When a worktree row sits immediately above this commit,
+                                                // start at the row top so the branch line doesn't paint
+                                                // over the worktree connector above it.
+                                                let approach_top = if has_virtual_row_above {
                                                     origin.y
                                                 } else {
                                                     origin.y - px(4.0)
@@ -1461,19 +1661,6 @@ impl Render for GraphView {
                                                 );
                                                 let color =
                                                     rgitui_theme::lane_color(edge.color_index);
-
-                                                // When this is the first commit row (right
-                                                // below the working tree row), skip
-                                                // pass-through edges entirely — those
-                                                // lanes have no working changes and the
-                                                // line would extend into empty space.
-                                                let is_top_row = commit_idx == 0 && wt_offset > 0;
-                                                if is_top_row
-                                                    && edge.from_lane != node_lane
-                                                    && edge.from_lane == edge.to_lane
-                                                {
-                                                    continue;
-                                                }
 
                                                 let start_y = if edge.from_lane == node_lane {
                                                     origin.y + mid_y
@@ -2762,6 +2949,12 @@ struct WorkingTreeRowParams {
     staged_count: usize,
     unstaged_count: usize,
     combined_breakdown: HashMap<FileChangeKind, usize>,
+    worktree_name: String,
+    branch_name: Option<String>,
+    is_current_worktree: bool,
+    is_orphan_worktree: bool,
+    has_head_incoming: bool,
+    pass_through_edges: Vec<GraphEdge>,
     row_height: f32,
     lane_width: f32,
     graph_padding_left: f32,
@@ -2796,6 +2989,12 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         staged_count,
         unstaged_count,
         combined_breakdown,
+        worktree_name,
+        branch_name,
+        is_current_worktree,
+        is_orphan_worktree,
+        has_head_incoming,
+        pass_through_edges,
         row_height,
         lane_width,
         graph_padding_left,
@@ -2869,6 +3068,27 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
 
     let graph_width = graph_col_width;
     let node_x = head_node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
+    let display_branch = branch_name.filter(|branch| !branch.is_empty());
+    let row_title = if is_orphan_worktree {
+        display_branch
+            .clone()
+            .map(|branch| format!("{branch} (no commits)"))
+            .unwrap_or_else(|| "No commits yet".to_string())
+    } else if let Some(branch) = display_branch.clone() {
+        format!("Pending changes on {branch}")
+    } else {
+        "Pending changes".to_string()
+    };
+    let row_badge_color = if is_current_worktree || is_orphan_worktree {
+        Color::Warning
+    } else {
+        Color::Accent
+    };
+    let hash_label = if is_orphan_worktree {
+        "new".to_string()
+    } else {
+        "working".to_string()
+    };
 
     let view_click = view.clone();
 
@@ -2925,6 +3145,30 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                 let node_x_px = px(node_x);
                                 let cx_x = origin.x + node_x_px;
                                 let cy_y = origin.y + mid_y;
+
+                                if has_head_incoming {
+                                    let mut line_up = PathBuilder::stroke(px(2.0));
+                                    line_up.move_to(point(cx_x, origin.y - px(4.0)));
+                                    line_up.line_to(point(cx_x, cy_y));
+                                    if let Ok(built) = line_up.build() {
+                                        window.paint_path(built, node_color);
+                                    }
+                                }
+
+                                for edge in &pass_through_edges {
+                                    let lane_x = px(edge.from_lane as f32 * lane_width
+                                        + lane_width / 2.0
+                                        + graph_padding_left);
+                                    let mut pass = PathBuilder::stroke(px(2.0));
+                                    pass.move_to(point(origin.x + lane_x, origin.y - px(4.0)));
+                                    pass.line_to(point(origin.x + lane_x, origin.y + h + px(4.0)));
+                                    if let Ok(built) = pass.build() {
+                                        window.paint_path(
+                                            built,
+                                            rgitui_theme::lane_color(edge.color_index),
+                                        );
+                                    }
+                                }
 
                                 // Vertical line from node center to bottom (connects to HEAD row below)
                                 let mut line_down = PathBuilder::stroke(px(2.0));
@@ -3013,9 +3257,13 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                         .color(Color::Warning),
                 )
                 .child(
-                    Label::new("working")
+                    Label::new(hash_label)
                         .size(LabelSize::XSmall)
-                        .color(Color::Warning)
+                        .color(if is_current_worktree || is_orphan_worktree {
+                            Color::Warning
+                        } else {
+                            Color::Accent
+                        })
                         .weight(gpui::FontWeight::MEDIUM),
                 ),
         )
@@ -3029,17 +3277,30 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 .overflow_x_hidden();
 
             let badge_color = if has_changes {
-                Color::Warning
+                row_badge_color
             } else {
                 Color::Muted
             };
             message_col = message_col.child(
                 div()
                     .flex_shrink_0()
-                    .child(Badge::new("Working Tree").color(badge_color).bold()),
+                    .child(Badge::new(worktree_name).color(badge_color).bold()),
             );
+            if is_orphan_worktree {
+                message_col = message_col.child(
+                    div()
+                        .flex_shrink_0()
+                        .child(Badge::new("New branch").color(Color::Warning)),
+                );
+            }
 
             if has_changes {
+                message_col = message_col.child(
+                    Label::new(row_title)
+                        .size(LabelSize::Small)
+                        .color(Color::Muted)
+                        .truncate(),
+                );
                 if staged_count > 0 {
                     message_col = message_col.child(
                         div().flex_shrink_0().child(
@@ -3095,7 +3356,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 message_col = message_col.child(indicators);
             } else {
                 message_col = message_col.child(
-                    Label::new("Working Tree Clean")
+                    Label::new(row_title)
                         .size(LabelSize::Small)
                         .color(Color::Muted)
                         .truncate(),
@@ -3111,18 +3372,6 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
             el.child(div().w(px(date_col_width)).flex_shrink_0())
         })
         .into_any_element()
-}
-
-/// Merge staged and unstaged file-kind breakdowns into a single combined map.
-fn merge_breakdowns(
-    staged: &HashMap<FileChangeKind, usize>,
-    unstaged: &HashMap<FileChangeKind, usize>,
-) -> HashMap<FileChangeKind, usize> {
-    let mut combined = staged.clone();
-    for (&kind, &count) in unstaged {
-        *combined.entry(kind).or_insert(0) += count;
-    }
-    combined
 }
 
 /// Compute a breakdown of file change kinds from a list of `FileStatus` entries.

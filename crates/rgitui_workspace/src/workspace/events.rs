@@ -9,7 +9,7 @@ use rgitui_git::{
     CommitInfo, GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
     RebaseEntryAction, RebasePlanEntry, Signature,
 };
-use rgitui_graph::{GraphView, GraphViewEvent};
+use rgitui_graph::{GraphView, GraphViewEvent, WorktreeGraphInfo};
 
 use crate::{
     cache::LruCache, BisectView, BisectViewEvent, BlameView, BlameViewEvent, BranchDialog,
@@ -24,6 +24,111 @@ use crate::{
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
+
+pub(super) fn build_worktree_graph_infos(
+    worktrees: &[rgitui_git::WorktreeInfo],
+) -> Vec<WorktreeGraphInfo> {
+    worktrees
+        .iter()
+        .filter_map(|worktree| {
+            let status = worktree.status.as_ref()?;
+            let mut combined_breakdown = rgitui_graph::compute_breakdown(&status.staged);
+            for (kind, count) in rgitui_graph::compute_breakdown(&status.unstaged) {
+                *combined_breakdown.entry(kind).or_insert(0) += count;
+            }
+            Some(WorktreeGraphInfo {
+                name: worktree.name.clone(),
+                is_current: worktree.is_current,
+                head_oid: worktree.head_oid,
+                staged_count: status.staged.len(),
+                unstaged_count: status.unstaged.len(),
+                combined_breakdown,
+                worktree_path: worktree.path.clone(),
+                branch: worktree.branch.clone(),
+            })
+        })
+        .collect()
+}
+
+fn active_worktree_status(
+    tab: &super::ProjectTab,
+    proj: &GitProject,
+) -> (rgitui_git::WorkingTreeStatus, std::path::PathBuf) {
+    if let Some(inspecting) = &tab.inspecting_worktree {
+        let status = proj
+            .worktrees()
+            .iter()
+            .find(|worktree| worktree.path == inspecting.path)
+            .and_then(|worktree| worktree.status.clone())
+            .unwrap_or_else(|| proj.status().clone());
+        (status, inspecting.path.clone())
+    } else {
+        (proj.status().clone(), proj.repo_path().to_path_buf())
+    }
+}
+
+pub(super) fn update_commit_panel_for_active_worktree(
+    workspace: &mut Workspace,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(tab) = workspace.tabs.get(workspace.active_tab) else {
+        return;
+    };
+    let staged_count = {
+        let proj = tab.project.read(cx);
+        let (status, _) = active_worktree_status(tab, &proj);
+        status.staged.len()
+    };
+    tab.commit_panel.update(cx, |commit_panel, cx| {
+        commit_panel.set_staged_count(staged_count, cx)
+    });
+}
+
+pub(super) fn update_toolbar_for_active_worktree(
+    workspace: &mut Workspace,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(tab) = workspace.tabs.get(workspace.active_tab) else {
+        return;
+    };
+    let (has_changes, has_stashes, ahead, behind, has_github_token) = {
+        let proj = tab.project.read(cx);
+        let (status, _) = active_worktree_status(tab, &proj);
+        let has_changes = !status.staged.is_empty() || !status.unstaged.is_empty();
+        let has_stashes = !proj.stashes().is_empty();
+        let (ahead, behind) = proj
+            .branches()
+            .iter()
+            .find(|branch| branch.is_head)
+            .map(|branch| (branch.ahead, branch.behind))
+            .unwrap_or((0, 0));
+        let has_github_token = tab.prs_panel.read(cx).github_token().is_some();
+        (has_changes, has_stashes, ahead, behind, has_github_token)
+    };
+    tab.toolbar.update(cx, |toolbar, cx| {
+        toolbar.set_state(true, true, has_stashes, has_changes, has_github_token, cx);
+        toolbar.set_ahead_behind(ahead, behind, cx);
+    });
+}
+
+pub(super) fn update_sidebar_for_active_worktree(
+    workspace: &mut Workspace,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(tab) = workspace.tabs.get(workspace.active_tab) else {
+        return;
+    };
+    let (status, selected_path) = {
+        let proj = tab.project.read(cx);
+        active_worktree_status(tab, &proj)
+    };
+    tab.sidebar.update(cx, |sidebar, cx| {
+        sidebar.update_status(status.staged.clone(), status.unstaged.clone(), cx);
+        sidebar.set_selected_worktree_by_path(Some(&selected_path), cx);
+    });
+    update_commit_panel_for_active_worktree(workspace, cx);
+    update_toolbar_for_active_worktree(workspace, cx);
+}
 
 pub(super) fn subscribe_settings_modal(
     cx: &mut Context<Workspace>,
@@ -351,8 +456,10 @@ pub(super) fn subscribe_confirm_dialog(
                     match action {
                         ConfirmAction::DiscardFile(path) => {
                             let path_buf = std::path::PathBuf::from(path);
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
-                                proj.discard_changes(&[path_buf], cx).detach();
+                                proj.discard_changes_at(&[path_buf], &worktree_path, cx)
+                                    .detach();
                             });
                         }
                         ConfirmAction::ForcePush => {
@@ -509,9 +616,19 @@ pub(super) fn subscribe_confirm_dialog(
                         }
                         ConfirmAction::WorktreeRemove(path) => {
                             let path = std::path::PathBuf::from(path.clone());
+                            if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                                if tab
+                                    .inspecting_worktree
+                                    .as_ref()
+                                    .is_some_and(|inspecting| inspecting.path == path)
+                                {
+                                    tab.inspecting_worktree = None;
+                                }
+                            }
                             project.update(cx, |proj, cx| {
                                 proj.remove_worktree(path, cx).detach();
                             });
+                            update_sidebar_for_active_worktree(this, cx);
                         }
                     }
                 }
@@ -658,13 +775,12 @@ pub(super) fn subscribe_project(
     project: &Entity<GitProject>,
     graph: &Entity<GraphView>,
     sidebar: &Entity<Sidebar>,
-    commit_panel: &Entity<CommitPanel>,
+    _commit_panel: &Entity<CommitPanel>,
     toolbar: &Entity<Toolbar>,
     diff_cache: Arc<Mutex<CommitDiffCache>>,
 ) {
     let graph = graph.clone();
     let sidebar = sidebar.clone();
-    let commit_panel = commit_panel.clone();
     let toolbar = toolbar.clone();
     let diff_cache = diff_cache.clone();
     let has_prewarmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -686,45 +802,33 @@ pub(super) fn subscribe_project(
             GitProjectEvent::StatusChanged
             | GitProjectEvent::HeadChanged
             | GitProjectEvent::RefsChanged => {
-                let proj = project.read(cx);
-                let commits = proj.recent_commits_arc();
-                let has_more = proj.has_more_commits();
-                let wt_status = proj.status_arc();
-                let branches = proj.branches().to_vec();
-                let tags = proj.tags().to_vec();
-                let remotes = proj.remotes().to_vec();
-                let stashes = proj.stashes().to_vec();
-                let worktrees = proj.worktrees().to_vec();
-                let has_stashes = !stashes.is_empty();
-                let has_changes = proj.has_changes();
-                let staged_count = wt_status.staged.len();
-                let (ahead, behind) = branches
-                    .iter()
-                    .find(|b| b.is_head)
-                    .map(|b| (b.ahead, b.behind))
-                    .unwrap_or((0, 0));
-                let mut seen = std::collections::HashSet::new();
-                let authors: Vec<(String, String)> = commits
-                    .iter()
-                    .filter(|c| seen.insert(c.author.email.clone()))
-                    .map(|c| (c.author.name.clone(), c.author.email.clone()))
-                    .collect();
+                let (commits, has_more, branches, tags, remotes, stashes, worktrees, authors) = {
+                    let proj = project.read(cx);
+                    let commits = proj.recent_commits_arc();
+                    let has_more = proj.has_more_commits();
+                    let branches = proj.branches().to_vec();
+                    let tags = proj.tags().to_vec();
+                    let remotes = proj.remotes().to_vec();
+                    let stashes = proj.stashes().to_vec();
+                    let worktrees = proj.worktrees().to_vec();
+                    let mut seen = std::collections::HashSet::new();
+                    let authors: Vec<(String, String)> = commits
+                        .iter()
+                        .filter(|c| seen.insert(c.author.email.clone()))
+                        .map(|c| (c.author.name.clone(), c.author.email.clone()))
+                        .collect();
+                    (
+                        commits, has_more, branches, tags, remotes, stashes, worktrees, authors,
+                    )
+                };
                 crate::avatar_resolver::resolve_avatars(authors, cx);
 
-                let wt_staged = wt_status.staged.len();
-                let wt_unstaged = wt_status.unstaged.len();
-                let wt_staged_bd = rgitui_graph::compute_breakdown(&wt_status.staged);
-                let wt_unstaged_bd = rgitui_graph::compute_breakdown(&wt_status.unstaged);
+                let worktree_graph_infos = build_worktree_graph_infos(&worktrees);
+                let worktrees_for_sidebar = worktrees.clone();
                 graph.update(cx, |g, cx| {
                     g.set_commits(commits, cx);
                     g.set_all_loaded(!has_more);
-                    g.set_working_tree_status(
-                        wt_staged,
-                        wt_unstaged,
-                        wt_staged_bd,
-                        wt_unstaged_bd,
-                        cx,
-                    );
+                    g.set_worktree_statuses(worktree_graph_infos, cx);
                 });
 
                 sidebar.update(cx, |s, cx| {
@@ -732,21 +836,26 @@ pub(super) fn subscribe_project(
                     s.update_tags(tags, cx);
                     s.update_remotes(remotes, cx);
                     s.update_stashes(stashes, cx);
-                    s.update_worktrees(worktrees, cx);
-                    s.update_status(wt_status.staged.clone(), wt_status.unstaged.clone(), cx);
+                    s.update_worktrees(worktrees_for_sidebar, cx);
                 });
 
-                commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
+                if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                    if let Some(inspecting) = &tab.inspecting_worktree {
+                        let inspected_worktree =
+                            worktrees.iter().find(|wt| wt.path == inspecting.path);
+                        let should_exit = match inspected_worktree {
+                            None => true,
+                            Some(worktree) => worktree.status.as_ref().is_some_and(|status| {
+                                status.staged.is_empty() && status.unstaged.is_empty()
+                            }),
+                        };
+                        if should_exit {
+                            tab.inspecting_worktree = None;
+                        }
+                    }
+                }
 
-                let has_github_token = if let Some(tab) = this.tabs.get(this.active_tab) {
-                    tab.prs_panel.read(cx).github_token().is_some()
-                } else {
-                    false
-                };
-                toolbar.update(cx, |tb, cx| {
-                    tb.set_state(true, true, has_stashes, has_changes, has_github_token, cx);
-                    tb.set_ahead_behind(ahead, behind, cx);
-                });
+                update_sidebar_for_active_worktree(this, cx);
 
                 // Pre-warm diff cache once for the first 30 commits.
                 if has_prewarmed.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -925,7 +1034,7 @@ pub(super) fn subscribe_sidebar(
                 let path_buf = std::path::PathBuf::from(path);
                 let p = path.clone();
                 let is_staged = *staged;
-                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let repo_path = this.effective_worktree_path(cx);
                 let dv = diff_viewer.clone();
                 let dp = detail_panel_ref.clone();
 
@@ -958,7 +1067,7 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::ConflictFileSelected(path) => {
                 let path_buf = std::path::PathBuf::from(path);
-                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let repo_path = this.effective_worktree_path(cx);
                 let dv = diff_viewer.clone();
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let result = cx
@@ -978,24 +1087,30 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::StageFile(path) => {
                 let path_buf = std::path::PathBuf::from(path);
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.stage_files(&[path_buf], cx).detach();
+                    proj.stage_files_at(&[path_buf], &worktree_path, cx)
+                        .detach();
                 });
             }
             SidebarEvent::UnstageFile(path) => {
                 let path_buf = std::path::PathBuf::from(path);
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.unstage_files(&[path_buf], cx).detach();
+                    proj.unstage_files_at(&[path_buf], &worktree_path, cx)
+                        .detach();
                 });
             }
             SidebarEvent::StageAll => {
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.stage_all(cx).detach();
+                    proj.stage_all_at(&worktree_path, cx).detach();
                 });
             }
             SidebarEvent::UnstageAll => {
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.unstage_all(cx).detach();
+                    proj.unstage_all_at(&worktree_path, cx).detach();
                 });
             }
             SidebarEvent::BranchCheckout(name) => {
@@ -1130,12 +1245,30 @@ pub(super) fn subscribe_sidebar(
             SidebarEvent::WorktreeSelected(index) => {
                 let worktrees = project.read(cx).worktrees().to_vec();
                 if let Some(wt) = worktrees.get(*index) {
+                    if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                        tab.inspecting_worktree = if wt.is_current {
+                            None
+                        } else {
+                            Some(super::InspectingWorktree {
+                                name: wt.name.clone(),
+                                path: wt.path.clone(),
+                                branch: wt.branch.clone(),
+                            })
+                        };
+                    }
                     if let Some(oid) = wt.head_oid {
                         if let Some(tab) = this.tabs.get(this.active_tab) {
                             tab.graph.update(cx, |g, cx| {
                                 g.scroll_to_commit(oid, cx);
                             });
                         }
+                    }
+                    update_sidebar_for_active_worktree(this, cx);
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        let dp = tab.detail_panel.clone();
+                        let dv = tab.diff_viewer.clone();
+                        dp.update(cx, |dp, cx| dp.clear(cx));
+                        dv.update(cx, |dv, cx| dv.clear(cx));
                     }
                 }
             }
@@ -1681,8 +1814,32 @@ pub(super) fn subscribe_graph(
                         proj.load_more_commits(cx).detach();
                     });
                 }
-                GraphViewEvent::WorkingTreeSelected => {
-                    log::info!("WorkingTreeSelected");
+                GraphViewEvent::WorktreeNodeSelected {
+                    worktree_path,
+                    name,
+                } => {
+                    let worktree_path = worktree_path.clone();
+                    let name = name.clone();
+                    let worktree = project
+                        .read(cx)
+                        .worktrees()
+                        .iter()
+                        .find(|worktree| worktree.path == worktree_path)
+                        .cloned();
+                    if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                        tab.inspecting_worktree = worktree.and_then(|worktree| {
+                            if worktree.is_current {
+                                None
+                            } else {
+                                Some(super::InspectingWorktree {
+                                    name,
+                                    path: worktree_path,
+                                    branch: worktree.branch,
+                                })
+                            }
+                        });
+                    }
+                    update_sidebar_for_active_worktree(this, cx);
                     let dp = detail_panel_ref.clone();
                     let dv = diff_viewer.clone();
                     dp.update(cx, |dp, cx| dp.clear(cx));
@@ -1953,8 +2110,9 @@ pub(super) fn subscribe_commit_panel(
                     .map(|c| c.oid.to_string());
                 let msg = message.clone();
                 let is_amend = *amend;
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.commit(&msg, is_amend, cx).detach();
+                    proj.commit_at(&msg, is_amend, &worktree_path, cx).detach();
                 });
                 commit_panel_ref.update(cx, |cp, cx| {
                     cp.set_message(String::new(), cx);
@@ -2066,11 +2224,11 @@ pub(super) fn subscribe_toolbar(
                 }
             }
             ToolbarEvent::OpenFileExplorer => {
-                let repo_path = _project.read(cx).repo_path().to_path_buf();
+                let repo_path = this.effective_worktree_path(cx);
                 super::layout::open_file_explorer(&repo_path);
             }
             ToolbarEvent::OpenTerminal => {
-                let repo_path = _project.read(cx).repo_path().to_path_buf();
+                let repo_path = this.effective_worktree_path(cx);
                 let terminal_cmd = cx
                     .global::<rgitui_settings::SettingsState>()
                     .settings()
@@ -2079,7 +2237,7 @@ pub(super) fn subscribe_toolbar(
                 super::layout::open_terminal(&repo_path, &terminal_cmd);
             }
             ToolbarEvent::OpenEditor => {
-                let repo_path = _project.read(cx).repo_path().to_path_buf();
+                let repo_path = this.effective_worktree_path(cx);
                 let editor_cmd = cx
                     .global::<rgitui_settings::SettingsState>()
                     .settings()

@@ -135,37 +135,55 @@ impl Workspace {
 
         // Initial sync
         {
-            let proj = project.read(cx);
-            let commits = proj.recent_commits_arc();
-            let has_more = proj.has_more_commits();
-            let init_status = proj.status_arc();
-            let branches = proj.branches().to_vec();
-            let tags = proj.tags().to_vec();
-            let remotes = proj.remotes().to_vec();
-            let stashes = proj.stashes().to_vec();
-            let worktrees = proj.worktrees().to_vec();
-            let staged_count = init_status.staged.len();
-            let mut seen = std::collections::HashSet::new();
-            let authors: Vec<(String, String)> = commits
-                .iter()
-                .filter(|c| seen.insert(c.author.email.clone()))
-                .map(|c| (c.author.name.clone(), c.author.email.clone()))
-                .collect();
+            let (
+                commits,
+                has_more,
+                init_status,
+                branches,
+                tags,
+                remotes,
+                stashes,
+                worktrees,
+                staged_count,
+                authors,
+                selected_worktree_path,
+            ) = {
+                let proj = project.read(cx);
+                let commits = proj.recent_commits_arc();
+                let has_more = proj.has_more_commits();
+                let init_status = proj.status_arc();
+                let branches = proj.branches().to_vec();
+                let tags = proj.tags().to_vec();
+                let remotes = proj.remotes().to_vec();
+                let stashes = proj.stashes().to_vec();
+                let worktrees = proj.worktrees().to_vec();
+                let staged_count = init_status.staged.len();
+                let mut seen = std::collections::HashSet::new();
+                let authors: Vec<(String, String)> = commits
+                    .iter()
+                    .filter(|c| seen.insert(c.author.email.clone()))
+                    .map(|c| (c.author.name.clone(), c.author.email.clone()))
+                    .collect();
+                (
+                    commits,
+                    has_more,
+                    init_status,
+                    branches,
+                    tags,
+                    remotes,
+                    stashes,
+                    worktrees,
+                    staged_count,
+                    authors,
+                    proj.repo_path().to_path_buf(),
+                )
+            };
             crate::avatar_resolver::resolve_avatars(authors, cx);
-            let init_staged = init_status.staged.len();
-            let init_unstaged = init_status.unstaged.len();
-            let init_staged_bd = rgitui_graph::compute_breakdown(&init_status.staged);
-            let init_unstaged_bd = rgitui_graph::compute_breakdown(&init_status.unstaged);
+            let worktree_graph_infos = super::events::build_worktree_graph_infos(&worktrees);
             graph.update(cx, |g, cx| {
                 g.set_commits(commits, cx);
                 g.set_all_loaded(!has_more);
-                g.set_working_tree_status(
-                    init_staged,
-                    init_unstaged,
-                    init_staged_bd,
-                    init_unstaged_bd,
-                    cx,
-                );
+                g.set_worktree_statuses(worktree_graph_infos, cx);
             });
 
             sidebar.update(cx, |s, cx| {
@@ -175,6 +193,7 @@ impl Workspace {
                 s.update_stashes(stashes, cx);
                 s.update_worktrees(worktrees, cx);
                 s.update_status(init_status.staged.clone(), init_status.unstaged.clone(), cx);
+                s.set_selected_worktree_by_path(Some(&selected_worktree_path), cx);
             });
 
             commit_panel.update(cx, |cp, cx| cp.set_staged_count(staged_count, cx));
@@ -265,6 +284,7 @@ impl Workspace {
             right_panel_mode: RightPanelMode::Details,
             bottom_panel_mode: BottomPanelMode::Diff,
             caches,
+            inspecting_worktree: None,
         });
         self.active_tab = self.tabs.len() - 1;
         log::info!("open_repo: opened as tab {}", self.tabs.len() - 1);

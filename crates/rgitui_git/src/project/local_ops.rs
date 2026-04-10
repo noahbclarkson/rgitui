@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rgitui_settings::current_git_auth_runtime;
 
@@ -13,10 +13,22 @@ use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent
 impl GitProject {
     /// Stage specific files.
     pub fn stage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.stage_files_at(paths, &worktree_path, cx)
+    }
+
+    /// Stage specific files in the given worktree.
+    pub fn stage_files_at(
+        &mut self,
+        paths: &[PathBuf],
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!("stage_files: {} paths", paths.len());
         let paths = paths.to_vec();
         let task_paths = paths.clone();
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -34,17 +46,17 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let mut index = repo.index()?;
                     for path in &task_paths {
-                        if repo_path.join(path).exists() {
+                        if worktree_path.join(path).exists() {
                             index.add_path(path)?;
                         } else {
                             index.remove_path(path)?;
                         }
                     }
                     index.write()?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 
@@ -86,10 +98,22 @@ impl GitProject {
 
     /// Unstage specific files.
     pub fn unstage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.unstage_files_at(paths, &worktree_path, cx)
+    }
+
+    /// Unstage specific files in the given worktree.
+    pub fn unstage_files_at(
+        &mut self,
+        paths: &[PathBuf],
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!("unstage_files: {} paths", paths.len());
         let paths = paths.to_vec();
         let task_paths = paths.clone();
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -107,7 +131,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     if let Ok(head_tree) = repo.head().and_then(|h| h.peel_to_tree()) {
                         repo.reset_default(Some(&head_tree.into_object()), &task_paths)?;
                     } else {
@@ -123,7 +147,7 @@ impl GitProject {
                         }
                         index.write()?;
                     }
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 
@@ -165,8 +189,19 @@ impl GitProject {
 
     /// Stage all changes.
     pub fn stage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.stage_all_at(&worktree_path, cx)
+    }
+
+    /// Stage all changes in the given worktree.
+    pub fn stage_all_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!("stage_all");
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -180,11 +215,11 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let mut index = repo.index()?;
                     index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
                     index.write()?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 
@@ -222,8 +257,19 @@ impl GitProject {
 
     /// Unstage all changes.
     pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.unstage_all_at(&worktree_path, cx)
+    }
+
+    /// Unstage all changes in the given worktree.
+    pub fn unstage_all_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!("unstage_all");
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -237,12 +283,12 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     if let Ok(head) = repo.head() {
                         let obj = head.peel(git2::ObjectType::Any)?;
                         repo.reset(&obj, git2::ResetType::Mixed, None)?;
                     }
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 
@@ -285,11 +331,24 @@ impl GitProject {
         amend: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<git2::Oid>> {
+        let worktree_path = self.repo_path.clone();
+        self.commit_at(message, amend, &worktree_path, cx)
+    }
+
+    /// Create a commit in the given worktree with the current staged changes.
+    pub fn commit_at(
+        &mut self,
+        message: &str,
+        amend: bool,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<git2::Oid>> {
         log::info!("commit: amend={}", amend);
         let message = message.to_string();
         let task_message = message.clone();
         let commit_summary = message.lines().next().unwrap_or("").to_string();
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -307,7 +366,7 @@ impl GitProject {
             let result: anyhow::Result<(git2::Oid, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let sig = repo.signature()?;
                     let mut index = repo.index()?;
                     if index.is_empty() {
@@ -421,7 +480,7 @@ impl GitProject {
                         }
                     };
 
-                    let data = gather_refresh_data(&repo_path, commit_limit)?;
+                    let data = gather_refresh_data(&refresh_repo_path, commit_limit)?;
                     Ok((oid, data))
                 })
                 .await;
@@ -1399,6 +1458,17 @@ impl GitProject {
         paths: &[PathBuf],
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.discard_changes_at(paths, &worktree_path, cx)
+    }
+
+    /// Discard changes in specific files for the given worktree (restore to HEAD).
+    pub fn discard_changes_at(
+        &mut self,
+        paths: &[PathBuf],
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!("discard_changes: {} paths", paths.len());
         let paths = paths.to_vec();
         let operation_id = self.begin_operation(
@@ -1412,13 +1482,14 @@ impl GitProject {
             self.head_branch.clone(),
             cx,
         );
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let workdir = repo
                         .workdir()
                         .ok_or_else(|| anyhow::anyhow!("Bare repository has no working directory"))?
@@ -1450,7 +1521,7 @@ impl GitProject {
                     if has_tracked {
                         repo.checkout_head(Some(&mut checkout_opts))?;
                     }
-                    let data = gather_refresh_data(&repo_path, commit_limit)?;
+                    let data = gather_refresh_data(&refresh_repo_path, commit_limit)?;
                     Ok::<_, anyhow::Error>(data)
                 })
                 .await;

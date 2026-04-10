@@ -11,6 +11,7 @@ mod update_checker;
 pub(crate) use state::*;
 pub(crate) use undo::{UndoAction, UndoEntry, UndoStack};
 
+use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui::prelude::*;
@@ -122,6 +123,14 @@ pub(super) struct ProjectTab {
     pub right_panel_mode: RightPanelMode,
     pub bottom_panel_mode: BottomPanelMode,
     pub caches: ViewCaches,
+    pub inspecting_worktree: Option<InspectingWorktree>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct InspectingWorktree {
+    pub name: String,
+    pub path: PathBuf,
+    pub branch: Option<String>,
 }
 
 /// Events from the workspace.
@@ -372,6 +381,18 @@ impl Workspace {
 
     pub fn active_project(&self) -> Option<&Entity<GitProject>> {
         self.tabs.get(self.active_tab).map(|t| &t.project)
+    }
+
+    pub(super) fn effective_worktree_path(&self, cx: &gpui::App) -> PathBuf {
+        self.tabs
+            .get(self.active_tab)
+            .and_then(|tab| tab.inspecting_worktree.as_ref().map(|w| w.path.clone()))
+            .unwrap_or_else(|| {
+                self.tabs
+                    .get(self.active_tab)
+                    .map(|tab| tab.project.read(cx).repo_path().to_path_buf())
+                    .unwrap_or_default()
+            })
     }
 
     /// Open the GitHub PR creation dialog with the current branch as head

@@ -97,11 +97,36 @@ impl Render for Workspace {
             .unwrap_or("detached")
             .to_string()
             .into();
-        let has_changes = project.has_changes();
+        let (has_changes, staged_count, unstaged_count) =
+            if let Some(inspecting) = &active_tab.inspecting_worktree {
+                project
+                    .worktrees()
+                    .iter()
+                    .find(|worktree| worktree.path == inspecting.path)
+                    .and_then(|worktree| worktree.status.as_ref())
+                    .map(|status| {
+                        (
+                            !status.staged.is_empty() || !status.unstaged.is_empty(),
+                            status.staged.len(),
+                            status.unstaged.len(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            project.has_changes(),
+                            project.status().staged.len(),
+                            project.status().unstaged.len(),
+                        )
+                    })
+            } else {
+                (
+                    project.has_changes(),
+                    project.status().staged.len(),
+                    project.status().unstaged.len(),
+                )
+            };
         let head_detached = project.is_head_detached();
         let repo_state = project.repo_state();
-        let staged_count = project.status().staged.len();
-        let unstaged_count = project.status().unstaged.len();
         let stash_count = project.stashes().len();
         let repo_path_display: SharedString = project.repo_path().display().to_string().into();
         let overlays_active = self.overlays.command_palette.read(cx).is_visible()
@@ -426,6 +451,55 @@ impl Render for Workspace {
                                 .color(Color::Error)
                                 .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
                                     this.execute_command(CommandId::AbortOperation, cx);
+                                })),
+                        ),
+                )
+            })
+            .when_some(active_tab.inspecting_worktree.clone(), |el, inspecting| {
+                let label: SharedString = inspecting
+                    .branch
+                    .clone()
+                    .map(|branch| format!("Inspecting worktree: {} ({})", inspecting.name, branch))
+                    .unwrap_or_else(|| format!("Inspecting worktree: {}", inspecting.name))
+                    .into();
+                el.child(
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .min_h(px(32.))
+                        .px(px(10.))
+                        .py(px(4.))
+                        .gap(px(6.))
+                        .items_center()
+                        .bg(cx.status().warning_background)
+                        .border_b_1()
+                        .border_color(cx.status().warning)
+                        .child(
+                            Icon::new(IconName::GitBranch)
+                                .size(IconSize::Small)
+                                .color(Color::Warning),
+                        )
+                        .child(
+                            Label::new(label)
+                                .size(LabelSize::Small)
+                                .weight(gpui::FontWeight::SEMIBOLD)
+                                .truncate(),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("go-back-main", "Go Back to Main")
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Subtle)
+                                .color(Color::Warning)
+                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                    if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                                        tab.inspecting_worktree = None;
+                                        let dp = tab.detail_panel.clone();
+                                        let dv = tab.diff_viewer.clone();
+                                        dp.update(cx, |dp, cx| dp.clear(cx));
+                                        dv.update(cx, |dv, cx| dv.clear(cx));
+                                    }
+                                    super::events::update_sidebar_for_active_worktree(this, cx);
                                 })),
                         ),
                 )
