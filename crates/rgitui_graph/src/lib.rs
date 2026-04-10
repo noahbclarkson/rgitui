@@ -132,6 +132,11 @@ pub enum GraphViewEvent {
     BisectGood(git2::Oid),
     /// Mark commit as "bad" during bisect.
     BisectBad(git2::Oid),
+    /// Open interactive rebase starting from (not including) the selected commit.
+    /// All commits from HEAD down to the selected commit will be shown in the
+    /// interactive rebase editor, allowing the user to reorder, squash, fixup,
+    /// reword, or drop them.
+    InteractiveRebase(git2::Oid),
 }
 
 /// State for the right-click context menu.
@@ -2013,6 +2018,7 @@ impl Render for GraphView {
                     ("Mark as good (bisect)", IconName::Check),
                     ("Mark as bad (bisect)", IconName::X),
                     ("Reset to here", IconName::Trash),
+                    ("Interactive Rebase", IconName::GitMerge),
                     ("Copy SHA", IconName::Copy),
                     ("Copy commit message", IconName::Edit),
                     ("Copy author name", IconName::User),
@@ -2022,7 +2028,7 @@ impl Render for GraphView {
                 // Convert window-relative click position to container-relative coordinates,
                 // then clamp to keep the menu within the container bounds.
                 let menu_w = px(200.);
-                let menu_h = px(280.);
+                let menu_h = px(308.);
                 let container_bounds = self.container_bounds;
                 // Convert click position from window coordinates to container-relative.
                 let rel_x = pos.x - container_bounds.origin.x;
@@ -2069,8 +2075,9 @@ impl Render for GraphView {
                     let label: SharedString = (*label_text).into();
                     let icon = *icon_name;
 
-                    // Add separator before bisect options, before destructive "Reset", and before clipboard ops
-                    if idx == 5 || idx == 7 || idx == 9 || idx == 11 {
+                    // Add separator before bisect options, before destructive "Reset",
+                    // before Interactive Rebase, and before clipboard ops
+                    if idx == 5 || idx == 7 || idx == 8 || idx == 12 {
                         menu = menu.child(
                             div()
                                 .w_full()
@@ -2203,6 +2210,22 @@ impl Render for GraphView {
                             );
                         }
                         8 => {
+                            // Interactive Rebase — emit event with the right-clicked commit's OID.
+                            // The workspace handler will build the commit list from HEAD down
+                            // to (including) this commit and open the rebase editor.
+                            let w = weak.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::InteractiveRebase(oid));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        9 => {
                             let w = weak.clone();
                             let sha_for_click = sha_clone.clone();
                             item = item.on_click(
@@ -2217,7 +2240,7 @@ impl Render for GraphView {
                                 },
                             );
                         }
-                        9 => {
+                        10 => {
                             let w = weak.clone();
                             let msg_for_click = msg_clone.clone();
                             item = item.on_click(
@@ -2232,7 +2255,7 @@ impl Render for GraphView {
                                 },
                             );
                         }
-                        10 => {
+                        11 => {
                             let w = weak.clone();
                             let author_for_click = author_name_clone.clone();
                             item = item.on_click(
@@ -2247,7 +2270,7 @@ impl Render for GraphView {
                                 },
                             );
                         }
-                        11 => {
+                        12 => {
                             let w = weak.clone();
                             let date_for_click = date_clone.clone();
                             item = item.on_click(

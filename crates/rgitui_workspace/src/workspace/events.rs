@@ -1652,6 +1652,67 @@ pub(super) fn subscribe_graph(
                     dp.update(cx, |dp, cx| dp.clear(cx));
                     dv.update(cx, |dv, cx| dv.clear(cx));
                 }
+                GraphViewEvent::InteractiveRebase(target_oid) => {
+                    let target = *target_oid;
+                    let commits = project.read(cx).recent_commits().to_vec();
+
+                    // Find the index of the target commit in the loaded commits list.
+                    // The interactive rebase will include all commits from HEAD (index 0)
+                    // down to and including this target.
+                    let Some(target_idx) = commits.iter().position(|c| c.oid == target) else {
+                        this.show_toast(
+                            "Selected commit not in loaded commits. Load more and try again.",
+                            ToastKind::Warning,
+                            cx,
+                        );
+                        return;
+                    };
+
+                    // Build the entry list from HEAD down to (and including) the target.
+                    // The interactive rebase editor will rebasing onto the parent of the
+                    // first entry (i.e., commits[0]..=commits[target_idx]).
+                    let head_branch = project
+                        .read(cx)
+                        .head_branch()
+                        .unwrap_or("HEAD")
+                        .to_string();
+                    let base_short = if target_idx > 0 {
+                        commits
+                            .get(target_idx)
+                            .map(|c| c.short_id.as_str())
+                            .unwrap_or("HEAD")
+                            .to_string()
+                    } else {
+                        head_branch.clone()
+                    };
+
+                    let entries: Vec<crate::interactive_rebase::RebaseEntry> = commits
+                        [..=target_idx]
+                        .iter()
+                        .map(|c| crate::interactive_rebase::RebaseEntry {
+                            oid: c.oid.to_string(),
+                            original_message: c.summary.clone(),
+                            author: c.author.name.clone(),
+                            action: crate::interactive_rebase::RebaseAction::Pick,
+                        })
+                        .collect();
+
+                    if entries.is_empty() {
+                        this.show_toast(
+                            "No commits available for interactive rebase.",
+                            ToastKind::Warning,
+                            cx,
+                        );
+                        return;
+                    }
+
+                    // Use the base short oid as the "onto" target ref in the dialog.
+                    this.overlays
+                        .interactive_rebase
+                        .update(cx, |ir, cx| {
+                            ir.show_visible(entries, format!("{} (rebase onto)", base_short), cx);
+                        });
+                }
             }
         }
     })
