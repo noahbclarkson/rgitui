@@ -1497,14 +1497,11 @@ mod tests {
         );
 
         // Every other main commit: continuation, has incoming
-        for (i, r) in rows.iter().enumerate() {
-            if i < 3 {
-                continue;
-            }
+        for (idx, r) in rows.iter().enumerate().skip(3).take(8) {
             assert!(
                 r.has_incoming,
                 "idx {} should have incoming (lane 0 continuation)",
-                i
+                idx
             );
         }
 
@@ -1513,14 +1510,11 @@ mod tests {
         // ═══════════════════════════════════════════════════════════
 
         let main_color = rows[2].node_color;
-        for (i, r) in rows.iter().enumerate() {
-            if i < 3 {
-                continue;
-            }
+        for (idx, r) in rows.iter().enumerate().skip(3).take(8) {
             assert_eq!(
                 r.node_color, main_color,
-                "idx {} color should match main ({}), was {}",
-                i, main_color, r.node_color
+                "idx {} color should match main ({}), was {:?}",
+                idx, main_color, r.node_color
             );
         }
 
@@ -1586,14 +1580,11 @@ mod tests {
         );
 
         // idx 2-5: branch_lane passes through alongside main
-        for (i, r) in rows.iter().enumerate() {
-            if !(2..=5).contains(&i) {
-                continue;
-            }
+        for (idx, r) in rows.iter().enumerate().skip(2).take(4) {
             assert!(
                 has_pt(r, branch_lane),
                 "idx {}: branch lane {} should pass through",
-                i,
+                idx,
                 branch_lane
             );
         }
@@ -1608,14 +1599,11 @@ mod tests {
         );
 
         // idx 7-8: branch_lane still passes through (3ce915d still pending)
-        for (i, r) in rows.iter().enumerate() {
-            if !(7..=8).contains(&i) {
-                continue;
-            }
+        for (idx, r) in rows.iter().enumerate().skip(7).take(2) {
             assert!(
                 has_pt(r, branch_lane),
                 "idx {}: branch lane {} should pass through (3ce915d pending)",
-                i,
+                idx,
                 branch_lane
             );
         }

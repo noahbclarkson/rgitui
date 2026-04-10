@@ -71,13 +71,6 @@ impl ThemeState {
             self.active = theme.clone();
         }
     }
-
-    /// Register a new theme in the global theme list.
-    pub fn register_theme(&mut self, theme: Theme) {
-        if !self.available.iter().any(|t| t.name == theme.name) {
-            self.available.push(Arc::new(theme));
-        }
-    }
 }
 
 /// Convenience trait to access the theme from App context.
