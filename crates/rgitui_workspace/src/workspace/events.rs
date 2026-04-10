@@ -1571,6 +1571,42 @@ pub(super) fn subscribe_graph(
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(date.clone()));
                     this.show_toast(format!("Copied date: {}", date), ToastKind::Success, cx);
                 }
+                GraphViewEvent::ViewOnGithub(oid) => {
+                    let oid = *oid;
+                    let remotes = project.read(cx).remotes();
+                    let remote_url = remotes
+                        .iter()
+                        .find(|r| r.name == "origin")
+                        .or_else(|| remotes.first())
+                        .and_then(|r| r.url.clone());
+
+                    if let Some(url) = remote_url {
+                        if let Some((owner, repo)) =
+                            crate::issues_panel::parse_github_owner_repo(&url)
+                        {
+                            let github_url =
+                                format!("https://github.com/{}/{}/commit/{}", owner, repo, oid);
+                            cx.open_url(&github_url);
+                            this.show_toast(
+                                format!("Opening {} on GitHub", &oid.to_string()[..7]),
+                                ToastKind::Info,
+                                cx,
+                            );
+                        } else {
+                            this.show_toast(
+                                "Remote URL is not a known Git host. Cannot open commit.",
+                                ToastKind::Warning,
+                                cx,
+                            );
+                        }
+                    } else {
+                        this.show_toast(
+                            "No remote configured. Add a remote to open commits on GitHub.",
+                            ToastKind::Warning,
+                            cx,
+                        );
+                    }
+                }
                 GraphViewEvent::CreateTagAtCommit(oid) => {
                     let oid = *oid;
                     this.dialogs.tag_dialog.update(cx, |td, cx| {

@@ -120,6 +120,8 @@ pub enum GraphViewEvent {
     CopyCommitMessage(String),
     CopyAuthorName(String),
     CopyDate(String),
+    /// Open this commit on GitHub (or compatible host).
+    ViewOnGithub(git2::Oid),
     CreateTagAtCommit(git2::Oid),
     ResetToCommit(git2::Oid, String),
     /// Request to load more commits beyond the current set.
@@ -2023,12 +2025,13 @@ impl Render for GraphView {
                     ("Copy commit message", IconName::Edit),
                     ("Copy author name", IconName::User),
                     ("Copy date", IconName::Clock),
+                    ("View on GitHub", IconName::ExternalLink),
                 ];
 
                 // Convert window-relative click position to container-relative coordinates,
                 // then clamp to keep the menu within the container bounds.
                 let menu_w = px(200.);
-                let menu_h = px(308.);
+                let menu_h = px(330.);
                 let container_bounds = self.container_bounds;
                 // Convert click position from window coordinates to container-relative.
                 let rel_x = pos.x - container_bounds.origin.x;
@@ -2279,6 +2282,20 @@ impl Render for GraphView {
                                     w.update(cx, |this: &mut GraphView, cx| {
                                         this.context_menu = None;
                                         cx.emit(GraphViewEvent::CopyDate(date_val));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        13 => {
+                            // View on GitHub — emit OID; workspace handler constructs the URL.
+                            let w = weak.clone();
+                            item = item.on_click(
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    w.update(cx, |this: &mut GraphView, cx| {
+                                        this.context_menu = None;
+                                        cx.emit(GraphViewEvent::ViewOnGithub(oid));
                                         cx.notify();
                                     })
                                     .ok();
