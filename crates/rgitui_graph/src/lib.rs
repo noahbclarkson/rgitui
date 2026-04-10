@@ -860,6 +860,13 @@ impl Render for GraphView {
         let wt_combined_breakdown = self.cached_merge_breakdown.clone();
         let total_list_items = self.total_list_items();
 
+        // Extract HEAD commit's lane info so the working tree row connects to it
+        let wt_head_node_lane = self
+            .graph_rows
+            .first()
+            .map(|r| r.node_lane)
+            .unwrap_or(0);
+
         // Search state for the render closure — use pre-computed Arc for O(1) clone
         let filter_match_set = Arc::clone(&self.filter_match_set_arc);
         let current_match_index = if self.filter_matches.is_empty() {
@@ -1197,6 +1204,7 @@ impl Render for GraphView {
                                 show_graph_lanes,
                                 compact_mul,
                                 has_context_menu,
+                                head_node_lane: wt_head_node_lane,
                             });
                         }
 
@@ -1360,7 +1368,6 @@ impl Render for GraphView {
                                 .relative()
                                 .w(px(graph_width))
                                 .flex_shrink_0()
-                                .overflow_x_hidden()
                                 .h_full()
                                 .child(
                                     canvas(
@@ -1378,10 +1385,19 @@ impl Render for GraphView {
 
                                             // 1. Approach segment: incoming line from row above → dot center.
                                             if has_incoming {
+                                                // For the HEAD row below the working tree,
+                                                // start at the row top so the blue branch
+                                                // line doesn't paint over the yellow
+                                                // working-tree line above.
+                                                let approach_top = if commit_idx == 0 && wt_offset > 0 {
+                                                    origin.y
+                                                } else {
+                                                    origin.y - px(4.0)
+                                                };
                                                 let mut approach = PathBuilder::stroke(px(2.0));
                                                 approach.move_to(point(
                                                     origin.x + node_x_px,
-                                                    origin.y - px(3.0),
+                                                    approach_top,
                                                 ));
                                                 approach.line_to(point(
                                                     origin.x + node_x_px,
@@ -1407,12 +1423,25 @@ impl Render for GraphView {
                                                 let color =
                                                     rgitui_theme::lane_color(edge.color_index);
 
+                                                // When this is the first commit row (right
+                                                // below the working tree row), skip
+                                                // pass-through edges entirely — those
+                                                // lanes have no working changes and the
+                                                // line would extend into empty space.
+                                                let is_top_row = commit_idx == 0 && wt_offset > 0;
+                                                if is_top_row
+                                                    && edge.from_lane != node_lane
+                                                    && edge.from_lane == edge.to_lane
+                                                {
+                                                    continue;
+                                                }
+
                                                 let start_y = if edge.from_lane == node_lane {
                                                     origin.y + mid_y
                                                 } else {
-                                                    origin.y - px(3.0)
+                                                    origin.y - px(4.0)
                                                 };
-                                                let end_y = origin.y + h + px(3.0);
+                                                let end_y = origin.y + h + px(4.0);
 
                                                 let stroke_width = px(2.0);
 
@@ -2629,6 +2658,8 @@ struct WorkingTreeRowParams {
     show_graph_lanes: bool,
     compact_mul: f32,
     has_context_menu: bool,
+    /// The lane HEAD's commit sits on (so the working tree node connects to it).
+    head_node_lane: usize,
 }
 
 /// Render the virtual "Working Tree" row that appears at the top of the graph.
@@ -2660,6 +2691,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         show_graph_lanes,
         compact_mul,
         has_context_menu,
+        head_node_lane,
     } = params;
     let bg = if selected {
         selected_bg
@@ -2710,7 +2742,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         .unwrap_or(0);
 
     let graph_width = graph_col_width;
-    let node_x = lane_width / 2.0 + graph_padding_left;
+    let node_x = head_node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
 
     let view_click = view.clone();
 
@@ -2753,7 +2785,6 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                     .relative()
                     .w(px(graph_width))
                     .flex_shrink_0()
-                    .overflow_x_hidden()
                     .h_full()
                     .child(
                         canvas(
@@ -2772,7 +2803,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                 // Vertical line from node center to bottom (connects to HEAD row below)
                                 let mut line_down = PathBuilder::stroke(px(2.0));
                                 line_down.move_to(point(cx_x, cy_y));
-                                line_down.line_to(point(cx_x, origin.y + h + px(2.0)));
+                                line_down.line_to(point(cx_x, origin.y + h + px(4.0)));
                                 if let Ok(built) = line_down.build() {
                                     window.paint_path(built, node_color);
                                 }
