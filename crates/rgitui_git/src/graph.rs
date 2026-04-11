@@ -1576,7 +1576,8 @@ mod tests {
             assert!(
                 has_pt(&rows[idx], wt_commit_lane),
                 "idx {}: wt_commit lane {} should pass through",
-                idx, wt_commit_lane
+                idx,
+                wt_commit_lane
             );
         }
 
@@ -1585,7 +1586,8 @@ mod tests {
             assert!(
                 has_pt(&rows[idx], wt_pending_lane),
                 "idx {}: wt_pending lane {} should pass through",
-                idx, wt_pending_lane
+                idx,
+                wt_pending_lane
             );
         }
 
@@ -1607,16 +1609,40 @@ mod tests {
             .iter()
             .filter(|e| e.from_lane == wt_pending_lane && e.to_lane == 0)
             .collect();
-        assert_eq!(merge_in_9.len(), 1, "3ce915d: merge-in from wt_pending lane");
+        assert_eq!(
+            merge_in_9.len(),
+            1,
+            "3ce915d: merge-in from wt_pending lane"
+        );
 
         // Main edge stays on lane 0 throughout
-        let idx5_main = rows[5].edges.iter().find(|e| e.from_lane == 0 && !e.is_merge);
-        assert!(idx5_main.is_some(), "1bb477f: should have main outgoing edge");
-        assert_eq!(idx5_main.unwrap().to_lane, 0, "1bb477f: main edge stays on lane 0");
+        let idx5_main = rows[5]
+            .edges
+            .iter()
+            .find(|e| e.from_lane == 0 && !e.is_merge);
+        assert!(
+            idx5_main.is_some(),
+            "1bb477f: should have main outgoing edge"
+        );
+        assert_eq!(
+            idx5_main.unwrap().to_lane,
+            0,
+            "1bb477f: main edge stays on lane 0"
+        );
 
-        let idx8_main = rows[8].edges.iter().find(|e| e.from_lane == 0 && !e.is_merge);
-        assert!(idx8_main.is_some(), "ba6e821: should have main outgoing edge");
-        assert_eq!(idx8_main.unwrap().to_lane, 0, "ba6e821: main edge stays on lane 0");
+        let idx8_main = rows[8]
+            .edges
+            .iter()
+            .find(|e| e.from_lane == 0 && !e.is_merge);
+        assert!(
+            idx8_main.is_some(),
+            "ba6e821: should have main outgoing edge"
+        );
+        assert_eq!(
+            idx8_main.unwrap().to_lane,
+            0,
+            "ba6e821: main edge stays on lane 0"
+        );
 
         // ═══════════════════════════════════════════════════════════
         // 8. LANE COMPACTION — lanes freed after fork points
@@ -1651,11 +1677,7 @@ mod tests {
         // Topo order (newest first):
         //   C1 (origin/main) → C2 → C3 → C4 (HEAD, local main) → C5
         let commits = vec![
-            make_commit(
-                1,
-                &[2],
-                vec![RefLabel::RemoteBranch("origin/main".into())],
-            ),
+            make_commit(1, &[2], vec![RefLabel::RemoteBranch("origin/main".into())]),
             make_commit(2, &[3], vec![]),
             make_commit(3, &[4], vec![]),
             make_commit(
@@ -1687,17 +1709,9 @@ mod tests {
         //   C3 → C5
         //   C5 (HEAD, local main) → C6
         let commits = vec![
-            make_commit(
-                1,
-                &[2],
-                vec![RefLabel::RemoteBranch("origin/main".into())],
-            ),
-            make_commit(2, &[3, 4], vec![]),   // merge commit
-            make_commit(
-                4,
-                &[5],
-                vec![RefLabel::RemoteBranch("origin/feat".into())],
-            ),
+            make_commit(1, &[2], vec![RefLabel::RemoteBranch("origin/main".into())]),
+            make_commit(2, &[3, 4], vec![]), // merge commit
+            make_commit(4, &[5], vec![RefLabel::RemoteBranch("origin/feat".into())]),
             make_commit(3, &[5], vec![]),
             make_commit(
                 5,
@@ -1736,11 +1750,7 @@ mod tests {
                 &[2, 3],
                 vec![RefLabel::Head, RefLabel::LocalBranch("main".into())],
             ),
-            make_commit(
-                3,
-                &[4],
-                vec![RefLabel::LocalBranch("feature".into())],
-            ),
+            make_commit(3, &[4], vec![RefLabel::LocalBranch("feature".into())]),
             make_commit(2, &[4], vec![]),
             make_commit(4, &[], vec![]),
         ];
