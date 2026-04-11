@@ -1572,9 +1572,9 @@ mod tests {
         };
 
         // wt_commit_lane passes through idx 1-5, then merge-in at idx 6 (e5d6285)
-        for idx in 1..=5 {
+        for (idx, row) in rows.iter().enumerate().take(6).skip(1) {
             assert!(
-                has_pt(&rows[idx], wt_commit_lane),
+                has_pt(row, wt_commit_lane),
                 "idx {}: wt_commit lane {} should pass through",
                 idx,
                 wt_commit_lane
@@ -1582,9 +1582,9 @@ mod tests {
         }
 
         // wt_pending_lane passes through idx 2-8, then merge-in at idx 9 (3ce915d)
-        for idx in 2..=8 {
+        for (idx, row) in rows.iter().enumerate().take(9).skip(2) {
             assert!(
-                has_pt(&rows[idx], wt_pending_lane),
+                has_pt(row, wt_pending_lane),
                 "idx {}: wt_pending lane {} should pass through",
                 idx,
                 wt_pending_lane
