@@ -235,15 +235,13 @@ impl AvatarCache {
 mod tests {
     use super::*;
 
-    /// Test helper: write content to a temp file and return its path.
+    /// Test helper: write content to a unique temp file and return its path.
     fn temp_file(content: &str) -> std::path::PathBuf {
-        let tmp = std::env::temp_dir().join(format!(
-            "rgitui_avatar_test_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp =
+            std::env::temp_dir().join(format!("rgitui_avatar_test_{}_{}", std::process::id(), id,));
         std::fs::write(&tmp, content).unwrap();
         tmp
     }
@@ -251,7 +249,7 @@ mod tests {
     /// Parse entries from a given path (used to test the parser in isolation
     /// without hitting the real disk cache path).
     fn parse_from_path(path: &std::path::Path) -> HashMap<String, String> {
-        let content = std::fs::read_to_string(path).unwrap_or_default();
+        let content = std::fs::read_to_string(path).expect("temp test file should exist");
         AvatarCache::parse_entries(&content)
     }
 
