@@ -4,20 +4,24 @@ _Updated by Forge each cron run. Arc reads this to sync._
 
 ---
 
-## Current Focus (2026-04-10 08:05 UTC)
+## Current Focus (2026-04-10 23:30 UTC)
 
-**Build:** ✅ `bdca9ba` builds clean, all tests pass, clippy 0 warnings.
+**Build:** ✅ `6468aad` builds clean, all 592 tests pass, clippy 0 warnings.
 
-**Shipped:** `bdca9ba` — feat(health): add branch health dashboard showing stale, diverged, unmerged branches.
-Added a new `BranchHealthPanel` in the right tab group to help users quickly clean up their repository. It computes `last_commit_time` and `is_merged_into_main` in the background git worker during branch refresh. Filters allow users to view:
-- **Unmerged**: Local branches not yet merged into `main`/`master`.
-- **Stale**: Branches with no new commits in 30+ days.
-- **Diverged**: Branches that have commits ahead AND behind their upstream.
+**Shipped:** `04648d2` — feat(keyboard): Alt+5/6/7 shortcuts for Issues, PRs, Branch Health panels.
+- Alt+5 → Issues (auto-fetches on first open)
+- Alt+6 → Pull Requests (auto-fetches on first open)
+- Alt+7 → Branch Health (auto-refreshes)
+- All registered in command palette and shortcuts help.
+
+**Cleanup:** `38f9395` — removed leftover `.patch`/`.orig` artifacts from avatar_cache merge.
+
+**Released:** v0.1.5 — includes Push All/Pull All, Alt+5/6/7 shortcuts, artifact cleanup.
 
 **Issues:**
 - **#7** (Gatekeeper) — OPEN. Wontfix, OS-level.
 
-**Next:** Drag commits in history to initiate interactive rebase.
+**Next:** Theme editor rewrite (needs GPUI API audit), PR review/create UI wiring, startup profiling.
 
 ---
 
@@ -37,4 +41,5 @@ Added a new `BranchHealthPanel` in the right tab group to help users quickly cle
 
 ## Release Tracker
 
-- **v0.1.3** — Released! (fixes #9 macOS text rendering, includes GPG badge).
+- **v0.1.5** — Released! (Alt+5/6/7 shortcuts, Push All/Pull All, artifact cleanup)
+- **v0.1.4** — Released! (fixes #9 macOS text rendering, includes GPG badge).

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use futures::AsyncReadExt;
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, Render,
-    SharedString, UniformListScrollHandle, WeakEntity, Window,
+    div, http_client::AsyncBody, px, uniform_list, App, ClickEvent, Context, ElementId, Entity,
+    EventEmitter, FocusHandle, Render, SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use http_client::HttpClient;
 
@@ -13,6 +13,7 @@ use crate::Workspace;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
+    TextInput, TintColor,
 };
 
 #[derive(Clone, Debug)]
@@ -53,6 +54,15 @@ pub struct PrComment {
 #[derive(Debug, Clone)]
 pub enum PrsPanelEvent {
     PrSelected(PullRequest, Vec<PrComment>),
+    ReviewSubmitted { number: u64, action: String },
+}
+
+/// The type of review action to submit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ReviewAction {
+    Approve,
+    RequestChanges,
+    Comment,
 }
 
 impl EventEmitter<PrsPanelEvent> for PrsPanel {}
@@ -105,6 +115,9 @@ pub struct PrsPanel {
     comments_loading: bool,
     workspace: WeakEntity<Workspace>,
     last_fetched: Option<std::time::Instant>,
+    review_submitting: bool,
+    review_comment_input: Entity<TextInput>,
+    review_result: Option<String>,
 }
 
 impl PrsPanel {
@@ -126,6 +139,13 @@ impl PrsPanel {
             comments_loading: false,
             workspace,
             last_fetched: None,
+            review_submitting: false,
+            review_comment_input: cx.new(|cx| {
+                let mut ti = TextInput::new(cx).multiline();
+                ti.set_placeholder("Leave a review comment (optional)");
+                ti
+            }),
+            review_result: None,
         }
     }
 
@@ -281,6 +301,8 @@ impl PrsPanel {
         self.view_mode = PrsPanelView::List;
         self.selected_pr = None;
         self.selected_comments = Vec::new();
+        self.review_result = None;
+        self.review_comment_input.update(cx, |ti, cx| ti.clear(cx));
         cx.notify();
     }
 
@@ -292,8 +314,163 @@ impl PrsPanel {
         }
     }
 
+    fn submit_review(&mut self, action: ReviewAction, cx: &mut Context<Self>) {
+        let Some(pr) = self.selected_pr.clone() else {
+            return;
+        };
+        let token = match &self.github_token {
+            Some(t) if !t.is_empty() => t.clone(),
+            _ => return,
+        };
+        let owner = self.github_owner.clone();
+        let repo = self.github_repo.clone();
+        let pr_number = pr.number;
+        let http = cx.http_client();
+        let body = self.review_comment_input.read(cx).text().to_string();
+
+        self.review_submitting = true;
+        self.review_result = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let result =
+                submit_pr_review(&http, &token, &owner, &repo, pr_number, action, &body).await;
+            cx.update(|cx| {
+                this.update(cx, |panel, cx| {
+                    panel.review_submitting = false;
+                    match result {
+                        Ok(()) => {
+                            let action_label = match action {
+                                ReviewAction::Approve => "approved",
+                                ReviewAction::RequestChanges => "requested changes on",
+                                ReviewAction::Comment => "reviewed",
+                            };
+                            panel.review_result =
+                                Some(format!("✓ Review submitted: {action_label} #{}", pr_number));
+                            panel.review_comment_input.update(cx, |ti, cx| ti.clear(cx));
+                            cx.emit(PrsPanelEvent::ReviewSubmitted {
+                                number: pr_number,
+                                action: action.to_string(),
+                            });
+                        }
+                        Err(e) => {
+                            panel.review_result = Some(format!("✗ {e}"));
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            });
+        })
+        .detach();
+    }
+
+    fn render_review_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let _colors = cx.colors();
+        let mut el = div().v_flex().w_full().gap(px(8.));
+
+        // Review comment input
+        let comment_input = self.review_comment_input.clone();
+        el = el.child(comment_input);
+
+        // Review action buttons
+        let mut buttons = div().h_flex().gap_2();
+
+        let submitting = self.review_submitting;
+
+        buttons = buttons.child(
+            Button::new("pr-review-approve", "Approve")
+                .style(ButtonStyle::Tinted(TintColor::Success))
+                .size(ButtonSize::Compact)
+                .disabled(submitting)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.submit_review(ReviewAction::Approve, cx);
+                })),
+        );
+
+        buttons = buttons.child(
+            Button::new("pr-review-request-changes", "Request Changes")
+                .style(ButtonStyle::Tinted(TintColor::Error))
+                .size(ButtonSize::Compact)
+                .disabled(submitting)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.submit_review(ReviewAction::RequestChanges, cx);
+                })),
+        );
+
+        buttons = buttons.child(
+            Button::new("pr-review-comment", "Comment")
+                .style(ButtonStyle::Subtle)
+                .size(ButtonSize::Compact)
+                .disabled(submitting)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.submit_review(ReviewAction::Comment, cx);
+                })),
+        );
+
+        if submitting {
+            buttons = buttons.child(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Refresh)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new("Submitting...")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            );
+        }
+
+        el = el.child(div().v_flex().w_full().gap_2().child(buttons));
+
+        // Result message
+        if let Some(msg) = &self.review_result {
+            let is_success = msg.starts_with('✓');
+            el =
+                el.child(
+                    div()
+                        .w_full()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(6.))
+                        .bg(if is_success {
+                            cx.status().success_background
+                        } else {
+                            cx.status().error_background
+                        })
+                        .child(Label::new(msg.clone()).size(LabelSize::Small).color(
+                            if is_success {
+                                Color::Success
+                            } else {
+                                Color::Error
+                            },
+                        )),
+                );
+        }
+
+        div()
+            .w_full()
+            .px(px(2.))
+            .py_3()
+            .border_t_1()
+            .border_color(cx.colors().border_variant)
+            .child(
+                Label::new("Review Actions")
+                    .size(LabelSize::XSmall)
+                    .weight(gpui::FontWeight::SEMIBOLD)
+                    .color(Color::Muted),
+            )
+            .child(el)
+    }
+
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
+        let _colors = cx.colors();
 
         if self.view_mode == PrsPanelView::Detail {
             return div()
@@ -303,9 +480,9 @@ impl PrsPanel {
                 .px(px(12.))
                 .gap(px(6.))
                 .items_center()
-                .bg(colors.surface_background)
+                .bg(cx.colors().surface_background)
                 .border_b_1()
-                .border_color(colors.border_variant)
+                .border_color(cx.colors().border_variant)
                 .child(
                     IconButton::new("prs-back", IconName::ChevronLeft)
                         .size(ButtonSize::Compact)
@@ -336,9 +513,9 @@ impl PrsPanel {
             .px(px(12.))
             .gap(px(6.))
             .items_center()
-            .bg(colors.surface_background)
+            .bg(cx.colors().surface_background)
             .border_b_1()
-            .border_color(colors.border_variant)
+            .border_color(cx.colors().border_variant)
             .child(
                 Icon::new(IconName::GitPullRequest)
                     .size(IconSize::XSmall)
@@ -360,7 +537,7 @@ impl PrsPanel {
                     .h(px(22.))
                     .rounded(px(6.))
                     .border_1()
-                    .border_color(colors.border_variant)
+                    .border_color(cx.colors().border_variant)
                     .overflow_hidden()
                     .child(
                         Button::new("pr-filter-open", "Open")
@@ -420,11 +597,11 @@ impl PrsPanel {
     }
 
     fn render_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
         let Some(pr) = &self.selected_pr else {
             return div().into_any_element();
         };
 
+        // We'll get colors inline to avoid borrow conflicts with render_review_actions
         let title: SharedString = pr.title.clone().into();
         let number_text: SharedString = format!("#{}", pr.number).into();
         let author: SharedString = pr.author.clone().into();
@@ -450,10 +627,10 @@ impl PrsPanel {
             .px(px(16.))
             .py(px(14.))
             .gap(px(10.))
-            .bg(colors.elevated_surface_background)
+            .bg(cx.colors().elevated_surface_background)
             .rounded(px(8.))
             .border_1()
-            .border_color(colors.border_variant);
+            .border_color(cx.colors().border_variant);
 
         card = card.child(
             div()
@@ -565,7 +742,7 @@ impl PrsPanel {
                         .pt_2()
                         .mt_1()
                         .border_t_1()
-                        .border_color(colors.border_variant)
+                        .border_color(cx.colors().border_variant)
                         .child(
                             Label::new(body_text)
                                 .size(LabelSize::Small)
@@ -576,6 +753,11 @@ impl PrsPanel {
         }
 
         content = content.child(card);
+
+        // Review actions — only for open PRs
+        if matches!(pr.state, PrState::Open) {
+            content = content.child(self.render_review_actions(cx));
+        }
 
         if self.comments_loading {
             content = content.child(
@@ -638,10 +820,10 @@ impl PrsPanel {
                         .px(px(14.))
                         .py(px(12.))
                         .gap(px(8.))
-                        .bg(colors.elevated_surface_background)
+                        .bg(cx.colors().elevated_surface_background)
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(colors.border_variant)
+                        .border_color(cx.colors().border_variant)
                         .child(
                             div()
                                 .h_flex()
@@ -654,7 +836,7 @@ impl PrsPanel {
                                         .justify_center()
                                         .size(px(20.))
                                         .rounded_full()
-                                        .bg(colors.ghost_element_selected)
+                                        .bg(cx.colors().ghost_element_selected)
                                         .child(
                                             Icon::new(IconName::User)
                                                 .size(IconSize::XSmall)
@@ -691,7 +873,7 @@ impl PrsPanel {
         subtitle: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let colors = cx.colors();
+        let _colors = cx.colors();
         div()
             .flex_1()
             .flex()
@@ -705,7 +887,7 @@ impl PrsPanel {
                     .px(px(32.))
                     .py(px(24.))
                     .rounded(px(12.))
-                    .bg(colors.ghost_element_background)
+                    .bg(cx.colors().ghost_element_background)
                     .child(
                         Icon::new(icon)
                             .size(IconSize::Large)
@@ -727,8 +909,8 @@ impl PrsPanel {
     }
 
     fn render_loading_skeleton(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let colors = cx.colors();
-        let skeleton_bg = colors.ghost_element_background;
+        let _colors = cx.colors();
+        let skeleton_bg = cx.colors().ghost_element_background;
 
         div()
             .v_flex()
@@ -1199,6 +1381,65 @@ fn format_github_date(date_str: &str) -> String {
     } else {
         date_str.to_string()
     }
+}
+
+impl std::fmt::Display for ReviewAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReviewAction::Approve => write!(f, "APPROVE"),
+            ReviewAction::RequestChanges => write!(f, "REQUEST_CHANGES"),
+            ReviewAction::Comment => write!(f, "COMMENT"),
+        }
+    }
+}
+
+/// Submit a review on a pull request.
+/// POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+async fn submit_pr_review(
+    http: &Arc<dyn HttpClient>,
+    token: &str,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    action: ReviewAction,
+    body: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/pulls/{}/reviews",
+        owner, repo, pr_number
+    );
+
+    let json_body = serde_json::json!({
+        "body": body,
+        "event": action.to_string(),
+    });
+
+    let request = http_client::http::Request::builder()
+        .method(http_client::http::Method::POST)
+        .uri(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github.v3+json")
+        .header("User-Agent", "rgitui")
+        .header("Content-Type", "application/json")
+        .body(AsyncBody::from(
+            serde_json::to_string(&json_body).map_err(|e| e.to_string())?,
+        ))
+        .map_err(|e| e.to_string())?;
+
+    let response = http.send(request).await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    let mut body_str = String::new();
+    let mut reader = response.into_body();
+    reader
+        .read_to_string(&mut body_str)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !status.is_success() {
+        return Err(format_github_detail_error(status, &body_str));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
