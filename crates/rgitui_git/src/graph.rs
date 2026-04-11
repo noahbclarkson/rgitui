@@ -68,41 +68,31 @@ fn is_ancestor_of(
 }
 
 /// Find the main branch tip OID by scanning commit refs for "main" or "master".
+///
+/// Commits are in topological order (newest first), so the first matching ref
+/// is the most-ahead tip. This correctly handles the case where origin/main is
+/// ahead of local main — we pick whichever is furthest ahead.
 fn find_main_branch_tip(commits: &[CommitInfo]) -> Option<git2::Oid> {
-    // Priority: LocalBranch("main") > LocalBranch("master") > RemoteBranch containing "main" > RemoteBranch containing "master"
-    let mut main_local = None;
-    let mut master_local = None;
-    let mut main_remote = None;
-    let mut master_remote = None;
+    let mut main_tip: Option<git2::Oid> = None;
+    let mut master_tip: Option<git2::Oid> = None;
 
     for commit in commits {
         for r in &commit.refs {
-            match r {
-                RefLabel::LocalBranch(name) if name == "main" => {
-                    main_local = Some(commit.oid);
-                }
-                RefLabel::LocalBranch(name) if name == "master" => {
-                    master_local = Some(commit.oid);
-                }
-                RefLabel::RemoteBranch(name) if name.ends_with("/main") => {
-                    if main_remote.is_none() {
-                        main_remote = Some(commit.oid);
-                    }
-                }
-                RefLabel::RemoteBranch(name) if name.ends_with("/master") => {
-                    if master_remote.is_none() {
-                        master_remote = Some(commit.oid);
-                    }
-                }
-                _ => {}
+            let is_main = matches!(r, RefLabel::LocalBranch(name) if name == "main")
+                || matches!(r, RefLabel::RemoteBranch(name) if name.ends_with("/main"));
+            let is_master = matches!(r, RefLabel::LocalBranch(name) if name == "master")
+                || matches!(r, RefLabel::RemoteBranch(name) if name.ends_with("/master"));
+
+            if is_main && main_tip.is_none() {
+                main_tip = Some(commit.oid);
+            }
+            if is_master && master_tip.is_none() {
+                master_tip = Some(commit.oid);
             }
         }
     }
 
-    main_local
-        .or(master_local)
-        .or(main_remote)
-        .or(master_remote)
+    main_tip.or(master_tip)
 }
 
 /// Compute the set of OIDs on the main branch's first-parent chain.
@@ -176,8 +166,8 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         .map(|(i, c)| (c.oid, i))
         .collect();
 
-    // Detect HEAD oid — scan all commits, not just the first, because
-    // feature branch tips may appear before HEAD in topological order.
+    // Detect HEAD oid — scan all commits, not just the first, because HEAD may
+    // not be the newest commit when remote branches are ahead.
     let head_oid = commits
         .iter()
         .find(|c| c.refs.iter().any(|r| matches!(r, RefLabel::Head)))
@@ -276,19 +266,33 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
 
         let node_color = lanes[node_lane].map(|(_, c)| c).unwrap_or(0);
 
-        // Build pass-through edges for all occupied lanes except node_lane
+        // Build pass-through edges for occupied lanes, and merge-in edges for
+        // stale lanes whose expected OID matches this commit (they were waiting
+        // for this commit but it landed in a different lane).
         let mut edges = Vec::new();
-        for (lane, slot) in lanes.iter().enumerate() {
+        for (lane, slot) in lanes.iter_mut().enumerate() {
             if lane == node_lane {
                 continue;
             }
-            if let Some((_, color)) = slot {
-                edges.push(GraphEdge {
-                    from_lane: lane,
-                    to_lane: lane,
-                    color_index: *color,
-                    is_merge: false,
-                });
+            if let Some((expected_oid, color)) = *slot {
+                if expected_oid == oid {
+                    // Stale lane: generate a merge-in edge converging into the
+                    // node, then free this lane.
+                    edges.push(GraphEdge {
+                        from_lane: lane,
+                        to_lane: node_lane,
+                        color_index: color,
+                        is_merge: false,
+                    });
+                    *slot = None;
+                } else {
+                    edges.push(GraphEdge {
+                        from_lane: lane,
+                        to_lane: lane,
+                        color_index: color,
+                        is_merge: false,
+                    });
+                }
             }
         }
 
@@ -492,6 +496,10 @@ fn find_lane(
 }
 
 /// Route a parent to an existing lane or allocate a new one.
+///
+/// Priority: exact OID match → reuse freed node_lane → ancestor match → new lane.
+/// Reusing node_lane before ancestor match keeps branch lines visually continuous
+/// down to the fork point, where a merge-in edge will be generated.
 fn route_parent(
     parent: git2::Oid,
     node_lane: usize,
@@ -501,33 +509,33 @@ fn route_parent(
     commits: &[CommitInfo],
     oid_to_idx: &std::collections::HashMap<git2::Oid, usize>,
 ) -> usize {
+    // 1. Exact OID match — parent already expected in a specific lane
     if let Some(target) = lanes
         .iter()
         .position(|s| matches!(s, Some((o, _)) if *o == parent))
     {
-        target
-    } else if let Some(target) = lanes.iter().position(|s| {
+        return target;
+    }
+
+    // 2. Reuse the freed node_lane if available — keeps the branch line alive
+    if lanes.get(node_lane) == Some(&None) {
+        lanes[node_lane] = Some((parent, node_color));
+        return node_lane;
+    }
+
+    // 3. Ancestor match — parent is ancestor of a lane's expected OID
+    if let Some(target) = lanes.iter().position(|s| {
         matches!(s, Some((expected_oid, _)) if is_ancestor_of(parent, *expected_oid, commits, oid_to_idx))
     }) {
-        // Update the lane to track the actual parent OID (not the old
-        // descendant). This prevents the zombie cleanup from clearing
-        // the lane when the old OID's commit arrives.
-        let color = lanes[target].map(|(_, c)| c).unwrap_or(node_color);
-        lanes[target] = Some((parent, color));
-        target
-    } else {
-        // Continue in the same lane with the same color if it's free
-        if lanes.get(node_lane) == Some(&None) {
-            lanes[node_lane] = Some((parent, node_color));
-            node_lane
-        } else {
-            let color = *next_color;
-            *next_color += 1;
-            let pos = alloc_lane(lanes, None);
-            lanes[pos] = Some((parent, color));
-            pos
-        }
+        return target;
     }
+
+    // 4. Allocate a new lane
+    let color = *next_color;
+    *next_color += 1;
+    let pos = alloc_lane(lanes, None);
+    lanes[pos] = Some((parent, color));
+    pos
 }
 
 /// Find the first free lane or append a new one, optionally skipping a reserved lane.
@@ -545,6 +553,7 @@ fn alloc_lane(lanes: &mut Vec<Option<(git2::Oid, usize)>>, skip_lane: Option<usi
         lanes.push(None);
         let pos = lanes.len() - 1;
         if Some(pos) == skip_lane {
+            // The appended lane collides with the reserved lane — add another.
             lanes.push(None);
             lanes.len() - 1
         } else {
@@ -1519,51 +1528,41 @@ mod tests {
         }
 
         // ═══════════════════════════════════════════════════════════
-        // 5. EDGE: branch tip outgoing edges
+        // 5. EDGE: branch tip outgoing edges — each branch keeps its own lane
         // ═══════════════════════════════════════════════════════════
 
-        // 795f1ba (idx 0): outgoing edge from its lane to wherever
-        // fork1 (e5d6285) was routed — should stay on its own lane
+        // 795f1ba (idx 0): outgoing edge stays on its own lane (node_lane reuse)
         let idx0_out: Vec<_> = rows[0]
             .edges
             .iter()
             .filter(|e| e.from_lane == wt_commit_lane)
             .collect();
+        assert_eq!(idx0_out.len(), 1, "795f1ba: 1 outgoing edge");
         assert_eq!(
-            idx0_out.len(),
-            1,
-            "795f1ba: 1 outgoing edge from lane {}",
-            wt_commit_lane
+            idx0_out[0].to_lane, wt_commit_lane,
+            "795f1ba: parent stays on its own lane"
         );
 
-        // 0308d39 (idx 1): outgoing edge from its lane.
-        // fork2 (3ce915d) is an ancestor of e5d6285, so route_parent's
-        // ancestor match routes it to the same lane as fork1.
+        // 0308d39 (idx 1): outgoing edge stays on its own lane
         let idx1_out: Vec<_> = rows[1]
             .edges
             .iter()
             .filter(|e| e.from_lane == wt_pending_lane)
             .collect();
+        assert_eq!(idx1_out.len(), 1, "0308d39: 1 outgoing edge");
         assert_eq!(
-            idx1_out.len(),
-            1,
-            "0308d39: 1 outgoing edge from lane {}",
-            wt_pending_lane
+            idx1_out[0].to_lane, wt_pending_lane,
+            "0308d39: parent stays on its own lane"
         );
 
-        // Both branches' parents end up on the same lane (ancestor match)
-        let fork1_target = idx0_out[0].to_lane;
-        let fork2_target = idx1_out[0].to_lane;
-        assert_eq!(
-            fork1_target, fork2_target,
-            "both fork parents routed to same lane via ancestor match"
+        // Each branch has its own lane (node_lane reuse keeps branch alive)
+        assert_ne!(
+            wt_commit_lane, wt_pending_lane,
+            "each branch should have its own lane"
         );
-
-        // The shared target lane is the wt_commit lane (fork1's original lane)
-        let branch_lane = fork1_target;
 
         // ═══════════════════════════════════════════════════════════
-        // 6. PASS-THROUGH: branch lane visible while active
+        // 6. PASS-THROUGH: each branch lane visible until its fork point
         // ═══════════════════════════════════════════════════════════
 
         let has_pt = |row: &GraphRow, lane: usize| -> bool {
@@ -1572,86 +1571,58 @@ mod tests {
                 .any(|e| e.from_lane == lane && e.to_lane == lane)
         };
 
-        // idx 1: branch_lane passes through (fork1/fork2 sitting there)
-        assert!(
-            has_pt(&rows[1], branch_lane),
-            "idx 1: branch lane {} should pass through",
-            branch_lane
-        );
-
-        // idx 2-5: branch_lane passes through alongside main
-        for (idx, r) in rows.iter().enumerate().skip(2).take(4) {
+        // wt_commit_lane passes through idx 1-5, then merge-in at idx 6 (e5d6285)
+        for idx in 1..=5 {
             assert!(
-                has_pt(r, branch_lane),
-                "idx {}: branch lane {} should pass through",
-                idx,
-                branch_lane
+                has_pt(&rows[idx], wt_commit_lane),
+                "idx {}: wt_commit lane {} should pass through",
+                idx, wt_commit_lane
             );
         }
 
-        // idx 6 (e5d6285): branch_lane STILL passes through because
-        // route_parent updated lane 1 to hold 3ce915d (not e5d6285),
-        // so zombie cleanup for e5d6285 doesn't clear it.
-        assert!(
-            has_pt(&rows[6], branch_lane),
-            "idx 6: branch lane {} should still pass through (holds 3ce915d)",
-            branch_lane
-        );
-
-        // idx 7-8: branch_lane still passes through (3ce915d still pending)
-        for (idx, r) in rows.iter().enumerate().skip(7).take(2) {
+        // wt_pending_lane passes through idx 2-8, then merge-in at idx 9 (3ce915d)
+        for idx in 2..=8 {
             assert!(
-                has_pt(r, branch_lane),
-                "idx {}: branch lane {} should pass through (3ce915d pending)",
-                idx,
-                branch_lane
+                has_pt(&rows[idx], wt_pending_lane),
+                "idx {}: wt_pending lane {} should pass through",
+                idx, wt_pending_lane
             );
         }
 
         // ═══════════════════════════════════════════════════════════
-        // 7. MERGE CURVES — edges from main to branch lane at fork points
+        // 7. MERGE-IN EDGES at fork points
         // ═══════════════════════════════════════════════════════════
 
-        // idx 5 (1bb477f): parent is e5d6285 (on main chain).
-        // Main edge should go from lane 0 to lane 0 (parent routed to lane 0).
-        let idx5_main = rows[5]
+        // idx 6 (e5d6285): wt_commit_lane merge-in edge converges to lane 0
+        let merge_in_6: Vec<_> = rows[6]
             .edges
             .iter()
-            .find(|e| e.from_lane == 0 && !e.is_merge);
-        assert!(
-            idx5_main.is_some(),
-            "1bb477f: should have main outgoing edge"
-        );
-        assert_eq!(
-            idx5_main.unwrap().to_lane,
-            0,
-            "1bb477f: main edge stays on lane 0"
-        );
+            .filter(|e| e.from_lane == wt_commit_lane && e.to_lane == 0)
+            .collect();
+        assert_eq!(merge_in_6.len(), 1, "e5d6285: merge-in from wt_commit lane");
 
-        // idx 8 (ba6e821): parent is 3ce915d (on main chain).
-        // The parent 3ce915d should be routed to lane 0 (main chain routing),
-        // but 3ce915d is ALSO on branch_lane (from the ancestor match).
-        // Main-chain routing should put it on lane 0. The branch_lane copy
-        // gets cleared by zombie cleanup when 3ce915d arrives.
-        let idx8_main = rows[8]
+        // idx 9 (3ce915d): wt_pending_lane merge-in edge converges to lane 0
+        let merge_in_9: Vec<_> = rows[9]
             .edges
             .iter()
-            .find(|e| e.from_lane == 0 && !e.is_merge);
-        assert!(
-            idx8_main.is_some(),
-            "ba6e821: should have main outgoing edge"
-        );
-        assert_eq!(
-            idx8_main.unwrap().to_lane,
-            0,
-            "ba6e821: main edge stays on lane 0"
-        );
+            .filter(|e| e.from_lane == wt_pending_lane && e.to_lane == 0)
+            .collect();
+        assert_eq!(merge_in_9.len(), 1, "3ce915d: merge-in from wt_pending lane");
+
+        // Main edge stays on lane 0 throughout
+        let idx5_main = rows[5].edges.iter().find(|e| e.from_lane == 0 && !e.is_merge);
+        assert!(idx5_main.is_some(), "1bb477f: should have main outgoing edge");
+        assert_eq!(idx5_main.unwrap().to_lane, 0, "1bb477f: main edge stays on lane 0");
+
+        let idx8_main = rows[8].edges.iter().find(|e| e.from_lane == 0 && !e.is_merge);
+        assert!(idx8_main.is_some(), "ba6e821: should have main outgoing edge");
+        assert_eq!(idx8_main.unwrap().to_lane, 0, "ba6e821: main edge stays on lane 0");
 
         // ═══════════════════════════════════════════════════════════
         // 8. LANE COMPACTION — lanes freed after fork points
         // ═══════════════════════════════════════════════════════════
 
-        // After idx 9 (3ce915d consumed): branch_lane should be cleared.
+        // After idx 9 (3ce915d consumed): both branch lanes should be cleared.
         // idx 10 should have only lane 0.
         assert_eq!(
             rows[10].lane_count, 1,
@@ -1669,6 +1640,130 @@ mod tests {
             idx10_pt, 0,
             "bc215a6: no pass-through edges, found {}",
             idx10_pt
+        );
+    }
+
+    #[test]
+    fn test_remote_main_ahead_of_local_main() {
+        // origin/main is several commits ahead of local main.
+        // The entire first-parent chain should stay on lane 0.
+        //
+        // Topo order (newest first):
+        //   C1 (origin/main) → C2 → C3 → C4 (HEAD, local main) → C5
+        let commits = vec![
+            make_commit(
+                1,
+                &[2],
+                vec![RefLabel::RemoteBranch("origin/main".into())],
+            ),
+            make_commit(2, &[3], vec![]),
+            make_commit(3, &[4], vec![]),
+            make_commit(
+                4,
+                &[5],
+                vec![RefLabel::Head, RefLabel::LocalBranch("main".into())],
+            ),
+            make_commit(5, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+
+        // All commits on lane 0 — origin/main is the effective main tip
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(
+                row.node_lane, 0,
+                "commit {} should be on lane 0 (remote main ahead)",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_remote_main_ahead_with_merge() {
+        // origin/main is ahead of local main, with a merge commit in between.
+        // The branch should fork and converge correctly without crossings.
+        //
+        //   C1 (origin/main) → C2 (merge, parents: C3, C4)
+        //   C4 (feature branch) → C5
+        //   C3 → C5
+        //   C5 (HEAD, local main) → C6
+        let commits = vec![
+            make_commit(
+                1,
+                &[2],
+                vec![RefLabel::RemoteBranch("origin/main".into())],
+            ),
+            make_commit(2, &[3, 4], vec![]),   // merge commit
+            make_commit(
+                4,
+                &[5],
+                vec![RefLabel::RemoteBranch("origin/feat".into())],
+            ),
+            make_commit(3, &[5], vec![]),
+            make_commit(
+                5,
+                &[6],
+                vec![RefLabel::Head, RefLabel::LocalBranch("main".into())],
+            ),
+            make_commit(6, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+
+        // C1 on lane 0 (origin/main tip, on main chain)
+        assert_eq!(rows[0].node_lane, 0, "origin/main tip on lane 0");
+        // Merge commit C2 on lane 0
+        assert_eq!(rows[1].node_lane, 0, "merge commit on lane 0");
+        // Feature C4 should NOT be on lane 0
+        assert_ne!(rows[2].node_lane, 0, "feature branch not on lane 0");
+        // C3 on lane 0 (main chain ancestor)
+        assert_eq!(rows[3].node_lane, 0, "main ancestor on lane 0");
+        // C5 (HEAD, local main) on lane 0
+        assert_eq!(rows[4].node_lane, 0, "HEAD/local main on lane 0");
+    }
+
+    #[test]
+    fn test_merge_in_edge_at_fork_point() {
+        // A branch forks at C4 and merges back at C1. The branch line should
+        // extend from C1 through C3 down to C4, producing a merge-in edge at
+        // C4's row that converges into lane 0.
+        //
+        //   C1 (main, HEAD, merge) → parents: [C2, C3]
+        //   C3 (feature) → C4
+        //   C2 → C4
+        //   C4
+        let commits = vec![
+            make_commit(
+                1,
+                &[2, 3],
+                vec![RefLabel::Head, RefLabel::LocalBranch("main".into())],
+            ),
+            make_commit(
+                3,
+                &[4],
+                vec![RefLabel::LocalBranch("feature".into())],
+            ),
+            make_commit(2, &[4], vec![]),
+            make_commit(4, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+
+        // C1 merge at lane 0
+        assert_eq!(rows[0].node_lane, 0);
+        // C3 (feature) not on lane 0
+        assert_ne!(rows[1].node_lane, 0);
+        // C2 on lane 0
+        assert_eq!(rows[2].node_lane, 0);
+        // C4 on lane 0 (fork point)
+        assert_eq!(rows[3].node_lane, 0);
+
+        // C4's row should have a merge-in edge from the feature lane to lane 0
+        let merge_in_edges: Vec<_> = rows[3]
+            .edges
+            .iter()
+            .filter(|e| e.from_lane != e.to_lane && e.to_lane == rows[3].node_lane)
+            .collect();
+        assert!(
+            !merge_in_edges.is_empty(),
+            "fork point should have a merge-in edge converging into lane 0"
         );
     }
 }

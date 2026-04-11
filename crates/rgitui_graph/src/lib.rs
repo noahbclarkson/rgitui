@@ -1072,9 +1072,6 @@ impl Render for GraphView {
         let show_author_email = self.show_author_email;
         let my_commits_active = self.my_commits_active;
 
-        // Helper to get global position
-        let entity = cx.entity();
-
         // Header row (not virtualized — always visible)
         let view_settings_toggle = cx.weak_entity();
         let view_my_commits_toggle = cx.weak_entity();
@@ -1088,19 +1085,6 @@ impl Render for GraphView {
             .bg(colors.toolbar_background)
             .border_b_1()
             .border_color(border_color)
-            .child(
-                canvas(
-                    {
-                        let entity = entity.clone();
-                        move |bounds, _, cx| {
-                            entity.update(cx, |this, _| this.container_bounds = bounds);
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            )
             .on_drag_move::<AuthorColumnResize>(cx.listener(
                 move |this, e: &gpui::DragMoveEvent<AuthorColumnResize>, _, cx| {
                     let settings = cx.global_mut::<SettingsState>();
@@ -1687,6 +1671,11 @@ impl Render for GraphView {
                                                         end_y,
                                                     ));
                                                 } else if edge.from_lane != node_lane {
+                                                    // Merge-in edge: comes from a different lane
+                                                    // above and converges into the node. Curve
+                                                    // starts vertical (continuing the branch line
+                                                    // from above) then bends horizontally toward
+                                                    // the node.
                                                     let fx = origin.x + from_x;
                                                     let tx = origin.x + to_x;
                                                     let horiz_y = origin.y + mid_y;
@@ -1695,14 +1684,13 @@ impl Render for GraphView {
                                                         GraphStyle::Curved => {
                                                             let ry = (horiz_y - start_y).max(px(1.0));
                                                             let rx = (from_x - to_x).abs().max(px(1.0));
-                                                            let bend_y = horiz_y - ry;
                                                             let dir = if tx < fx { -1.0_f32 } else { 1.0_f32 };
 
                                                             path.move_to(point(fx, start_y));
 
                                                             for &(sin_a, one_minus_cos) in quarter_arc_offsets() {
-                                                                let px_x = fx + rx * dir * sin_a;
-                                                                let px_y = bend_y + ry * one_minus_cos;
+                                                                let px_x = fx + rx * dir * one_minus_cos;
+                                                                let px_y = start_y + ry * sin_a;
                                                                 path.line_to(point(px_x, px_y));
                                                             }
                                                         }
