@@ -149,6 +149,7 @@ pub enum CommandId {
     ToggleIssues,
     TogglePullRequests,
     ToggleBranchHealth,
+    ToggleStashes,
 }
 
 impl CommandId {
@@ -207,6 +208,7 @@ impl CommandId {
             Self::ToggleIssues => "toggle_issues",
             Self::TogglePullRequests => "toggle_pull_requests",
             Self::ToggleBranchHealth => "toggle_branch_health",
+            Self::ToggleStashes => "toggle_stashes",
         }
     }
 
@@ -265,6 +267,7 @@ impl CommandId {
             Self::ToggleIssues => "toggle issues panel",
             Self::TogglePullRequests => "toggle pull requests panel",
             Self::ToggleBranchHealth => "toggle branch health panel",
+            Self::ToggleStashes => "toggle stashes panel",
         }
     }
 }
@@ -333,6 +336,7 @@ impl TryFrom<&str> for CommandId {
             "toggle_issues" => Ok(Self::ToggleIssues),
             "toggle_pull_requests" => Ok(Self::TogglePullRequests),
             "toggle_branch_health" => Ok(Self::ToggleBranchHealth),
+            "toggle_stashes" => Ok(Self::ToggleStashes),
             _ => Err(()),
         }
     }
@@ -623,6 +627,12 @@ impl CommandPalette {
                 CommandId::ToggleBranchHealth,
                 "View: Branch Health Panel",
                 Some("Alt+7"),
+                "View",
+            ),
+            PaletteCommand::new(
+                CommandId::ToggleStashes,
+                "View: Stashes Panel",
+                Some("Alt+8"),
                 "View",
             ),
         ];

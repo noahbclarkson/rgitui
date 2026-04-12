@@ -7,8 +7,9 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    KeyDownEvent, ListSizingBehavior, Render, SharedString, WeakEntity, Window,
+    canvas, div, px, uniform_list, App, Bounds, ClickEvent, Context, ElementId, Entity,
+    EventEmitter, FocusHandle, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent,
+    MouseMoveEvent, Pixels, Point, Render, SharedString, Size, WeakEntity, Window,
 };
 use rgitui_git::{
     BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
@@ -118,6 +119,14 @@ enum SidebarItem {
     UnstagedFile(usize), // index into unstaged files
 }
 
+/// State for the right-click stash context menu.
+struct StashContextMenuState {
+    /// The index of the stash that was right-clicked.
+    stash_index: usize,
+    /// Window-relative position where the menu should appear.
+    position: Point<Pixels>,
+}
+
 /// The left sidebar panel with branches, tags, stashes, and working tree status.
 pub struct Sidebar {
     expanded_sections: Vec<SidebarSection>,
@@ -179,6 +188,10 @@ pub struct Sidebar {
     my_branches_active: bool,
     /// Current user email for "My Branches" filtering.
     current_user_email: Option<String>,
+    /// Right-click context menu for stashes.
+    stash_context_menu: Option<StashContextMenuState>,
+    /// Cached bounds of the sidebar panel container (updated via on_allocate).
+    container_bounds: Bounds<Pixels>,
 }
 
 /// Pure filtering function: returns indices into `branches` whose names contain
@@ -283,6 +296,30 @@ impl Sidebar {
             branch_filter_active: false,
             my_branches_active: false,
             current_user_email: None,
+            stash_context_menu: None,
+            container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
+        }
+    }
+
+    /// Show the stash context menu at the given window-relative position.
+    fn show_stash_context_menu(
+        &mut self,
+        stash_index: usize,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.stash_context_menu = Some(StashContextMenuState {
+            stash_index,
+            position,
+        });
+        cx.notify();
+    }
+
+    /// Dismiss the stash context menu if it's open.
+    fn dismiss_stash_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.stash_context_menu.is_some() {
+            self.stash_context_menu = None;
+            cx.notify();
         }
     }
 
@@ -1001,6 +1038,28 @@ impl Render for Sidebar {
         // Compute navigable items for keyboard highlight matching
         let keyboard_index = self.keyboard_index;
 
+        // Bounds tracker — updates container_bounds whenever the panel resizes.
+        let sidebar_bounds = cx.weak_entity();
+        let bounds_tracker = canvas(
+            {
+                let sidebar_bounds = sidebar_bounds.clone();
+                move |bounds: Bounds<Pixels>, _: &mut Window, cx: &mut App| {
+                    sidebar_bounds
+                        .update(cx, |this: &mut Sidebar, _| {
+                            this.container_bounds = bounds;
+                        })
+                        .ok();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+
+        // Dismiss context menu on left-click outside the menu bounds.
+        let stash_dismiss = cx.weak_entity();
+        let has_stash_menu = self.stash_context_menu.is_some();
+
         let panel = div()
             .id("sidebar-panel")
             .track_focus(&self.focus_handle)
@@ -1011,7 +1070,33 @@ impl Render for Sidebar {
             .h_full()
             .bg(colors.panel_background)
             .border_r_1()
-            .border_color(colors.border_variant);
+            .border_color(colors.border_variant)
+            .when(has_stash_menu, |el| {
+                el.on_mouse_down(MouseButton::Left, {
+                    let dismiss = stash_dismiss.clone();
+                    move |event: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        dismiss
+                            .update(cx, |this: &mut Sidebar, cx| {
+                                let click_inside_menu =
+                                    this.stash_context_menu.as_ref().is_some_and(|cm| {
+                                        let menu_w: Pixels = px(180.);
+                                        let menu_h: Pixels = px(140.);
+                                        let x = event.position.x;
+                                        let y = event.position.y;
+                                        x >= cm.position.x
+                                            && x < cm.position.x + menu_w
+                                            && y >= cm.position.y
+                                            && y < cm.position.y + menu_h
+                                    });
+                                if !click_inside_menu {
+                                    this.dismiss_stash_context_menu(cx);
+                                }
+                            })
+                            .ok();
+                    }
+                })
+            })
+            .child(bounds_tracker);
 
         let mut content = div()
             .id("sidebar-content")
@@ -2212,7 +2297,18 @@ impl Render for Sidebar {
                                                 .border_color(kb_accent)
                                         })
                                         .hover(|s| s.bg(colors.ghost_element_hover))
-                                        .active(|s| s.bg(colors.ghost_element_active));
+                                        .active(|s| s.bg(colors.ghost_element_active))
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            {
+                                                let w = w.clone();
+                                                move |event: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                                                    let _ = w.update(cx, |this: &mut Sidebar, cx| {
+                                                        this.show_stash_context_menu(stash_index, event.position, cx);
+                                                    });
+                                                }
+                                            },
+                                        );
 
                                     let w_sel = w.clone();
                                     item = item.on_click(
@@ -3134,15 +3230,240 @@ impl Render for Sidebar {
             }
         }
 
-        panel.child(
-            div()
-                .id("sidebar-scroll")
+        // Build scroll div and context menu (if open), then return panel.
+        let scroll_div = div()
+            .id("sidebar-scroll")
+            .v_flex()
+            .w_full()
+            .flex_1()
+            .overflow_y_scroll()
+            .child(content);
+
+        if let Some(ref menu_state) = self.stash_context_menu {
+            let menu_bg = colors.elevated_surface_background;
+            let menu_border = colors.border;
+            let menu_hover = colors.ghost_element_hover;
+            let menu_active = colors.ghost_element_active;
+            let pos = menu_state.position;
+            let container_bounds = self.container_bounds;
+            let weak = cx.weak_entity();
+
+            // Convert window-relative click position to container-relative coordinates.
+            let menu_w: Pixels = px(180.);
+            let menu_h: Pixels = px(140.);
+            let rel_x = pos.x - container_bounds.origin.x;
+            let rel_y = pos.y - container_bounds.origin.y;
+            let max_x = container_bounds.size.width - menu_w;
+            let max_y = container_bounds.size.height - menu_h;
+            let clamped_x = rel_x.max(px(0.)).min(max_x);
+            let clamped_y = rel_y.max(px(0.)).min(max_y);
+
+            let mut menu = div()
+                .id("stash-context-menu")
+                .absolute()
+                .left(clamped_x)
+                .top(clamped_y)
                 .v_flex()
-                .w_full()
-                .flex_1()
-                .overflow_y_scroll()
-                .child(content),
-        )
+                .min_w(menu_w)
+                .py(px(3.))
+                .bg(menu_bg)
+                .border_1()
+                .border_color(menu_border)
+                .rounded(px(6.))
+                .elevation_3(cx)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    },
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    },
+                )
+                .on_mouse_move(|_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                });
+
+            // Apply
+            {
+                let w = weak.clone();
+                menu = menu.child(
+                    div()
+                        .id("stash-menu-apply")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(8.))
+                        .gap(px(6.))
+                        .items_center()
+                        .cursor_pointer()
+                        .rounded(px(3.))
+                        .hover(|s| {
+                            s.bg(menu_hover)
+                                .border_l_2()
+                                .border_color(colors.text_accent)
+                        })
+                        .active(|s| s.bg(menu_active))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            w.update(cx, |this: &mut Sidebar, cx| {
+                                let idx = this.stash_context_menu.as_ref().map(|m| m.stash_index);
+                                this.stash_context_menu = None;
+                                cx.notify();
+                                if let Some(i) = idx {
+                                    cx.emit(SidebarEvent::StashApply(i));
+                                }
+                            })
+                            .ok();
+                        })
+                        .child(
+                            rgitui_ui::Icon::new(IconName::Check)
+                                .size(rgitui_ui::IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Apply stash")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Default),
+                        ),
+                );
+            }
+            // Pop
+            {
+                let w = weak.clone();
+                menu = menu.child(
+                    div()
+                        .id("stash-menu-pop")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(8.))
+                        .gap(px(6.))
+                        .items_center()
+                        .cursor_pointer()
+                        .rounded(px(3.))
+                        .hover(|s| {
+                            s.bg(menu_hover)
+                                .border_l_2()
+                                .border_color(colors.text_accent)
+                        })
+                        .active(|s| s.bg(menu_active))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            w.update(cx, |this: &mut Sidebar, cx| {
+                                let idx = this.stash_context_menu.as_ref().map(|m| m.stash_index);
+                                this.stash_context_menu = None;
+                                cx.notify();
+                                if let Some(i) = idx {
+                                    cx.emit(SidebarEvent::StashPop(i));
+                                }
+                            })
+                            .ok();
+                        })
+                        .child(
+                            rgitui_ui::Icon::new(IconName::Undo)
+                                .size(rgitui_ui::IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Pop stash")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Default),
+                        ),
+                );
+            }
+            // Create branch
+            {
+                let w = weak.clone();
+                menu = menu.child(
+                    div()
+                        .id("stash-menu-create-branch")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(8.))
+                        .gap(px(6.))
+                        .items_center()
+                        .cursor_pointer()
+                        .rounded(px(3.))
+                        .hover(|s| {
+                            s.bg(menu_hover)
+                                .border_l_2()
+                                .border_color(colors.text_accent)
+                        })
+                        .active(|s| s.bg(menu_active))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            w.update(cx, |this: &mut Sidebar, cx| {
+                                let idx = this.stash_context_menu.as_ref().map(|m| m.stash_index);
+                                this.stash_context_menu = None;
+                                cx.notify();
+                                if let Some(i) = idx {
+                                    cx.emit(SidebarEvent::StashBranch(i));
+                                }
+                            })
+                            .ok();
+                        })
+                        .child(
+                            rgitui_ui::Icon::new(IconName::GitBranch)
+                                .size(rgitui_ui::IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new("Create branch")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Default),
+                        ),
+                );
+            }
+            // Drop
+            {
+                let w = weak.clone();
+                menu = menu.child(
+                    div()
+                        .id("stash-menu-drop")
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(8.))
+                        .gap(px(6.))
+                        .items_center()
+                        .cursor_pointer()
+                        .rounded(px(3.))
+                        .hover(|s| {
+                            s.bg(menu_hover)
+                                .border_l_2()
+                                .border_color(colors.text_accent)
+                        })
+                        .active(|s| s.bg(menu_active))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            w.update(cx, |this: &mut Sidebar, cx| {
+                                let idx = this.stash_context_menu.as_ref().map(|m| m.stash_index);
+                                this.stash_context_menu = None;
+                                cx.notify();
+                                if let Some(i) = idx {
+                                    cx.emit(SidebarEvent::StashDrop(i));
+                                }
+                            })
+                            .ok();
+                        })
+                        .child(
+                            rgitui_ui::Icon::new(IconName::Trash)
+                                .size(rgitui_ui::IconSize::XSmall)
+                                .color(Color::Deleted),
+                        )
+                        .child(
+                            Label::new("Drop stash")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Default),
+                        ),
+                );
+            }
+
+            panel.child(scroll_div).child(menu)
+        } else {
+            panel.child(scroll_div)
+        }
     }
 }
 

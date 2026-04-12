@@ -465,6 +465,20 @@ impl Workspace {
                     cx.notify();
                 }
             }
+            CommandId::ToggleStashes => {
+                if let Some(active_tab) = self.tabs.get_mut(self.active_tab) {
+                    if active_tab.right_panel_mode == RightPanelMode::Stashes {
+                        active_tab.right_panel_mode = RightPanelMode::Details;
+                    } else {
+                        active_tab.right_panel_mode = RightPanelMode::Stashes;
+                        let sp = active_tab.stashes_panel.clone();
+                        sp.update(cx, |panel, cx| {
+                            panel.refresh(cx);
+                        });
+                    }
+                    cx.notify();
+                }
+            }
             CommandId::Settings
             | CommandId::CreateBranch
             | CommandId::OpenRepo

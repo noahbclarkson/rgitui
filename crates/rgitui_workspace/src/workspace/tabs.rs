@@ -210,7 +210,9 @@ impl Workspace {
         let workspace_weak = cx.entity().downgrade();
         let prs_panel = cx.new(|cx| crate::PrsPanel::new(cx, workspace_weak.clone()));
         let project_weak = project.downgrade();
-        let branch_health_panel = cx.new(|cx| crate::BranchHealthPanel::new(cx, project_weak));
+        let branch_health_panel =
+            cx.new(|cx| crate::BranchHealthPanel::new(cx, project_weak.clone()));
+        let stashes_panel = cx.new(|cx| crate::StashesPanel::new(cx, project_weak));
 
         // Configure issues and PRs panels with GitHub remote info and token
         {
@@ -280,6 +282,7 @@ impl Workspace {
             issues_panel,
             prs_panel,
             branch_health_panel,
+            stashes_panel,
             global_search_view,
             right_panel_mode: RightPanelMode::Details,
             bottom_panel_mode: BottomPanelMode::Diff,

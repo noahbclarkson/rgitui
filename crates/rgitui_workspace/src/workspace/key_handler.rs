@@ -555,6 +555,10 @@ impl Workspace {
                     self.execute_command(CommandId::ToggleBranchHealth, cx);
                     return;
                 }
+                "8" => {
+                    self.execute_command(CommandId::ToggleStashes, cx);
+                    return;
+                }
                 _ => {}
             }
         }
