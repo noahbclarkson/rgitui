@@ -366,7 +366,6 @@ impl PrsPanel {
     }
 
     fn render_review_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let _colors = cx.colors();
         let mut el = div().v_flex().w_full().gap(px(8.));
 
         // Review comment input
@@ -470,8 +469,6 @@ impl PrsPanel {
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let _colors = cx.colors();
-
         if self.view_mode == PrsPanelView::Detail {
             return div()
                 .h_flex()
@@ -873,7 +870,6 @@ impl PrsPanel {
         subtitle: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let _colors = cx.colors();
         div()
             .flex_1()
             .flex()
@@ -909,7 +905,6 @@ impl PrsPanel {
     }
 
     fn render_loading_skeleton(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let _colors = cx.colors();
         let skeleton_bg = cx.colors().ghost_element_background;
 
         div()
