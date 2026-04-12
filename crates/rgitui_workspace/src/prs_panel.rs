@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
 use futures::AsyncReadExt;
@@ -38,6 +39,28 @@ pub enum PrState {
     Merged,
 }
 
+impl std::fmt::Display for PrState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrState::Open => write!(f, "open"),
+            PrState::Closed => write!(f, "closed"),
+            PrState::Merged => write!(f, "merged"),
+        }
+    }
+}
+
+impl FromStr for PrState {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(PrState::Open),
+            "closed" => Ok(PrState::Closed),
+            "merged" => Ok(PrState::Merged),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PrLabel {
     pub name: String,
@@ -63,6 +86,18 @@ pub enum ReviewAction {
     Approve,
     RequestChanges,
     Comment,
+}
+
+impl FromStr for ReviewAction {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "APPROVE" => Ok(ReviewAction::Approve),
+            "REQUEST_CHANGES" => Ok(ReviewAction::RequestChanges),
+            "COMMENT" => Ok(ReviewAction::Comment),
+            _ => Err(()),
+        }
+    }
 }
 
 impl EventEmitter<PrsPanelEvent> for PrsPanel {}
@@ -1507,5 +1542,113 @@ mod tests {
     fn format_github_date_much_longer() {
         // longer than 10, slices first 10
         assert_eq!(format_github_date("2024-01-15T10:30:00Z"), "2024-01-15");
+    }
+
+    // ReviewAction::to_string
+
+    #[test]
+    fn review_action_to_string_approve() {
+        assert_eq!(ReviewAction::Approve.to_string(), "APPROVE");
+    }
+
+    #[test]
+    fn review_action_to_string_request_changes() {
+        assert_eq!(ReviewAction::RequestChanges.to_string(), "REQUEST_CHANGES");
+    }
+
+    #[test]
+    fn review_action_to_string_comment() {
+        assert_eq!(ReviewAction::Comment.to_string(), "COMMENT");
+    }
+
+    // PrState
+
+    #[test]
+    fn pr_state_to_string_open() {
+        assert_eq!(PrState::Open.to_string(), "open");
+    }
+
+    #[test]
+    fn pr_state_to_string_closed() {
+        assert_eq!(PrState::Closed.to_string(), "closed");
+    }
+
+    #[test]
+    fn pr_state_to_string_merged() {
+        assert_eq!(PrState::Merged.to_string(), "merged");
+    }
+
+    #[test]
+    fn pr_state_from_str_open() {
+        assert_eq!(PrState::from_str("open"), Ok(PrState::Open));
+    }
+
+    #[test]
+    fn pr_state_from_str_closed() {
+        assert_eq!(PrState::from_str("closed"), Ok(PrState::Closed));
+    }
+
+    #[test]
+    fn pr_state_from_str_merged() {
+        assert_eq!(PrState::from_str("merged"), Ok(PrState::Merged));
+    }
+
+    #[test]
+    fn pr_state_from_str_unknown() {
+        assert_eq!(PrState::from_str("banana"), Err(()));
+    }
+
+    // PrLabel
+
+    #[test]
+    fn pr_label_creation() {
+        let label = PrLabel {
+            name: "bug".into(),
+            color: "ff0000".into(),
+        };
+        assert_eq!(label.name, "bug");
+        assert_eq!(label.color, "ff0000");
+    }
+
+    // PullRequest
+
+    #[test]
+    fn pull_request_creation() {
+        let pr = PullRequest {
+            number: 42,
+            title: "Add feature".into(),
+            body: Some("Implementation details".into()),
+            state: PrState::Open,
+            author: "alice".into(),
+            created_at: "2024-01-15T10:30:00Z".into(),
+            labels: vec![PrLabel {
+                name: "enhancement".into(),
+                color: "00ff00".into(),
+            }],
+            head_branch: "feature-x".into(),
+            base_branch: "main".into(),
+            draft: false,
+            comments_count: 3,
+        };
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.title, "Add feature");
+        assert!(pr.body.is_some());
+        assert_eq!(pr.state, PrState::Open);
+        assert_eq!(pr.labels.len(), 1);
+        assert!(!pr.draft);
+        assert_eq!(pr.comments_count, 3);
+    }
+
+    // PrComment
+
+    #[test]
+    fn pr_comment_creation() {
+        let comment = PrComment {
+            body: "Looks good!".into(),
+            author: "bob".into(),
+            created_at: "2024-02-01T12:00:00Z".into(),
+        };
+        assert_eq!(comment.body, "Looks good!");
+        assert_eq!(comment.author, "bob");
     }
 }
