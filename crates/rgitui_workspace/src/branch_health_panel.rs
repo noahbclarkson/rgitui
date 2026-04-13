@@ -68,59 +68,11 @@ impl BranchHealthPanel {
     }
 
     fn filtered_branches(&self) -> Vec<&BranchInfo> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        self.branches
-            .iter()
-            .filter(|b| {
-                if b.is_remote {
-                    return false;
-                }
-                match self.filter {
-                    BranchHealthFilter::All => true,
-                    BranchHealthFilter::Unmerged => {
-                        b.is_merged_into_main == Some(false) && !b.is_head
-                    }
-                    BranchHealthFilter::Stale => {
-                        if let Some(time) = b.last_commit_time {
-                            (now - time) > STALE_SECONDS
-                        } else {
-                            false
-                        }
-                    }
-                    BranchHealthFilter::Diverged => b.ahead > 0 && b.behind > 0,
-                }
-            })
-            .collect()
+        filter_branches(&self.branches, &self.filter)
     }
 
     fn stats(&self) -> (usize, usize, usize, usize) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        let local: Vec<&BranchInfo> = self.branches.iter().filter(|b| !b.is_remote).collect();
-        let total = local.len();
-        let unmerged = local
-            .iter()
-            .filter(|b| b.is_merged_into_main == Some(false) && !b.is_head)
-            .count();
-        let stale = local
-            .iter()
-            .filter(|b| {
-                if let Some(time) = b.last_commit_time {
-                    (now - time) > STALE_SECONDS
-                } else {
-                    false
-                }
-            })
-            .count();
-        let diverged = local.iter().filter(|b| b.ahead > 0 && b.behind > 0).count();
-        (total, unmerged, stale, diverged)
+        compute_branch_stats(&self.branches)
     }
 
     fn set_filter(&mut self, filter: BranchHealthFilter, cx: &mut Context<Self>) {
@@ -314,6 +266,65 @@ impl Render for BranchHealthPanel {
     }
 }
 
+/// Filter branches by the given filter.
+fn filter_branches<'a>(
+    branches: &'a [BranchInfo],
+    filter: &'a BranchHealthFilter,
+) -> Vec<&'a BranchInfo> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    branches
+        .iter()
+        .filter(|b| {
+            if b.is_remote {
+                return false;
+            }
+            match filter {
+                BranchHealthFilter::All => true,
+                BranchHealthFilter::Unmerged => b.is_merged_into_main == Some(false) && !b.is_head,
+                BranchHealthFilter::Stale => {
+                    if let Some(time) = b.last_commit_time {
+                        (now - time) > STALE_SECONDS
+                    } else {
+                        false
+                    }
+                }
+                BranchHealthFilter::Diverged => b.ahead > 0 && b.behind > 0,
+            }
+        })
+        .collect()
+}
+
+/// Compute branch health statistics: (total, unmerged, stale, diverged).
+fn compute_branch_stats(branches: &[BranchInfo]) -> (usize, usize, usize, usize) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let local: Vec<&BranchInfo> = branches.iter().filter(|b| !b.is_remote).collect();
+    let total = local.len();
+    let unmerged = local
+        .iter()
+        .filter(|b| b.is_merged_into_main == Some(false) && !b.is_head)
+        .count();
+    let stale = local
+        .iter()
+        .filter(|b| {
+            if let Some(time) = b.last_commit_time {
+                (now - time) > STALE_SECONDS
+            } else {
+                false
+            }
+        })
+        .count();
+    let diverged = local.iter().filter(|b| b.ahead > 0 && b.behind > 0).count();
+    (total, unmerged, stale, diverged)
+}
+
 impl BranchHealthPanel {
     fn render_toolbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let colors = cx.colors();
@@ -403,5 +414,226 @@ impl BranchHealthPanel {
                     .color(Color::Muted),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rgitui_git::BranchInfo;
+
+    fn make_branch(
+        name: &str,
+        is_head: bool,
+        is_remote: bool,
+        is_merged_into_main: Option<bool>,
+        last_commit_time: Option<i64>,
+        ahead: usize,
+        behind: usize,
+    ) -> BranchInfo {
+        BranchInfo {
+            name: name.to_string(),
+            is_head,
+            is_remote,
+            upstream: None,
+            ahead,
+            behind,
+            tip_oid: None,
+            author_email: None,
+            last_commit_time,
+            is_merged_into_main,
+        }
+    }
+
+    // BranchHealthFilter::label
+
+    #[test]
+    fn branch_health_filter_label_all() {
+        assert_eq!(BranchHealthFilter::All.label(), "All");
+    }
+
+    #[test]
+    fn branch_health_filter_label_unmerged() {
+        assert_eq!(BranchHealthFilter::Unmerged.label(), "Unmerged");
+    }
+
+    #[test]
+    fn branch_health_filter_label_stale() {
+        assert_eq!(BranchHealthFilter::Stale.label(), "Stale");
+    }
+
+    #[test]
+    fn branch_health_filter_label_diverged() {
+        assert_eq!(BranchHealthFilter::Diverged.label(), "Diverged");
+    }
+
+    // BranchHealthFilter equality
+
+    #[test]
+    fn branch_health_filter_eq() {
+        assert_eq!(BranchHealthFilter::All, BranchHealthFilter::All);
+        assert_eq!(BranchHealthFilter::Unmerged, BranchHealthFilter::Unmerged);
+        assert_eq!(BranchHealthFilter::Stale, BranchHealthFilter::Stale);
+        assert_eq!(BranchHealthFilter::Diverged, BranchHealthFilter::Diverged);
+        assert_ne!(BranchHealthFilter::All, BranchHealthFilter::Unmerged);
+    }
+
+    // filtered_branches — All filter returns all local non-remote branches
+    #[test]
+    fn filtered_branches_all_includes_local_branches() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let branches = vec![
+            make_branch("main", false, false, Some(true), Some(now - 100), 0, 0),
+            make_branch("feature", false, false, Some(false), Some(now - 100), 0, 0),
+            make_branch("origin/main", false, true, None, Some(now - 100), 0, 0), // remote — excluded
+        ];
+
+        let filtered: Vec<_> = filter_branches(&branches, &BranchHealthFilter::All);
+        assert_eq!(filtered.len(), 2, "All filter returns only local branches");
+        assert!(filtered.iter().all(|b| !b.is_remote));
+    }
+
+    // filtered_branches — Unmerged filter excludes HEAD
+    #[test]
+    fn filtered_branches_unmerged_excludes_head() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let branches = vec![
+            make_branch("main", false, false, Some(false), Some(now - 100), 0, 0),
+            make_branch("HEAD", true, false, Some(false), Some(now - 100), 0, 0), // is_head — excluded
+        ];
+
+        let filtered: Vec<_> = filter_branches(&branches, &BranchHealthFilter::Unmerged);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "main");
+        assert!(!filtered[0].is_head);
+    }
+
+    // filtered_branches — Stale filter excludes recent branches
+    #[test]
+    fn filtered_branches_stale_excludes_recent() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // 10 days ago — not stale (STALE_DAYS = 30)
+        let recent_time = now - (10 * 24 * 60 * 60);
+        // 40 days ago — stale
+        let stale_time = now - (40 * 24 * 60 * 60);
+
+        let branches = vec![
+            make_branch("recent", false, false, Some(false), Some(recent_time), 0, 0),
+            make_branch("old", false, false, Some(false), Some(stale_time), 0, 0),
+        ];
+
+        let filtered: Vec<_> = filter_branches(&branches, &BranchHealthFilter::Stale);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "old");
+    }
+
+    // filtered_branches — Diverged filter requires ahead AND behind
+    #[test]
+    fn filtered_branches_diverged_requires_ahead_and_behind() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let branches = vec![
+            make_branch("ahead-only", false, false, Some(false), Some(now), 3, 0),
+            make_branch("behind-only", false, false, Some(false), Some(now), 0, 2),
+            make_branch("diverged", false, false, Some(false), Some(now), 3, 2),
+            make_branch("clean", false, false, Some(false), Some(now), 0, 0),
+        ];
+
+        let filtered: Vec<_> = filter_branches(&branches, &BranchHealthFilter::Diverged);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "diverged");
+    }
+
+    // stats — counts match expected
+    #[test]
+    fn stats_counts_correctly() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let recent_time = now - (10 * 24 * 60 * 60);
+        let stale_time = now - (40 * 24 * 60 * 60);
+
+        let branches = vec![
+            // main — merged, recent
+            make_branch("main", false, false, Some(true), Some(recent_time), 0, 0),
+            // feature — unmerged, not head, recent
+            make_branch(
+                "feature",
+                false,
+                false,
+                Some(false),
+                Some(recent_time),
+                0,
+                0,
+            ),
+            // stale-branch — stale, not merged
+            make_branch("stale", false, false, Some(false), Some(stale_time), 0, 0),
+            // origin/main — remote, excluded
+            make_branch("origin/main", false, true, None, Some(stale_time), 0, 0),
+            // diverged — diverged
+            make_branch(
+                "diverged",
+                false,
+                false,
+                Some(false),
+                Some(recent_time),
+                2,
+                1,
+            ),
+        ];
+
+        let (total, unmerged, stale, diverged) = compute_branch_stats(&branches);
+        assert_eq!(total, 4, "4 local branches");
+        assert_eq!(
+            unmerged, 3,
+            "3 unmerged (feature, stale, diverged — HEAD excluded)"
+        );
+        assert_eq!(stale, 1, "1 stale (stale)");
+        assert_eq!(diverged, 1, "1 diverged");
+    }
+
+    // stats — empty branch list
+    #[test]
+    fn stats_empty_branches() {
+        let (total, unmerged, stale, diverged) = compute_branch_stats(&[]);
+        assert_eq!(total, 0);
+        assert_eq!(unmerged, 0);
+        assert_eq!(stale, 0);
+        assert_eq!(diverged, 0);
+    }
+
+    // stats — HEAD branch is counted in total but not in unmerged
+    #[test]
+    fn stats_head_not_in_unmerged() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let branches = vec![
+            make_branch("HEAD", true, false, Some(false), Some(now), 0, 0),
+            make_branch("other", false, false, Some(false), Some(now), 0, 0),
+        ];
+
+        let (total, unmerged, _, _) = compute_branch_stats(&branches);
+        assert_eq!(total, 2, "HEAD counts in total");
+        assert_eq!(unmerged, 1, "HEAD excluded from unmerged");
     }
 }
