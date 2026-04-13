@@ -1360,11 +1360,15 @@ impl Render for GraphView {
                                 }
                             };
                             // The worktree virtual row sits immediately above its
-                            // HEAD commit. We need to draw pass-through lines for
-                            // other branches' lanes that cross this row vertically,
-                            // otherwise there's a visible gap in those lines.
-                            // We use the HEAD commit's straight pass-through edges,
-                            // excluding the worktree's own node lane.
+                            // HEAD commit. We need to draw vertical lines at every
+                            // lane that is active in the row above the HEAD so
+                            // parallel branches aren't cut off by the worktree row.
+                            // Those lanes appear in the HEAD's edges as either
+                            // straight pass-throughs (from_lane == to_lane) or as
+                            // merge-in edges converging into the HEAD's dot
+                            // (to_lane == HEAD's node_lane). In both cases the
+                            // source lane is drawn full-height at the worktree row;
+                            // any bend happens at the HEAD's row below.
                             let wt_node_lane = position.node_lane;
                             let (has_head_incoming, pass_through_edges) = position
                                 .commit_index
@@ -1375,7 +1379,10 @@ impl Render for GraphView {
                                         gr.edges
                                             .iter()
                                             .filter(|edge| {
-                                                edge.from_lane == edge.to_lane
+                                                let crosses_worktree = edge.from_lane
+                                                    == edge.to_lane
+                                                    || edge.to_lane == gr.node_lane;
+                                                crosses_worktree
                                                     && edge.from_lane != gr.node_lane
                                                     && edge.from_lane != wt_node_lane
                                             })
