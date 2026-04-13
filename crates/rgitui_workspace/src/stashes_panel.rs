@@ -21,7 +21,6 @@ pub enum StashesPanelEvent {
     StashApply(usize),
     StashPop(usize),
     StashDrop(usize),
-    StashBranch(usize),
 }
 
 /// The main stashes panel.
