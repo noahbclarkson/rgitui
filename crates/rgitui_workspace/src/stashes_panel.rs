@@ -14,15 +14,6 @@ use rgitui_ui::{
     Badge, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
 };
 
-/// Events emitted by the Stashes panel.
-#[derive(Debug, Clone)]
-pub enum StashesPanelEvent {
-    StashSelected(usize),
-    StashApply(usize),
-    StashPop(usize),
-    StashDrop(usize),
-}
-
 /// The main stashes panel.
 pub struct StashesPanel {
     stashes: Vec<StashEntry>,
