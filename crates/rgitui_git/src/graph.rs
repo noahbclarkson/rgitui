@@ -188,15 +188,24 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
         }
     };
 
-    let head_on_main = head_oid.is_none_or(|h| main_chain.contains(&h));
-
     // Each active lane: (expected OID, color index)
     let mut lanes: Vec<Option<(git2::Oid, usize)>> = Vec::new();
     let mut next_color: usize = 0;
 
-    // If HEAD is on a feature branch (not on main), pre-reserve lane 0 for main.
-    // The main tip will eventually arrive in the commit list and land on lane 0.
-    if !head_on_main {
+    // Pre-reserve lane 0 for main_tip whenever main_tip isn't the first commit
+    // in the list. Any commit processed before main_tip that routes a parent on
+    // the main-chain would otherwise reuse its own freed node_lane for that
+    // parent, producing a straight {L, L} outgoing edge and a merge-in at
+    // main_tip's row that bends into lane 0. The straight edge extends 4 px
+    // past the row bottom with no approach line on the same lane below it to
+    // hide the overhang, leaving a visible stub. Routing to lane 0 up front
+    // emits a curve instead and keeps main on its canonical column. When
+    // main_tip is commits[0] nothing is processed before it, so pre-reserving
+    // would spuriously mark main_tip's row as having an incoming line from
+    // above.
+    let reserve_lane_0 = main_tip
+        .is_some_and(|tip| commits.first().is_some_and(|c| c.oid != tip));
+    if reserve_lane_0 {
         if let Some(tip) = main_tip {
             let color = next_color;
             next_color += 1;
@@ -781,6 +790,76 @@ mod tests {
                 "outgoing edge from a lane should carry that lane's color"
             );
         }
+    }
+
+    #[test]
+    fn test_feature_ahead_zero_behind_routes_parent_to_lane_0() {
+        // HEAD on main, feature branch ahead of main with 0 behind.
+        // Feature's oldest commit's parent is main tip. Topo order puts the
+        // newer feature commits first, so F_base is processed before M1.
+        //
+        // Without lane 0 reservation, F_base's outgoing to M1 would reuse the
+        // freed feature lane and produce a straight {1, 1} edge plus a
+        // merge-in at M1's row. That straight edge's 4 px overhang below the
+        // row sticks out visibly because M1 has no approach on lane 1.
+        //
+        // After the fix, lane 0 is reserved so route_parent finds an exact
+        // match at lane 0 and emits {1, 0} (a curve) — no overhang on lane 1.
+        let commits = vec![
+            make_commit(10, &[20], vec![RefLabel::LocalBranch("feature".into())]),
+            make_commit(20, &[30], vec![]),
+            make_commit(
+                30,
+                &[40],
+                vec![RefLabel::Head, RefLabel::LocalBranch("main".into())],
+            ),
+            make_commit(40, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+
+        let f_base = &rows[1];
+        assert_eq!(f_base.node_lane, 1);
+        let outgoing_from_feature_lane: Vec<_> = f_base
+            .edges
+            .iter()
+            .filter(|e| e.from_lane == 1)
+            .collect();
+        assert!(
+            outgoing_from_feature_lane
+                .iter()
+                .any(|e| e.to_lane == 0),
+            "F_base's outgoing edge should target lane 0 (main), got edges: {:?}",
+            f_base.edges
+        );
+        assert!(
+            !outgoing_from_feature_lane
+                .iter()
+                .any(|e| e.to_lane == 1),
+            "F_base must not emit a straight {{1, 1}} outgoing, got edges: {:?}",
+            f_base.edges
+        );
+    }
+
+    #[test]
+    fn test_main_tip_first_commit_has_no_incoming() {
+        // When main_tip is the topmost commit, lane 0 must not be
+        // pre-reserved — otherwise main_tip's row is marked as having an
+        // incoming line from above, producing a 4 px approach stub above
+        // the top of the graph.
+        let commits = vec![
+            make_commit(
+                1,
+                &[2],
+                vec![RefLabel::Head, RefLabel::LocalBranch("main".into())],
+            ),
+            make_commit(2, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+        assert_eq!(rows[0].node_lane, 0);
+        assert!(
+            !rows[0].has_incoming,
+            "topmost main commit should not report incoming"
+        );
     }
 
     #[test]
@@ -1499,14 +1578,10 @@ mod tests {
         assert!(!rows[0].has_incoming, "795f1ba: new branch, no incoming");
         assert!(!rows[1].has_incoming, "0308d39: new branch, no incoming");
 
-        // Main HEAD (f50abd6): lane 0 was free before it, no incoming
-        assert!(
-            !rows[2].has_incoming,
-            "f50abd6: first on lane 0, no incoming"
-        );
-
-        // Every other main commit: continuation, has incoming
-        for (idx, r) in rows.iter().enumerate().skip(3).take(8) {
+        // Every main commit has incoming: lane 0 is pre-reserved for main_tip
+        // so the feature-branch commits above emit pass-throughs on lane 0
+        // that feed into main HEAD and every ancestor below it.
+        for (idx, r) in rows.iter().enumerate().skip(2).take(9) {
             assert!(
                 r.has_incoming,
                 "idx {} should have incoming (lane 0 continuation)",
