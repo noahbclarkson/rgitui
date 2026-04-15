@@ -14,21 +14,29 @@ use rgitui_ui::{
     Badge, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
 };
 
+use crate::workspace::Workspace;
+
 /// The main stashes panel.
 pub struct StashesPanel {
     stashes: Vec<StashEntry>,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     project: WeakEntity<GitProject>,
+    workspace: WeakEntity<Workspace>,
 }
 
 impl StashesPanel {
-    pub fn new(cx: &mut Context<Self>, project: WeakEntity<GitProject>) -> Self {
+    pub fn new(
+        cx: &mut Context<Self>,
+        project: WeakEntity<GitProject>,
+        workspace: WeakEntity<Workspace>,
+    ) -> Self {
         Self {
             stashes: Vec::new(),
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             project,
+            workspace,
         }
     }
 
@@ -61,11 +69,21 @@ impl StashesPanel {
     }
 
     fn drop_stash(&self, index: usize, cx: &mut Context<Self>) {
-        let Some(proj) = self.project.upgrade() else {
+        let Some(ws) = self.workspace.upgrade() else {
             return;
         };
-        proj.update(cx, |proj, cx| {
-            proj.stash_drop(index, cx).detach();
+        ws.update(cx, |ws, cx| {
+            ws.dialogs.confirm_dialog.update(cx, |cd, cx| {
+                cd.show_visible(
+                    "Drop Stash",
+                    format!(
+                        "Are you sure you want to drop stash@{{{}}}? This cannot be undone.",
+                        index
+                    ),
+                    crate::ConfirmAction::StashDrop(index),
+                    cx,
+                );
+            });
         });
     }
 }
