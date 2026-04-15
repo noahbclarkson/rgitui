@@ -246,6 +246,8 @@ pub struct AppSettings {
     pub last_update_check_at: Option<DateTime<Utc>>,
     #[serde(default = "default_commit_limit")]
     pub commit_limit: usize,
+    #[serde(default)]
+    pub watch_all_worktrees: bool,
 }
 
 /// Current settings version. Increment when making breaking changes.
@@ -513,6 +515,7 @@ impl Default for AppSettings {
             auto_check_updates: default_auto_check_updates(),
             last_update_check_at: None,
             commit_limit: default_commit_limit(),
+            watch_all_worktrees: false,
         }
     }
 }

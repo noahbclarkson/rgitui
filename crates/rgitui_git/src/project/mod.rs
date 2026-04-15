@@ -15,7 +15,6 @@ mod watcher;
 use anyhow::{Context as _, Result};
 use git2::{Repository, StatusOptions};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
-use notify::RecommendedWatcher;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -230,9 +229,6 @@ pub struct GitProject {
     commit_author_filter: Option<String>,
     /// Maximum number of commits to load (configurable via settings).
     commit_limit: usize,
-
-    // Filesystem watcher (kept alive)
-    _watcher: Option<RecommendedWatcher>,
 }
 
 impl EventEmitter<GitProjectEvent> for GitProject {}
@@ -261,7 +257,6 @@ impl GitProject {
             current_user_email: None,
             commit_author_filter: None,
             commit_limit: 1000,
-            _watcher: None,
         }
     }
 
@@ -291,7 +286,6 @@ impl GitProject {
             current_user_email: None,
             commit_author_filter: None,
             commit_limit,
-            _watcher: None,
         };
 
         project.start_watcher(cx);

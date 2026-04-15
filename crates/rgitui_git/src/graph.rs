@@ -203,8 +203,7 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
     // main_tip is commits[0] nothing is processed before it, so pre-reserving
     // would spuriously mark main_tip's row as having an incoming line from
     // above.
-    let reserve_lane_0 = main_tip
-        .is_some_and(|tip| commits.first().is_some_and(|c| c.oid != tip));
+    let reserve_lane_0 = main_tip.is_some_and(|tip| commits.first().is_some_and(|c| c.oid != tip));
     if reserve_lane_0 {
         if let Some(tip) = main_tip {
             let color = next_color;
@@ -456,6 +455,42 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
             is_head,
             is_merge,
         });
+    }
+
+    // Trim the ghost main lane above main_tip. Pre-reserving lane 0 leaves a
+    // pass-through edge on every row above main_tip's row even when nothing
+    // above merges back into main — the lane only exists to hold the slot open
+    // for main_tip. That produces a continuous column drawn all the way to the
+    // top of the graph, which is misleading when the newest commits are on
+    // side branches. Strip any pure lane-0 pass-through (`0 -> 0`) on those
+    // upper rows. Edges with `from_lane == 0` or `to_lane == 0` that go to a
+    // different lane (merge-ins, divergences) are preserved.
+    if reserve_lane_0 {
+        if let Some(tip) = main_tip {
+            if let Some(&tip_idx) = oid_to_idx.get(&tip) {
+                if tip_idx > 0 {
+                    let mut last_stripped = None;
+                    for (idx, row) in rows.iter_mut().enumerate().take(tip_idx) {
+                        let before = row.edges.len();
+                        row.edges.retain(|e| !(e.from_lane == 0 && e.to_lane == 0));
+                        if row.edges.len() != before {
+                            last_stripped = Some(idx);
+                        }
+                    }
+                    // If we stripped the pass-through that feeds into main_tip's
+                    // row, main_tip no longer has a line coming in from above.
+                    // Suppress has_incoming to avoid a dangling 4px stub
+                    // painted by the rendering code above the dot.
+                    if last_stripped == Some(tip_idx - 1) {
+                        if let Some(tip_row) = rows.get_mut(tip_idx) {
+                            if tip_row.node_lane == 0 {
+                                tip_row.has_incoming = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     log::debug!(
@@ -819,22 +854,15 @@ mod tests {
 
         let f_base = &rows[1];
         assert_eq!(f_base.node_lane, 1);
-        let outgoing_from_feature_lane: Vec<_> = f_base
-            .edges
-            .iter()
-            .filter(|e| e.from_lane == 1)
-            .collect();
+        let outgoing_from_feature_lane: Vec<_> =
+            f_base.edges.iter().filter(|e| e.from_lane == 1).collect();
         assert!(
-            outgoing_from_feature_lane
-                .iter()
-                .any(|e| e.to_lane == 0),
+            outgoing_from_feature_lane.iter().any(|e| e.to_lane == 0),
             "F_base's outgoing edge should target lane 0 (main), got edges: {:?}",
             f_base.edges
         );
         assert!(
-            !outgoing_from_feature_lane
-                .iter()
-                .any(|e| e.to_lane == 1),
+            !outgoing_from_feature_lane.iter().any(|e| e.to_lane == 1),
             "F_base must not emit a straight {{1, 1}} outgoing, got edges: {:?}",
             f_base.edges
         );
@@ -1578,10 +1606,15 @@ mod tests {
         assert!(!rows[0].has_incoming, "795f1ba: new branch, no incoming");
         assert!(!rows[1].has_incoming, "0308d39: new branch, no incoming");
 
-        // Every main commit has incoming: lane 0 is pre-reserved for main_tip
-        // so the feature-branch commits above emit pass-throughs on lane 0
-        // that feed into main HEAD and every ancestor below it.
-        for (idx, r) in rows.iter().enumerate().skip(2).take(9) {
+        // main_tip (idx 2) is the topmost lane-0 commit — rows above it are
+        // feature branches with no lane-0 content once the ghost pass-through
+        // is trimmed, so has_incoming is false for main_tip itself. Its
+        // ancestors (idx 3..=10) still chain continuously on lane 0.
+        assert!(
+            !rows[2].has_incoming,
+            "f50abd6 (main_tip): no lane-0 continuation above"
+        );
+        for (idx, r) in rows.iter().enumerate().skip(3).take(8) {
             assert!(
                 r.has_incoming,
                 "idx {} should have incoming (lane 0 continuation)",

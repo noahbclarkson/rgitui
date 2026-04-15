@@ -1,8 +1,9 @@
 use gpui::{AsyncApp, Context};
-use notify::{RecursiveMode, Watcher};
-use std::path::Path;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use super::refresh::gather_refresh_data_lightweight;
@@ -65,120 +66,242 @@ fn scan_refs_mtimes(dir: &Path, newest: &mut Option<SystemTime>) {
     }
 }
 
+/// Resolve the per-worktree git dir for a linked worktree under the main repo.
+/// A worktree's `.git` is a file containing `gitdir: <path>` pointing into
+/// `<main>/.git/worktrees/<name>/`. We read that redirect here so fingerprinting
+/// still works when the caller only has the worktree's working-tree path.
+fn worktree_git_dir(worktree_path: &Path) -> Option<PathBuf> {
+    let dot_git = worktree_path.join(".git");
+    let content = std::fs::read_to_string(&dot_git).ok()?;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("gitdir:") {
+            let p = PathBuf::from(rest.trim());
+            return Some(if p.is_absolute() {
+                p
+            } else {
+                worktree_path.join(p)
+            });
+        }
+    }
+    None
+}
+
+/// Compute a combined fingerprint across the main repo's `.git` and every
+/// linked worktree's per-worktree git dir. Returns the newest mtime seen.
+fn combined_fingerprint(
+    main_git_dir: &Path,
+    extra_worktree_paths: &HashSet<PathBuf>,
+) -> Option<SystemTime> {
+    let mut newest = git_state_fingerprint(main_git_dir);
+    for wt in extra_worktree_paths {
+        if let Some(git_dir) = worktree_git_dir(wt) {
+            if let Some(fp) = git_state_fingerprint(&git_dir) {
+                newest = Some(newest.map_or(fp, |n| n.max(fp)));
+            }
+        }
+    }
+    newest
+}
+
 impl GitProject {
     /// Start watching the repository for filesystem changes.
+    ///
+    /// Always watches the main repo path. When the `watch_all_worktrees`
+    /// setting is enabled, additionally watches every linked worktree's path
+    /// and fingerprints its per-worktree git dir. The watched set is
+    /// re-evaluated on every poll tick, so toggling the setting or adding /
+    /// removing worktrees takes effect without restarting the app.
     pub(super) fn start_watcher(&mut self, cx: &mut Context<Self>) {
         let repo_path = self.repo_path.clone();
+        let main_git_dir = repo_path.join(".git");
         let dirty = Arc::new(AtomicBool::new(false));
 
-        let git_dir = repo_path.join(".git");
-        let last_git_fingerprint = Arc::new(std::sync::Mutex::new(git_state_fingerprint(&git_dir)));
+        // Keep the notify watcher behind a mutex so the poll loop can add /
+        // remove watched paths when the all-worktrees setting flips.
+        let watcher_handle: Arc<Mutex<Option<RecommendedWatcher>>> = Arc::new(Mutex::new(None));
 
-        let watcher = {
+        {
             let dirty_flag = dirty.clone();
-            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if let Ok(event) = res {
-                    let dominated_by_git = event
-                        .paths
-                        .iter()
-                        .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
-                    if dominated_by_git {
-                        return;
-                    }
-                    match event.kind {
-                        notify::EventKind::Create(_)
-                        | notify::EventKind::Modify(_)
-                        | notify::EventKind::Remove(_) => {
-                            dirty_flag.store(true, Ordering::Relaxed);
+            let watcher =
+                notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = res {
+                        let dominated_by_git = event
+                            .paths
+                            .iter()
+                            .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
+                        if dominated_by_git {
+                            return;
                         }
-                        _ => {}
+                        match event.kind {
+                            notify::EventKind::Create(_)
+                            | notify::EventKind::Modify(_)
+                            | notify::EventKind::Remove(_) => {
+                                dirty_flag.store(true, Ordering::Relaxed);
+                            }
+                            _ => {}
+                        }
                     }
-                }
-            })
-        };
+                });
 
-        if let Ok(mut watcher) = watcher {
-            if let Err(e) = watcher.watch(&repo_path, RecursiveMode::Recursive) {
-                log::warn!(
-                    "Failed to watch repository directory for filesystem changes: {}",
-                    e
-                );
+            match watcher {
+                Ok(mut w) => {
+                    if let Err(e) = w.watch(&repo_path, RecursiveMode::Recursive) {
+                        log::warn!(
+                            "Failed to watch repository directory for filesystem changes: {}",
+                            e
+                        );
+                    }
+                    *watcher_handle.lock().expect("watcher mutex") = Some(w);
+                }
+                Err(e) => {
+                    log::warn!("Failed to create filesystem watcher: {}", e);
+                }
             }
-            self._watcher = Some(watcher);
+        }
 
-            let watcher_repo_path = repo_path.clone();
-            let watcher_commit_limit = self.commit_limit;
-            let dirty_flag = dirty.clone();
-            let git_fingerprint = last_git_fingerprint.clone();
-            cx.spawn(async move |weak, cx: &mut AsyncApp| loop {
-                smol::Timer::after(Duration::from_millis(300)).await;
-                log::trace!("watcher: poll tick");
+        let last_fingerprint: Arc<Mutex<Option<SystemTime>>> = Arc::new(Mutex::new(
+            combined_fingerprint(&main_git_dir, &HashSet::new()),
+        ));
+        let watched_extras: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
 
-                // Detect git internal state changes (commits, pushes, branch ops,
-                // staging changes, etc.) that don't produce working-directory events.
-                let git_dir = watcher_repo_path.join(".git");
-                let fingerprint_changed = git_fingerprint
-                    .lock()
-                    .ok()
-                    .and_then(|guard| {
-                        let current = git_state_fingerprint(&git_dir);
-                        if current.is_some() && current != *guard {
-                            Some(current)
-                        } else {
-                            None
+        let watcher_commit_limit = self.commit_limit;
+        cx.spawn({
+            let watcher_handle = watcher_handle.clone();
+            let watched_extras = watched_extras.clone();
+            let last_fingerprint = last_fingerprint.clone();
+            let dirty = dirty.clone();
+            let repo_path = repo_path.clone();
+            let main_git_dir = main_git_dir.clone();
+            async move |weak, cx: &mut AsyncApp| {
+                // Keep the watcher handle alive for the lifetime of this task.
+                // When the task ends (because the entity was dropped), the Arc
+                // refcount hits zero and the notify watcher shuts down.
+                let _keepalive = watcher_handle.clone();
+
+                loop {
+                    smol::Timer::after(Duration::from_millis(300)).await;
+                    log::trace!("watcher: poll tick");
+
+                    // Re-read the all-worktrees setting and current worktree
+                    // list. Sync the notify watcher's watched paths and the
+                    // fingerprint set to match. `None` signals the entity
+                    // has been dropped so we should end the watcher loop.
+                    let desired: Option<HashSet<PathBuf>> = cx.update(|app| {
+                        let entity = weak.upgrade()?;
+                        let watch_all = app
+                            .try_global::<rgitui_settings::SettingsState>()
+                            .map(|s| s.settings().watch_all_worktrees)
+                            .unwrap_or(false);
+                        if !watch_all {
+                            return Some(HashSet::new());
                         }
-                    })
-                    .flatten();
-
-                if let Some(new_fp) = fingerprint_changed {
-                    log::debug!("watcher: git state changed, scheduling lightweight refresh");
-                    if let Ok(mut guard) = git_fingerprint.lock() {
-                        *guard = Some(new_fp);
-                    }
-                    dirty_flag.store(true, Ordering::Relaxed);
-                }
-
-                if dirty.swap(false, Ordering::Relaxed) {
-                    smol::Timer::after(Duration::from_millis(200)).await;
-
-                    // Only clear dirty if no new events arrived during the batch wait.
-                    // If dirty was re-set, loop back immediately to refresh again without
-                    // the 300ms poll interval delay — prevents missed refreshes under
-                    // bursty file system activity (e.g. git checkout touching 20 files).
-                    if !dirty.load(Ordering::Relaxed) {
-                        dirty.store(false, Ordering::Relaxed);
-                    }
-
-                    let path = watcher_repo_path.clone();
-                    let data = cx
-                        .background_executor()
-                        .spawn(async move {
-                            gather_refresh_data_lightweight(&path, watcher_commit_limit)
-                        })
-                        .await;
-
-                    let data = match data {
-                        Ok(d) => {
-                            log::debug!("watcher: lightweight refresh complete");
-                            d
-                        }
-                        Err(_) => continue,
+                        Some(
+                            entity
+                                .read(app)
+                                .worktrees
+                                .iter()
+                                .filter(|w| !w.is_current)
+                                .map(|w| w.path.clone())
+                                .collect::<HashSet<PathBuf>>(),
+                        )
+                    });
+                    let desired = match desired {
+                        Some(d) => d,
+                        None => break,
                     };
 
-                    let result = cx.update(|cx| {
-                        weak.update(cx, |this, cx| {
-                            this.apply_refresh_data(data);
-                            cx.emit(GitProjectEvent::StatusChanged);
-                            cx.notify();
-                        })
-                    });
+                    {
+                        let mut current = watched_extras.lock().expect("watched mutex");
+                        if *current != desired {
+                            if let Ok(mut guard) = watcher_handle.lock() {
+                                if let Some(w) = guard.as_mut() {
+                                    for to_remove in current.difference(&desired) {
+                                        if let Err(e) = w.unwatch(to_remove) {
+                                            log::debug!(
+                                                "Failed to unwatch {}: {}",
+                                                to_remove.display(),
+                                                e
+                                            );
+                                        }
+                                    }
+                                    for to_add in desired.difference(&current) {
+                                        if let Err(e) = w.watch(to_add, RecursiveMode::Recursive) {
+                                            log::warn!(
+                                                "Failed to watch worktree {}: {}",
+                                                to_add.display(),
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            *current = desired.clone();
+                        }
+                    }
 
-                    if result.is_err() {
-                        break;
+                    // Detect git internal state changes across main + watched
+                    // worktrees (commits, pushes, branch ops, staging
+                    // changes, etc.) that don't produce working-directory
+                    // events on the main repo.
+                    let fingerprint_changed = {
+                        let current = combined_fingerprint(&main_git_dir, &desired);
+                        let mut guard = last_fingerprint.lock().expect("fp mutex");
+                        if current.is_some() && current != *guard {
+                            *guard = current;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+
+                    if fingerprint_changed {
+                        log::debug!("watcher: git state changed, scheduling refresh");
+                        dirty.store(true, Ordering::Relaxed);
+                    }
+
+                    if dirty.swap(false, Ordering::Relaxed) {
+                        smol::Timer::after(Duration::from_millis(200)).await;
+
+                        // Only clear dirty if no new events arrived during the batch wait.
+                        // If dirty was re-set, loop back immediately to refresh again without
+                        // the 300ms poll interval delay — prevents missed refreshes under
+                        // bursty file system activity (e.g. git checkout touching 20 files).
+                        if !dirty.load(Ordering::Relaxed) {
+                            dirty.store(false, Ordering::Relaxed);
+                        }
+
+                        let path = repo_path.clone();
+                        let data = cx
+                            .background_executor()
+                            .spawn(async move {
+                                gather_refresh_data_lightweight(&path, watcher_commit_limit)
+                            })
+                            .await;
+
+                        let data = match data {
+                            Ok(d) => {
+                                log::debug!("watcher: lightweight refresh complete");
+                                d
+                            }
+                            Err(_) => continue,
+                        };
+
+                        let result = cx.update(|cx| {
+                            weak.update(cx, |this, cx| {
+                                this.apply_refresh_data(data);
+                                cx.emit(GitProjectEvent::StatusChanged);
+                                cx.notify();
+                            })
+                        });
+
+                        if result.is_err() {
+                            break;
+                        }
                     }
                 }
-            })
-            .detach();
-        }
+                drop(_keepalive);
+            }
+        })
+        .detach();
     }
 }

@@ -257,6 +257,7 @@ pub struct SettingsModal {
     auto_fetch_interval: AutoFetchInterval,
     confirm_destructive_operations: bool,
     auto_check_updates: bool,
+    watch_all_worktrees: bool,
     terminal_command_editor: Entity<TextInput>,
     editor_command_editor: Entity<TextInput>,
     detected_terminals: Vec<DetectedApp>,
@@ -655,6 +656,7 @@ impl SettingsModal {
             auto_fetch_interval: settings.auto_fetch_interval,
             confirm_destructive_operations: settings.confirm_destructive_operations,
             auto_check_updates: settings.auto_check_updates,
+            watch_all_worktrees: settings.watch_all_worktrees,
             terminal_command_editor,
             editor_command_editor,
             detected_terminals,
@@ -746,6 +748,7 @@ impl SettingsModal {
                 self.auto_fetch_interval = s.auto_fetch_interval;
                 self.confirm_destructive_operations = s.confirm_destructive_operations;
                 self.auto_check_updates = s.auto_check_updates;
+                self.watch_all_worktrees = s.watch_all_worktrees;
                 self.feedback_message = None;
                 self.feedback_is_error = false;
                 (
@@ -871,6 +874,7 @@ impl SettingsModal {
             state.settings_mut().confirm_destructive_operations =
                 self.confirm_destructive_operations;
             state.settings_mut().auto_check_updates = self.auto_check_updates;
+            state.settings_mut().watch_all_worktrees = self.watch_all_worktrees;
             state.settings_mut().terminal_command = terminal_command.trim().to_string();
             state.settings_mut().editor_command = editor_command.trim().to_string();
             {
@@ -3372,6 +3376,52 @@ impl SettingsModal {
                 ),
         );
         section = section.child(updates_card);
+
+        // Watch all worktrees card
+        let watch_all_worktrees = self.watch_all_worktrees;
+        let mut watch_card = Self::setting_card(cx);
+        watch_card = watch_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(
+                            Label::new("Watch All Worktrees")
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            Label::new(
+                                "Refresh the graph whenever files change in any linked worktree, not just the current one. Useful when you have multiple worktrees open and work is happening in them in parallel.",
+                            )
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("watch-all-worktrees-toggle")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.watch_all_worktrees = !this.watch_all_worktrees;
+                            this.save_settings(cx);
+                        }))
+                        .child(Checkbox::new(
+                            "watch-all-worktrees-cb",
+                            if watch_all_worktrees {
+                                CheckState::Checked
+                            } else {
+                                CheckState::Unchecked
+                            },
+                        )),
+                ),
+        );
+        section = section.child(watch_card);
         section = section.child(Self::section_divider(cx));
 
         // External tools card

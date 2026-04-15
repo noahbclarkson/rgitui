@@ -428,61 +428,49 @@ impl GraphView {
         let mut orphan_indices = Vec::new();
 
         for (worktree_idx, info) in self.worktree_infos.iter().enumerate() {
-            match info.head_oid {
-                Some(oid) => {
-                    if let Some(commit_index) = self.commits.iter().position(|c| c.oid == oid) {
-                        if let Some(graph_row) = self.graph_rows.get(commit_index) {
-                            anchored.push((
-                                commit_index,
-                                WorktreeRowPosition {
-                                    worktree_idx,
-                                    list_index: 0,
-                                    commit_index: Some(commit_index),
-                                    node_lane: graph_row.node_lane,
-                                    color_index: graph_row.node_color,
-                                },
-                            ));
-                        } else if commit_index < visible_commit_count {
-                            anchored.push((
-                                commit_index,
-                                WorktreeRowPosition {
-                                    worktree_idx,
-                                    list_index: 0,
-                                    commit_index: Some(commit_index),
-                                    node_lane: 0,
-                                    color_index: 0,
-                                },
-                            ));
-                        }
+            let mut placed = false;
+            if let Some(oid) = info.head_oid {
+                if let Some(commit_index) = self.commits.iter().position(|c| c.oid == oid) {
+                    if let Some(graph_row) = self.graph_rows.get(commit_index) {
+                        anchored.push((
+                            commit_index,
+                            WorktreeRowPosition {
+                                worktree_idx,
+                                list_index: 0,
+                                commit_index: Some(commit_index),
+                                node_lane: graph_row.node_lane,
+                                color_index: graph_row.node_color,
+                            },
+                        ));
+                        placed = true;
+                    } else if commit_index < visible_commit_count {
+                        anchored.push((
+                            commit_index,
+                            WorktreeRowPosition {
+                                worktree_idx,
+                                list_index: 0,
+                                commit_index: Some(commit_index),
+                                node_lane: 0,
+                                color_index: 0,
+                            },
+                        ));
+                        placed = true;
                     }
                 }
-                None => orphan_indices.push(worktree_idx),
+            }
+            if !placed {
+                orphan_indices.push(worktree_idx);
             }
         }
 
-        // Sort anchored worktrees: current/main worktree first (so it gets
-        // list_index 0 and wins lane collisions), then by commit_index.
-        anchored.sort_by(|(ci_a, pos_a), (ci_b, pos_b)| {
-            let a_current = self.worktree_infos[pos_a.worktree_idx].is_current;
-            let b_current = self.worktree_infos[pos_b.worktree_idx].is_current;
-            b_current.cmp(&a_current).then_with(|| ci_a.cmp(ci_b))
-        });
+        // Each worktree's virtual row sits directly above its HEAD commit at
+        // a distinct list_index, so two anchored worktrees sharing a node_lane
+        // stack vertically rather than overlap — no collision reassignment is
+        // needed. Keeping natural lanes means the pending-changes node lines
+        // up with the branch color continuing up from its tip, which is the
+        // whole visual point.
 
-        // Detect lane collisions among anchored worktree rows and assign
-        // unique lanes so that two worktrees whose HEAD commits share a lane
-        // don't overlap visually. The current worktree is first so it keeps
-        // its natural lane (lane 0 for main).
-        let mut used_lanes: HashSet<usize> = HashSet::new();
         let mut next_extra_lane = self.global_max_lane + 1;
-        for (_commit_index, position) in anchored.iter_mut() {
-            if !used_lanes.insert(position.node_lane) {
-                // Collision — assign a fresh lane beyond the current max.
-                position.node_lane = next_extra_lane;
-                position.color_index = next_extra_lane;
-                next_extra_lane += 1;
-            }
-        }
-
         for (list_index, worktree_idx) in orphan_indices.into_iter().enumerate() {
             self.worktree_row_positions.push(WorktreeRowPosition {
                 worktree_idx,
