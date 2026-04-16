@@ -67,6 +67,70 @@ fn active_worktree_status(
     }
 }
 
+/// Extracts a clean commit subject from a git stash message.
+///
+/// git stash produces messages like:
+///   "WIP on main: abc1234 my last commit"
+///   "On feature: def5678 WIP"
+///   "On main: ghi9012"           ← no subject
+///   custom message from -m
+///
+/// We strip the "WIP on <branch>: <sha>" or "On <branch>: <sha>" prefix
+/// and return the meaningful subject. Falls back to "Stash" if the message
+/// is blank.
+fn extract_stash_summary(msg: &str) -> String {
+    let first_line = msg.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        return String::from("Stash");
+    }
+
+    // Strip "WIP on <branch>: <sha> " or "On <branch>: <sha> " prefix.
+    // The pattern: "WIP on <branch>: " or "On <branch>: " followed by a 7-char SHA.
+    if let Some(colon_pos) = first_line.find(':') {
+        let before_colon = &first_line[..colon_pos];
+        let after_colon = first_line[colon_pos + 1..].trim_start();
+
+        // Check if "before_colon" is a valid branch reference prefix.
+        // Valid forms: "WIP on <branch>" or "On <branch>"
+        let branch_part = if let Some(stripped) = before_colon.strip_prefix("WIP on ") {
+            stripped
+        } else if let Some(stripped) = before_colon.strip_prefix("On ") {
+            stripped
+        } else {
+            before_colon // custom message, no prefix
+        };
+
+        // Parse "<sha> <subject>" or "<sha>" after the colon.
+        // git stash uses 7-char short SHAs. The subject is everything after the space.
+        // If there is no space, or the prefix before the space is not a valid SHA,
+        // treat the entire remaining string as the subject.
+        let remaining = after_colon.trim_start();
+        let subject = if let Some(space_pos) = remaining.find(' ') {
+            let prefix = &remaining[..space_pos];
+            let after = remaining[space_pos..].trim_start();
+            // Valid SHA: 7 hex chars. git stash short SHAs are 7 chars.
+            if prefix.len() == 7 && prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+                if after.is_empty() {
+                    None
+                } else {
+                    Some(after.to_string())
+                }
+            } else {
+                // Not a standard SHA — treat whole remaining as subject.
+                Some(remaining.to_string())
+            }
+        } else {
+            // No space at all — no subject.
+            None
+        };
+
+        return subject.unwrap_or_else(|| branch_part.to_string());
+    }
+
+    // No colon — custom message, use the first line as-is.
+    first_line.to_string()
+}
+
 pub(super) fn update_commit_panel_for_active_worktree(
     workspace: &mut Workspace,
     cx: &mut Context<Workspace>,
@@ -1206,10 +1270,13 @@ pub(super) fn subscribe_sidebar(
                                     name: String::from("stash"),
                                     email: String::new(),
                                 };
-                                let summary = msg.lines().next().unwrap_or("Stash").to_string();
+                                // git stash messages are "WIP on <branch>: <sha> <subject>" or
+                                // "On <branch>: <sha> <subject>". We want just the subject.
+                                // Strip the WIP/On prefix and the trailing hash+subject.
+                                let summary = extract_stash_summary(&msg);
                                 let synthetic = CommitInfo {
                                     oid,
-                                    short_id: format!("{:.7}", oid.to_string()),
+                                    short_id: oid.to_string()[..7].to_string(),
                                     summary,
                                     message: msg,
                                     author: unknown_sig.clone(),
@@ -2519,4 +2586,64 @@ pub(super) fn subscribe_bisect_view(
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_stash_summary;
+
+    #[test]
+    fn test_extract_stash_summary_wip_with_subject() {
+        let msg = "WIP on main: abc1234 last commit on main";
+        assert_eq!(extract_stash_summary(msg), "last commit on main");
+    }
+
+    #[test]
+    fn test_extract_stash_summary_on_with_subject() {
+        // "On branch: <sha> <subject>" — real SHA (7 hex chars) followed by subject.
+        let msg = "On feature: abc1234 WIP";
+        assert_eq!(extract_stash_summary(msg), "WIP");
+    }
+
+    #[test]
+    fn test_extract_stash_summary_no_subject_just_branch() {
+        let msg = "On main: ghi9012";
+        assert_eq!(extract_stash_summary(msg), "main");
+    }
+
+    #[test]
+    fn test_extract_stash_summary_wip_no_subject() {
+        let msg = "WIP on main: abc1234";
+        assert_eq!(extract_stash_summary(msg), "main");
+    }
+
+    #[test]
+    fn test_extract_stash_summary_custom_message() {
+        let msg = "my important stash";
+        assert_eq!(extract_stash_summary(msg), "my important stash");
+    }
+
+    #[test]
+    fn test_extract_stash_summary_multiline() {
+        let msg = "WIP on main: abc1234 my subject\n\nChanges:\n  file.txt";
+        assert_eq!(extract_stash_summary(msg), "my subject");
+    }
+
+    #[test]
+    fn test_extract_stash_summary_empty() {
+        assert_eq!(extract_stash_summary(""), "Stash");
+    }
+
+    #[test]
+    fn test_extract_stash_summary_whitespace_only() {
+        assert_eq!(extract_stash_summary("   \n   "), "Stash");
+    }
+
+    #[test]
+    fn test_extract_stash_summary_strips_sha_long_form() {
+        // When after_colon starts with non-hex (e.g. "<sha><space><subject>" doesn't match
+        // our pattern), fall back to using remaining as subject.
+        let msg = "On main: abc1234d my subject";
+        assert_eq!(extract_stash_summary(msg), "abc1234d my subject");
+    }
 }

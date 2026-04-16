@@ -73,6 +73,7 @@ pub(super) enum RightPanelMode {
     Issues,
     PullRequests,
     BranchHealth,
+    Stashes,
 }
 
 /// A single open project tab.
@@ -119,6 +120,7 @@ pub(super) struct ProjectTab {
     pub issues_panel: Entity<crate::IssuesPanel>,
     pub prs_panel: Entity<crate::PrsPanel>,
     pub branch_health_panel: Entity<crate::BranchHealthPanel>,
+    pub stashes_panel: Entity<crate::StashesPanel>,
     pub global_search_view: Entity<crate::GlobalSearchView>,
     pub right_panel_mode: RightPanelMode,
     pub bottom_panel_mode: BottomPanelMode,

@@ -2,6 +2,8 @@ pub(crate) mod avatar_resolver;
 mod bisect_view;
 mod blame_view;
 mod branch_dialog;
+mod stashes_panel;
+
 mod branch_health_panel;
 mod cache;
 mod command_palette;
@@ -38,6 +40,8 @@ pub(crate) mod worktree_dialog;
 pub use bisect_view::*;
 pub use blame_view::*;
 pub use branch_dialog::*;
+pub use stashes_panel::*;
+
 pub use branch_health_panel::*;
 pub use command_palette::*;
 pub use commit_panel::*;

@@ -1084,6 +1084,10 @@ impl Render for Workspace {
                                     .when(
                                         active_tab.right_panel_mode == RightPanelMode::BranchHealth,
                                         |el| el.child(active_tab.branch_health_panel.clone()),
+                                    )
+                                    .when(
+                                        active_tab.right_panel_mode == RightPanelMode::Stashes,
+                                        |el| el.child(active_tab.stashes_panel.clone()),
                                     ),
                             )
                             // Resize handle between detail and commit input

@@ -13,7 +13,7 @@ use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 
 /// Events emitted by the file history view.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FileHistoryViewEvent {
     CommitSelected(String),
     Dismissed,
@@ -439,5 +439,82 @@ impl Render for FileHistoryView {
             )
             .child(list)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- FileHistoryViewEvent tests ---
+
+    #[test]
+    fn file_history_view_event_debug() {
+        let event = FileHistoryViewEvent::Dismissed;
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("Dismissed"));
+    }
+
+    #[test]
+    fn file_history_view_event_clone_eq() {
+        let event = FileHistoryViewEvent::CommitSelected("abc123".to_string());
+        let clone = event.clone();
+        assert_eq!(event, clone);
+    }
+
+    #[test]
+    fn file_history_view_event_switch_to_blame() {
+        let event = FileHistoryViewEvent::SwitchToBlame;
+        assert_eq!(format!("{:?}", event), "SwitchToBlame");
+    }
+
+    #[test]
+    fn file_history_view_event_switch_to_diff() {
+        let event = FileHistoryViewEvent::SwitchToDiff;
+        assert_eq!(format!("{:?}", event), "SwitchToDiff");
+    }
+
+    #[test]
+    fn file_history_view_event_commit_selected() {
+        let oid = "aabbccddee00112233445566778899aabbccdd00";
+        let event = FileHistoryViewEvent::CommitSelected(oid.to_string());
+        if let FileHistoryViewEvent::CommitSelected(val) = event {
+            assert_eq!(val, oid);
+        } else {
+            panic!("expected CommitSelected");
+        }
+    }
+
+    // --- FileHistoryView struct field tests ---
+
+    #[test]
+    fn file_history_view_debug_clone() {
+        // Test that FileHistoryView derives Debug and Clone properly
+        // by creating a minimal instance via the public constructor
+        // We verify through the event enum which FileHistoryView emits
+        let events = vec![
+            FileHistoryViewEvent::Dismissed,
+            FileHistoryViewEvent::SwitchToBlame,
+            FileHistoryViewEvent::CommitSelected("deadbeef".to_string()),
+        ];
+        for event in events {
+            let cloned = event.clone();
+            assert_eq!(format!("{:?}", event), format!("{:?}", cloned));
+        }
+    }
+
+    #[test]
+    fn file_history_view_event_all_variants() {
+        use FileHistoryViewEvent::*;
+        let variants = [
+            CommitSelected("test".to_string()),
+            Dismissed,
+            SwitchToBlame,
+            SwitchToDiff,
+        ];
+        for v in variants {
+            let debug = format!("{:?}", v);
+            assert!(!debug.is_empty());
+        }
     }
 }

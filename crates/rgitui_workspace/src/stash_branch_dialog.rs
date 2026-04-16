@@ -371,3 +371,202 @@ impl Render for StashBranchDialog {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::StashBranchDialog;
+
+    // --- validate_branch_name tests ---
+
+    #[test]
+    fn validate_branch_name_valid_simple() {
+        assert!(StashBranchDialog::validate_branch_name("main").is_none());
+        assert!(StashBranchDialog::validate_branch_name("feature-xyz").is_none());
+        assert!(StashBranchDialog::validate_branch_name("feature_xyz").is_none());
+        assert!(StashBranchDialog::validate_branch_name("user/feature").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_empty_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name(""),
+            Some("Branch name cannot be empty".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_spaces_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feature branch"),
+            Some("Branch name cannot contain spaces".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_starts_with_dot_or_hyphen_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name(".hidden"),
+            Some("Branch name cannot start with '.' or '-'".to_string())
+        );
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("-feature"),
+            Some("Branch name cannot start with '.' or '-'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_ends_with_dot_or_slash_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feature."),
+            Some("Branch name cannot end with '.' or '/'".to_string())
+        );
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feature/"),
+            Some("Branch name cannot end with '.' or '/'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_double_dot_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feature..main"),
+            Some("Branch name cannot contain '..'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_tilde_caret_colon_backslash_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feature~1"),
+            Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string())
+        );
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feature^1"),
+            Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string())
+        );
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("origin:feature"),
+            Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string())
+        );
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feat\\ure"),
+            Some("Branch name cannot contain '~', '^', ':', or '\\'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_glob_chars_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feat?ure"),
+            Some("Branch name cannot contain glob characters".to_string())
+        );
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feat*ure"),
+            Some("Branch name cannot contain glob characters".to_string())
+        );
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feat[ure]"),
+            Some("Branch name cannot contain glob characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_control_char_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feat\x7fure"),
+            Some("Branch name cannot contain control characters".to_string())
+        );
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feat\x00ure"),
+            Some("Branch name cannot contain control characters".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_at_brace_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feat@{ure"),
+            Some("Branch name cannot contain '@{'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_at_alone_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("@"),
+            Some("Branch name cannot be '@'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_consecutive_slashes_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("user//feature"),
+            Some("Branch name cannot contain consecutive slashes".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_lock_suffix_returns_error() {
+        assert_eq!(
+            StashBranchDialog::validate_branch_name("feature.lock"),
+            Some("Branch name cannot end with '.lock'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_branch_name_unicode_valid() {
+        assert!(StashBranchDialog::validate_branch_name("feature-日本語").is_none());
+        assert!(StashBranchDialog::validate_branch_name("功能分支").is_none());
+        assert!(StashBranchDialog::validate_branch_name("branche-française").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_numbers_and_hyphens_valid() {
+        assert!(StashBranchDialog::validate_branch_name("v1.0.0").is_none());
+        assert!(StashBranchDialog::validate_branch_name("release-2024-01").is_none());
+        assert!(StashBranchDialog::validate_branch_name("feature-123").is_none());
+    }
+
+    #[test]
+    fn validate_branch_name_path_like_valid() {
+        assert!(StashBranchDialog::validate_branch_name("user/feature").is_none());
+        assert!(StashBranchDialog::validate_branch_name("owner/sub/feature").is_none());
+        assert!(StashBranchDialog::validate_branch_name("a/b/c/d/e").is_none());
+    }
+
+    // --- StashBranchDialogEvent tests ---
+
+    #[test]
+    fn stash_branch_dialog_event_debug() {
+        let event = super::StashBranchDialogEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+    }
+
+    #[test]
+    fn stash_branch_dialog_event_create_branch() {
+        let event = super::StashBranchDialogEvent::CreateBranch {
+            name: "feature-x".to_string(),
+            stash_index: 2,
+        };
+        let debug_str = format!("{:?}", event);
+        assert!(debug_str.contains("CreateBranch"));
+        assert!(debug_str.contains("feature-x"));
+        assert!(debug_str.contains("2"));
+    }
+
+    #[test]
+    fn stash_branch_dialog_event_clone() {
+        let event = super::StashBranchDialogEvent::CreateBranch {
+            name: "test".to_string(),
+            stash_index: 5,
+        };
+        let cloned = event.clone();
+        if let super::StashBranchDialogEvent::CreateBranch { name, stash_index } = cloned {
+            assert_eq!(name, "test");
+            assert_eq!(stash_index, 5);
+        } else {
+            panic!("Clone should produce CreateBranch variant");
+        }
+    }
+}

@@ -459,6 +459,7 @@ impl Render for CreatePrDialog {
                                 div()
                                     .h_flex()
                                     .gap_2()
+                                    .pr(px(4.))
                                     .child(
                                         Button::new("create-pr-cancel", "Cancel")
                                             .size(ButtonSize::Default)
