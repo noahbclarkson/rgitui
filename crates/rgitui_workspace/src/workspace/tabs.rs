@@ -301,6 +301,45 @@ impl Workspace {
         Ok(())
     }
 
+    /// Build the current command context from the active tab's project state.
+    fn build_command_context(&self, cx: &Context<Self>) -> CommandContext {
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        let Some(tab) = self.tabs.get(idx) else {
+            return CommandContext::none();
+        };
+        let proj = tab.project.read(cx);
+        let prs_panel = &tab.prs_panel;
+        CommandContext {
+            has_remotes: !proj.remotes().is_empty(),
+            has_changes: proj.has_changes(),
+            worktree_clean: proj.repo_state().is_clean(),
+            is_bisecting: matches!(proj.repo_state(), rgitui_git::RepoState::Bisect),
+            has_stashes: !proj.stashes().is_empty(),
+            has_staged: !proj.status().staged.is_empty(),
+            in_progress_operation: matches!(
+                proj.repo_state(),
+                rgitui_git::RepoState::Merge
+                    | rgitui_git::RepoState::Rebase
+                    | rgitui_git::RepoState::RebaseInteractive
+                    | rgitui_git::RepoState::RebaseMerge
+                    | rgitui_git::RepoState::CherryPick
+                    | rgitui_git::RepoState::CherryPickSequence
+                    | rgitui_git::RepoState::Revert
+                    | rgitui_git::RepoState::RevertSequence
+            ),
+            has_github_token: prs_panel.read(cx).github_token().is_some(),
+        }
+    }
+
+    /// Update the command palette's context with fresh data from the active tab.
+    /// Call this after refresh operations so predicates stay accurate.
+    pub fn update_command_context(&mut self, cx: &mut Context<Self>) {
+        let ctx = self.build_command_context(cx);
+        self.overlays.command_palette.update(cx, |cp, _cx| {
+            cp.set_context(ctx);
+        });
+    }
+
     /// Refresh all tabs, active tab first. Once the active tab completes,
     /// the remaining tabs start refreshing in parallel.
     pub fn refresh_all_tabs_prioritized(&self, cx: &mut Context<Self>) {
@@ -325,6 +364,16 @@ impl Workspace {
         cx.spawn(async move |_this, cx: &mut gpui::AsyncApp| {
             if let Err(e) = task.await {
                 log::error!("Active tab refresh failed: {}", e);
+            }
+
+            // Update command context so predicates (has_stashes, has_changes, etc.)
+            // reflect the refreshed state before user opens command palette.
+            if let Some(ws) = _this.upgrade() {
+                cx.update(|cx| {
+                    ws.update(cx, |ws, cx| {
+                        ws.update_command_context(cx);
+                    });
+                });
             }
 
             // Now refresh remaining tabs in parallel

@@ -1175,6 +1175,23 @@ mod tests {
     fn command_id_stash_branch() {
         use super::CommandId;
         assert_eq!(CommandId::StashBranch.as_str(), "stash_branch");
-        assert_eq!(CommandId::StashBranch.display_label(), "create branch from stash");
+        assert_eq!(
+            CommandId::StashBranch.display_label(),
+            "create branch from stash"
+        );
+    }
+
+    #[test]
+    fn command_context_none_all_false() {
+        use super::CommandContext;
+        let ctx = CommandContext::none();
+        assert!(!ctx.has_remotes);
+        assert!(!ctx.has_changes);
+        assert!(!ctx.worktree_clean);
+        assert!(!ctx.is_bisecting);
+        assert!(!ctx.has_stashes);
+        assert!(!ctx.has_staged);
+        assert!(!ctx.in_progress_operation);
+        assert!(!ctx.has_github_token);
     }
 }
