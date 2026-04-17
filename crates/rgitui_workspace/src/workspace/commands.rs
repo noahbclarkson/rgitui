@@ -479,6 +479,13 @@ impl Workspace {
                     cx.notify();
                 }
             }
+            CommandId::StashBranch => {
+                self.show_toast(
+                    "Right-click a stash in the sidebar to create a branch",
+                    ToastKind::Info,
+                    cx,
+                );
+            }
             CommandId::Settings
             | CommandId::CreateBranch
             | CommandId::OpenRepo

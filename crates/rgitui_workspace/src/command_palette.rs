@@ -150,6 +150,7 @@ pub enum CommandId {
     TogglePullRequests,
     ToggleBranchHealth,
     ToggleStashes,
+    StashBranch,
 }
 
 impl CommandId {
@@ -209,6 +210,7 @@ impl CommandId {
             Self::TogglePullRequests => "toggle_pull_requests",
             Self::ToggleBranchHealth => "toggle_branch_health",
             Self::ToggleStashes => "toggle_stashes",
+            Self::StashBranch => "stash_branch",
         }
     }
 
@@ -268,6 +270,7 @@ impl CommandId {
             Self::TogglePullRequests => "toggle pull requests panel",
             Self::ToggleBranchHealth => "toggle branch health panel",
             Self::ToggleStashes => "toggle stashes panel",
+            Self::StashBranch => "create branch from stash",
         }
     }
 }
@@ -337,6 +340,7 @@ impl TryFrom<&str> for CommandId {
             "toggle_pull_requests" => Ok(Self::TogglePullRequests),
             "toggle_branch_health" => Ok(Self::ToggleBranchHealth),
             "toggle_stashes" => Ok(Self::ToggleStashes),
+            "stash_branch" => Ok(Self::StashBranch),
             _ => Err(()),
         }
     }
@@ -635,6 +639,13 @@ impl CommandPalette {
                 Some("Alt+8"),
                 "View",
             ),
+            PaletteCommand::new(
+                CommandId::StashBranch,
+                "Git: Create Branch from Stash",
+                None,
+                "Git",
+            )
+            .with_predicate(has_stashes),
         ];
 
         let filtered_indices: Vec<(usize, usize)> = (0..commands.len()).map(|i| (i, 0)).collect();
@@ -1158,5 +1169,12 @@ mod tests {
         // Unicode characters
         assert!(CommandPalette::fuzzy_score("caf", "Café").is_some());
         assert!(CommandPalette::fuzzy_score("日本語", "日本語テスト").is_some());
+    }
+
+    #[test]
+    fn command_id_stash_branch() {
+        use super::CommandId;
+        assert_eq!(CommandId::StashBranch.as_str(), "stash_branch");
+        assert_eq!(CommandId::StashBranch.display_label(), "create branch from stash");
     }
 }
