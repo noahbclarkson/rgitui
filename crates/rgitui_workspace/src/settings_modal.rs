@@ -252,6 +252,7 @@ pub struct SettingsModal {
     font_size: u32,
     show_line_numbers_in_diff: bool,
     diff_view_mode: DiffViewMode,
+    diff_wrap_lines: bool,
     graph_style: GraphStyle,
     show_subject_column: bool,
     auto_fetch_interval: AutoFetchInterval,
@@ -651,6 +652,7 @@ impl SettingsModal {
             font_size: settings.font_size,
             show_line_numbers_in_diff: settings.show_line_numbers_in_diff,
             diff_view_mode: settings.diff_view_mode,
+            diff_wrap_lines: settings.diff_wrap_lines,
             graph_style: settings.graph_style,
             show_subject_column: settings.show_subject_column,
             auto_fetch_interval: settings.auto_fetch_interval,
@@ -743,6 +745,7 @@ impl SettingsModal {
                 self.font_size = s.font_size;
                 self.show_line_numbers_in_diff = s.show_line_numbers_in_diff;
                 self.diff_view_mode = s.diff_view_mode;
+                self.diff_wrap_lines = s.diff_wrap_lines;
                 self.graph_style = s.graph_style;
                 self.show_subject_column = s.show_subject_column;
                 self.auto_fetch_interval = s.auto_fetch_interval;
@@ -868,6 +871,7 @@ impl SettingsModal {
             state.settings_mut().font_size = self.font_size;
             state.settings_mut().show_line_numbers_in_diff = self.show_line_numbers_in_diff;
             state.settings_mut().diff_view_mode = self.diff_view_mode;
+            state.settings_mut().diff_wrap_lines = self.diff_wrap_lines;
             state.settings_mut().graph_style = self.graph_style;
             state.settings_mut().show_subject_column = self.show_subject_column;
             state.settings_mut().auto_fetch_interval = self.auto_fetch_interval;
@@ -3120,6 +3124,7 @@ impl SettingsModal {
         // Diff settings card
         let mut diff_card = Self::setting_card(cx);
         let show_line_numbers = self.show_line_numbers_in_diff;
+        let wrap_lines = self.diff_wrap_lines;
         diff_card = diff_card
             .child(
                 div()
@@ -3153,6 +3158,45 @@ impl SettingsModal {
                             .child(Checkbox::new(
                                 "show-line-numbers-cb",
                                 if show_line_numbers {
+                                    CheckState::Checked
+                                } else {
+                                    CheckState::Unchecked
+                                },
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .w_full()
+                    .items_center()
+                    .child(
+                        div()
+                            .v_flex()
+                            .flex_1()
+                            .gap(px(2.))
+                            .child(
+                                Label::new("Wrap Long Lines in Diff")
+                                    .size(LabelSize::Small)
+                                    .weight(FontWeight::SEMIBOLD),
+                            )
+                            .child(
+                                Label::new("Wrap overflowing lines instead of scrolling horizontally.")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("diff-wrap-lines-toggle")
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.diff_wrap_lines = !this.diff_wrap_lines;
+                                this.save_settings(cx);
+                            }))
+                            .child(Checkbox::new(
+                                "diff-wrap-lines-cb",
+                                if wrap_lines {
                                     CheckState::Checked
                                 } else {
                                     CheckState::Unchecked

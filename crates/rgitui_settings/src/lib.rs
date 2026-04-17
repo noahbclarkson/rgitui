@@ -227,6 +227,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub diff_view_mode: DiffViewMode,
     #[serde(default)]
+    pub diff_wrap_lines: bool,
+    #[serde(default)]
     pub graph_style: GraphStyle,
     #[serde(default = "default_show_subject_column")]
     pub show_subject_column: bool,
@@ -506,6 +508,7 @@ impl Default for AppSettings {
             font_size: default_font_size(),
             show_line_numbers_in_diff: default_show_line_numbers_in_diff(),
             diff_view_mode: DiffViewMode::default(),
+            diff_wrap_lines: false,
             graph_style: GraphStyle::default(),
             show_subject_column: default_show_subject_column(),
             author_column_width: default_author_column_width(),

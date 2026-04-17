@@ -1319,30 +1319,45 @@ impl DiffViewer {
         text: &StyledLine,
         default_color: gpui::Hsla,
         row_height: f32,
+        wrap: bool,
     ) -> gpui::AnyElement {
         let mut text_style = window.text_style();
         text_style.color = default_color;
         // Clamp line_height to row height so highlight background rects
         // don't extend past the row boundaries and overlap adjacent rows.
         text_style.line_height = px(row_height).into();
+        // The text layouter reads `white_space` from this text_style directly;
+        // inheriting `whitespace_nowrap` from a parent div is not enough (see
+        // `gpui::elements::text::Text::request_layout`).
+        text_style.white_space = if wrap {
+            gpui::WhiteSpace::Normal
+        } else {
+            gpui::WhiteSpace::Nowrap
+        };
 
         // Guard: if text is empty but highlights exist, GPUI panics on
         // StyledText::with_default_highlights (Text: '', run: len: N).
         // This can happen with word-level diff on whitespace-only lines.
-        // Skip word highlights when text is empty.
-        if text.text.is_empty() || text.highlights.is_empty() {
-            div()
-                .overflow_hidden()
-                .child(StyledText::new(text.text.clone()))
-                .into_any_element()
+        let highlights = if text.text.is_empty() {
+            Vec::new()
         } else {
-            div()
-                .overflow_hidden()
-                .child(
-                    StyledText::new(text.text.clone())
-                        .with_default_highlights(&text_style, text.highlights.clone()),
-                )
-                .into_any_element()
+            text.highlights.clone()
+        };
+        let styled = StyledText::new(text.text.clone())
+            .with_default_highlights(&text_style, highlights)
+            .into_any_element();
+
+        if wrap {
+            // Per Zed `text.rs` storybook: "When rendering text in a
+            // horizontal flex container, Taffy will not pass width constraints
+            // down from the parent. To fix this, render text in a parent with
+            // `overflow: hidden`." Without this wrapper, the text's min-content
+            // (full unbroken width) propagates up and blows out the flex bounds.
+            div().overflow_hidden().child(styled).into_any_element()
+        } else {
+            // No-wrap: text stays on one line at its natural width and the
+            // ancestor scroll area handles horizontal scrolling.
+            styled
         }
     }
 
@@ -1891,7 +1906,7 @@ impl DiffViewer {
 }
 
 impl Render for DiffViewer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log::trace!(
             "DiffViewer::render: path={:?} display_rows={} sbs_rows={}",
             self.file_path,
@@ -1974,6 +1989,7 @@ impl Render for DiffViewer {
         let vc_added = colors.vc_added;
         let vc_deleted = colors.vc_deleted;
         let element_bg = colors.element_background;
+        let toolbar_bg = colors.toolbar_background;
 
         let added_line_bg = gpui::Hsla {
             a: 0.12,
@@ -2003,10 +2019,9 @@ impl Render for DiffViewer {
             ..text_color
         };
 
-        let compactness = cx
-            .global::<rgitui_settings::SettingsState>()
-            .settings()
-            .compactness;
+        let settings_state = cx.global::<rgitui_settings::SettingsState>();
+        let compactness = settings_state.settings().compactness;
+        let wrap_enabled = settings_state.settings().diff_wrap_lines;
         let row_height = compactness.spacing(20.0);
         let hunk_header_height = row_height;
 
@@ -2037,759 +2052,900 @@ impl Render for DiffViewer {
         let list = match display_mode {
             DiffDisplayMode::Unified => {
                 let view = view.clone();
-                uniform_list(
-                    "diff-lines",
-                    display_rows.len(),
-                    move |range: Range<usize>, window: &mut Window, _cx: &mut App| {
-                        range
-                            .map(|i| {
-                                let row = &display_rows[i];
-                                match row {
-                                    DisplayRow::HunkHeader {
-                                        header,
-                                        context_name,
-                                        hunk_index,
-                                    } => {
-                                        let line_range: SharedString =
-                                            Self::extract_line_range(header).into();
-                                        let ctx_name: SharedString = context_name.clone().into();
-                                        let has_context = !context_name.is_empty();
-                                        let stage_label = if is_staged {
-                                            "Unstage Hunk"
-                                        } else {
-                                            "Stage Hunk"
-                                        };
-                                        let idx = *hunk_index;
-                                        let view_clone = view.clone();
-                                        let view_hunk = view.clone();
-                                        let is_hunk_selected = selected_lines
-                                            .as_ref()
-                                            .is_some_and(|r| r.contains(&i));
-                                        let hunk_bg = if is_hunk_selected {
-                                            selection_bg
-                                        } else {
-                                            element_bg
-                                        };
+                let row_count = display_rows.len();
+                let build_unified = move |range: Range<usize>, window: &mut Window, _cx: &mut App| -> Vec<gpui::AnyElement> {
+                    range
+                        .map(|i| {
+                            let row = &display_rows[i];
+                            match row {
+                                DisplayRow::HunkHeader {
+                                    header,
+                                    context_name,
+                                    hunk_index,
+                                } => {
+                                    let line_range: SharedString =
+                                        Self::extract_line_range(header).into();
+                                    let ctx_name: SharedString = context_name.clone().into();
+                                    let has_context = !context_name.is_empty();
+                                    let stage_label = if is_staged {
+                                        "Unstage Hunk"
+                                    } else {
+                                        "Stage Hunk"
+                                    };
+                                    let idx = *hunk_index;
+                                    let view_clone = view.clone();
+                                    let view_hunk = view.clone();
+                                    let is_hunk_selected = selected_lines
+                                        .as_ref()
+                                        .is_some_and(|r| r.contains(&i));
+                                    let hunk_bg = if is_hunk_selected {
+                                        selection_bg
+                                    } else {
+                                        element_bg
+                                    };
 
-                                        let mut hunk_row = div()
-                                            .id(ElementId::NamedInteger(
-                                                "hunk-header".into(),
-                                                i as u64,
-                                            ))
-                                            .h_flex()
-                                            .h(px(hunk_header_height))
-                                            .w_full()
-                                            .px(px(8.))
-                                            .py(px(4.))
-                                            .items_center()
-                                            .gap(px(8.))
-                                            .bg(hunk_bg)
-                                            .border_t_1()
-                                            .border_b_1()
-                                            .border_color(border_variant)
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                move |event: &MouseDownEvent,
-                                                      _window: &mut Window,
+                                    let mut hunk_row = div()
+                                        .id(ElementId::NamedInteger(
+                                            "hunk-header".into(),
+                                            i as u64,
+                                        ))
+                                        .h_flex()
+                                        .h(px(hunk_header_height))
+                                        .w_full()
+                                        .px(px(8.))
+                                        .py(px(4.))
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .bg(hunk_bg)
+                                        .border_t_1()
+                                        .border_b_1()
+                                        .border_color(border_variant)
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            move |event: &MouseDownEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                let shift = event.modifiers.shift;
+                                                view_hunk
+                                                    .update(cx, |this, cx| {
+                                                        this.handle_line_click(i, shift, cx);
+                                                    })
+                                                    .ok();
+                                            },
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_muted)
+                                                .child(line_range),
+                                        );
+
+                                    if has_context {
+                                        hunk_row = hunk_row.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(text_placeholder_color)
+                                                .italic()
+                                                .child(ctx_name),
+                                        );
+                                    }
+
+                                    hunk_row
+                                        .child(div().flex_1())
+                                        .child(
+                                            Button::new(
+                                                SharedString::from(format!(
+                                                    "hunk-stage-{}",
+                                                    idx
+                                                )),
+                                                stage_label,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .style(ButtonStyle::Subtle)
+                                            .on_click(
+                                                move |_: &ClickEvent,
+                                                      _: &mut Window,
                                                       cx: &mut App| {
-                                                    let shift = event.modifiers.shift;
-                                                    view_hunk
-                                                        .update(cx, |this, cx| {
-                                                            this.handle_line_click(i, shift, cx);
+                                                    view_clone
+                                                        .update(cx, |_this, cx| {
+                                                            if is_staged {
+                                                                cx.emit(
+                                                                DiffViewerEvent::HunkUnstageRequested(
+                                                                    idx,
+                                                                ),
+                                                            );
+                                                            } else {
+                                                                cx.emit(
+                                                                DiffViewerEvent::HunkStageRequested(
+                                                                    idx,
+                                                                ),
+                                                            );
+                                                            }
                                                         })
                                                         .ok();
                                                 },
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_family("Lilex")
-                                                    .text_color(text_muted)
-                                                    .child(line_range),
-                                            );
-
-                                        if has_context {
-                                            hunk_row = hunk_row.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(text_placeholder_color)
-                                                    .italic()
-                                                    .child(ctx_name),
-                                            );
+                                            ),
+                                        )
+                                        .into_any_element()
+                                }
+                                DisplayRow::Line {
+                                    old_num,
+                                    new_num,
+                                    styled,
+                                    kind,
+                                } => {
+                                    let (prefix, text_col, line_bg, gutter_accent) = match kind
+                                    {
+                                        DisplayLineKind::Context => {
+                                            (" ", text_color, editor_bg, gutter_bg)
                                         }
+                                        DisplayLineKind::Addition => {
+                                            ("+", vc_added, added_line_bg, added_gutter_bg)
+                                        }
+                                        DisplayLineKind::Deletion => {
+                                            ("-", vc_deleted, deleted_line_bg, deleted_gutter_bg)
+                                        }
+                                    };
 
-                                        hunk_row
-                                            .child(div().flex_1())
-                                            .child(
-                                                Button::new(
-                                                    SharedString::from(format!(
-                                                        "hunk-stage-{}",
-                                                        idx
-                                                    )),
-                                                    stage_label,
-                                                )
-                                                .size(ButtonSize::Compact)
-                                                .style(ButtonStyle::Subtle)
-                                                .on_click(
-                                                    move |_: &ClickEvent,
-                                                          _: &mut Window,
-                                                          cx: &mut App| {
-                                                        view_clone
-                                                            .update(cx, |_this, cx| {
-                                                                if is_staged {
-                                                                    cx.emit(
-                                                                    DiffViewerEvent::HunkUnstageRequested(
-                                                                        idx,
-                                                                    ),
-                                                                );
-                                                                } else {
-                                                                    cx.emit(
-                                                                    DiffViewerEvent::HunkStageRequested(
-                                                                        idx,
-                                                                    ),
-                                                                );
-                                                                }
-                                                            })
-                                                            .ok();
-                                                    },
-                                                ),
-                                            )
-                                            .into_any_element()
+                                    let old_str: SharedString = old_num
+                                        .map(|n| format!("{:>4}", n))
+                                        .unwrap_or_else(|| "    ".to_string())
+                                        .into();
+                                    let new_str: SharedString = new_num
+                                        .map(|n| format!("{:>4}", n))
+                                        .unwrap_or_else(|| "    ".to_string())
+                                        .into();
+                                    let prefix_str: SharedString = prefix.into();
+                                    let is_highlighted = highlighted_row == Some(i);
+                                    let is_selected = selected_lines
+                                        .as_ref()
+                                        .is_some_and(|r| r.contains(&i));
+                                    let effective_bg = if is_selected {
+                                        selection_bg
+                                    } else if is_highlighted {
+                                        highlight_bg
+                                    } else {
+                                        line_bg
+                                    };
+
+                                    let view_line = view.clone();
+                                    let mut row_div = div()
+                                        .id(ElementId::NamedInteger(
+                                            "diff-line".into(),
+                                            i as u64,
+                                        ))
+                                        .w_full()
+                                        .bg(effective_bg)
+                                        .hover(move |s| s.bg(row_hover_bg))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            move |event: &MouseDownEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                let shift = event.modifiers.shift;
+                                                view_line
+                                                    .update(cx, |this, cx| {
+                                                        this.handle_line_click(i, shift, cx);
+                                                    })
+                                                    .ok();
+                                            },
+                                        );
+                                    if wrap_enabled {
+                                        row_div = row_div.flex().items_start().min_h(px(row_height));
+                                    } else {
+                                        row_div = row_div.h_flex().h(px(row_height));
                                     }
-                                    DisplayRow::Line {
-                                        old_num,
-                                        new_num,
-                                        styled,
-                                        kind,
-                                    } => {
-                                        let (prefix, text_col, line_bg, gutter_accent) = match kind
-                                        {
-                                            DisplayLineKind::Context => {
-                                                (" ", text_color, editor_bg, gutter_bg)
-                                            }
-                                            DisplayLineKind::Addition => {
-                                                ("+", vc_added, added_line_bg, added_gutter_bg)
-                                            }
-                                            DisplayLineKind::Deletion => {
-                                                ("-", vc_deleted, deleted_line_bg, deleted_gutter_bg)
-                                            }
-                                        };
 
-                                        let old_str: SharedString = old_num
-                                            .map(|n| format!("{:>4}", n))
-                                            .unwrap_or_else(|| "    ".to_string())
-                                            .into();
-                                        let new_str: SharedString = new_num
-                                            .map(|n| format!("{:>4}", n))
-                                            .unwrap_or_else(|| "    ".to_string())
-                                            .into();
-                                        let prefix_str: SharedString = prefix.into();
-                                        let is_highlighted = highlighted_row == Some(i);
-                                        let is_selected = selected_lines
-                                            .as_ref()
-                                            .is_some_and(|r| r.contains(&i));
-                                        let effective_bg = if is_selected {
-                                            selection_bg
-                                        } else if is_highlighted {
-                                            highlight_bg
-                                        } else {
-                                            line_bg
-                                        };
+                                    let make_gutter_cell = |val: SharedString, width: f32| {
+                                        div()
+                                            .w(px(width))
+                                            .flex_shrink_0()
+                                            .min_h(px(row_height))
+                                            .flex()
+                                            .items_center()
+                                            .justify_end()
+                                            .bg(gutter_accent)
+                                            .border_r_1()
+                                            .border_color(border_variant)
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(text_muted)
+                                            .pr(px(4.))
+                                            .child(val)
+                                    };
+                                    let prefix_cell = div()
+                                        .w(px(18.))
+                                        .flex_shrink_0()
+                                        .min_h(px(row_height))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_xs()
+                                        .font_family("Lilex")
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(text_col)
+                                        .child(prefix_str);
 
-                                        let view_line = view.clone();
+                                    // Text content. In no-wrap mode we put it inside an
+                                    // inner scroll area so the row's gutters stay visible
+                                    // while long lines scroll horizontally.
+                                    let content_area: gpui::AnyElement = if wrap_enabled {
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .pl(px(6.))
+                                            .py(px(2.))
+                                            .min_h(px(row_height))
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(text_col)
+                                            .child(Self::render_styled_text(
+                                                window,
+                                                styled,
+                                                text_col,
+                                                row_height,
+                                                true,
+                                            ))
+                                            .into_any_element()
+                                    } else {
                                         div()
                                             .id(ElementId::NamedInteger(
-                                                "diff-line".into(),
+                                                "diff-line-scroll".into(),
                                                 i as u64,
                                             ))
                                             .h_flex()
-                                            .h(px(row_height))
-                                            .w_full()
-                                            .bg(effective_bg)
-                                            .hover(move |s| s.bg(row_hover_bg))
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                move |event: &MouseDownEvent,
-                                                      _window: &mut Window,
-                                                      cx: &mut App| {
-                                                    let shift = event.modifiers.shift;
-                                                    view_line
-                                                        .update(cx, |this, cx| {
-                                                            this.handle_line_click(i, shift, cx);
-                                                        })
-                                                        .ok();
-                                                },
-                                            )
-                                            .child(
-                                                div()
-                                                    .w(px(44.))
-                                                    .flex_shrink_0()
-                                                    .h_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_end()
-                                                    .bg(gutter_accent)
-                                                    .border_r_1()
-                                                    .border_color(border_variant)
-                                                    .text_xs()
-                                                    .font_family("Lilex")
-                                                    .text_color(text_muted)
-                                                    .pr(px(4.))
-                                                    .child(old_str),
-                                            )
-                                            .child(
-                                                div()
-                                                    .w(px(44.))
-                                                    .flex_shrink_0()
-                                                    .h_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_end()
-                                                    .bg(gutter_accent)
-                                                    .border_r_1()
-                                                    .border_color(border_variant)
-                                                    .text_xs()
-                                                    .font_family("Lilex")
-                                                    .text_color(text_muted)
-                                                    .pr(px(4.))
-                                                    .child(new_str),
-                                            )
-                                            .child(
-                                                div()
-                                                    .w(px(18.))
-                                                    .flex_shrink_0()
-                                                    .h_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .text_xs()
-                                                    .font_family("Lilex")
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(text_col)
-                                                    .child(prefix_str),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .h_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .pl(px(6.))
-                                                    .text_xs()
-                                                    .font_family("Lilex")
-                                                    .text_color(text_col)
-                                                    .whitespace_nowrap()
-                                                    .overflow_y_hidden()
-                                                    .child(Self::render_styled_text(window, styled, text_col, row_height)),
-                                            )
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h_full()
+                                            .pl(px(6.))
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(text_col)
+                                            .overflow_x_scroll()
+                                            .child(Self::render_styled_text(
+                                                window,
+                                                styled,
+                                                text_col,
+                                                row_height,
+                                                false,
+                                            ))
                                             .into_any_element()
-                                    }
+                                    };
+
+                                    row_div
+                                        .child(make_gutter_cell(old_str, 44.))
+                                        .child(make_gutter_cell(new_str, 44.))
+                                        .child(prefix_cell)
+                                        .child(content_area)
+                                        .into_any_element()
                                 }
-                            })
-                            .collect()
-                    },
-                )
-                .with_sizing_behavior(ListSizingBehavior::Auto)
-                .flex_grow()
-                .track_scroll(&self.scroll_handle)
+                            }
+                        })
+                        .collect()
+                };
+
+                if wrap_enabled {
+                    // Non-virtualized: render every row so wrapped content can grow
+                    // row heights naturally. Trades virtualization for correctness.
+                    // Note: self.scroll_handle (UniformListScrollHandle) is not attached
+                    // here, so scroll_to_item / pending_scroll_top are no-ops in wrap mode.
+                    let rows = build_unified(0..row_count, window, cx);
+                    div()
+                        .id("diff-lines-wrap")
+                        .v_flex()
+                        .flex_grow()
+                        .overflow_y_scroll()
+                        .children(rows)
+                        .into_any_element()
+                } else {
+                    uniform_list("diff-lines", row_count, build_unified)
+                        .with_sizing_behavior(ListSizingBehavior::Auto)
+                        .flex_grow()
+                        .track_scroll(&self.scroll_handle)
+                        .into_any_element()
+                }
             }
             DiffDisplayMode::SideBySide => {
                 let view = view.clone();
-                uniform_list(
-                    "diff-lines-sbs",
-                    sbs_rows.len(),
-                    move |range: Range<usize>, window: &mut Window, _cx: &mut App| {
-                        range
-                            .map(|i| {
-                                let row = &sbs_rows[i];
-                                match row {
-                                    SideBySideRow::HunkHeader {
-                                        header,
-                                        context_name,
-                                        hunk_index,
-                                    } => {
-                                        let line_range: SharedString =
-                                            Self::extract_line_range(header).into();
-                                        let ctx_name: SharedString = context_name.clone().into();
-                                        let has_context = !context_name.is_empty();
-                                        let stage_label = if is_staged {
-                                            "Unstage Hunk"
-                                        } else {
-                                            "Stage Hunk"
-                                        };
-                                        let idx = *hunk_index;
-                                        let view_clone = view.clone();
-                                        let view_sbs_hunk = view.clone();
-                                        let is_sbs_hunk_selected = selected_lines
-                                            .as_ref()
-                                            .is_some_and(|r| r.contains(&i));
-                                        let sbs_hunk_bg = if is_sbs_hunk_selected {
-                                            selection_bg
-                                        } else {
-                                            element_bg
-                                        };
+                let row_count = sbs_rows.len();
+                let build_sbs = move |range: Range<usize>, window: &mut Window, _cx: &mut App| -> Vec<gpui::AnyElement> {
+                    range
+                        .map(|i| {
+                            let row = &sbs_rows[i];
+                            match row {
+                                SideBySideRow::HunkHeader {
+                                    header,
+                                    context_name,
+                                    hunk_index,
+                                } => {
+                                    let line_range: SharedString =
+                                        Self::extract_line_range(header).into();
+                                    let ctx_name: SharedString = context_name.clone().into();
+                                    let has_context = !context_name.is_empty();
+                                    let stage_label = if is_staged {
+                                        "Unstage Hunk"
+                                    } else {
+                                        "Stage Hunk"
+                                    };
+                                    let idx = *hunk_index;
+                                    let view_clone = view.clone();
+                                    let view_sbs_hunk = view.clone();
+                                    let is_sbs_hunk_selected = selected_lines
+                                        .as_ref()
+                                        .is_some_and(|r| r.contains(&i));
+                                    let sbs_hunk_bg = if is_sbs_hunk_selected {
+                                        selection_bg
+                                    } else {
+                                        element_bg
+                                    };
 
-                                        let mut hunk_row = div()
-                                            .id(ElementId::NamedInteger(
-                                                "sbs-hunk-header".into(),
-                                                i as u64,
-                                            ))
-                                            .h_flex()
-                                            .h(px(hunk_header_height))
-                                            .w_full()
-                                            .px(px(8.))
-                                            .py(px(4.))
-                                            .items_center()
-                                            .gap(px(8.))
-                                            .bg(sbs_hunk_bg)
-                                            .border_t_1()
-                                            .border_b_1()
-                                            .border_color(border_variant)
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                move |event: &MouseDownEvent,
-                                                      _window: &mut Window,
+                                    let mut hunk_row = div()
+                                        .id(ElementId::NamedInteger(
+                                            "sbs-hunk-header".into(),
+                                            i as u64,
+                                        ))
+                                        .h_flex()
+                                        .h(px(hunk_header_height))
+                                        .w_full()
+                                        .px(px(8.))
+                                        .py(px(4.))
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .bg(sbs_hunk_bg)
+                                        .border_t_1()
+                                        .border_b_1()
+                                        .border_color(border_variant)
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            move |event: &MouseDownEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                let shift = event.modifiers.shift;
+                                                view_sbs_hunk
+                                                    .update(cx, |this, cx| {
+                                                        this.handle_line_click(i, shift, cx);
+                                                    })
+                                                    .ok();
+                                            },
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_muted)
+                                                .child(line_range),
+                                        );
+
+                                    if has_context {
+                                        hunk_row = hunk_row.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(text_placeholder_color)
+                                                .italic()
+                                                .child(ctx_name),
+                                        );
+                                    }
+
+                                    hunk_row
+                                        .child(div().flex_1())
+                                        .child(
+                                            Button::new(
+                                                SharedString::from(format!(
+                                                    "sbs-hunk-stage-{}",
+                                                    idx
+                                                )),
+                                                stage_label,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .style(ButtonStyle::Subtle)
+                                            .on_click(
+                                                move |_: &ClickEvent,
+                                                      _: &mut Window,
                                                       cx: &mut App| {
-                                                    let shift = event.modifiers.shift;
-                                                    view_sbs_hunk
-                                                        .update(cx, |this, cx| {
-                                                            this.handle_line_click(i, shift, cx);
+                                                    view_clone
+                                                        .update(cx, |_this, cx| {
+                                                            if is_staged {
+                                                                cx.emit(
+                                                                DiffViewerEvent::HunkUnstageRequested(
+                                                                    idx,
+                                                                ),
+                                                            );
+                                                            } else {
+                                                                cx.emit(
+                                                                DiffViewerEvent::HunkStageRequested(
+                                                                    idx,
+                                                                ),
+                                                            );
+                                                            }
                                                         })
                                                         .ok();
                                                 },
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_family("Lilex")
-                                                    .text_color(text_muted)
-                                                    .child(line_range),
-                                            );
-
-                                        if has_context {
-                                            hunk_row = hunk_row.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(text_placeholder_color)
-                                                    .italic()
-                                                    .child(ctx_name),
-                                            );
-                                        }
-
-                                        hunk_row
-                                            .child(div().flex_1())
-                                            .child(
-                                                Button::new(
-                                                    SharedString::from(format!(
-                                                        "sbs-hunk-stage-{}",
-                                                        idx
-                                                    )),
-                                                    stage_label,
-                                                )
-                                                .size(ButtonSize::Compact)
-                                                .style(ButtonStyle::Subtle)
-                                                .on_click(
-                                                    move |_: &ClickEvent,
-                                                          _: &mut Window,
-                                                          cx: &mut App| {
-                                                        view_clone
-                                                            .update(cx, |_this, cx| {
-                                                                if is_staged {
-                                                                    cx.emit(
-                                                                    DiffViewerEvent::HunkUnstageRequested(
-                                                                        idx,
-                                                                    ),
-                                                                );
-                                                                } else {
-                                                                    cx.emit(
-                                                                    DiffViewerEvent::HunkStageRequested(
-                                                                        idx,
-                                                                    ),
-                                                                );
-                                                                }
-                                                            })
-                                                            .ok();
-                                                    },
-                                                ),
-                                            )
-                                            .into_any_element()
-                                    }
-                                    SideBySideRow::Pair {
-                                        left_num,
-                                        left_styled,
-                                        left_kind,
-                                        right_num,
-                                        right_styled,
-                                        right_kind,
-                                    } => {
-                                        let (left_bg, left_gutter_bg, left_text_col) =
-                                            match left_kind {
-                                                SideBySideLineKind::Context => {
-                                                    (editor_bg, gutter_bg, text_color)
-                                                }
-                                                SideBySideLineKind::Deletion => {
-                                                    (deleted_line_bg, deleted_gutter_bg, vc_deleted)
-                                                }
-                                                SideBySideLineKind::Addition => {
-                                                    (added_line_bg, added_gutter_bg, vc_added)
-                                                }
-                                                SideBySideLineKind::Empty => {
-                                                    (empty_fill_bg, gutter_bg, text_placeholder_color)
-                                                }
-                                            };
-                                        let (right_bg, right_gutter_bg, right_text_col) =
-                                            match right_kind {
-                                                SideBySideLineKind::Context => {
-                                                    (editor_bg, gutter_bg, text_color)
-                                                }
-                                                SideBySideLineKind::Addition => {
-                                                    (added_line_bg, added_gutter_bg, vc_added)
-                                                }
-                                                SideBySideLineKind::Deletion => {
-                                                    (deleted_line_bg, deleted_gutter_bg, vc_deleted)
-                                                }
-                                                SideBySideLineKind::Empty => {
-                                                    (empty_fill_bg, gutter_bg, text_placeholder_color)
-                                                }
-                                            };
-
-                                        let left_num_str: SharedString = left_num
-                                            .map(|n| format!("{:>4}", n))
-                                            .unwrap_or_else(|| "    ".to_string())
-                                            .into();
-                                        let right_num_str: SharedString = right_num
-                                            .map(|n| format!("{:>4}", n))
-                                            .unwrap_or_else(|| "    ".to_string())
-                                            .into();
-                                        let is_highlighted = highlighted_row == Some(i);
-                                        let is_sbs_selected = selected_lines
-                                            .as_ref()
-                                            .is_some_and(|r| r.contains(&i));
-                                        let effective_left_bg = if is_sbs_selected {
-                                            selection_bg
-                                        } else if is_highlighted {
-                                            highlight_bg
-                                        } else {
-                                            left_bg
-                                        };
-                                        let effective_right_bg = if is_sbs_selected {
-                                            selection_bg
-                                        } else if is_highlighted {
-                                            highlight_bg
-                                        } else {
-                                            right_bg
-                                        };
-
-                                        let view_sbs_line = view.clone();
-                                        div()
-                                            .id(ElementId::NamedInteger(
-                                                "sbs-line".into(),
-                                                i as u64,
-                                            ))
-                                            .h_flex()
-                                            .h(px(row_height))
-                                            .w_full()
-                                            .hover(move |s| s.bg(row_hover_bg))
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                move |event: &MouseDownEvent,
-                                                      _window: &mut Window,
-                                                      cx: &mut App| {
-                                                    let shift = event.modifiers.shift;
-                                                    view_sbs_line
-                                                        .update(cx, |this, cx| {
-                                                            this.handle_line_click(i, shift, cx);
-                                                        })
-                                                        .ok();
-                                                },
-                                            )
-                                            .child(
-                                                div()
-                                                    .h_flex()
-                                                    .flex_1()
-                                                    .h_full()
-                                                    .overflow_x_hidden()
-                                                    .bg(effective_left_bg)
-                                                    .child(
-                                                        div()
-                                                            .w(px(44.))
-                                                            .flex_shrink_0()
-                                                            .h_full()
-                                                            .flex()
-                                                            .items_center()
-                                                            .justify_end()
-                                                            .bg(left_gutter_bg)
-                                                            .border_r_1()
-                                                            .border_color(border_variant)
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(text_muted)
-                                                            .pr(px(4.))
-                                                            .child(left_num_str),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .h_full()
-                                                            .flex()
-                                                            .items_center()
-                                                            .pl(px(6.))
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(left_text_col)
-                                                            .whitespace_nowrap()
-                                                            .text_ellipsis()
-                                                            .overflow_y_hidden()
-                                                            .child(Self::render_styled_text(window, left_styled, left_text_col, row_height)),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .w(px(2.))
-                                                    .flex_shrink_0()
-                                                    .h_full()
-                                                    .bg(border_variant),
-                                            )
-                                            .child(
-                                                div()
-                                                    .h_flex()
-                                                    .flex_1()
-                                                    .h_full()
-                                                    .overflow_x_hidden()
-                                                    .bg(effective_right_bg)
-                                                    .child(
-                                                        div()
-                                                            .w(px(44.))
-                                                            .flex_shrink_0()
-                                                            .h_full()
-                                                            .flex()
-                                                            .items_center()
-                                                            .justify_end()
-                                                            .bg(right_gutter_bg)
-                                                            .border_r_1()
-                                                            .border_color(border_variant)
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(text_muted)
-                                                            .pr(px(4.))
-                                                            .child(right_num_str),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .h_full()
-                                                            .flex()
-                                                            .items_center()
-                                                            .pl(px(6.))
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(right_text_col)
-                                                            .whitespace_nowrap()
-                                                            .text_ellipsis()
-                                                            .overflow_y_hidden()
-                                                            .child(Self::render_styled_text(window, right_styled, right_text_col, row_height)),
-                                                    ),
-                                            )
-                                            .into_any_element()
-                                    }
+                                            ),
+                                        )
+                                        .into_any_element()
                                 }
-                            })
-                            .collect()
-                    },
-                )
-                .with_sizing_behavior(ListSizingBehavior::Auto)
-                .flex_grow()
-                .track_scroll(&self.scroll_handle)
-            }
-            DiffDisplayMode::ThreeWay => {
-                let _view = view.clone();
-                let tw_rows = three_way_rows.clone();
-                uniform_list(
-                    "diff-lines-tw",
-                    tw_rows.len(),
-                    move |range: Range<usize>, window: &mut Window, _cx: &mut App| {
-                        range
-                            .map(|i| {
-                                let row = &tw_rows[i];
-                                match row {
-                                    ThreeWayRow::HunkHeader { header, context_name } => {
-                                        div()
-                                            .id(ElementId::NamedInteger("tw-hunk-header".into(), i as u64))
-                                            .h_flex()
-                                            .h(px(hunk_header_height))
-                                            .w_full()
-                                            .px(px(8.))
-                                            .py(px(4.))
-                                            .items_center()
-                                            .gap(px(6.))
-                                            .bg(element_bg)
-                                            .border_t_1()
-                                            .border_b_1()
-                                            .border_color(border_variant)
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_family("Lilex")
-                                                    .text_color(text_muted)
-                                                    .child(header.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_family("Lilex")
-                                                    .text_color(text_muted)
-                                                    .ml(px(8.))
-                                                    .child(format!("[{}]", context_name)),
-                                            )
-                                            .into_any_element()
-                                    }
-                                    ThreeWayRow::Triple {
-                                        left_num,
-                                        left_styled,
-                                        left_kind,
-                                        mid_num,
-                                        mid_styled,
-                                        mid_kind,
-                                        right_num,
-                                        right_styled,
-                                        right_kind,
-                                    } => {
-                                        let conflict_bg = |kind: ThreeWayLineKind, base: gpui::Hsla| -> gpui::Hsla {
-                                            match kind {
-                                                ThreeWayLineKind::Conflict => gpui::Hsla { a: 0.2, ..base },
-                                                _ => base,
+                                SideBySideRow::Pair {
+                                    left_num,
+                                    left_styled,
+                                    left_kind,
+                                    right_num,
+                                    right_styled,
+                                    right_kind,
+                                } => {
+                                    let (left_bg, left_gutter_bg, left_text_col) =
+                                        match left_kind {
+                                            SideBySideLineKind::Context => {
+                                                (editor_bg, gutter_bg, text_color)
+                                            }
+                                            SideBySideLineKind::Deletion => {
+                                                (deleted_line_bg, deleted_gutter_bg, vc_deleted)
+                                            }
+                                            SideBySideLineKind::Addition => {
+                                                (added_line_bg, added_gutter_bg, vc_added)
+                                            }
+                                            SideBySideLineKind::Empty => {
+                                                (empty_fill_bg, gutter_bg, text_placeholder_color)
                                             }
                                         };
-                                        let left_bg = conflict_bg(*left_kind, editor_bg);
-                                        let mid_bg = conflict_bg(*mid_kind, editor_bg);
-                                        let right_bg = conflict_bg(*right_kind, editor_bg);
-                                        let conflict_text_color = gpui::Hsla { h: 0.0, s: 0.8, l: 0.65, a: 1.0 };
-                                        let left_text_col = match left_kind {
-                                            ThreeWayLineKind::Conflict => conflict_text_color,
-                                            _ => text_color,
+                                    let (right_bg, right_gutter_bg, right_text_col) =
+                                        match right_kind {
+                                            SideBySideLineKind::Context => {
+                                                (editor_bg, gutter_bg, text_color)
+                                            }
+                                            SideBySideLineKind::Addition => {
+                                                (added_line_bg, added_gutter_bg, vc_added)
+                                            }
+                                            SideBySideLineKind::Deletion => {
+                                                (deleted_line_bg, deleted_gutter_bg, vc_deleted)
+                                            }
+                                            SideBySideLineKind::Empty => {
+                                                (empty_fill_bg, gutter_bg, text_placeholder_color)
+                                            }
                                         };
-                                        let right_text_col = match right_kind {
-                                            ThreeWayLineKind::Conflict => conflict_text_color,
-                                            _ => text_color,
-                                        };
-                                        let left_num_str: SharedString = left_num.map(|n| n.to_string()).unwrap_or_default().into();
-                                        let mid_num_str: SharedString = mid_num.map(|n| n.to_string()).unwrap_or_default().into();
-                                        let right_num_str: SharedString = right_num.map(|n| n.to_string()).unwrap_or_default().into();
 
-                                        div()
-                                            .id(ElementId::NamedInteger("tw-row".into(), i as u64))
-                                            .h(px(row_height))
-                                            .w_full()
+                                    let left_num_str: SharedString = left_num
+                                        .map(|n| format!("{:>4}", n))
+                                        .unwrap_or_else(|| "    ".to_string())
+                                        .into();
+                                    let right_num_str: SharedString = right_num
+                                        .map(|n| format!("{:>4}", n))
+                                        .unwrap_or_else(|| "    ".to_string())
+                                        .into();
+                                    let is_highlighted = highlighted_row == Some(i);
+                                    let is_sbs_selected = selected_lines
+                                        .as_ref()
+                                        .is_some_and(|r| r.contains(&i));
+                                    let effective_left_bg = if is_sbs_selected {
+                                        selection_bg
+                                    } else if is_highlighted {
+                                        highlight_bg
+                                    } else {
+                                        left_bg
+                                    };
+                                    let effective_right_bg = if is_sbs_selected {
+                                        selection_bg
+                                    } else if is_highlighted {
+                                        highlight_bg
+                                    } else {
+                                        right_bg
+                                    };
+
+                                    let view_sbs_line = view.clone();
+                                    let mut row_div = div()
+                                        .id(ElementId::NamedInteger(
+                                            "sbs-line".into(),
+                                            i as u64,
+                                        ))
+                                        .w_full()
+                                        .hover(move |s| s.bg(row_hover_bg))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            move |event: &MouseDownEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                let shift = event.modifiers.shift;
+                                                view_sbs_line
+                                                    .update(cx, |this, cx| {
+                                                        this.handle_line_click(i, shift, cx);
+                                                    })
+                                                    .ok();
+                                            },
+                                        );
+                                    if wrap_enabled {
+                                        row_div = row_div
                                             .flex()
-                                            .border_b_1()
-                                            .border_color(gpui::Hsla { a: 0.5, ..border_variant })
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .h_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .px(px(4.))
-                                                    .bg(left_bg)
-                                                    .border_r_1()
-                                                    .border_color(border_variant)
-                                                    .gap(px(2.))
-                                                    .child(
-                                                        div()
-                                                            .w(px(32.))
-                                                            .flex_shrink_0()
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(text_muted)
-                                                            .justify_end()
-                                                            .child(left_num_str.clone()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(left_text_col)
-                                                            .overflow_x_hidden()
-                                                            .child(Self::render_styled_text(window, left_styled, left_text_col, row_height)),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .h_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .px(px(4.))
-                                                    .bg(mid_bg)
-                                                    .border_r_1()
-                                                    .border_color(border_variant)
-                                                    .gap(px(2.))
-                                                    .child(
-                                                        div()
-                                                            .w(px(32.))
-                                                            .flex_shrink_0()
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(text_muted)
-                                                            .justify_end()
-                                                            .child(mid_num_str.clone()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(text_color)
-                                                            .overflow_x_hidden()
-                                                            .child(Self::render_styled_text(window, mid_styled, text_color, row_height)),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .h_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .px(px(4.))
-                                                    .bg(right_bg)
-                                                    .gap(px(2.))
-                                                    .child(
-                                                        div()
-                                                            .w(px(32.))
-                                                            .flex_shrink_0()
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(text_muted)
-                                                            .justify_end()
-                                                            .child(right_num_str.clone()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .text_xs()
-                                                            .font_family("Lilex")
-                                                            .text_color(right_text_col)
-                                                            .overflow_x_hidden()
-                                                            .child(Self::render_styled_text(window, right_styled, right_text_col, row_height)),
-                                                    ),
-                                            )
-                                            .into_any_element()
+                                            .items_stretch()
+                                            .min_h(px(row_height));
+                                    } else {
+                                        row_div = row_div.h_flex().h(px(row_height));
                                     }
+
+                                    // Build gutter (fixed 44px wide, column-height).
+                                    let make_gutter = |num_str: SharedString,
+                                                       gutter_bg_val: gpui::Hsla|
+                                     -> gpui::AnyElement {
+                                        let mut g = div()
+                                            .w(px(44.))
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_end()
+                                            .bg(gutter_bg_val)
+                                            .border_r_1()
+                                            .border_color(border_variant)
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(text_muted)
+                                            .pr(px(4.))
+                                            .child(num_str);
+                                        g = if wrap_enabled {
+                                            g.min_h(px(row_height))
+                                        } else {
+                                            g.h_full()
+                                        };
+                                        g.into_any_element()
+                                    };
+
+                                    // Build a column: gutter (outside scroll) + text.
+                                    // - wrap mode: text_div is a plain block with flex_1 +
+                                    //   min_w_0 so it inherits column's flex share as its
+                                    //   max width; render_styled_text returns StyledText
+                                    //   directly so the text layouter word-wraps.
+                                    // - no-wrap mode: an inner scroll area (with id) holds
+                                    //   the text. The gutter stays OUTSIDE that scroll area
+                                    //   so it remains visible when the text scrolls right.
+                                    let build_column = |side: &'static str,
+                                                        bg_val: gpui::Hsla,
+                                                        gutter_bg_val: gpui::Hsla,
+                                                        num_str: SharedString,
+                                                        text_col_val: gpui::Hsla,
+                                                        styled: &StyledLine,
+                                                        window: &mut Window|
+                                     -> gpui::AnyElement {
+                                        if wrap_enabled {
+                                            let text_div = div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .pl(px(6.))
+                                                .py(px(2.))
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_col_val)
+                                                .min_h(px(row_height))
+                                                .child(Self::render_styled_text(
+                                                    window,
+                                                    styled,
+                                                    text_col_val,
+                                                    row_height,
+                                                    true,
+                                                ));
+                                            div()
+                                                .h_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .items_stretch()
+                                                .min_h(px(row_height))
+                                                .bg(bg_val)
+                                                .child(make_gutter(num_str, gutter_bg_val))
+                                                .child(text_div)
+                                                .into_any_element()
+                                        } else {
+                                            let scroll_area = div()
+                                                .id(ElementId::NamedInteger(
+                                                    side.into(),
+                                                    i as u64,
+                                                ))
+                                                .h_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .pl(px(6.))
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_col_val)
+                                                .overflow_x_scroll()
+                                                .child(Self::render_styled_text(
+                                                    window,
+                                                    styled,
+                                                    text_col_val,
+                                                    row_height,
+                                                    false,
+                                                ));
+                                            div()
+                                                .h_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .bg(bg_val)
+                                                .child(make_gutter(num_str, gutter_bg_val))
+                                                .child(scroll_area)
+                                                .into_any_element()
+                                        }
+                                    };
+
+                                    let mut divider = div()
+                                        .w(px(2.))
+                                        .flex_shrink_0()
+                                        .bg(border_variant);
+                                    divider = if wrap_enabled {
+                                        divider.min_h(px(row_height))
+                                    } else {
+                                        divider.h_full()
+                                    };
+
+                                    row_div
+                                        .child(build_column(
+                                            "sbs-left",
+                                            effective_left_bg,
+                                            left_gutter_bg,
+                                            left_num_str,
+                                            left_text_col,
+                                            left_styled,
+                                            window,
+                                        ))
+                                        .child(divider)
+                                        .child(build_column(
+                                            "sbs-right",
+                                            effective_right_bg,
+                                            right_gutter_bg,
+                                            right_num_str,
+                                            right_text_col,
+                                            right_styled,
+                                            window,
+                                        ))
+                                        .into_any_element()
                                 }
-                            })
-                            .collect()
-                    },
-                )
-                .with_sizing_behavior(ListSizingBehavior::Auto)
-                .flex_grow()
-                .track_scroll(&self.scroll_handle)
+                            }
+                        })
+                        .collect()
+                };
+
+                if wrap_enabled {
+                    let rows = build_sbs(0..row_count, window, cx);
+                    div()
+                        .id("diff-lines-sbs-wrap")
+                        .v_flex()
+                        .flex_grow()
+                        .overflow_y_scroll()
+                        .children(rows)
+                        .into_any_element()
+                } else {
+                    uniform_list("diff-lines-sbs", row_count, build_sbs)
+                        .with_sizing_behavior(ListSizingBehavior::Auto)
+                        .flex_grow()
+                        .track_scroll(&self.scroll_handle)
+                        .into_any_element()
+                }
+            }
+            DiffDisplayMode::ThreeWay => {
+                let tw_rows = three_way_rows.clone();
+                let row_count = tw_rows.len();
+                let build_tw = move |range: Range<usize>, window: &mut Window, _cx: &mut App| -> Vec<gpui::AnyElement> {
+                    range
+                        .map(|i| {
+                            let row = &tw_rows[i];
+                            match row {
+                                ThreeWayRow::HunkHeader { header, context_name } => {
+                                    div()
+                                        .id(ElementId::NamedInteger("tw-hunk-header".into(), i as u64))
+                                        .h_flex()
+                                        .h(px(hunk_header_height))
+                                        .w_full()
+                                        .px(px(8.))
+                                        .py(px(4.))
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .bg(element_bg)
+                                        .border_t_1()
+                                        .border_b_1()
+                                        .border_color(border_variant)
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_muted)
+                                                .child(header.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_muted)
+                                                .ml(px(8.))
+                                                .child(format!("[{}]", context_name)),
+                                        )
+                                        .into_any_element()
+                                }
+                                ThreeWayRow::Triple {
+                                    left_num,
+                                    left_styled,
+                                    left_kind,
+                                    mid_num,
+                                    mid_styled,
+                                    mid_kind,
+                                    right_num,
+                                    right_styled,
+                                    right_kind,
+                                } => {
+                                    let conflict_bg = |kind: ThreeWayLineKind, base: gpui::Hsla| -> gpui::Hsla {
+                                        match kind {
+                                            ThreeWayLineKind::Conflict => gpui::Hsla { a: 0.2, ..base },
+                                            _ => base,
+                                        }
+                                    };
+                                    let left_bg = conflict_bg(*left_kind, editor_bg);
+                                    let mid_bg = conflict_bg(*mid_kind, editor_bg);
+                                    let right_bg = conflict_bg(*right_kind, editor_bg);
+                                    let conflict_text_color = gpui::Hsla { h: 0.0, s: 0.8, l: 0.65, a: 1.0 };
+                                    let left_text_col = match left_kind {
+                                        ThreeWayLineKind::Conflict => conflict_text_color,
+                                        _ => text_color,
+                                    };
+                                    let right_text_col = match right_kind {
+                                        ThreeWayLineKind::Conflict => conflict_text_color,
+                                        _ => text_color,
+                                    };
+                                    let left_num_str: SharedString = left_num.map(|n| n.to_string()).unwrap_or_default().into();
+                                    let mid_num_str: SharedString = mid_num.map(|n| n.to_string()).unwrap_or_default().into();
+                                    let right_num_str: SharedString = right_num.map(|n| n.to_string()).unwrap_or_default().into();
+
+                                    let mut row_div = div()
+                                        .id(ElementId::NamedInteger("tw-row".into(), i as u64))
+                                        .w_full()
+                                        .flex()
+                                        .border_b_1()
+                                        .border_color(gpui::Hsla { a: 0.5, ..border_variant });
+                                    row_div = if wrap_enabled {
+                                        row_div.items_stretch().min_h(px(row_height))
+                                    } else {
+                                        row_div.h(px(row_height))
+                                    };
+
+                                    // Same pattern as split view: gutter is OUTSIDE the
+                                    // scroll area so the line number stays visible while
+                                    // the text scrolls horizontally.
+                                    let make_col = |side: &'static str,
+                                                    bg: gpui::Hsla,
+                                                    num_str: SharedString,
+                                                    text_col_val: gpui::Hsla,
+                                                    styled: &StyledLine,
+                                                    border_right: bool,
+                                                    window: &mut Window|
+                                     -> gpui::AnyElement {
+                                        let mut num_div = div()
+                                            .w(px(32.))
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(text_muted)
+                                            .justify_end();
+                                        if wrap_enabled {
+                                            num_div = num_div.min_h(px(row_height));
+                                        }
+                                        if wrap_enabled {
+                                            let text_div = div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .py(px(2.))
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_col_val)
+                                                .child(Self::render_styled_text(
+                                                    window,
+                                                    styled,
+                                                    text_col_val,
+                                                    row_height,
+                                                    true,
+                                                ));
+                                            let mut col = div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .flex()
+                                                .items_start()
+                                                .min_h(px(row_height))
+                                                .px(px(4.))
+                                                .bg(bg)
+                                                .gap(px(2.));
+                                            if border_right {
+                                                col = col
+                                                    .border_r_1()
+                                                    .border_color(border_variant);
+                                            }
+                                            col.child(num_div.child(num_str))
+                                                .child(text_div)
+                                                .into_any_element()
+                                        } else {
+                                            let scroll_area = div()
+                                                .id(ElementId::NamedInteger(
+                                                    side.into(),
+                                                    i as u64,
+                                                ))
+                                                .h_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_col_val)
+                                                .overflow_x_scroll()
+                                                .child(Self::render_styled_text(
+                                                    window,
+                                                    styled,
+                                                    text_col_val,
+                                                    row_height,
+                                                    false,
+                                                ));
+                                            let mut col = div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_flex()
+                                                .h_full()
+                                                .px(px(4.))
+                                                .bg(bg)
+                                                .gap(px(2.));
+                                            if border_right {
+                                                col = col
+                                                    .border_r_1()
+                                                    .border_color(border_variant);
+                                            }
+                                            col.child(num_div.child(num_str))
+                                                .child(scroll_area)
+                                                .into_any_element()
+                                        }
+                                    };
+
+                                    row_div
+                                        .child(make_col(
+                                            "tw-left",
+                                            left_bg,
+                                            left_num_str.clone(),
+                                            left_text_col,
+                                            left_styled,
+                                            true,
+                                            window,
+                                        ))
+                                        .child(make_col(
+                                            "tw-mid",
+                                            mid_bg,
+                                            mid_num_str.clone(),
+                                            text_color,
+                                            mid_styled,
+                                            true,
+                                            window,
+                                        ))
+                                        .child(make_col(
+                                            "tw-right",
+                                            right_bg,
+                                            right_num_str.clone(),
+                                            right_text_col,
+                                            right_styled,
+                                            false,
+                                            window,
+                                        ))
+                                        .into_any_element()
+                                }
+                            }
+                        })
+                        .collect()
+                };
+
+                if wrap_enabled {
+                    let rows = build_tw(0..row_count, window, cx);
+                    div()
+                        .id("diff-lines-tw-wrap")
+                        .v_flex()
+                        .flex_grow()
+                        .overflow_y_scroll()
+                        .children(rows)
+                        .into_any_element()
+                } else {
+                    uniform_list("diff-lines-tw", row_count, build_tw)
+                        .with_sizing_behavior(ListSizingBehavior::Auto)
+                        .flex_grow()
+                        .track_scroll(&self.scroll_handle)
+                        .into_any_element()
+                }
             }
         };
 
@@ -2832,7 +2988,7 @@ impl Render for DiffViewer {
                     .px(px(10.))
                     .gap(px(6.))
                     .items_center()
-                    .bg(colors.toolbar_background)
+                    .bg(toolbar_bg)
                     .border_b_1()
                     .border_color(border_variant)
                     .child(
