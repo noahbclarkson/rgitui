@@ -2053,7 +2053,10 @@ impl Render for DiffViewer {
             DiffDisplayMode::Unified => {
                 let view = view.clone();
                 let row_count = display_rows.len();
-                let build_unified = move |range: Range<usize>, window: &mut Window, _cx: &mut App| -> Vec<gpui::AnyElement> {
+                let build_unified = move |range: Range<usize>,
+                                          window: &mut Window,
+                                          _cx: &mut App|
+                      -> Vec<gpui::AnyElement> {
                     range
                         .map(|i| {
                             let row = &display_rows[i];
@@ -2349,7 +2352,10 @@ impl Render for DiffViewer {
             DiffDisplayMode::SideBySide => {
                 let view = view.clone();
                 let row_count = sbs_rows.len();
-                let build_sbs = move |range: Range<usize>, window: &mut Window, _cx: &mut App| -> Vec<gpui::AnyElement> {
+                let build_sbs = move |range: Range<usize>,
+                                      window: &mut Window,
+                                      _cx: &mut App|
+                      -> Vec<gpui::AnyElement> {
                     range
                         .map(|i| {
                             let row = &sbs_rows[i];
@@ -2721,42 +2727,46 @@ impl Render for DiffViewer {
             DiffDisplayMode::ThreeWay => {
                 let tw_rows = three_way_rows.clone();
                 let row_count = tw_rows.len();
-                let build_tw = move |range: Range<usize>, window: &mut Window, _cx: &mut App| -> Vec<gpui::AnyElement> {
+                let build_tw = move |range: Range<usize>,
+                                     window: &mut Window,
+                                     _cx: &mut App|
+                      -> Vec<gpui::AnyElement> {
                     range
                         .map(|i| {
                             let row = &tw_rows[i];
                             match row {
-                                ThreeWayRow::HunkHeader { header, context_name } => {
-                                    div()
-                                        .id(ElementId::NamedInteger("tw-hunk-header".into(), i as u64))
-                                        .h_flex()
-                                        .h(px(hunk_header_height))
-                                        .w_full()
-                                        .px(px(8.))
-                                        .py(px(4.))
-                                        .items_center()
-                                        .gap(px(6.))
-                                        .bg(element_bg)
-                                        .border_t_1()
-                                        .border_b_1()
-                                        .border_color(border_variant)
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_family("Lilex")
-                                                .text_color(text_muted)
-                                                .child(header.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_family("Lilex")
-                                                .text_color(text_muted)
-                                                .ml(px(8.))
-                                                .child(format!("[{}]", context_name)),
-                                        )
-                                        .into_any_element()
-                                }
+                                ThreeWayRow::HunkHeader {
+                                    header,
+                                    context_name,
+                                } => div()
+                                    .id(ElementId::NamedInteger("tw-hunk-header".into(), i as u64))
+                                    .h_flex()
+                                    .h(px(hunk_header_height))
+                                    .w_full()
+                                    .px(px(8.))
+                                    .py(px(4.))
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .bg(element_bg)
+                                    .border_t_1()
+                                    .border_b_1()
+                                    .border_color(border_variant)
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(text_muted)
+                                            .child(header.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(text_muted)
+                                            .ml(px(8.))
+                                            .child(format!("[{}]", context_name)),
+                                    )
+                                    .into_any_element(),
                                 ThreeWayRow::Triple {
                                     left_num,
                                     left_styled,
@@ -2768,16 +2778,24 @@ impl Render for DiffViewer {
                                     right_styled,
                                     right_kind,
                                 } => {
-                                    let conflict_bg = |kind: ThreeWayLineKind, base: gpui::Hsla| -> gpui::Hsla {
-                                        match kind {
-                                            ThreeWayLineKind::Conflict => gpui::Hsla { a: 0.2, ..base },
-                                            _ => base,
-                                        }
-                                    };
+                                    let conflict_bg =
+                                        |kind: ThreeWayLineKind, base: gpui::Hsla| -> gpui::Hsla {
+                                            match kind {
+                                                ThreeWayLineKind::Conflict => {
+                                                    gpui::Hsla { a: 0.2, ..base }
+                                                }
+                                                _ => base,
+                                            }
+                                        };
                                     let left_bg = conflict_bg(*left_kind, editor_bg);
                                     let mid_bg = conflict_bg(*mid_kind, editor_bg);
                                     let right_bg = conflict_bg(*right_kind, editor_bg);
-                                    let conflict_text_color = gpui::Hsla { h: 0.0, s: 0.8, l: 0.65, a: 1.0 };
+                                    let conflict_text_color = gpui::Hsla {
+                                        h: 0.0,
+                                        s: 0.8,
+                                        l: 0.65,
+                                        a: 1.0,
+                                    };
                                     let left_text_col = match left_kind {
                                         ThreeWayLineKind::Conflict => conflict_text_color,
                                         _ => text_color,
@@ -2786,16 +2804,22 @@ impl Render for DiffViewer {
                                         ThreeWayLineKind::Conflict => conflict_text_color,
                                         _ => text_color,
                                     };
-                                    let left_num_str: SharedString = left_num.map(|n| n.to_string()).unwrap_or_default().into();
-                                    let mid_num_str: SharedString = mid_num.map(|n| n.to_string()).unwrap_or_default().into();
-                                    let right_num_str: SharedString = right_num.map(|n| n.to_string()).unwrap_or_default().into();
+                                    let left_num_str: SharedString =
+                                        left_num.map(|n| n.to_string()).unwrap_or_default().into();
+                                    let mid_num_str: SharedString =
+                                        mid_num.map(|n| n.to_string()).unwrap_or_default().into();
+                                    let right_num_str: SharedString =
+                                        right_num.map(|n| n.to_string()).unwrap_or_default().into();
 
                                     let mut row_div = div()
                                         .id(ElementId::NamedInteger("tw-row".into(), i as u64))
                                         .w_full()
                                         .flex()
                                         .border_b_1()
-                                        .border_color(gpui::Hsla { a: 0.5, ..border_variant });
+                                        .border_color(gpui::Hsla {
+                                            a: 0.5,
+                                            ..border_variant
+                                        });
                                     row_div = if wrap_enabled {
                                         row_div.items_stretch().min_h(px(row_height))
                                     } else {

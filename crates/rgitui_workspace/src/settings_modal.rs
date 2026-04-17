@@ -3181,9 +3181,11 @@ impl SettingsModal {
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new("Wrap overflowing lines instead of scrolling horizontally.")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
+                                Label::new(
+                                    "Wrap overflowing lines instead of scrolling horizontally.",
+                                )
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
                             ),
                     )
                     .child(
