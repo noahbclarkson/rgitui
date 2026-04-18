@@ -21,32 +21,7 @@ impl Workspace {
         {
             log::debug!("open_repo: already open at tab {}", idx);
             self.active_tab = idx;
-            // Update command palette with the switched-to project's context.
-            let proj = self.tabs[idx].project.read(cx);
-            let prs_panel = &self.tabs[idx].prs_panel;
-            let ctx = CommandContext {
-                has_remotes: !proj.remotes().is_empty(),
-                has_changes: proj.has_changes(),
-                worktree_clean: proj.repo_state().is_clean(),
-                is_bisecting: matches!(proj.repo_state(), rgitui_git::RepoState::Bisect),
-                has_stashes: !proj.stashes().is_empty(),
-                has_staged: !proj.status().staged.is_empty(),
-                in_progress_operation: matches!(
-                    proj.repo_state(),
-                    rgitui_git::RepoState::Merge
-                        | rgitui_git::RepoState::Rebase
-                        | rgitui_git::RepoState::RebaseInteractive
-                        | rgitui_git::RepoState::RebaseMerge
-                        | rgitui_git::RepoState::CherryPick
-                        | rgitui_git::RepoState::CherryPickSequence
-                        | rgitui_git::RepoState::Revert
-                        | rgitui_git::RepoState::RevertSequence
-                ),
-                has_github_token: prs_panel.read(cx).github_token().is_some(),
-            };
-            self.overlays.command_palette.update(cx, |cp, _cx| {
-                cp.set_context(ctx);
-            });
+            self.update_command_context(cx);
             cx.notify();
             return Ok(());
         }
@@ -244,28 +219,7 @@ impl Workspace {
             }
         }
 
-        let proj = project.read(cx);
-        let name = proj.repo_name().to_string();
-        let ctx = CommandContext {
-            has_remotes: !proj.remotes().is_empty(),
-            has_changes: proj.has_changes(),
-            worktree_clean: proj.repo_state().is_clean(),
-            is_bisecting: matches!(proj.repo_state(), rgitui_git::RepoState::Bisect),
-            has_stashes: !proj.stashes().is_empty(),
-            has_staged: !proj.status().staged.is_empty(),
-            in_progress_operation: matches!(
-                proj.repo_state(),
-                rgitui_git::RepoState::Merge
-                    | rgitui_git::RepoState::Rebase
-                    | rgitui_git::RepoState::RebaseInteractive
-                    | rgitui_git::RepoState::RebaseMerge
-                    | rgitui_git::RepoState::CherryPick
-                    | rgitui_git::RepoState::CherryPickSequence
-                    | rgitui_git::RepoState::Revert
-                    | rgitui_git::RepoState::RevertSequence
-            ),
-            has_github_token: prs_panel.read(cx).github_token().is_some(),
-        };
+        let name = project.read(cx).repo_name().to_string();
         self.tabs.push(ProjectTab {
             name,
             project,
@@ -292,9 +246,7 @@ impl Workspace {
         });
         self.active_tab = self.tabs.len() - 1;
         log::info!("open_repo: opened as tab {}", self.tabs.len() - 1);
-        self.overlays.command_palette.update(cx, |cp, _cx| {
-            cp.set_context(ctx);
-        });
+        self.update_command_context(cx);
         self.persist_workspace_snapshot(cx);
 
         cx.notify();
@@ -308,27 +260,15 @@ impl Workspace {
             return CommandContext::none();
         };
         let proj = tab.project.read(cx);
-        let prs_panel = &tab.prs_panel;
-        CommandContext {
-            has_remotes: !proj.remotes().is_empty(),
-            has_changes: proj.has_changes(),
-            worktree_clean: proj.repo_state().is_clean(),
-            is_bisecting: matches!(proj.repo_state(), rgitui_git::RepoState::Bisect),
-            has_stashes: !proj.stashes().is_empty(),
-            has_staged: !proj.status().staged.is_empty(),
-            in_progress_operation: matches!(
-                proj.repo_state(),
-                rgitui_git::RepoState::Merge
-                    | rgitui_git::RepoState::Rebase
-                    | rgitui_git::RepoState::RebaseInteractive
-                    | rgitui_git::RepoState::RebaseMerge
-                    | rgitui_git::RepoState::CherryPick
-                    | rgitui_git::RepoState::CherryPickSequence
-                    | rgitui_git::RepoState::Revert
-                    | rgitui_git::RepoState::RevertSequence
-            ),
-            has_github_token: prs_panel.read(cx).github_token().is_some(),
-        }
+        let has_token = tab.prs_panel.read(cx).github_token().is_some();
+        CommandContext::from_parts(
+            !proj.remotes().is_empty(),
+            proj.has_changes(),
+            proj.repo_state(),
+            !proj.stashes().is_empty(),
+            !proj.status().staged.is_empty(),
+            has_token,
+        )
     }
 
     /// Update the command palette's context with fresh data from the active tab.
@@ -361,14 +301,14 @@ impl Workspace {
         let active_project = self.tabs[active].project.clone();
         let task = active_project.update(cx, |proj, cx| proj.refresh(cx));
 
-        cx.spawn(async move |_this, cx: &mut gpui::AsyncApp| {
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             if let Err(e) = task.await {
                 log::error!("Active tab refresh failed: {}", e);
             }
 
             // Update command context so predicates (has_stashes, has_changes, etc.)
             // reflect the refreshed state before user opens command palette.
-            if let Some(ws) = _this.upgrade() {
+            if let Some(ws) = this.upgrade() {
                 cx.update(|cx| {
                     ws.update(cx, |ws, cx| {
                         ws.update_command_context(cx);
