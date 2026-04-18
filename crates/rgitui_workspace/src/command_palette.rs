@@ -47,6 +47,39 @@ impl CommandContext {
             has_github_token: false,
         }
     }
+
+    /// Build a context from primitive inputs. Keeps the `RepoState` →
+    /// `worktree_clean` / `is_bisecting` / `in_progress_operation` mapping in
+    /// one place so `open_repo`, refresh, and future callers cannot drift.
+    pub fn from_parts(
+        has_remotes: bool,
+        has_changes: bool,
+        repo_state: rgitui_git::RepoState,
+        has_stashes: bool,
+        has_staged: bool,
+        has_github_token: bool,
+    ) -> Self {
+        Self {
+            has_remotes,
+            has_changes,
+            worktree_clean: repo_state.is_clean(),
+            is_bisecting: matches!(repo_state, rgitui_git::RepoState::Bisect),
+            has_stashes,
+            has_staged,
+            in_progress_operation: matches!(
+                repo_state,
+                rgitui_git::RepoState::Merge
+                    | rgitui_git::RepoState::Rebase
+                    | rgitui_git::RepoState::RebaseInteractive
+                    | rgitui_git::RepoState::RebaseMerge
+                    | rgitui_git::RepoState::CherryPick
+                    | rgitui_git::RepoState::CherryPickSequence
+                    | rgitui_git::RepoState::Revert
+                    | rgitui_git::RepoState::RevertSequence
+            ),
+            has_github_token,
+        }
+    }
 }
 
 /// A no-op predicate that always shows the command.
@@ -1193,5 +1226,95 @@ mod tests {
         assert!(!ctx.has_staged);
         assert!(!ctx.in_progress_operation);
         assert!(!ctx.has_github_token);
+    }
+
+    #[test]
+    fn from_parts_clean_state_sets_worktree_clean() {
+        use super::CommandContext;
+        let ctx = CommandContext::from_parts(
+            false,
+            false,
+            rgitui_git::RepoState::Clean,
+            false,
+            false,
+            false,
+        );
+        assert!(ctx.worktree_clean);
+        assert!(!ctx.is_bisecting);
+        assert!(!ctx.in_progress_operation);
+    }
+
+    #[test]
+    fn from_parts_bisect_state_sets_only_is_bisecting() {
+        use super::CommandContext;
+        let ctx = CommandContext::from_parts(
+            false,
+            false,
+            rgitui_git::RepoState::Bisect,
+            false,
+            false,
+            false,
+        );
+        assert!(!ctx.worktree_clean);
+        assert!(ctx.is_bisecting);
+        assert!(!ctx.in_progress_operation);
+    }
+
+    #[test]
+    fn from_parts_in_progress_states_set_in_progress_operation() {
+        use super::CommandContext;
+        for state in [
+            rgitui_git::RepoState::Merge,
+            rgitui_git::RepoState::Rebase,
+            rgitui_git::RepoState::RebaseInteractive,
+            rgitui_git::RepoState::RebaseMerge,
+            rgitui_git::RepoState::CherryPick,
+            rgitui_git::RepoState::CherryPickSequence,
+            rgitui_git::RepoState::Revert,
+            rgitui_git::RepoState::RevertSequence,
+        ] {
+            let ctx = CommandContext::from_parts(false, false, state, false, false, false);
+            assert!(
+                ctx.in_progress_operation,
+                "{:?} should report in_progress_operation",
+                state
+            );
+            assert!(!ctx.worktree_clean, "{:?} should not be clean", state);
+            assert!(!ctx.is_bisecting, "{:?} should not be bisecting", state);
+        }
+    }
+
+    #[test]
+    fn from_parts_forwards_primitive_flags() {
+        use super::CommandContext;
+        // `has_stashes` is the specific flag that motivated the fix — a stash
+        // apply/pop/drop must propagate through to the command palette so the
+        // `Git: Create Branch from Stash` predicate sees the change.
+        let ctx =
+            CommandContext::from_parts(true, true, rgitui_git::RepoState::Clean, true, true, true);
+        assert!(ctx.has_remotes);
+        assert!(ctx.has_changes);
+        assert!(ctx.has_stashes);
+        assert!(ctx.has_staged);
+        assert!(ctx.has_github_token);
+    }
+
+    #[test]
+    fn from_parts_apply_mailbox_is_neither_in_progress_nor_clean() {
+        use super::CommandContext;
+        // ApplyMailbox / ApplyMailboxOrRebase exist in `RepoState` but are not
+        // listed in `in_progress_operation`. Guard that behaviour so later
+        // additions to either side have to update the test deliberately.
+        let ctx = CommandContext::from_parts(
+            false,
+            false,
+            rgitui_git::RepoState::ApplyMailbox,
+            false,
+            false,
+            false,
+        );
+        assert!(!ctx.worktree_clean);
+        assert!(!ctx.is_bisecting);
+        assert!(!ctx.in_progress_operation);
     }
 }
