@@ -1498,6 +1498,14 @@ impl DiffViewer {
                          added_word_bg: &HighlightStyle,
                          deleted_word_bg: &HighlightStyle| {
                 let max_len = dels.len().max(adds.len());
+                // Word-diff pairs lines by index. When del/add counts differ
+                // (typical for a reformat like splitting a one-liner into a
+                // match block) that positional pairing lines up semantically
+                // unrelated rows, and the resulting highlight is dense
+                // token-coincidence noise instead of useful change markers.
+                // Skip word-diff in that case; the red/green row coloring on
+                // its own is clearer than a misleading in-line highlight.
+                let pair_word_diff = dels.len() == adds.len();
                 for j in 0..max_len {
                     let (left_num, left_text, mut left_styled, left_kind) =
                         if let Some((num, text, styled)) = dels.get(j) {
@@ -1532,8 +1540,7 @@ impl DiffViewer {
                             )
                         };
 
-                    // Word-level diff: only when both sides have content (paired change).
-                    if !left_text.is_empty() && !right_text.is_empty() {
+                    if pair_word_diff && !left_text.is_empty() && !right_text.is_empty() {
                         let (del_spans, add_spans) =
                             Self::compute_word_diff(&left_text, &right_text);
                         left_styled.apply_word_highlights(
@@ -1737,26 +1744,36 @@ impl DiffViewer {
                          deleted_word_bg: HighlightStyle,
                          added_word_bg: HighlightStyle| {
                 let max_len = dels.len().max(adds.len());
+                // Word-diff pairs rows by index, so applying it when the
+                // deletion and addition counts disagree (reformats, insertions
+                // that split a line, etc.) produces dense token-coincidence
+                // noise instead of useful change markers. The row-level red/
+                // green coloring alone is clearer in that case.
+                let pair_word_diff = dels.len() == adds.len();
                 for j in 0..max_len {
                     match (dels.get_mut(j), adds.get_mut(j)) {
                         (
                             Some((del_line, del_text, del_styled)),
                             Some((_add_line, add_text, add_styled)),
                         ) => {
-                            let (del_spans, add_spans) =
-                                Self::compute_word_diff(del_text.trim_end(), add_text.trim_end());
-                            del_styled.apply_word_highlights(
-                                del_spans,
-                                Vec::new(),
-                                deleted_word_bg,
-                                added_word_bg,
-                            );
-                            add_styled.apply_word_highlights(
-                                Vec::new(),
-                                add_spans,
-                                deleted_word_bg,
-                                added_word_bg,
-                            );
+                            if pair_word_diff {
+                                let (del_spans, add_spans) = Self::compute_word_diff(
+                                    del_text.trim_end(),
+                                    add_text.trim_end(),
+                                );
+                                del_styled.apply_word_highlights(
+                                    del_spans,
+                                    Vec::new(),
+                                    deleted_word_bg,
+                                    added_word_bg,
+                                );
+                                add_styled.apply_word_highlights(
+                                    Vec::new(),
+                                    add_spans,
+                                    deleted_word_bg,
+                                    added_word_bg,
+                                );
+                            }
                             rows.push(DisplayRow::Line {
                                 old_num: Some(*del_line),
                                 new_num: None,
