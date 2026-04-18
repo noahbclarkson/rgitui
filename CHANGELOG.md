@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-04-18
+
+### Added
+
+- **Dedicated Stashes panel** (Alt+8): lists every stash with its message and
+  OID, with inline Apply, Pop, and Drop buttons. Dropping a stash prompts a
+  confirmation dialog. A stash-count badge appears in the toolbar. The command
+  palette also gains `Git: Create Branch from Stash`, visible when stashes
+  exist.
+- **Diff line-wrap toggle**: new "Wrap Long Lines in Diff" setting in the Diff
+  settings card switches between wrapping and horizontal scrolling. Wrapping
+  respects the text layouter so lines break correctly in all diff modes.
+- **Diff horizontal scrollbar**: in no-wrap Unified mode, the whole list
+  scrolls horizontally with a draggable scrollbar at the bottom. In Split and
+  Three-way modes each column keeps its own horizontal scroll area so long
+  lines no longer bleed across the column divider. The line-number gutter
+  stays pinned in all modes.
+- **Diff vertical scrollbar**: a draggable vertical scrollbar now sits next
+  to the diff body in every mode.
+- **Watch all worktrees** (General settings): when enabled, the filesystem
+  watcher tracks every linked worktree, so external changes in any worktree
+  trigger a refresh.
+
+### Changed
+
+- **Wrap-mode diff viewer is virtualized**: only the visible rows (plus a
+  small overdraw buffer) are rendered per frame, and wrapped-line heights are
+  measured once and cached. Large diffs stay responsive while scrolling with
+  wrap enabled.
+- **Stash detail summary**: stash entries in the detail panel now show a
+  clean subject line. The `WIP on <branch>: <sha>` prefix is stripped, with
+  graceful fallbacks to the branch name or full message for custom stash
+  names.
+
+### Fixed
+
+- **Wrap mode no longer overlaps lines**: wrapped continuation lines used to
+  paint on top of the row below because flex-shrink squeezed rows when total
+  content exceeded the viewport. Wrapped text now correctly extends the row
+  it belongs to.
+- **Word-diff noise on reformatted hunks**: word-level highlighting paired
+  deletion line *i* with addition line *i* regardless of whether the counts
+  matched. On a reformat (e.g. inlining a closure body into a multi-line
+  match block) the pairing lined up semantically unrelated rows and every
+  coincidental token match produced a misleading highlight. Word-diff is now
+  skipped when deletion and addition line counts differ, so reformats render
+  as clean red/green blocks.
+- **Command palette stale after stash operations**: after Apply / Pop / Drop,
+  the palette's `has_stashes`, `has_changes`, and related predicates are
+  rebuilt once the active tab finishes refreshing, so the next open reflects
+  the actual repo state.
+- **Commit graph lane artifacts with worktrees**: fixed a ghost lane-0
+  column extending above `main_tip` when the newest commits were on side
+  branches, a dangling stub on lane 1 at the main-tip row, and missing
+  pass-through strokes across worktree virtual rows for merge-in lanes.
+  Worktrees whose HEAD isn't in the visible commit list are now routed to
+  orphan slots instead of being silently dropped.
+- **Action button clipping in dialogs**: the Discard and Unstage buttons in
+  the sidebar file list, and the action buttons in the Create PR dialog,
+  were clipped against the right edge on Windows. Right padding now matches
+  the rest of the dialog surface.
+
 ## [0.1.2] - 2026-04-09
 
 ### Added
@@ -149,5 +211,7 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/noahbclarkson/rgitui/compare/v0.1.6...v0.1.7
+[0.1.2]: https://github.com/noahbclarkson/rgitui/compare/v0.1.0...v0.1.2
 [0.1.0]: https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.0
