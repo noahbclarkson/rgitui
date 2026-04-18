@@ -806,7 +806,7 @@ pub(super) fn subscribe_global_search(
                             let line_owned = line_for_toast;
                             dv.update(cx, move |dv, cx| {
                                 dv.set_diff(diff, path_str_owned, false, None, cx);
-                                dv.scroll_to_line(line_owned);
+                                dv.scroll_to_line(line_owned, cx);
                             });
                             dp.update(cx, |dp, cx| dp.clear(cx));
                         }

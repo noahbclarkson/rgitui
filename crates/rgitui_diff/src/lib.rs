@@ -7,15 +7,15 @@ use similar::{capture_diff_slices, Algorithm};
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
-    FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListSizingBehavior,
-    MouseButton, MouseDownEvent, Render, ScrollStrategy, SharedString, StyledText,
-    UniformListScrollHandle, WeakEntity, Window,
+    div, list, px, uniform_list, AnyElement, App, ClickEvent, ClipboardItem, Context, ElementId,
+    EventEmitter, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment,
+    ListHorizontalSizingBehavior, ListSizingBehavior, ListState, MouseButton, MouseDownEvent,
+    Render, ScrollStrategy, SharedString, StyledText, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{DiffLine, FileDiff, ThreeWayFileDiff};
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
 use rgitui_ui::{
-    Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
+    Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, Scrollbar,
 };
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle as SyntectFontStyle, Theme, ThemeSet};
@@ -269,6 +269,10 @@ pub struct DiffViewer {
     three_way_rows: Arc<Vec<ThreeWayRow>>,
     three_way_diff: Option<ThreeWayFileDiff>,
     scroll_handle: UniformListScrollHandle,
+    /// Variable-height virtualized list state used by wrap-mode rendering.
+    /// `gpui::list` caches per-row measurements in a SumTree so only the
+    /// visible (plus overdraw) rows render per frame.
+    wrap_list_state: ListState,
     focus_handle: FocusHandle,
     highlighted_row: Option<usize>,
     selected_lines: Option<Range<usize>>,
@@ -304,6 +308,7 @@ impl DiffViewer {
             three_way_rows: Arc::new(Vec::new()),
             three_way_diff: None,
             scroll_handle: UniformListScrollHandle::new(),
+            wrap_list_state: ListState::new(0, ListAlignment::Top, px(200.)),
             focus_handle: cx.focus_handle(),
             highlighted_row: None,
             selected_lines: None,
@@ -359,6 +364,7 @@ impl DiffViewer {
                 ));
             }
         }
+        self.sync_wrap_list_state();
         cx.notify();
     }
 
@@ -406,6 +412,7 @@ impl DiffViewer {
             self.selected_lines = None;
             self.partial_mode = false;
             self.selection_anchor = None;
+            self.sync_wrap_list_state();
             cx.notify();
             return;
         }
@@ -467,6 +474,7 @@ impl DiffViewer {
         self.selected_lines = None;
         self.partial_mode = false;
         self.selection_anchor = None;
+        self.sync_wrap_list_state();
         cx.notify();
     }
 
@@ -482,6 +490,7 @@ impl DiffViewer {
         self.selected_lines = None;
         self.partial_mode = false;
         self.selection_anchor = None;
+        self.sync_wrap_list_state();
         cx.notify();
     }
 
@@ -498,6 +507,7 @@ impl DiffViewer {
         self.selected_lines = None;
         self.partial_mode = false;
         self.selection_anchor = None;
+        self.sync_wrap_list_state();
         cx.notify();
     }
 
@@ -617,6 +627,28 @@ impl DiffViewer {
         }
     }
 
+    /// Resize the virtualized wrap-mode list so its SumTree matches the current
+    /// row set. Call this after any mutation that changes the number or
+    /// identity of rows for the active `display_mode`.
+    fn sync_wrap_list_state(&self) {
+        self.wrap_list_state.reset(self.row_count());
+    }
+
+    /// Reveal row `ix` in whichever scrollable container is currently active.
+    /// The uniform list scroll handle is used for no-wrap rendering, while
+    /// wrap mode lives inside a `gpui::list` backed by `wrap_list_state`.
+    fn scroll_row_into_view(&self, ix: usize, cx: &App) {
+        if cx
+            .global::<rgitui_settings::SettingsState>()
+            .settings()
+            .diff_wrap_lines
+        {
+            self.wrap_list_state.scroll_to_reveal_item(ix);
+        } else {
+            self.scroll_handle.scroll_to_item(ix, ScrollStrategy::Top);
+        }
+    }
+
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -639,7 +671,7 @@ impl DiffViewer {
                     Some(i) => i,
                 };
                 self.highlighted_row = Some(next);
-                self.scroll_handle.scroll_to_item(next, ScrollStrategy::Top);
+                self.scroll_row_into_view(next, cx);
                 cx.notify();
             }
             "k" | "up" if !ctrl => {
@@ -650,18 +682,18 @@ impl DiffViewer {
                     None => 0,
                 };
                 self.highlighted_row = Some(next);
-                self.scroll_handle.scroll_to_item(next, ScrollStrategy::Top);
+                self.scroll_row_into_view(next, cx);
                 cx.notify();
             }
             "g" if !ctrl && !event.keystroke.modifiers.shift => {
                 self.highlighted_row = Some(0);
-                self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                self.scroll_row_into_view(0, cx);
                 cx.notify();
             }
             "g" if event.keystroke.modifiers.shift => {
                 let last = row_count.saturating_sub(1);
                 self.highlighted_row = Some(last);
-                self.scroll_handle.scroll_to_item(last, ScrollStrategy::Top);
+                self.scroll_row_into_view(last, cx);
                 cx.notify();
             }
             "]" if !ctrl => {
@@ -688,7 +720,7 @@ impl DiffViewer {
                 });
                 if let Some(pos) = next {
                     self.highlighted_row = Some(pos);
-                    self.scroll_handle.scroll_to_item(pos, ScrollStrategy::Top);
+                    self.scroll_row_into_view(pos, cx);
                     cx.notify();
                 }
                 cx.stop_propagation();
@@ -721,7 +753,7 @@ impl DiffViewer {
                 });
                 if let Some(pos) = prev {
                     self.highlighted_row = Some(pos);
-                    self.scroll_handle.scroll_to_item(pos, ScrollStrategy::Top);
+                    self.scroll_row_into_view(pos, cx);
                     cx.notify();
                 }
                 cx.stop_propagation();
@@ -1014,6 +1046,7 @@ impl DiffViewer {
             DiffDisplayMode::SideBySide => DiffDisplayMode::Unified,
             DiffDisplayMode::ThreeWay => DiffDisplayMode::Unified,
         };
+        self.sync_wrap_list_state();
         cx.notify();
     }
 
@@ -1032,7 +1065,7 @@ impl DiffViewer {
     /// Scroll to and highlight the given line number (1-indexed) in the new/right side
     /// of the diff. Used by global search to navigate from grep results to the
     /// corresponding location in the diff viewer. Returns true if the line was found.
-    pub fn scroll_to_line(&mut self, line_number: usize) -> bool {
+    pub fn scroll_to_line(&mut self, line_number: usize, cx: &Context<Self>) -> bool {
         let rows = &self.display_rows;
         if rows.is_empty() {
             return false;
@@ -1048,7 +1081,7 @@ impl DiffViewer {
         });
         if let Some(idx) = target {
             self.highlighted_row = Some(idx);
-            self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
+            self.scroll_row_into_view(idx, cx);
             return true;
         }
         false
@@ -1314,6 +1347,72 @@ impl DiffViewer {
         }
     }
 
+    /// Returns the row index of the longest line for the given mode, used to
+    /// seed `UniformList::with_width_from_item` so horizontal scroll range
+    /// covers the widest line in the diff. Byte length is a good-enough proxy
+    /// for code diffs, which are overwhelmingly ASCII.
+    fn longest_row_ix(
+        mode: DiffDisplayMode,
+        display_rows: &[DisplayRow],
+        sbs_rows: &[SideBySideRow],
+        three_way_rows: &[ThreeWayRow],
+    ) -> usize {
+        match mode {
+            DiffDisplayMode::Unified => display_rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let len = match row {
+                        DisplayRow::Line { styled, .. } => styled.text.len(),
+                        DisplayRow::HunkHeader { header, .. } => header.len(),
+                    };
+                    (i, len)
+                })
+                .max_by_key(|(_, len)| *len)
+                .map(|(i, _)| i)
+                .unwrap_or(0),
+            DiffDisplayMode::SideBySide => sbs_rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let len = match row {
+                        SideBySideRow::Pair {
+                            left_styled,
+                            right_styled,
+                            ..
+                        } => left_styled.text.len().max(right_styled.text.len()),
+                        SideBySideRow::HunkHeader { header, .. } => header.len(),
+                    };
+                    (i, len)
+                })
+                .max_by_key(|(_, len)| *len)
+                .map(|(i, _)| i)
+                .unwrap_or(0),
+            DiffDisplayMode::ThreeWay => three_way_rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let len = match row {
+                        ThreeWayRow::Triple {
+                            left_styled,
+                            mid_styled,
+                            right_styled,
+                            ..
+                        } => left_styled
+                            .text
+                            .len()
+                            .max(mid_styled.text.len())
+                            .max(right_styled.text.len()),
+                        ThreeWayRow::HunkHeader { header, .. } => header.len(),
+                    };
+                    (i, len)
+                })
+                .max_by_key(|(_, len)| *len)
+                .map(|(i, _)| i)
+                .unwrap_or(0),
+        }
+    }
+
     fn render_styled_text(
         window: &Window,
         text: &StyledLine,
@@ -1321,43 +1420,52 @@ impl DiffViewer {
         row_height: f32,
         wrap: bool,
     ) -> gpui::AnyElement {
-        let mut text_style = window.text_style();
-        text_style.color = default_color;
-        // Clamp line_height to row height so highlight background rects
-        // don't extend past the row boundaries and overlap adjacent rows.
-        text_style.line_height = px(row_height).into();
-        // The text layouter reads `white_space` from this text_style directly;
-        // inheriting `whitespace_nowrap` from a parent div is not enough (see
-        // `gpui::elements::text::Text::request_layout`).
-        text_style.white_space = if wrap {
-            gpui::WhiteSpace::Normal
-        } else {
-            gpui::WhiteSpace::Nowrap
-        };
+        // Runs (colors / font) are built from this style. StyledText's layout
+        // reads `window.text_style()` — NOT this local — for white_space,
+        // line_height, etc., so we also push those onto the ancestor div below.
+        let mut run_style = window.text_style();
+        run_style.color = default_color;
+        run_style.line_height = px(row_height).into();
 
+        let styled_text = StyledText::new(text.text.clone());
         // Guard: if text is empty but highlights exist, GPUI panics on
         // StyledText::with_default_highlights (Text: '', run: len: N).
         // This can happen with word-level diff on whitespace-only lines.
-        let highlights = if text.text.is_empty() {
-            Vec::new()
+        // Pass highlights as a borrowed-iter (cloned per-element) to skip the
+        // Vec allocation per row per frame.
+        let styled = if text.text.is_empty() {
+            styled_text
+                .with_default_highlights(&run_style, std::iter::empty())
+                .into_any_element()
         } else {
-            text.highlights.clone()
+            styled_text
+                .with_default_highlights(&run_style, text.highlights.iter().cloned())
+                .into_any_element()
         };
-        let styled = StyledText::new(text.text.clone())
-            .with_default_highlights(&text_style, highlights)
-            .into_any_element();
 
+        // The text layouter reads `window.text_style()` at its request_layout
+        // time, so white_space and line_height must be on an ancestor div via
+        // `with_text_style` — setting them on a local TextStyle that is only
+        // handed to `with_default_highlights` does nothing for layout.
         if wrap {
-            // Per Zed `text.rs` storybook: "When rendering text in a
-            // horizontal flex container, Taffy will not pass width constraints
-            // down from the parent. To fix this, render text in a parent with
-            // `overflow: hidden`." Without this wrapper, the text's min-content
-            // (full unbroken width) propagates up and blows out the flex bounds.
-            div().overflow_hidden().child(styled).into_any_element()
+            // `overflow_hidden` is also required so Taffy passes a definite
+            // width down to the text layouter inside a flex container (per
+            // zed's text.rs storybook example).
+            div()
+                .overflow_hidden()
+                .line_height(px(row_height))
+                .whitespace_normal()
+                .child(styled)
+                .into_any_element()
         } else {
-            // No-wrap: text stays on one line at its natural width and the
-            // ancestor scroll area handles horizontal scrolling.
-            styled
+            // No-wrap: ancestor `overflow_x_scroll` scroll area handles
+            // horizontal scrolling; the StyledText extends to its natural
+            // width inside it.
+            div()
+                .line_height(px(row_height))
+                .whitespace_nowrap()
+                .child(styled)
+                .into_any_element()
         }
     }
 
@@ -1906,7 +2014,7 @@ impl DiffViewer {
 }
 
 impl Render for DiffViewer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log::trace!(
             "DiffViewer::render: path={:?} display_rows={} sbs_rows={}",
             self.file_path,
@@ -2045,9 +2153,21 @@ impl Render for DiffViewer {
         // user sees the correct scroll position immediately.
         if let Some(top_ix) = self.pending_scroll_top.take() {
             let target_ix = top_ix.min(self.row_count().saturating_sub(1));
-            self.scroll_handle
-                .scroll_to_item(target_ix, ScrollStrategy::Top);
+            self.scroll_row_into_view(target_ix, cx);
         }
+
+        // Compute once before rows move into per-mode build closures.
+        let longest_row_ix =
+            Self::longest_row_ix(display_mode, &display_rows, &sbs_rows, &three_way_rows);
+        log::debug!(
+            target: "rgitui::diff",
+            "render mode={:?} wrap={} row_height={} rows={} longest_ix={}",
+            display_mode,
+            wrap_enabled,
+            row_height,
+            self.row_count(),
+            longest_row_ix,
+        );
 
         let list = match display_mode {
             DiffDisplayMode::Unified => {
@@ -2218,7 +2338,6 @@ impl Render for DiffViewer {
                                             "diff-line".into(),
                                             i as u64,
                                         ))
-                                        .w_full()
                                         .bg(effective_bg)
                                         .hover(move |s| s.bg(row_hover_bg))
                                         .on_mouse_down(
@@ -2235,9 +2354,23 @@ impl Render for DiffViewer {
                                             },
                                         );
                                     if wrap_enabled {
-                                        row_div = row_div.flex().items_start().min_h(px(row_height));
+                                        // Wrap mode: w_full makes the row span the list width so
+                                        // bg is consistent; flex_shrink_0 keeps the row from being
+                                        // squeezed vertically when content totals exceed viewport,
+                                        // which would make wrapped lines overlap the row below.
+                                        row_div = row_div
+                                            .w_full()
+                                            .flex_shrink_0()
+                                            .h_flex()
+                                            .items_start()
+                                            .min_h(px(row_height));
                                     } else {
-                                        row_div = row_div.h_flex().h(px(row_height));
+                                        // No-wrap: w_full spans available width so bg is
+                                        // consistent across the scrolled area; the row's min-
+                                        // content width (sum of children's min-content widths)
+                                        // is what the list uses to determine horizontal scroll
+                                        // range.
+                                        row_div = row_div.w_full().h_flex().h(px(row_height));
                                     }
 
                                     let make_gutter_cell = |val: SharedString, width: f32| {
@@ -2270,16 +2403,18 @@ impl Render for DiffViewer {
                                         .text_color(text_col)
                                         .child(prefix_str);
 
-                                    // Text content. In no-wrap mode we put it inside an
-                                    // inner scroll area so the row's gutters stay visible
-                                    // while long lines scroll horizontally.
+                                    // Text content. Wrap mode uses a flex child with min_w_0 so
+                                    // the text layouter receives a bounded width and can word-
+                                    // wrap. No-wrap mode lets the text set its natural width so
+                                    // the enclosing list can scroll horizontally.
                                     let content_area: gpui::AnyElement = if wrap_enabled {
+                                        // No vertical padding in wrap mode — it adds ~4px
+                                        // between logical lines because the row grows with
+                                        // the padded content height, not the text box.
                                         div()
                                             .flex_1()
                                             .min_w_0()
                                             .pl(px(6.))
-                                            .py(px(2.))
-                                            .min_h(px(row_height))
                                             .text_xs()
                                             .font_family("Lilex")
                                             .text_color(text_col)
@@ -2293,19 +2428,13 @@ impl Render for DiffViewer {
                                             .into_any_element()
                                     } else {
                                         div()
-                                            .id(ElementId::NamedInteger(
-                                                "diff-line-scroll".into(),
-                                                i as u64,
-                                            ))
                                             .h_flex()
-                                            .flex_1()
-                                            .min_w_0()
                                             .h_full()
                                             .pl(px(6.))
+                                            .pr(px(12.))
                                             .text_xs()
                                             .font_family("Lilex")
                                             .text_color(text_col)
-                                            .overflow_x_scroll()
                                             .child(Self::render_styled_text(
                                                 window,
                                                 styled,
@@ -2329,21 +2458,37 @@ impl Render for DiffViewer {
                 };
 
                 if wrap_enabled {
-                    // Non-virtualized: render every row so wrapped content can grow
-                    // row heights naturally. Trades virtualization for correctness.
-                    // Note: self.scroll_handle (UniformListScrollHandle) is not attached
-                    // here, so scroll_to_item / pending_scroll_top are no-ops in wrap mode.
-                    let rows = build_unified(0..row_count, window, cx);
+                    // Virtualized wrap mode: `gpui::list` caches per-row heights in a
+                    // SumTree so only the visible window (plus overdraw) renders each
+                    // frame. `overflow_x_hidden` on the wrapper prevents any
+                    // non-wrapping long line from bleeding into neighboring panels.
+                    let list_body = list(self.wrap_list_state.clone(), move |ix, window, cx| {
+                        build_unified(ix..ix + 1, window, cx)
+                            .into_iter()
+                            .next()
+                            .expect("build_unified returns exactly one row")
+                    })
+                    .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+                    .flex_grow();
+                    // v_flex parent so `list_body`'s `flex_grow` actually
+                    // gives it a definite height — without it the List is
+                    // 0px tall and renders nothing in wrap mode.
                     div()
                         .id("diff-lines-wrap")
                         .v_flex()
                         .flex_grow()
-                        .overflow_y_scroll()
-                        .children(rows)
+                        .min_h(px(0.))
+                        .min_w_0()
+                        .overflow_x_hidden()
+                        .child(list_body)
                         .into_any_element()
                 } else {
                     uniform_list("diff-lines", row_count, build_unified)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
+                        .with_horizontal_sizing_behavior(
+                            ListHorizontalSizingBehavior::Unconstrained,
+                        )
+                        .with_width_from_item(Some(longest_row_ix))
                         .flex_grow()
                         .track_scroll(&self.scroll_handle)
                         .into_any_element()
@@ -2560,8 +2705,9 @@ impl Render for DiffViewer {
                                         );
                                     if wrap_enabled {
                                         row_div = row_div
-                                            .flex()
-                                            .items_stretch()
+                                            .flex_shrink_0()
+                                            .h_flex()
+                                            .items_start()
                                             .min_h(px(row_height));
                                     } else {
                                         row_div = row_div.h_flex().h(px(row_height));
@@ -2614,11 +2760,9 @@ impl Render for DiffViewer {
                                                 .flex_1()
                                                 .min_w_0()
                                                 .pl(px(6.))
-                                                .py(px(2.))
                                                 .text_xs()
                                                 .font_family("Lilex")
                                                 .text_color(text_col_val)
-                                                .min_h(px(row_height))
                                                 .child(Self::render_styled_text(
                                                     window,
                                                     styled,
@@ -2630,13 +2774,17 @@ impl Render for DiffViewer {
                                                 .h_flex()
                                                 .flex_1()
                                                 .min_w_0()
-                                                .items_stretch()
+                                                .items_start()
                                                 .min_h(px(row_height))
                                                 .bg(bg_val)
                                                 .child(make_gutter(num_str, gutter_bg_val))
                                                 .child(text_div)
                                                 .into_any_element()
                                         } else {
+                                            // Split view: each column has a fixed flex share
+                                            // of row width. Use per-row overflow_x_scroll so
+                                            // long lines scroll inside the column instead of
+                                            // bleeding into the adjacent column.
                                             let scroll_area = div()
                                                 .id(ElementId::NamedInteger(
                                                     side.into(),
@@ -2708,15 +2856,28 @@ impl Render for DiffViewer {
                 };
 
                 if wrap_enabled {
-                    let rows = build_sbs(0..row_count, window, cx);
+                    let list_body = list(self.wrap_list_state.clone(), move |ix, window, cx| {
+                        build_sbs(ix..ix + 1, window, cx)
+                            .into_iter()
+                            .next()
+                            .expect("build_sbs returns exactly one row")
+                    })
+                    .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+                    .flex_grow();
                     div()
                         .id("diff-lines-sbs-wrap")
                         .v_flex()
                         .flex_grow()
-                        .overflow_y_scroll()
-                        .children(rows)
+                        .min_h(px(0.))
+                        .min_w_0()
+                        .overflow_x_hidden()
+                        .child(list_body)
                         .into_any_element()
                 } else {
+                    // Split view: each column has an independent per-row horizontal
+                    // scroll area, so the list itself should be viewport-width
+                    // (no Unconstrained sizing, no global horizontal scrollbar).
+                    let _ = longest_row_ix;
                     uniform_list("diff-lines-sbs", row_count, build_sbs)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
                         .flex_grow()
@@ -2821,7 +2982,7 @@ impl Render for DiffViewer {
                                             ..border_variant
                                         });
                                     row_div = if wrap_enabled {
-                                        row_div.items_stretch().min_h(px(row_height))
+                                        row_div.flex_shrink_0().items_start().min_h(px(row_height))
                                     } else {
                                         row_div.h(px(row_height))
                                     };
@@ -2851,7 +3012,6 @@ impl Render for DiffViewer {
                                             let text_div = div()
                                                 .flex_1()
                                                 .min_w_0()
-                                                .py(px(2.))
                                                 .text_xs()
                                                 .font_family("Lilex")
                                                 .text_color(text_col_val)
@@ -2880,6 +3040,10 @@ impl Render for DiffViewer {
                                                 .child(text_div)
                                                 .into_any_element()
                                         } else {
+                                            // Three-way split: each column is 1/3 of row width.
+                                            // Per-row overflow_x_scroll clips long lines inside
+                                            // their column rather than bleeding across the
+                                            // dividers into adjacent versions.
                                             let scroll_area = div()
                                                 .id(ElementId::NamedInteger(
                                                     side.into(),
@@ -2955,15 +3119,25 @@ impl Render for DiffViewer {
                 };
 
                 if wrap_enabled {
-                    let rows = build_tw(0..row_count, window, cx);
+                    let list_body = list(self.wrap_list_state.clone(), move |ix, window, cx| {
+                        build_tw(ix..ix + 1, window, cx)
+                            .into_iter()
+                            .next()
+                            .expect("build_tw returns exactly one row")
+                    })
+                    .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+                    .flex_grow();
                     div()
                         .id("diff-lines-tw-wrap")
                         .v_flex()
                         .flex_grow()
-                        .overflow_y_scroll()
-                        .children(rows)
+                        .min_h(px(0.))
+                        .min_w_0()
+                        .overflow_x_hidden()
+                        .child(list_body)
                         .into_any_element()
                 } else {
+                    let _ = longest_row_ix;
                     uniform_list("diff-lines-tw", row_count, build_tw)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
                         .flex_grow()
@@ -2983,6 +3157,7 @@ impl Render for DiffViewer {
             }))
             .v_flex()
             .size_full()
+            .overflow_hidden()
             .bg(editor_bg);
 
         if let Some(path) = &self.file_path {
@@ -3083,7 +3258,38 @@ impl Render for DiffViewer {
             );
         }
 
-        container = container.child(list);
+        // Wrap the list in a row container that holds a vertical scrollbar on
+        // the right, then append a horizontal scrollbar below for modes that
+        // scroll the whole list horizontally (unified, no-wrap). Split and
+        // three-way use per-row scroll areas per column, so a global
+        // horizontal scrollbar would not reflect their state. Wrap mode is
+        // backed by `gpui::list`, so the scrollbar drives `ListState`; the
+        // no-wrap modes stay on the uniform list's base `ScrollHandle`.
+        let vscroll: AnyElement = if wrap_enabled {
+            Scrollbar::vertical("diff-vscroll", self.wrap_list_state.clone()).into_any_element()
+        } else {
+            Scrollbar::vertical(
+                "diff-vscroll",
+                self.scroll_handle.0.borrow().base_handle.clone(),
+            )
+            .into_any_element()
+        };
+
+        let list_row = div()
+            .flex_grow()
+            .h_flex()
+            .items_stretch()
+            .min_h(px(0.))
+            .child(list)
+            .child(vscroll);
+
+        let mut body = div().v_flex().flex_grow().min_h(px(0.)).child(list_row);
+        let show_hscroll = !wrap_enabled && display_mode == DiffDisplayMode::Unified;
+        if show_hscroll {
+            let h_handle = self.scroll_handle.0.borrow().base_handle.clone();
+            body = body.child(Scrollbar::horizontal("diff-hscroll", h_handle));
+        }
+        container = container.child(body);
 
         container.into_any_element()
     }
