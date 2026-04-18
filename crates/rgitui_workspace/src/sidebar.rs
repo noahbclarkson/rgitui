@@ -2836,7 +2836,7 @@ impl Render for Sidebar {
                                         .child(div().flex_1())
                                         .child(
                                             div()
-                                                .pr(px(2.))
+                                                .pr(px(4.))
                                                 .child(
                                                     div()
                                                         .id(ElementId::NamedInteger("unstage-action".into(), i as u64))
@@ -3120,7 +3120,7 @@ impl Render for Sidebar {
                                         // Action buttons for unstaged files (wrapped for right padding)
                                         .child(
                                             div()
-                                                .pr(px(2.))
+                                                .pr(px(4.))
                                                 .h_flex()
                                                 .gap_1()
                                                 .child(
