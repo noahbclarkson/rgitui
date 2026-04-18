@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use gpui::{point, px, App, BoxShadow, Global, Hsla, Styled};
 use rgitui_settings::AppearanceMode;
+use serde::Serialize;
 
 use crate::colors::{
     catppuccin_latte_colors, catppuccin_latte_status, catppuccin_mocha_colors,
@@ -11,14 +12,15 @@ use crate::colors::{
 };
 
 /// Visual appearance mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Appearance {
     Light,
     Dark,
 }
 
 /// A complete theme definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Theme {
     pub name: String,
     pub appearance: Appearance,
@@ -70,6 +72,23 @@ impl ThemeState {
         if let Some(theme) = self.available.iter().find(|t| t.name == name) {
             self.active = theme.clone();
         }
+    }
+
+    /// Set the active theme directly (used for custom themes).
+    pub fn set_active_theme(&mut self, theme: Arc<Theme>) {
+        self.active = theme;
+    }
+
+    /// Insert a custom theme into the available list and activate it.
+    /// If a theme with the same name already exists, it is replaced.
+    pub fn insert_theme(&mut self, theme: Arc<Theme>) {
+        // Replace existing theme with same name, otherwise append
+        if let Some(existing) = self.available.iter_mut().find(|t| t.name == theme.name) {
+            *existing = theme.clone();
+        } else {
+            self.available.push(theme.clone());
+        }
+        self.active = theme;
     }
 }
 
