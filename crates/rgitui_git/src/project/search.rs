@@ -164,6 +164,27 @@ fn parse_grep_output(raw: &str) -> Vec<SearchResult> {
             unreachable!("colon_positions.len() >= 2: for loop always breaks via 'break search'")
         };
 
+        // Fallback for malformed input: if rank==0 (no valid separator found),
+        // fall back to the old simple split: first colon=path, second colon=lineno/content.
+        if colon_positions.iter().position(|&p| p == content_colon_idx) == Some(0) {
+            // No valid content separator found. Fall back to simple split.
+            let Some((file_part, rest)) = line.split_once(':') else {
+                continue;
+            };
+            let path = PathBuf::from(file_part);
+            let Some((line_str, content)) = rest.split_once(':') else {
+                // Malformed in fallback too — skip.
+                continue;
+            };
+            let line_number = line_str.parse::<usize>().unwrap_or(1);
+            results.push(SearchResult {
+                path,
+                line_number,
+                content: content.to_string(),
+            });
+            continue;
+        }
+
         // content_start is the character after content_colon_idx.
         let content_start = content_colon_idx + 1;
 
