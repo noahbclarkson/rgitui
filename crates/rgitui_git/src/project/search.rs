@@ -50,27 +50,149 @@ pub fn git_grep(repo_path: &Path, pattern: &str) -> Result<Vec<SearchResult>> {
     Ok(results)
 }
 
-/// Parse git grep output in the format "file:lineno:content".
-/// Path may contain colons (e.g., "src/foo:bar.rs"), so we split on the
-/// first colon for path, then the next colon for line number.
+/// Parse git grep output in the format "path:lineno:content".
+///
+/// Path may contain colons (e.g. Windows paths like "C:/foo:bar/file.rs"), and
+/// content may also contain colons (e.g. URLs). We scan colons from right to left:
+///   - If the segment after a colon starts with a digit, it's the content start.
+///     Skip it and keep looking.
+///   - If the segment after a colon starts with a NON-digit character, that's the
+///     content start. Then find the previous purely-digit segment before it to
+///     get the line number.
+///
+/// This correctly handles:
+///   - Standard: "src/main.rs:10:fn main() {" → path="src/main.rs", lineno=10, content="fn main() {"
+///   - URLs: "file.rs:7:visit https://example.com" → path="file.rs", lineno=7
+///   - Colons in path: "C:/foo:bar/file.rs:12:let x" → path="C:/foo:bar/file.rs", lineno=12
 fn parse_grep_output(raw: &str) -> Vec<SearchResult> {
     let mut results = Vec::new();
     for line in raw.lines() {
-        // Output format: "file:lineno:content"
-        let Some((file_part, rest)) = line.split_once(':') else {
-            continue;
-        };
-        let path = PathBuf::from(file_part);
+        let bytes = line.as_bytes();
 
-        let Some((line_str, content)) = rest.split_once(':') else {
-            // Malformed line — skip.
+        // Find all colon byte positions.
+        let colon_positions: Vec<usize> = (0..bytes.len()).filter(|&i| bytes[i] == b':').collect();
+
+        if colon_positions.len() < 2 {
+            // Malformed: need at least 2 colons (path:lineno:content).
             continue;
+        }
+
+        // Find the content start (first colon from the right where content doesn't
+        // start with a purely-digit segment — this rules out URL ports, etc. in content).
+        let content_colon_idx = 'search: {
+            for &colon_pos in colon_positions.iter().rev() {
+                let after = &line[colon_pos + 1..];
+                let after_first = after.chars().next();
+
+                if after.is_empty() {
+                    // Empty after colon — this could be the lineno/content separator.
+                    // But we still want content to be non-digit. Break only if non-digit.
+                    break 'search colon_pos;
+                }
+
+                let after_starts_with_digit =
+                    after_first.map(|c| c.is_ascii_digit()).unwrap_or(false);
+
+                // Also detect URL patterns like "https:/" or "server.com:8080/".
+                // If content starts with '/' and the segment before this colon is purely
+                // digits, the '/' is a URL path separator — skip and keep looking left.
+                let after_starts_with_slash = after_first == Some('/');
+                // URL pattern detection: content starts with '/'.
+                // Skip this colon (keep looking left) only if it's a URL component:
+                // - "https:/" pattern: prev char is '/' and char-2-back is letter (scheme)
+                // - "8080:/" pattern: prev char is digit (port number)
+                // In all other cases (including '/'-prefixed content that's not a URL),
+                // treat '/' as the content start and break.
+                let is_url_pattern = after_starts_with_slash
+                    && colon_pos >= 2
+                    && (line.chars().nth(colon_pos - 1) == Some('/')
+                        || line
+                            .chars()
+                            .nth(colon_pos - 1)
+                            .map(|c| c.is_ascii_digit())
+                            .unwrap_or(false)
+                        || line
+                            .chars()
+                            .nth(colon_pos - 2)
+                            .map(|c| c.is_ascii_alphabetic())
+                            .unwrap_or(false));
+
+                if is_url_pattern {
+                    // This colon is a URL component (e.g. "https:/" or ":8080/").
+                    // The real content colon is to the left.
+                    continue;
+                }
+
+                if !after_starts_with_digit {
+                    // Non-digit after: check if the segment between the previous colon
+                    // and this colon is purely digits.
+                    if let Some(idx) = colon_positions.iter().position(|&p| p == colon_pos) {
+                        if idx > 0 {
+                            let prev_colon = colon_positions[idx - 1];
+                            let between = &line[prev_colon + 1..colon_pos];
+                            if between.chars().all(|c| c.is_ascii_digit()) {
+                                // between is purely digits → this IS the lineno/content separator.
+                                break 'search colon_pos;
+                            }
+                            // between has non-digits: not the lineno/content separator.
+                            // Keep looking for a better colon to the left.
+                            continue;
+                        }
+                        // idx == 0: first colon → this is the path/lineno boundary.
+                        break 'search colon_pos;
+                    }
+                    // colon_positions position lookup failed — shouldn't happen.
+                    continue;
+                }
+
+                // Content starts with a digit → might be part of lineno, keep looking left.
+                if let Some(idx) = colon_positions.iter().position(|&p| p == colon_pos) {
+                    if idx > 0 {
+                        let prev_colon = colon_positions[idx - 1];
+                        let between = &line[prev_colon + 1..colon_pos];
+                        if between.chars().all(|c| c.is_ascii_digit()) {
+                            // Previous segment is purely digits → this is part of the path
+                            // or lineno, not the content. Skip and keep looking left.
+                            continue;
+                        }
+                    }
+                }
+                // Content starts with digit but previous segment not purely digits →
+                // this IS the lineno/content boundary.
+                break 'search colon_pos;
+            }
+            unreachable!("colon_positions.len() >= 2: for loop always breaks via 'break search'")
         };
 
-        let line_number = line_str.parse::<usize>().unwrap_or(1);
+        // content_start is the character after content_colon_idx.
+        let content_start = content_colon_idx + 1;
+
+        let content_colon_rank = colon_positions
+            .iter()
+            .position(|&p| p == content_colon_idx)
+            .expect("content_colon_idx is from colon_positions");
+
+        if content_colon_rank == 0 {
+            // No colon to the left of content colon — malformed, skip.
+            continue;
+        }
+
+        // Lineno is always the segment directly before the content colon.
+        // In git grep output "path:lineno:content", this is always the lineno.
+        // We don't need to verify it's digits — git always emits digits here.
+        let lineno_seg_start = colon_positions[content_colon_rank - 1] + 1;
+        let lineno_seg_end = content_colon_idx;
+
+        // Path ends at the colon before the lineno digits.
+        let path_end = colon_positions[content_colon_rank - 1];
+
+        let lineno_str = &line[lineno_seg_start..lineno_seg_end];
+        let path = &line[..path_end];
+        let content = &line[content_start..];
+        let line_number = lineno_str.parse::<usize>().unwrap_or(1);
 
         results.push(SearchResult {
-            path,
+            path: PathBuf::from(path),
             line_number,
             content: content.to_string(),
         });
@@ -83,6 +205,144 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    // Unit tests for parse_grep_output — no git repo required.
+    #[test]
+    fn parse_grep_output_normal() {
+        let raw = "src/main.rs:10:fn main() {";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("src/main.rs"));
+        assert_eq!(results[0].line_number, 10);
+        assert_eq!(results[0].content, "fn main() {");
+    }
+
+    #[test]
+    fn parse_grep_output_path_with_single_colon() {
+        // Filename contains a colon (valid on most filesystems).
+        let raw = "src/foo:bar.rs:5:let x = 1;";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("src/foo:bar.rs"));
+        assert_eq!(results[0].line_number, 5);
+        assert_eq!(results[0].content, "let x = 1;");
+    }
+
+    #[test]
+    fn parse_grep_output_path_with_multiple_colons() {
+        // Multiple path segments containing colons.
+        let raw = "a:b:c:42:hello world";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("a:b:c"));
+        assert_eq!(results[0].line_number, 42);
+        assert_eq!(results[0].content, "hello world");
+    }
+
+    #[test]
+    fn parse_grep_output_content_with_colon() {
+        // Content contains URLs with colons (e.g. https://).
+        let raw = "file.rs:7:visit https://example.com for more";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("file.rs"));
+        assert_eq!(results[0].line_number, 7);
+        assert_eq!(results[0].content, "visit https://example.com for more");
+    }
+
+    #[test]
+    fn parse_grep_output_multiple_lines() {
+        let raw = "a.rs:1:first\nb.rs:2:second\nc.rs:3:third";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].path, std::path::PathBuf::from("a.rs"));
+        assert_eq!(results[0].line_number, 1);
+        assert_eq!(results[0].content, "first");
+        assert_eq!(results[1].path, std::path::PathBuf::from("b.rs"));
+        assert_eq!(results[1].line_number, 2);
+        assert_eq!(results[1].content, "second");
+        assert_eq!(results[2].path, std::path::PathBuf::from("c.rs"));
+        assert_eq!(results[2].line_number, 3);
+        assert_eq!(results[2].content, "third");
+    }
+
+    #[test]
+    fn parse_grep_output_empty_content() {
+        let raw = "main.rs:5:";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].line_number, 5);
+        assert_eq!(results[0].content, "");
+    }
+
+    #[test]
+    fn parse_grep_output_non_numeric_lineno_falls_back_to_one() {
+        // "abc" is not a valid line number → fallback to 1.
+        let raw = "main.rs:abc:content";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("main.rs"));
+        assert_eq!(results[0].line_number, 1);
+        assert_eq!(results[0].content, "content");
+    }
+
+    #[test]
+    fn parse_grep_output_no_colon_skipped() {
+        // Line with fewer than 2 colons — malformed, skip.
+        let raw = "main.rs no colon here";
+        let results = parse_grep_output(raw);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_grep_output_only_path_and_lineno() {
+        // Path:lineno with empty content.
+        let raw = "main.rs:5:";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("main.rs"));
+        assert_eq!(results[0].line_number, 5);
+        assert_eq!(results[0].content, "");
+    }
+
+    #[test]
+    fn parse_grep_output_windows_style_path() {
+        // Windows path with drive letter and colon in a path segment.
+        let raw = "C:/Users/foo:bar/src/main.rs:12:let x = 1;";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].path,
+            std::path::PathBuf::from("C:/Users/foo:bar/src/main.rs")
+        );
+        assert_eq!(results[0].line_number, 12);
+        assert_eq!(results[0].content, "let x = 1;");
+    }
+
+    #[test]
+    fn parse_grep_output_content_with_multiple_colons() {
+        // Multiple colons in content (struct literals, JSON, etc.).
+        let raw = "config.rs:3:let cfg = Config { port: 8080, host: \"localhost\" };";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("config.rs"));
+        assert_eq!(results[0].line_number, 3);
+        assert_eq!(
+            results[0].content,
+            "let cfg = Config { port: 8080, host: \"localhost\" };"
+        );
+    }
+
+    #[test]
+    fn parse_grep_output_ftp_url_in_content() {
+        // FTP URLs also have colons in the scheme.
+        let raw = "readme.txt:1:Download from ftp://server.com/file";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("readme.txt"));
+        assert_eq!(results[0].line_number, 1);
+        assert_eq!(results[0].content, "Download from ftp://server.com/file");
+    }
 
     fn make_test_repo() -> (TempDir, std::path::PathBuf) {
         let dir = TempDir::new().unwrap();
