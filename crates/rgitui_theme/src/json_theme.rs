@@ -184,6 +184,25 @@ pub fn load_theme_by_name(name: &str) -> Theme {
     load_theme_from_json(BUILTIN_THEME_FILES[0].1).expect("default theme must parse")
 }
 
+/// Serialize a theme to a JSON string for saving to disk.
+/// The output format is compatible with `load_theme_from_json`.
+pub fn serialize_theme_to_json(theme: &Theme) -> Result<String> {
+    serde_json::to_string_pretty(theme).map_err(|e| anyhow!("failed to serialize theme: {}", e))
+}
+
+/// Save a theme to the user's themes directory (~/.config/rgitui/themes/).
+/// Creates the directory if it does not exist.
+pub fn save_theme_to_file(theme: &Theme) -> Result<std::path::PathBuf> {
+    let json = serialize_theme_to_json(theme)?;
+    let config_dir = dirs::config_dir().ok_or_else(|| anyhow!("no config directory found"))?;
+    let themes_dir = config_dir.join("rgitui").join("themes");
+    std::fs::create_dir_all(&themes_dir)?;
+    let filename = format!("{}.json", theme.name.to_lowercase().replace(' ', "-"));
+    let path = themes_dir.join(&filename);
+    std::fs::write(&path, json)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +392,34 @@ mod tests {
         // Unknown name → falls back to first theme (Catppuccin Mocha)
         let theme = load_theme_by_name("does not exist");
         assert_eq!(theme.name, "Catppuccin Mocha");
+    }
+
+    #[test]
+    fn serialize_theme_to_json_produces_valid_json() {
+        let theme = load_theme_by_name("Catppuccin Mocha");
+        let json = serialize_theme_to_json(&theme).expect("should serialize");
+        // Should be parseable as JSON
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&json).expect("should be valid JSON");
+        assert_eq!(reparsed["name"], "Catppuccin Mocha");
+        assert_eq!(reparsed["appearance"], "dark");
+        // Colors should be present as hex strings
+        let colors = &reparsed["colors"];
+        assert!(colors["background"].as_str().unwrap().starts_with('#'));
+        // Status should be present
+        let status = &reparsed["status"];
+        assert!(status["error"].as_str().unwrap().starts_with('#'));
+    }
+
+    #[test]
+    fn serialize_deserialize_roundtrip() {
+        let theme = load_theme_by_name("Catppuccin Mocha");
+        let json = serialize_theme_to_json(&theme).expect("should serialize");
+        let loaded = load_theme_from_json(&json).expect("should deserialize");
+        assert_eq!(loaded.name, theme.name);
+        assert_eq!(loaded.appearance, theme.appearance);
+        // Verify colors roundtrip (Hsla → #rrggbbaa → Hsla via hex_to_hsla)
+        assert_eq!(loaded.colors.background, theme.colors.background);
+        assert_eq!(loaded.status.error, theme.status.error);
     }
 }
