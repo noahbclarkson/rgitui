@@ -274,7 +274,7 @@ impl ThemeEditorDialog {
                 cx.update_global::<ThemeState, _>(|state, _cx| {
                     state.insert_theme(new_theme.clone());
                 });
-                cx.emit(ThemeEditorEvent::Saved(self.editable_theme.clone()));
+                cx.emit(ThemeEditorEvent::Saved(new_theme.clone()));
             }
             Err(e) => {
                 self.save_status = Some(format!("Save failed: {}", e));
