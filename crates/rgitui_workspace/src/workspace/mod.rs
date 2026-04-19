@@ -205,6 +205,7 @@ impl Workspace {
         let interactive_rebase = cx.new(crate::InteractiveRebase::new);
         let settings_modal = cx.new(crate::SettingsModal::new);
         let global_search = cx.new(crate::GlobalSearchView::new);
+        let theme_editor = cx.new(crate::ThemeEditorDialog::new_for_active_theme);
         let toast_layer = cx.new(ToastLayer::new);
 
         let branch_dialog = cx.new(crate::BranchDialog::new);
@@ -273,6 +274,7 @@ impl Workspace {
                 repo_opener,
                 shortcuts_help,
                 global_search,
+                theme_editor,
             },
             operations: OperationState {
                 active_git_operation: None,

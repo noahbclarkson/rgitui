@@ -240,6 +240,12 @@ pub(super) fn subscribe_settings_modal(
 
                 cx.notify();
             }
+            SettingsModalEvent::OpenThemeEditor => {
+                this.overlays.theme_editor.update(cx, |te, cx| {
+                    te.show_for_active_theme(cx);
+                });
+                cx.notify();
+            }
         },
     )
     .detach();
