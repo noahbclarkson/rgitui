@@ -184,6 +184,46 @@ pub fn load_theme_by_name(name: &str) -> Theme {
     load_theme_from_json(BUILTIN_THEME_FILES[0].1).expect("default theme must parse")
 }
 
+fn theme_filename(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    let mut last_was_dash = false;
+
+    for ch in name.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            Some(ch.to_ascii_lowercase())
+        } else if ch.is_whitespace()
+            || ch.is_ascii_punctuation()
+            || matches!(ch, '-' | '_')
+        {
+            Some('-')
+        } else {
+            None
+        };
+
+        if let Some(ch) = mapped {
+            if ch == '-' {
+                if last_was_dash || slug.is_empty() {
+                    continue;
+                }
+                last_was_dash = true;
+            } else {
+                last_was_dash = false;
+            }
+            slug.push(ch);
+        }
+    }
+
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+
+    if slug.is_empty() {
+        "theme.json".to_string()
+    } else {
+        format!("{slug}.json")
+    }
+}
+
 /// Serialize a theme to a JSON string for saving to disk.
 /// The output format is compatible with `load_theme_from_json`.
 pub fn serialize_theme_to_json(theme: &Theme) -> Result<String> {
@@ -197,8 +237,7 @@ pub fn save_theme_to_file(theme: &Theme) -> Result<std::path::PathBuf> {
     let config_dir = dirs::config_dir().ok_or_else(|| anyhow!("no config directory found"))?;
     let themes_dir = config_dir.join("rgitui").join("themes");
     std::fs::create_dir_all(&themes_dir)?;
-    let filename = format!("{}.json", theme.name.to_lowercase().replace(' ', "-"));
-    let path = themes_dir.join(&filename);
+    let path = themes_dir.join(theme_filename(&theme.name));
     std::fs::write(&path, json)?;
     Ok(path)
 }
@@ -421,5 +460,16 @@ mod tests {
         // Verify colors roundtrip (Hsla → #rrggbbaa → Hsla via hex_to_hsla)
         assert_eq!(loaded.colors.background, theme.colors.background);
         assert_eq!(loaded.status.error, theme.status.error);
+    }
+
+    #[test]
+    fn theme_filename_slugifies_for_cross_platform_paths() {
+        assert_eq!(theme_filename("My Theme"), "my-theme.json");
+        assert_eq!(theme_filename(" Theme:/Name? *v2* "), "theme-name-v2.json");
+    }
+
+    #[test]
+    fn theme_filename_falls_back_when_name_has_no_safe_characters() {
+        assert_eq!(theme_filename(":/\\*?"), "theme.json");
     }
 }

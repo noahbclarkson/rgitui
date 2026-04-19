@@ -36,6 +36,14 @@ pub struct ThemeState {
 
 impl Global for ThemeState {}
 
+fn upsert_theme_by_name(available: &mut Vec<Arc<Theme>>, theme: Arc<Theme>) {
+    if let Some(existing) = available.iter_mut().find(|t| t.name == theme.name) {
+        *existing = theme;
+    } else {
+        available.push(theme);
+    }
+}
+
 impl ThemeState {
     pub fn theme(&self) -> &Arc<Theme> {
         &self.active
@@ -82,12 +90,7 @@ impl ThemeState {
     /// Insert a custom theme into the available list and activate it.
     /// If a theme with the same name already exists, it is replaced.
     pub fn insert_theme(&mut self, theme: Arc<Theme>) {
-        // Replace existing theme with same name, otherwise append
-        if let Some(existing) = self.available.iter_mut().find(|t| t.name == theme.name) {
-            *existing = theme.clone();
-        } else {
-            self.available.push(theme.clone());
-        }
+        upsert_theme_by_name(&mut self.available, theme.clone());
         self.active = theme;
     }
 }
@@ -170,7 +173,7 @@ pub fn init(cx: &mut App) {
                             Ok(json) => match crate::json_theme::load_theme_from_json(&json) {
                                 Ok(theme) => {
                                     log::info!("Loaded custom theme: {}", theme.name);
-                                    available.push(Arc::new(theme));
+                                    upsert_theme_by_name(&mut available, Arc::new(theme));
                                 }
                                 Err(e) => {
                                     log::warn!("Failed to parse theme {}: {}", path.display(), e)
@@ -334,3 +337,28 @@ pub trait StyledExt: Styled + Sized {
 }
 
 impl<E: Styled> StyledExt for E {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_theme_by_name_replaces_existing_theme() {
+        let mut available = builtin_themes();
+        let replacement = Arc::new(Theme {
+            name: "Catppuccin Mocha".into(),
+            appearance: Appearance::Light,
+            colors: catppuccin_latte_colors(),
+            status: catppuccin_latte_status(),
+        });
+
+        upsert_theme_by_name(&mut available, replacement.clone());
+
+        assert_eq!(available.len(), builtin_themes().len());
+        let stored = available
+            .iter()
+            .find(|theme| theme.name == "Catppuccin Mocha")
+            .expect("replacement theme should be present");
+        assert_eq!(stored.appearance, Appearance::Light);
+    }
+}
