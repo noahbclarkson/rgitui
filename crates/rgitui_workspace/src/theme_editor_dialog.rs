@@ -274,6 +274,10 @@ impl ThemeEditorDialog {
                 cx.update_global::<ThemeState, _>(|state, _cx| {
                     state.insert_theme(new_theme.clone());
                 });
+                // Update editable_theme so subsequent saves start from the last-saved state,
+                // not the pre-save state. This matters if the user keeps the dialog open
+                // and edits another color field before saving again.
+                self.editable_theme = new_theme.clone();
                 cx.emit(ThemeEditorEvent::Saved(new_theme.clone()));
             }
             Err(e) => {
