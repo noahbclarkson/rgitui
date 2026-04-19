@@ -191,10 +191,7 @@ fn theme_filename(name: &str) -> String {
     for ch in name.chars() {
         let mapped = if ch.is_ascii_alphanumeric() {
             Some(ch.to_ascii_lowercase())
-        } else if ch.is_whitespace()
-            || ch.is_ascii_punctuation()
-            || matches!(ch, '-' | '_')
-        {
+        } else if ch.is_whitespace() || ch.is_ascii_punctuation() || matches!(ch, '-' | '_') {
             Some('-')
         } else {
             None
