@@ -37,10 +37,15 @@ pub fn normalize_repo_path(path: PathBuf) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let s = path.to_string_lossy();
-        // UNC paths begin with two backslashes (\\server\share).
-        // Convert every backslash to a forward slash so libgit2 accepts them.
+        // Only rewrite share-style UNC paths (\\server\share\...).
+        // Skip extended-length (\\?\...) and device (\\.\...) prefixes — libgit2
+        // does not accept the slash-converted form of these, and Rust's
+        // `canonicalize` routinely produces \\?\ paths we must not mangle.
         if s.starts_with("\\\\") {
-            return PathBuf::from(s.replace('\\', "/"));
+            let third = s.as_bytes().get(2).copied();
+            if third != Some(b'?') && third != Some(b'.') {
+                return PathBuf::from(s.replace('\\', "/"));
+            }
         }
     }
     path
@@ -763,5 +768,21 @@ mod tests {
         let input = PathBuf::from(r"\\server\share\project");
         let expected = PathBuf::from("//server/share/project");
         assert_eq!(normalize_repo_path(input), expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_extended_length_prefix_unchanged() {
+        // \\?\ is the Windows extended-length prefix; std::fs::canonicalize
+        // emits it and libgit2 does not accept the slash-converted form.
+        let path = PathBuf::from(r"\\?\C:\Users\user\repo");
+        assert_eq!(normalize_repo_path(path.clone()), path);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_device_namespace_prefix_unchanged() {
+        let path = PathBuf::from(r"\\.\C:\Users\user\repo");
+        assert_eq!(normalize_repo_path(path.clone()), path);
     }
 }
