@@ -21,6 +21,31 @@ use std::sync::Arc;
 
 use crate::types::*;
 
+/// Normalize a repository path before passing it to libgit2.
+///
+/// On Windows, libgit2 requires UNC paths (network shares, WSL2 filesystems)
+/// to use forward-slash separators instead of backslashes. This converts
+/// `\\server\share\path` → `//server/share/path`, which libgit2 can parse.
+///
+/// The most common case is WSL2: users on Windows can browse to a repo at
+/// `\\wsl.localhost\distro\home\user\repo` but libgit2 rejects the
+/// backslash form. After normalisation the path becomes
+/// `//wsl.localhost/distro/home/user/repo` and opens successfully.
+///
+/// On non-Windows platforms this function is a no-op.
+pub fn normalize_repo_path(path: PathBuf) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let s = path.to_string_lossy();
+        // UNC paths begin with two backslashes (\\server\share).
+        // Convert every backslash to a forward slash so libgit2 accepts them.
+        if s.starts_with("\\\\") {
+            return PathBuf::from(s.replace('\\', "/"));
+        }
+    }
+    path
+}
+
 /// Create a `git` [`Command`] with `CREATE_NO_WINDOW` set on Windows so that
 /// spawning it from a GUI application never flashes a visible console window.
 pub(crate) fn git_command() -> Command {
@@ -262,6 +287,8 @@ impl GitProject {
 
     /// Open a repository at the given path.
     pub fn open(path: PathBuf, commit_limit: usize, cx: &mut Context<Self>) -> Result<Self> {
+        // Normalise UNC paths on Windows so that libgit2 can open WSL2 repos.
+        let path = normalize_repo_path(path);
         let repo = Repository::open(&path)
             .with_context(|| format!("Failed to open repository at {}", path.display()))?;
 
@@ -686,5 +713,55 @@ impl GitProject {
             .ok();
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_repo_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn normalize_non_unc_path_unchanged() {
+        let path = PathBuf::from("/home/user/repo");
+        assert_eq!(normalize_repo_path(path.clone()), path);
+    }
+
+    #[test]
+    fn normalize_relative_path_unchanged() {
+        let path = PathBuf::from("./my-repo");
+        assert_eq!(normalize_repo_path(path.clone()), path);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_wsl_localhost_unc_path() {
+        let input = PathBuf::from(r"\\wsl.localhost\archlinux\home\user\repo");
+        let expected = PathBuf::from("//wsl.localhost/archlinux/home/user/repo");
+        assert_eq!(normalize_repo_path(input), expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_wsl_dollar_unc_path() {
+        let input = PathBuf::from(r"\\wsl$\Ubuntu\home\user\project");
+        let expected = PathBuf::from("//wsl$/Ubuntu/home/user/project");
+        assert_eq!(normalize_repo_path(input), expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_windows_drive_path_unchanged() {
+        // Regular Windows drive paths must not be modified.
+        let path = PathBuf::from(r"C:\Users\user\repo");
+        assert_eq!(normalize_repo_path(path.clone()), path);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_network_share_unc_path() {
+        let input = PathBuf::from(r"\\server\share\project");
+        let expected = PathBuf::from("//server/share/project");
+        assert_eq!(normalize_repo_path(input), expected);
     }
 }
