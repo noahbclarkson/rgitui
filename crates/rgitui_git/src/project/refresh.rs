@@ -396,10 +396,12 @@ fn gather_refresh_data_internal(
                     branch.is_merged_into_main = Some(branch.tip_oid == main_tip);
                     continue;
                 }
-                // A branch is merged into main if main_tip is an ancestor of branch.tip
-                // (i.e. the branch tip is reachable from main)
+                // A branch is merged into main if the branch tip is an ancestor of main_tip.
+                // Use merge_base: if merge_base(branch_tip, main_tip) == branch_tip,
+                // then branch_tip is an ancestor of main_tip (branch was merged/fast-forwarded).
                 let is_merged = branch.tip_oid.is_some_and(|tip_oid| {
-                    repo.graph_descendant_of(main_tip_oid, tip_oid)
+                    repo.merge_base(tip_oid, main_tip_oid)
+                        .map(|mb| mb == tip_oid)
                         .unwrap_or(false)
                 });
                 branch.is_merged_into_main = Some(is_merged);
@@ -1046,5 +1048,256 @@ mod load_more_tests {
             load_more_commits_from_repo(&path, 10, 5, &branch_tips, &[], None).unwrap();
         assert!(commits.is_empty());
         assert!(!has_more);
+    }
+}
+
+// ── is_merged_into_main via graph_descendant_of ──────────────────
+//
+// graph_descendant_of(a, b) in libgit2 means:
+//   "is b reachable from a by following parent pointers?"
+//   i.e. "is a an ancestor of b?"
+//
+// To check "branch is merged into main":
+//   We need: "is branch_tip an ancestor of main_tip?"
+//   I.e., can we reach main_tip by following parent pointers from branch_tip?
+//   Answer: graph_descendant_of(branch_tip, main_tip)
+
+#[cfg(test)]
+mod is_merged_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn configure_signature(repo: &Repository) {
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+    }
+
+    fn empty_tree_oid(repo: &Repository) -> git2::Oid {
+        repo.index().unwrap().write_tree().unwrap()
+    }
+
+    fn commit(
+        repo: &Repository,
+        refname: &str,
+        message: &str,
+        parent: Option<git2::Oid>,
+    ) -> git2::Oid {
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_oid = empty_tree_oid(repo);
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let mut parents: Vec<git2::Commit> = Vec::new();
+        if let Some(p) = parent {
+            parents.push(repo.find_commit(p).unwrap());
+        }
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some(refname), &sig, &sig, message, &tree, &parent_refs)
+            .unwrap()
+    }
+
+    fn merge(repo: &Repository, into_ref: &str, from_ref: &str, message: &str) -> git2::Oid {
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_oid = empty_tree_oid(repo);
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let main_commit = repo
+            .revparse_single(into_ref)
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let branch_commit = repo
+            .revparse_single(from_ref)
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        repo.commit(
+            Some(into_ref),
+            &sig,
+            &sig,
+            message,
+            &tree,
+            &[&main_commit, &branch_commit],
+        )
+        .unwrap()
+    }
+
+    /// Repo structure:
+    ///   A (main, branch)
+    /// After: A --- M (main, merged)
+    ///                 \
+    ///                  B (branch)
+    /// graph_descendant_of(branch_tip=B, main_tip=M) should be true.
+    #[test]
+    fn debug_graph_descendant_of_semantics() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        configure_signature(&repo);
+
+        let a = commit(&repo, "refs/heads/main", "A", None);
+        let b = commit(&repo, "refs/heads/branch", "B", Some(a));
+        let m = merge(&repo, "refs/heads/main", "refs/heads/branch", "Merge");
+
+        let m_commit = repo.find_commit(m).unwrap();
+        eprintln!("DEBUG: a={:?}", a);
+        eprintln!("DEBUG: b={:?}", b);
+        eprintln!("DEBUG: m={:?}", m);
+        eprintln!(
+            "DEBUG: M parents count: {}",
+            m_commit
+                .parent_id(0)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|_| "none".into())
+        );
+        for i in 0..m_commit.parent_count() {
+            eprintln!("DEBUG: M parent[{}] = {:?}", i, m_commit.parent_id(i));
+        }
+
+        // Verify main ref points to M
+        let main_ref = repo.find_reference("refs/heads/main").unwrap();
+        eprintln!("DEBUG: main ref points to {:?}", main_ref.target().unwrap());
+
+        // Verify branch ref points to B
+        let branch_ref = repo.find_reference("refs/heads/branch").unwrap();
+        eprintln!(
+            "DEBUG: branch ref points to {:?}",
+            branch_ref.target().unwrap()
+        );
+
+        // git_graph_descendant_of(a, b) should return TRUE if 'a' is a descendant of 'b'
+        // based on libgit2 C source: walks 'a' back and checks if 'b' is reached
+        let walk_a = repo.graph_descendant_of(a, b).unwrap();
+        let walk_b = repo.graph_descendant_of(b, a).unwrap();
+        eprintln!("graph_descendant_of(a={:?}, b={:?}) = {}", a, b, walk_a);
+        eprintln!("graph_descendant_of(b={:?}, a={:?}) = {}", b, a, walk_b);
+        let walk_b_m = repo.graph_descendant_of(b, m).unwrap();
+        let walk_a_m = repo.graph_descendant_of(a, m).unwrap();
+        eprintln!("graph_descendant_of(b={:?}, m={:?}) = {}", b, m, walk_b_m);
+        eprintln!("graph_descendant_of(a={:?}, m={:?}) = {}", a, m, walk_a_m);
+    }
+
+    /// Repo structure:
+    ///   A (main, branch)
+    /// After: A --- M (main, merged)
+    ///                 \
+    ///                  B (branch)
+    /// merge_base(branch_tip=B, main_tip=M) should equal B (B is ancestor of M).
+    #[test]
+    fn branch_merged_into_main_returns_true() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        configure_signature(&repo);
+
+        let a = commit(&repo, "refs/heads/main", "A", None);
+        let b = commit(&repo, "refs/heads/branch", "B", Some(a));
+        let m = merge(&repo, "refs/heads/main", "refs/heads/branch", "Merge");
+
+        // Verify B is a parent of M
+        let m_commit = repo.find_commit(m).unwrap();
+        let m_parents: Vec<_> = m_commit.parent_ids().collect();
+        assert!(m_parents.contains(&b), "B should be a parent of M");
+
+        // is_merged = merge_base(branch_tip, main_tip) == branch_tip
+        let mb = repo.merge_base(b, m).unwrap();
+        assert_eq!(mb, b, "merge_base(branch=B, main=M) should equal B");
+    }
+
+    /// Repo structure:
+    ///   A --- C (main, diverged)
+    ///    \
+    ///     B (branch, never merged)
+    /// merge_base(branch_tip=B, main_tip=C) should NOT equal B.
+    #[test]
+    fn branch_not_merged_returns_false() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        configure_signature(&repo);
+
+        let a = commit(&repo, "refs/heads/main", "A", None);
+        let b = commit(&repo, "refs/heads/branch", "B", Some(a));
+        let c = commit(&repo, "refs/heads/main", "C", Some(a));
+
+        let mb = repo.merge_base(b, c).unwrap();
+        assert_ne!(
+            mb, b,
+            "merge_base(branch=B, main=C) should NOT equal B for diverged branches"
+        );
+    }
+
+    /// Repo structure (fast-forward):
+    ///   A (both main and branch)
+    /// Then branch advances:
+    ///   A --- B (branch)
+    /// (main still at A)
+    /// After fast-forward of main to branch tip B:
+    ///   A --- B (main, branch — same commit)
+    /// merge_base(branch_tip=B, main_tip=B) == B (same commit).
+    #[test]
+    fn fast_forward_merged_returns_true() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        configure_signature(&repo);
+
+        let a = commit(&repo, "refs/heads/main", "A", None);
+        // Create branch at A (same as main)
+        repo.branch("branch", &repo.find_commit(a).unwrap(), false)
+            .unwrap();
+        // Advance branch to B
+        let b = commit(&repo, "refs/heads/branch", "B", Some(a));
+
+        // Fast-forward: move main ref to branch tip
+        let mut main_ref = repo.find_reference("refs/heads/main").unwrap();
+        main_ref
+            .set_target(b, "fast-forward main to branch")
+            .unwrap();
+
+        let main_tip = repo
+            .revparse_single("refs/heads/main")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        // Both point to B now
+        assert_eq!(main_tip, b, "main should now point to B");
+
+        // is_merged = merge_base(branch_tip, main_tip) == branch_tip
+        // When both point to the same commit, merge_base equals that commit
+        let mb = repo.merge_base(b, main_tip).unwrap();
+        assert_eq!(mb, b, "merge_base of same commit should equal that commit");
+    }
+
+    /// Repo structure:
+    ///   A --- B --- C (main advanced after branch split)
+    ///    \
+    ///     D (branch, still at D)
+    /// This is the key bug scenario: main advanced past the branch commit,
+    /// but the branch was never merged into main.
+    /// merge_base(branch_tip=D, main_tip=C) should NOT equal D.
+    #[test]
+    fn main_advanced_after_branch_returns_false() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        configure_signature(&repo);
+
+        let a = commit(&repo, "refs/heads/main", "A", None);
+        let d = commit(&repo, "refs/heads/branch", "D", Some(a));
+        let _b = commit(&repo, "refs/heads/main", "B", Some(a));
+        let c = commit(
+            &repo,
+            "refs/heads/main",
+            "C",
+            Some(
+                repo.revparse_single("refs/heads/main")
+                    .unwrap()
+                    .peel_to_commit()
+                    .unwrap()
+                    .id(),
+            ),
+        );
+
+        // branch still at D, main at C. D is NOT an ancestor of C.
+        let mb = repo.merge_base(d, c).unwrap();
+        assert_ne!(
+            mb, d,
+            "merge_base(branch=D, main=C) should NOT equal D when main advanced independently"
+        );
     }
 }
