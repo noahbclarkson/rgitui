@@ -62,6 +62,7 @@ impl ThemeEditorDialog {
         let theme = cx.global::<ThemeState>().theme().clone();
         self.editable_theme = theme;
         self.rebuild_inputs(cx);
+        self.save_status = None;
         self.visible = true;
         cx.notify();
     }
@@ -70,7 +71,7 @@ impl ThemeEditorDialog {
         let (color_fields, color_inputs) = Self::build_color_fields(&theme.colors, cx);
         let (status_fields, status_inputs) = Self::build_status_fields(&theme.status, cx);
         Self {
-            visible: true,
+            visible: false,
             editable_theme: theme,
             focus_handle: cx.focus_handle(),
             color_fields,
@@ -148,7 +149,7 @@ impl ThemeEditorDialog {
             let hex = hsla_to_hex(getter(colors));
             let input = cx.new(|cx| {
                 let mut ti = TextInput::new(cx);
-                ti.set_placeholder(&hex);
+                ti.set_text(hex, cx);
                 ti
             });
             inputs.push(input);
@@ -190,7 +191,7 @@ impl ThemeEditorDialog {
             let hex = hsla_to_hex(getter(status));
             let input = cx.new(|cx| {
                 let mut ti = TextInput::new(cx);
-                ti.set_placeholder(&hex);
+                ti.set_text(hex, cx);
                 ti
             });
             inputs.push(input);
@@ -209,7 +210,7 @@ impl ThemeEditorDialog {
             let hex = hsla_to_hex((field.getter)(&self.editable_theme.colors));
             let input = cx.new(|cx| {
                 let mut ti = TextInput::new(cx);
-                ti.set_placeholder(&hex);
+                ti.set_text(hex, cx);
                 ti
             });
             color_inputs.push(input);
@@ -221,7 +222,7 @@ impl ThemeEditorDialog {
             let hex = hsla_to_hex((field.getter)(&self.editable_theme.status));
             let input = cx.new(|cx| {
                 let mut ti = TextInput::new(cx);
-                ti.set_placeholder(&hex);
+                ti.set_text(hex, cx);
                 ti
             });
             status_inputs.push(input);
@@ -239,7 +240,7 @@ impl ThemeEditorDialog {
             "escape" => {
                 self.dismiss(cx);
             }
-            "enter" | "cmd+enter" => {
+            "enter" => {
                 self.save(cx);
             }
             _ => {}
@@ -251,15 +252,21 @@ impl ThemeEditorDialog {
         let mut status = self.editable_theme.status.clone();
 
         for (i, field) in self.color_fields.iter().enumerate() {
-            let text = self.color_inputs[i].read(cx).text();
-            let hsla = hex_to_hsla(text);
-            ((field.setter)(&mut colors, hsla));
+            let text = self.color_inputs[i].read(cx).text().trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            let hsla = hex_to_hsla(&text);
+            (field.setter)(&mut colors, hsla);
         }
 
         for (i, field) in self.status_fields.iter().enumerate() {
-            let text = self.status_inputs[i].read(cx).text();
-            let hsla = hex_to_hsla(text);
-            ((field.setter)(&mut status, hsla));
+            let text = self.status_inputs[i].read(cx).text().trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            let hsla = hex_to_hsla(&text);
+            (field.setter)(&mut status, hsla);
         }
 
         let mut theme = (*self.editable_theme).clone();
@@ -269,7 +276,7 @@ impl ThemeEditorDialog {
         match save_theme_to_file(&theme) {
             Ok(path) => {
                 log::info!("Theme saved to {}", path.display());
-                self.save_status = Some("Saved!".to_string());
+                self.save_status = Some(format!("Saved to {}", path.display()));
                 let new_theme = Arc::new(theme);
                 cx.update_global::<ThemeState, _>(|state, _cx| {
                     state.insert_theme(new_theme.clone());
@@ -398,8 +405,11 @@ impl Render for ThemeEditorDialog {
                                     .child(div().v_flex().gap_1().children(
                                         self.color_inputs.iter().enumerate().map(
                                             |(i, input_ent)| {
-                                                let hex_val = input_ent.read(cx).text();
-                                                let label_text = self.color_fields[i].label.clone();
+                                                let hex_val = input_ent.read(cx).text().to_string();
+                                                let field = &self.color_fields[i];
+                                                let label_text = field.label.clone();
+                                                let fallback =
+                                                    (field.getter)(&self.editable_theme.colors);
                                                 div()
                                                     .h_flex()
                                                     .items_center()
@@ -420,8 +430,8 @@ impl Render for ThemeEditorDialog {
                                                             .rounded(px(4.))
                                                             .border_1()
                                                             .border_color(colors.border)
-                                                            .bg(Self::parse_hex_or_default(
-                                                                hex_val,
+                                                            .bg(Self::preview_color(
+                                                                &hex_val, fallback,
                                                             )),
                                                     )
                                                     .child(input_ent.clone())
@@ -443,9 +453,11 @@ impl Render for ThemeEditorDialog {
                                     .child(div().v_flex().gap_1().children(
                                         self.status_inputs.iter().enumerate().map(
                                             |(i, input_ent)| {
-                                                let hex_val = input_ent.read(cx).text();
-                                                let label_text =
-                                                    self.status_fields[i].label.clone();
+                                                let hex_val = input_ent.read(cx).text().to_string();
+                                                let field = &self.status_fields[i];
+                                                let label_text = field.label.clone();
+                                                let fallback =
+                                                    (field.getter)(&self.editable_theme.status);
                                                 div()
                                                     .h_flex()
                                                     .items_center()
@@ -466,8 +478,8 @@ impl Render for ThemeEditorDialog {
                                                             .rounded(px(4.))
                                                             .border_1()
                                                             .border_color(colors.border)
-                                                            .bg(Self::parse_hex_or_default(
-                                                                hex_val,
+                                                            .bg(Self::preview_color(
+                                                                &hex_val, fallback,
                                                             )),
                                                     )
                                                     .child(input_ent.clone())
@@ -488,11 +500,19 @@ impl Render for ThemeEditorDialog {
                             .border_t_1()
                             .border_color(colors.border)
                             .bg(colors.surface_background)
-                            .child(
-                                Label::new("Enter to save · Esc to close")
-                                    .size(LabelSize::Small)
-                                    .color(Color::Placeholder),
-                            )
+                            .child({
+                                let (text, color) = match &self.save_status {
+                                    Some(msg) if msg.starts_with("Save failed") => {
+                                        (msg.clone(), Color::Error)
+                                    }
+                                    Some(msg) => (msg.clone(), Color::Success),
+                                    None => (
+                                        "Enter to save · Esc to close".to_string(),
+                                        Color::Placeholder,
+                                    ),
+                                };
+                                Label::new(text).size(LabelSize::Small).color(color)
+                            })
                             .child(
                                 div().h_flex().gap_2().children([
                                     Button::new("btn-cancel", "Cancel")
@@ -514,7 +534,66 @@ impl Render for ThemeEditorDialog {
 }
 
 impl ThemeEditorDialog {
-    fn parse_hex_or_default(hex: &str) -> Hsla {
-        hex_to_hsla(hex)
+    /// Resolve the swatch color: use the typed hex if it is a valid 6- or 8-char
+    /// value, otherwise fall back to the theme's current color for that field so
+    /// a half-typed or cleared input does not flash to black.
+    fn preview_color(hex: &str, fallback: Hsla) -> Hsla {
+        let trimmed = hex.trim().trim_start_matches('#');
+        let valid_length = matches!(trimmed.len(), 6 | 8);
+        let all_hex = trimmed.chars().all(|c| c.is_ascii_hexdigit());
+        if valid_length && all_hex {
+            hex_to_hsla(hex)
+        } else {
+            fallback
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThemeEditorDialog;
+    use gpui::Hsla;
+
+    fn fallback() -> Hsla {
+        Hsla {
+            h: 0.5,
+            s: 0.5,
+            l: 0.5,
+            a: 1.0,
+        }
+    }
+
+    #[test]
+    fn preview_color_empty_returns_fallback() {
+        assert_eq!(ThemeEditorDialog::preview_color("", fallback()), fallback());
+    }
+
+    #[test]
+    fn preview_color_partial_returns_fallback() {
+        assert_eq!(
+            ThemeEditorDialog::preview_color("#12", fallback()),
+            fallback()
+        );
+    }
+
+    #[test]
+    fn preview_color_non_hex_returns_fallback() {
+        assert_eq!(
+            ThemeEditorDialog::preview_color("#zzzzzz", fallback()),
+            fallback()
+        );
+    }
+
+    #[test]
+    fn preview_color_valid_hex_parses() {
+        let parsed = ThemeEditorDialog::preview_color("#ff0000", fallback());
+        assert!((parsed.l - 0.5).abs() < 1e-3);
+        assert!((parsed.s - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn preview_color_valid_hex_with_alpha() {
+        let parsed = ThemeEditorDialog::preview_color("#00ff0080", fallback());
+        assert!(parsed.a < 1.0);
     }
 }
