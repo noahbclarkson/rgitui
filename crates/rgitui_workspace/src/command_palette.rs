@@ -184,6 +184,7 @@ pub enum CommandId {
     ToggleBranchHealth,
     ToggleStashes,
     StashBranch,
+    OpenThemeEditor,
 }
 
 impl CommandId {
@@ -244,6 +245,7 @@ impl CommandId {
             Self::ToggleBranchHealth => "toggle_branch_health",
             Self::ToggleStashes => "toggle_stashes",
             Self::StashBranch => "stash_branch",
+            Self::OpenThemeEditor => "open_theme_editor",
         }
     }
 
@@ -304,6 +306,7 @@ impl CommandId {
             Self::ToggleBranchHealth => "toggle branch health panel",
             Self::ToggleStashes => "toggle stashes panel",
             Self::StashBranch => "create branch from stash",
+            Self::OpenThemeEditor => "edit theme",
         }
     }
 }
@@ -374,6 +377,7 @@ impl TryFrom<&str> for CommandId {
             "toggle_branch_health" => Ok(Self::ToggleBranchHealth),
             "toggle_stashes" => Ok(Self::ToggleStashes),
             "stash_branch" => Ok(Self::StashBranch),
+            "open_theme_editor" => Ok(Self::OpenThemeEditor),
             _ => Err(()),
         }
     }
@@ -679,6 +683,12 @@ impl CommandPalette {
                 "Git",
             )
             .with_predicate(has_stashes),
+            PaletteCommand::new(
+                CommandId::OpenThemeEditor,
+                "View: Edit Theme",
+                Some("Ctrl+Shift+T"),
+                "View",
+            ),
         ];
 
         let filtered_indices: Vec<(usize, usize)> = (0..commands.len()).map(|i| (i, 0)).collect();
