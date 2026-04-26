@@ -86,6 +86,18 @@ impl StashesPanel {
             });
         });
     }
+
+    /// Open the branch-from-stash dialog for the given stash entry.
+    fn branch_stash(&self, index: usize, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace.upgrade() else {
+            return;
+        };
+        ws.update(cx, |ws, cx| {
+            ws.dialogs.stash_branch_dialog.update(cx, |d, cx| {
+                d.show_visible(index, cx);
+            });
+        });
+    }
 }
 
 impl Render for StashesPanel {
@@ -300,6 +312,28 @@ impl StashesPanel {
                                     move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                         let _ = w.update(cx, |this: &mut StashesPanel, cx| {
                                             this.pop_stash(idx, cx);
+                                        });
+                                    },
+                                ),
+                            );
+                        }
+
+                        // Branch
+                        {
+                            let w = weak.clone();
+                            item = item.child(
+                                IconButton::new(
+                                    ElementId::NamedInteger("branch-stash".into(), i as u64),
+                                    IconName::GitBranch,
+                                )
+                                .size(btn_size)
+                                .style(btn_style)
+                                .color(Color::Default)
+                                .tooltip("Create branch from stash")
+                                .on_click(
+                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                        let _ = w.update(cx, |this: &mut StashesPanel, cx| {
+                                            this.branch_stash(idx, cx);
                                         });
                                     },
                                 ),
