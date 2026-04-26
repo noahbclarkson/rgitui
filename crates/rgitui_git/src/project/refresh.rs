@@ -1125,60 +1125,6 @@ mod is_merged_tests {
     /// After: A --- M (main, merged)
     ///                 \
     ///                  B (branch)
-    /// graph_descendant_of(branch_tip=B, main_tip=M) should be true.
-    #[test]
-    fn debug_graph_descendant_of_semantics() {
-        let dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-        configure_signature(&repo);
-
-        let a = commit(&repo, "refs/heads/main", "A", None);
-        let b = commit(&repo, "refs/heads/branch", "B", Some(a));
-        let m = merge(&repo, "refs/heads/main", "refs/heads/branch", "Merge");
-
-        let m_commit = repo.find_commit(m).unwrap();
-        eprintln!("DEBUG: a={:?}", a);
-        eprintln!("DEBUG: b={:?}", b);
-        eprintln!("DEBUG: m={:?}", m);
-        eprintln!(
-            "DEBUG: M parents count: {}",
-            m_commit
-                .parent_id(0)
-                .map(|id| id.to_string())
-                .unwrap_or_else(|_| "none".into())
-        );
-        for i in 0..m_commit.parent_count() {
-            eprintln!("DEBUG: M parent[{}] = {:?}", i, m_commit.parent_id(i));
-        }
-
-        // Verify main ref points to M
-        let main_ref = repo.find_reference("refs/heads/main").unwrap();
-        eprintln!("DEBUG: main ref points to {:?}", main_ref.target().unwrap());
-
-        // Verify branch ref points to B
-        let branch_ref = repo.find_reference("refs/heads/branch").unwrap();
-        eprintln!(
-            "DEBUG: branch ref points to {:?}",
-            branch_ref.target().unwrap()
-        );
-
-        // git_graph_descendant_of(a, b) should return TRUE if 'a' is a descendant of 'b'
-        // based on libgit2 C source: walks 'a' back and checks if 'b' is reached
-        let walk_a = repo.graph_descendant_of(a, b).unwrap();
-        let walk_b = repo.graph_descendant_of(b, a).unwrap();
-        eprintln!("graph_descendant_of(a={:?}, b={:?}) = {}", a, b, walk_a);
-        eprintln!("graph_descendant_of(b={:?}, a={:?}) = {}", b, a, walk_b);
-        let walk_b_m = repo.graph_descendant_of(b, m).unwrap();
-        let walk_a_m = repo.graph_descendant_of(a, m).unwrap();
-        eprintln!("graph_descendant_of(b={:?}, m={:?}) = {}", b, m, walk_b_m);
-        eprintln!("graph_descendant_of(a={:?}, m={:?}) = {}", a, m, walk_a_m);
-    }
-
-    /// Repo structure:
-    ///   A (main, branch)
-    /// After: A --- M (main, merged)
-    ///                 \
-    ///                  B (branch)
     /// merge_base(branch_tip=B, main_tip=M) should equal B (B is ancestor of M).
     #[test]
     fn branch_merged_into_main_returns_true() {
