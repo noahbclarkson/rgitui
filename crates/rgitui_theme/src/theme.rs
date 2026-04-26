@@ -361,4 +361,27 @@ mod tests {
             .expect("replacement theme should be present");
         assert_eq!(stored.appearance, Appearance::Light);
     }
+
+    #[test]
+    fn upsert_theme_by_name_inserts_new_theme() {
+        let mut available = builtin_themes();
+        let initial_len = available.len();
+        let new_theme = Arc::new(Theme {
+            name: "My Custom Theme".into(),
+            appearance: Appearance::Dark,
+            colors: catppuccin_mocha_colors(),
+            status: catppuccin_mocha_status(),
+        });
+
+        upsert_theme_by_name(&mut available, new_theme.clone());
+
+        assert_eq!(available.len(), initial_len + 1);
+        let stored = available
+            .iter()
+            .find(|theme| theme.name == "My Custom Theme")
+            .expect("new theme should be present");
+        assert_eq!(stored.appearance, Appearance::Dark);
+        // Existing themes should be unaffected
+        assert!(available.iter().any(|t| t.name == "Catppuccin Mocha"));
+    }
 }

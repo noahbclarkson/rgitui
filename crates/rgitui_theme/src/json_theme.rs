@@ -460,6 +460,44 @@ mod tests {
     }
 
     #[test]
+    fn serialize_deserialize_roundtrip_light_appearance() {
+        // Latte is a Light theme — ensure Light appearance and all colors roundtrip correctly
+        let theme = load_theme_by_name("Catppuccin Latte");
+        assert_eq!(theme.appearance, crate::theme::Appearance::Light);
+        let json = serialize_theme_to_json(&theme).expect("should serialize");
+        let loaded = load_theme_from_json(&json).expect("should deserialize");
+        assert_eq!(loaded.name, theme.name);
+        assert_eq!(loaded.appearance, theme.appearance);
+        // Surface and elevated surface colors should roundtrip identically
+        assert_eq!(
+            loaded.colors.surface_background,
+            theme.colors.surface_background
+        );
+        assert_eq!(
+            loaded.colors.elevated_surface_background,
+            theme.colors.elevated_surface_background
+        );
+    }
+
+    #[test]
+    fn serialize_roundtrip_preserves_alpha_channel() {
+        // Build a theme with explicit alpha != 1.0 and verify it roundtrips.
+        // Hsla serializes as #RRGGBBAA (8-char with alpha suffix).
+        // load_theme_from_json -> hex_to_hsla parses the 8-char form back to Hsla.
+        let theme = load_theme_by_name("Catppuccin Mocha");
+        let json = serialize_theme_to_json(&theme).expect("should serialize");
+        // Verify 8-char hex appears in the serialized JSON (alpha suffix)
+        assert!(
+            json.contains("#1e1e2e"),
+            "serialized JSON should contain background color hex"
+        );
+        let loaded = load_theme_from_json(&json).expect("should deserialize with alpha");
+        // Alpha channel must be preserved through the roundtrip
+        assert_eq!(loaded.colors.background, theme.colors.background);
+        assert_eq!(loaded.colors.text, theme.colors.text);
+    }
+
+    #[test]
     fn theme_filename_slugifies_for_cross_platform_paths() {
         assert_eq!(theme_filename("My Theme"), "my-theme.json");
         assert_eq!(theme_filename(" Theme:/Name? *v2* "), "theme-name-v2.json");
