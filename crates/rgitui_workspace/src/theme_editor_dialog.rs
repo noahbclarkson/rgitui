@@ -4,8 +4,8 @@ use gpui::{
     IntoElement, KeyDownEvent, ParentElement, Render, Window,
 };
 use rgitui_theme::{
-    hex_to_hsla, hsla_to_hex, json_theme::save_theme_to_file, ActiveTheme, Appearance, Color,
-    StyledExt, Theme, ThemeState,
+    hex_to_hsla, hex_to_hsla_strict, hsla_to_hex, json_theme::save_theme_to_file, ActiveTheme,
+    Appearance, Color, StyledExt, Theme, ThemeState,
 };
 use rgitui_theme::{StatusColors, ThemeColors};
 use rgitui_ui::{Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput};
@@ -256,8 +256,10 @@ impl ThemeEditorDialog {
             if text.is_empty() {
                 continue;
             }
-            let hsla = hex_to_hsla(&text);
-            (field.setter)(&mut colors, hsla);
+            // Use strict parser: invalid hex → keep current color instead of silently saving black.
+            if let Some(hsla) = hex_to_hsla_strict(&text) {
+                (field.setter)(&mut colors, hsla);
+            }
         }
 
         for (i, field) in self.status_fields.iter().enumerate() {
@@ -265,8 +267,9 @@ impl ThemeEditorDialog {
             if text.is_empty() {
                 continue;
             }
-            let hsla = hex_to_hsla(&text);
-            (field.setter)(&mut status, hsla);
+            if let Some(hsla) = hex_to_hsla_strict(&text) {
+                (field.setter)(&mut status, hsla);
+            }
         }
 
         let mut theme = (*self.editable_theme).clone();
