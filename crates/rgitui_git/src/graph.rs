@@ -477,11 +477,7 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
                     let strip_until = rows
                         .iter()
                         .take(tip_idx)
-                        .position(|r| {
-                            r.edges
-                                .iter()
-                                .any(|e| e.to_lane == 0 && e.from_lane != 0)
-                        })
+                        .position(|r| r.edges.iter().any(|e| e.to_lane == 0 && e.from_lane != 0))
                         .map(|i| (i + 1).min(tip_idx))
                         .unwrap_or(tip_idx);
 
@@ -881,6 +877,54 @@ mod tests {
             !outgoing_from_feature_lane.iter().any(|e| e.to_lane == 1),
             "F_base must not emit a straight {{1, 1}} outgoing, got edges: {:?}",
             f_base.edges
+        );
+    }
+
+    #[test]
+    fn test_lane_zero_continues_from_first_curve_in_to_main_tip() {
+        // A side branch above main_tip curves into lane 0 at row 1, while
+        // another unrelated side branch occupies row 2 before main_tip
+        // appears at row 3.
+        //
+        // Old ghost-lane trimming stripped every lane-0 pass-through above
+        // main_tip, which removed row 2's `0 -> 0` edge and left the curve-in
+        // from row 1 dangling without continuity into main_tip.
+        //
+        // We should strip only through the first curve-in row, then keep lane
+        // 0 drawn on the remaining rows down to main_tip.
+        let commits = vec![
+            make_commit(10, &[20], vec![RefLabel::LocalBranch("feature-a".into())]),
+            make_commit(20, &[30], vec![]),
+            make_commit(15, &[40], vec![RefLabel::LocalBranch("feature-b".into())]),
+            make_commit(
+                30,
+                &[40],
+                vec![RefLabel::Head, RefLabel::LocalBranch("main".into())],
+            ),
+            make_commit(40, &[], vec![]),
+        ];
+        let rows = compute_graph(&commits);
+
+        let feature_a_lane = rows[1].node_lane;
+        assert_ne!(feature_a_lane, 0, "feature base should stay off lane 0");
+        assert!(
+            rows[1]
+                .edges
+                .iter()
+                .any(|e| e.from_lane == feature_a_lane && e.to_lane == 0),
+            "feature base should curve into lane 0"
+        );
+        assert!(
+            rows[2]
+                .edges
+                .iter()
+                .any(|e| e.from_lane == 0 && e.to_lane == 0),
+            "lane 0 pass-through should continue after the first curve-in"
+        );
+        assert_eq!(rows[3].node_lane, 0, "main tip should remain on lane 0");
+        assert!(
+            rows[3].has_incoming,
+            "main tip should keep an incoming line once a curve-in appears above it"
         );
     }
 
