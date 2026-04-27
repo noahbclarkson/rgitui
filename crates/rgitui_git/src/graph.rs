@@ -462,15 +462,31 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
     // above merges back into main — the lane only exists to hold the slot open
     // for main_tip. That produces a continuous column drawn all the way to the
     // top of the graph, which is misleading when the newest commits are on
-    // side branches. Strip any pure lane-0 pass-through (`0 -> 0`) on those
-    // upper rows. Edges with `from_lane == 0` or `to_lane == 0` that go to a
-    // different lane (merge-ins, divergences) are preserved.
+    // side branches. Strip pure lane-0 pass-throughs (`0 -> 0`) on rows
+    // up to AND INCLUDING the first row that converges into lane 0 from
+    // another lane. The converging edge itself handles lane 0 inside that
+    // row (curving down to lane 0 at row_bottom + 4); the next row's
+    // pass-through picks up the line with the standard 4 px overlap. Below
+    // that row, lane 0 must remain drawn so the curve actually reaches
+    // main_tip's dot — otherwise the side-branch edge dangles in mid-air on
+    // lane 0 with no commit at its end.
     if reserve_lane_0 {
         if let Some(tip) = main_tip {
             if let Some(&tip_idx) = oid_to_idx.get(&tip) {
                 if tip_idx > 0 {
+                    let strip_until = rows
+                        .iter()
+                        .take(tip_idx)
+                        .position(|r| {
+                            r.edges
+                                .iter()
+                                .any(|e| e.to_lane == 0 && e.from_lane != 0)
+                        })
+                        .map(|i| (i + 1).min(tip_idx))
+                        .unwrap_or(tip_idx);
+
                     let mut last_stripped = None;
-                    for (idx, row) in rows.iter_mut().enumerate().take(tip_idx) {
+                    for (idx, row) in rows.iter_mut().enumerate().take(strip_until) {
                         let before = row.edges.len();
                         row.edges.retain(|e| !(e.from_lane == 0 && e.to_lane == 0));
                         if row.edges.len() != before {
