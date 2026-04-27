@@ -423,6 +423,22 @@ mod tests {
     }
 
     #[test]
+    fn stash_entry_oid_different() {
+        let e0 = StashEntry {
+            index: 0,
+            message: "stash 0".into(),
+            oid: git2::Oid::zero(),
+        };
+        let e1 = StashEntry {
+            index: 0,
+            message: "stash 0".into(),
+            oid: git2::Oid::from_str("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2").unwrap(),
+        };
+        assert_ne!(e0.oid, e1.oid);
+        assert_ne!(e0, e1);
+    }
+
+    #[test]
     fn stash_entry_debug() {
         let entry = StashEntry {
             index: 3,
