@@ -105,11 +105,31 @@ impl Workspace {
             return;
         }
 
+        // Dismiss theme editor on Escape
+        if key == "escape" && self.overlays.theme_editor.read(cx).is_visible() {
+            self.overlays.theme_editor.update(cx, |te, cx| {
+                te.dismiss(cx);
+            });
+            self.restore_focus(window, cx);
+            return;
+        }
+
+        // Ctrl+Shift+T to open theme editor (Ctrl+9 as alternative)
+        if (modifiers.control || modifiers.platform) && modifiers.shift && key == "t" {
+            self.execute_command(CommandId::OpenThemeEditor, cx);
+            return;
+        }
+        if modifiers.alt && !modifiers.control && key == "9" {
+            self.execute_command(CommandId::OpenThemeEditor, cx);
+            return;
+        }
+
         // When an overlay is active, only allow modal toggle shortcuts (below) and Escape (above).
         // Block all panel-specific shortcuts (j/k, Alt+1/2/3/4, Tab, resize, etc.)
         let any_overlay_active = self.overlays.command_palette.read(cx).is_visible()
             || self.overlays.interactive_rebase.read(cx).is_visible()
             || self.overlays.settings_modal.read(cx).is_visible()
+            || self.overlays.theme_editor.read(cx).is_visible()
             || self.dialogs.branch_dialog.read(cx).is_visible()
             || self.dialogs.tag_dialog.read(cx).is_visible()
             || self.dialogs.worktree_dialog.read(cx).is_visible()

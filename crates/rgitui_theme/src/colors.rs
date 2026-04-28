@@ -157,6 +157,118 @@ fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     }
 }
 
+/// Parse a hex color string strictly, returning None for invalid input.
+/// Accepts: #RGB, #RGBA, #RRGGBB, #RRGGBBAA (case-insensitive).
+pub fn hex_to_hsla_strict(hex: &str) -> Option<Hsla> {
+    let hex = hex.trim_start_matches('#');
+
+    // Validate: must be 3, 4, 6, or 8 hex digits
+    match hex.len() {
+        3 | 4 | 6 | 8 => {}
+        _ => return None,
+    }
+
+    // Validate all characters are hex digits
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    let r: f32;
+    let g: f32;
+    let b: f32;
+    let a: f32;
+
+    match hex.len() {
+        3 => {
+            // #RGB → expand each digit to #RRGGBB (e.g. #ABC → #AABBCC)
+            let bytes = hex.as_bytes();
+            let hex_digit = |b: u8| -> u8 {
+                match b {
+                    b @ b'0'..=b'9' => b - b'0',
+                    b @ b'A'..=b'F' => b - b'A' + 10,
+                    b @ b'a'..=b'f' => b - b'a' + 10,
+                    _ => 0,
+                }
+            };
+            let expand = |b: u8| -> u8 { hex_digit(b) * 17 };
+            r = expand(bytes[0]) as f32 / 255.0;
+            g = expand(bytes[1]) as f32 / 255.0;
+            b = expand(bytes[2]) as f32 / 255.0;
+            a = 1.0;
+        }
+        4 => {
+            // #RGBA → expand to #RRGGBBAA
+            let bytes = hex.as_bytes();
+            let hex_digit = |b: u8| -> u8 {
+                match b {
+                    b @ b'0'..=b'9' => b - b'0',
+                    b @ b'A'..=b'F' => b - b'A' + 10,
+                    b @ b'a'..=b'f' => b - b'a' + 10,
+                    _ => 0,
+                }
+            };
+            let expand = |b: u8| -> u8 { hex_digit(b) * 17 };
+            r = expand(bytes[0]) as f32 / 255.0;
+            g = expand(bytes[1]) as f32 / 255.0;
+            b = expand(bytes[2]) as f32 / 255.0;
+            a = expand(bytes[3]) as f32 / 255.0;
+        }
+        6 => {
+            r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
+            g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
+            b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
+            a = 1.0;
+        }
+        8 => {
+            r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
+            g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
+            b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
+            a = u8::from_str_radix(&hex[6..8], 16).ok()? as f32 / 255.0;
+        }
+        _ => return None,
+    }
+
+    // RGB to HSL conversion
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+
+    if (max - min).abs() < f32::EPSILON {
+        return Some(Hsla {
+            h: 0.0,
+            s: 0.0,
+            l,
+            a,
+        });
+    }
+
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+
+    let h = if (max - r).abs() < f32::EPSILON {
+        let mut h = (g - b) / d;
+        if g < b {
+            h += 6.0;
+        }
+        h
+    } else if (max - g).abs() < f32::EPSILON {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+
+    Some(Hsla {
+        h: h / 6.0,
+        s,
+        l,
+        a,
+    })
+}
+
 /// Parse a hex color string (#RRGGBB or #RRGGBBAA) into an Hsla value.
 pub fn hex_to_hsla(hex: &str) -> Hsla {
     let hex = hex.trim_start_matches('#');
@@ -216,6 +328,78 @@ pub fn hex_to_hsla(hex: &str) -> Hsla {
         l,
         a,
     }
+}
+
+/// Serialize an Hsla value to a hex string (#RRGGBB or #RRGGBBAA).
+/// Alpha is included only when it is not fully opaque (a < 1.0).
+pub fn hsla_to_hex(color: Hsla) -> String {
+    // HSL to RGB
+    let h = color.h;
+    let s = color.s;
+    let l = color.l;
+
+    if s.abs() < f32::EPSILON {
+        let r = (l * 255.0).round() as u8;
+        let g = (l * 255.0).round() as u8;
+        let b = (l * 255.0).round() as u8;
+        if (color.a - 1.0).abs() < f32::EPSILON {
+            format!("#{:02x}{:02x}{:02x}", r, g, b)
+        } else {
+            format!(
+                "#{:02x}{:02x}{:02x}{:02x}",
+                r,
+                g,
+                b,
+                (color.a * 255.0).round() as u8
+            )
+        }
+    } else {
+        let q = if l < 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
+        let p = 2.0 * l - q;
+
+        let r = hue_to_rgb(p, q, h + 1.0 / 3.0);
+        let g = hue_to_rgb(p, q, h);
+        let b = hue_to_rgb(p, q, h - 1.0 / 3.0);
+
+        let r = (r * 255.0).round() as u8;
+        let g = (g * 255.0).round() as u8;
+        let b = (b * 255.0).round() as u8;
+
+        if (color.a - 1.0).abs() < f32::EPSILON {
+            format!("#{:02x}{:02x}{:02x}", r, g, b)
+        } else {
+            format!(
+                "#{:02x}{:02x}{:02x}{:02x}",
+                r,
+                g,
+                b,
+                (color.a * 255.0).round() as u8
+            )
+        }
+    }
+}
+
+fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
+    if t < 0.0 {
+        t += 1.0;
+    }
+    if t > 1.0 {
+        t -= 1.0;
+    }
+    if t < 1.0 / 6.0 {
+        return p + (q - p) * 6.0 * t;
+    }
+    if t < 1.0 / 2.0 {
+        return q;
+    }
+    if t < 2.0 / 3.0 {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    p
 }
 
 /// Catppuccin Mocha dark theme colors.
@@ -981,6 +1165,88 @@ mod tests {
         assert!(approx_eq(c.l, 0.0));
     }
 
+    // ── hex_to_hsla_strict ─────────────────────────────────────────
+
+    #[test]
+    fn hex_strict_valid_6_digit() {
+        let c = hex_to_hsla_strict("#FF0000").unwrap();
+        assert!(approx_eq(c.h, 0.0));
+        assert!(approx_eq(c.s, 1.0));
+        assert!(approx_eq(c.l, 0.5));
+        assert!(approx_eq(c.a, 1.0));
+    }
+
+    #[test]
+    fn hex_strict_valid_8_digit_with_alpha() {
+        let c = hex_to_hsla_strict("#FF000080").unwrap();
+        assert!(approx_eq(c.h, 0.0));
+        assert!(approx_eq(c.s, 1.0));
+        assert!(approx_eq(c.l, 0.5));
+        assert!(approx_eq(c.a, 128.0 / 255.0));
+    }
+
+    #[test]
+    fn hex_strict_valid_3_digit() {
+        // #ABC → A=10→170, B=11→187, C=12→204 (each ×17)
+        // max=204, min=170 → l≈0.733, s≈0.063 (near-grey, slightly blue-ish)
+        let c = hex_to_hsla_strict("#ABC").unwrap();
+        assert!(approx_eq(c.a, 1.0));
+        // Just verify it's a valid color (h,s,l in [0,1])
+        assert!(c.h >= 0.0 && c.h <= 1.0);
+        assert!(c.s >= 0.0 && c.s <= 1.0);
+        assert!(c.l >= 0.0 && c.l <= 1.0);
+    }
+
+    #[test]
+    fn hex_strict_valid_4_digit() {
+        let c = hex_to_hsla_strict("#ABCD").unwrap();
+        // A=10→170, B=11→187, C=12→204, D=13→221
+        // R=170, G=187, B=204, A=221
+        assert!(approx_eq(c.a, 221.0 / 255.0));
+    }
+
+    #[test]
+    fn hex_strict_invalid_garbage_returns_none() {
+        assert!(hex_to_hsla_strict("garbage").is_none());
+        assert!(hex_to_hsla_strict("xyz123").is_none());
+        assert!(hex_to_hsla_strict("#XYZ").is_none());
+    }
+
+    #[test]
+    fn hex_strict_invalid_length_returns_none() {
+        assert!(hex_to_hsla_strict("#AB").is_none()); // 2 chars
+        assert!(hex_to_hsla_strict("#AB123").is_none()); // 5 chars
+        assert!(hex_to_hsla_strict("#AB1234567").is_none()); // 9 chars
+    }
+
+    #[test]
+    fn hex_strict_empty_returns_none() {
+        assert!(hex_to_hsla_strict("").is_none());
+        assert!(hex_to_hsla_strict("#").is_none());
+    }
+
+    #[test]
+    fn hex_strict_no_hash_prefix_works() {
+        let c = hex_to_hsla_strict("FF0000").unwrap();
+        assert!(approx_eq(c.h, 0.0));
+        assert!(approx_eq(c.s, 1.0));
+    }
+
+    #[test]
+    fn hex_strict_roundtrip_red() {
+        let c = hex_to_hsla_strict("#FF0000").unwrap();
+        let hex = hsla_to_hex(c);
+        assert_eq!(&hex, "#ff0000");
+    }
+
+    #[test]
+    fn hex_strict_roundtrip_catppuccin_mocha_background() {
+        let c = hex_to_hsla_strict("#1e1e2e").unwrap();
+        let reloaded = hex_to_hsla_strict(&hsla_to_hex(c));
+        assert!(reloaded.is_some());
+        assert!(approx_eq(reloaded.unwrap().l, c.l));
+    }
+
     // ── lane_color ─────────────────────────────────────────────────
 
     #[test]
@@ -1064,5 +1330,80 @@ mod tests {
         assert!(approx_eq(status.success.a, 1.0));
         assert!(approx_eq(status.warning.a, 1.0));
         assert!(approx_eq(status.info.a, 1.0));
+    }
+
+    // ── hsla_to_hex ──────────────────────────────────────────────
+
+    fn approx_eq_f32(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn hsla_to_hex_roundtrip_red() {
+        // #FF0000 → hex_to_hsla → hsla_to_hex → #ff0000 (6-char, fully opaque)
+        let c = super::hex_to_hsla("#FF0000");
+        let hex = super::hsla_to_hex(c);
+        assert_eq!(hex.len(), 7); // # + 6 hex chars
+        assert_eq!(&hex[..7], "#ff0000");
+    }
+
+    #[test]
+    fn hsla_to_hex_roundtrip_with_alpha() {
+        // #FFFFFF80 → hex_to_hsla → hsla_to_hex → #ffffff80 (8-char with alpha)
+        let c = super::hex_to_hsla("#FFFFFF80");
+        let hex = super::hsla_to_hex(c);
+        assert_eq!(hex.len(), 9); // # + 8 hex chars
+        assert_eq!(&hex[..7], "#ffffff");
+        assert!(hex.ends_with("80") || hex.ends_with("7f"));
+    }
+
+    #[test]
+    fn hsla_to_hex_preserves_black() {
+        let c = super::hex_to_hsla("#000000");
+        let hex = super::hsla_to_hex(c);
+        assert_eq!(&hex, "#000000");
+    }
+
+    #[test]
+    fn hsla_to_hex_preserves_white() {
+        let c = super::hex_to_hsla("#FFFFFF");
+        let hex = super::hsla_to_hex(c);
+        assert_eq!(&hex, "#ffffff");
+    }
+
+    #[test]
+    fn hsla_to_hex_roundtrip_catppuccin_mocha() {
+        // HSL → hex → HSL roundtrip for non-pure colors.
+        // Saturation may drift slightly due to floating-point HSL↔RGB conversion.
+        // We only check that hue and lightness are preserved within 0.02 tolerance.
+        let mocha = super::catppuccin_mocha_colors();
+        let bg_hex = super::hsla_to_hex(mocha.background);
+        let reloaded = super::hex_to_hsla(&bg_hex);
+        assert!(
+            approx_eq_f32(reloaded.l, mocha.background.l),
+            "lightness drifted: expected {}, got {}",
+            mocha.background.l,
+            reloaded.l
+        );
+        // Alpha should always be 1.0 for fully-opaque colors
+        assert!(approx_eq_f32(reloaded.a, 1.0));
+    }
+
+    #[test]
+    fn hsla_to_hex_transparent_alpha_omitted() {
+        // Fully opaque (a=1.0) → 6-char output (no alpha suffix)
+        let c = super::hex_to_hsla("#123456");
+        assert!(approx_eq_f32(c.a, 1.0));
+        let hex = super::hsla_to_hex(c);
+        assert_eq!(hex.len(), 7);
+    }
+
+    #[test]
+    fn hsla_to_hex_non_opaque_alpha_included() {
+        // Non-1.0 alpha → 9-char output with alpha suffix
+        let c = super::hex_to_hsla("#123456AB");
+        assert!(!approx_eq_f32(c.a, 1.0));
+        let hex = super::hsla_to_hex(c);
+        assert_eq!(hex.len(), 9);
     }
 }

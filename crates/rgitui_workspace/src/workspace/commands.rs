@@ -68,6 +68,11 @@ impl Workspace {
                     });
                 }
             }
+            CommandId::OpenThemeEditor => {
+                self.overlays.theme_editor.update(cx, |te, cx| {
+                    te.show_for_active_theme(cx);
+                });
+            }
             cmd => {
                 let Some(tab) = self.tabs.get(self.active_tab).cloned() else {
                     return;
@@ -492,7 +497,8 @@ impl Workspace {
             | CommandId::Shortcuts
             | CommandId::WorkspaceHome
             | CommandId::RestoreLastWorkspace
-            | CommandId::Undo => {}
+            | CommandId::Undo
+            | CommandId::OpenThemeEditor => {}
         }
     }
 

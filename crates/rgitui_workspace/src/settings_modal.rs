@@ -21,6 +21,7 @@ pub enum SettingsModalEvent {
     Dismissed,
     ThemeChanged(String),
     SettingsChanged,
+    OpenThemeEditor,
 }
 
 /// Which section of the settings is currently active.
@@ -1882,6 +1883,47 @@ impl SettingsModal {
 
         card = card.child(theme_grid);
         section = section.child(card);
+
+        // Edit theme button
+        section = section.child({
+            let mut card = Self::setting_card(cx);
+            card = card.child(
+                div()
+                    .h_flex()
+                    .w_full()
+                    .items_center()
+                    .child(
+                        div()
+                            .v_flex()
+                            .flex_1()
+                            .gap(px(2.))
+                            .child(
+                                Label::new("Custom Theme Editor")
+                                    .size(LabelSize::Small)
+                                    .weight(FontWeight::SEMIBOLD),
+                            )
+                            .child(
+                                Label::new(
+                                    "Edit colors, create custom themes, and export as JSON.",
+                                )
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                            ),
+                    )
+                    .child(
+                        Button::new("open-theme-editor", "Edit Theme")
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Subtle)
+                            .icon(IconName::Edit)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                cx.emit(SettingsModalEvent::OpenThemeEditor);
+                                this.dismiss(cx);
+                            })),
+                    ),
+            );
+            card
+        });
+
         section
     }
 

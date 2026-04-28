@@ -4,7 +4,7 @@ use rgitui_git::GitOperationUpdate;
 use crate::{
     BranchDialog, CommandPalette, ConfirmDialog, CreatePrDialog, GlobalSearchView,
     InteractiveRebase, RenameDialog, RepoOpener, SettingsModal, ShortcutsHelp, StashBranchDialog,
-    TagDialog, WorktreeDialog,
+    TagDialog, ThemeEditorDialog, WorktreeDialog,
 };
 
 use super::{ActiveOperation, FocusedPanel, OperationOutput};
@@ -38,6 +38,7 @@ pub(crate) struct OverlayState {
     pub repo_opener: Entity<RepoOpener>,
     pub shortcuts_help: Entity<ShortcutsHelp>,
     pub global_search: Entity<GlobalSearchView>,
+    pub theme_editor: Entity<ThemeEditorDialog>,
 }
 
 /// Git operation tracking state.

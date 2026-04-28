@@ -73,6 +73,7 @@ impl Render for Workspace {
                 .child(self.overlays.command_palette.clone())
                 .child(self.overlays.interactive_rebase.clone())
                 .child(self.overlays.settings_modal.clone())
+                .child(self.overlays.theme_editor.clone())
                 .child(self.dialogs.branch_dialog.clone())
                 .child(self.dialogs.tag_dialog.clone())
                 .child(self.dialogs.worktree_dialog.clone())

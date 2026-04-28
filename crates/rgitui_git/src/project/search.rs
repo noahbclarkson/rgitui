@@ -355,6 +355,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_grep_output_malformed_fallback_simple_split() {
+        // When every segment before the last looks non-numeric (no purely-digit
+        // segment found), the content colon lands at position 0 in the main
+        // loop. The fallback does a simple split: first ':' = path, second ':'
+        // = lineno/content. For "foo:bar:baz": fallback splits "foo"/"bar:baz",
+        // then "bar"/"baz" → path="foo", line=1 (non-numeric), content="baz".
+        let raw = "foo:bar:baz";
+        let results = parse_grep_output(raw);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, std::path::PathBuf::from("foo"));
+        assert_eq!(results[0].line_number, 1); // "bar" is not numeric → falls back to 1
+        assert_eq!(results[0].content, "baz"); // second split gives "bar"/"baz"
+    }
+
+    #[test]
     fn parse_grep_output_ftp_url_in_content() {
         // FTP URLs also have colons in the scheme.
         let raw = "readme.txt:1:Download from ftp://server.com/file";

@@ -94,6 +94,8 @@ impl ShortcutsHelp {
                         "Alt+5 / 6 / 7",
                         "Toggle issues / PRs / branch health panels",
                     ),
+                    ("Alt+8", "Toggle stashes panel"),
+                    ("Ctrl+Shift+T / Alt+9", "Open theme editor"),
                     ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
                     ("Enter / Space", "Activate selected sidebar item"),
                 ],

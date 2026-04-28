@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use gpui::{point, px, App, BoxShadow, Global, Hsla, Styled};
 use rgitui_settings::AppearanceMode;
+use serde::Serialize;
 
 use crate::colors::{
     catppuccin_latte_colors, catppuccin_latte_status, catppuccin_mocha_colors,
@@ -11,14 +12,15 @@ use crate::colors::{
 };
 
 /// Visual appearance mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Appearance {
     Light,
     Dark,
 }
 
 /// A complete theme definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Theme {
     pub name: String,
     pub appearance: Appearance,
@@ -33,6 +35,14 @@ pub struct ThemeState {
 }
 
 impl Global for ThemeState {}
+
+fn upsert_theme_by_name(available: &mut Vec<Arc<Theme>>, theme: Arc<Theme>) {
+    if let Some(existing) = available.iter_mut().find(|t| t.name == theme.name) {
+        *existing = theme;
+    } else {
+        available.push(theme);
+    }
+}
 
 impl ThemeState {
     pub fn theme(&self) -> &Arc<Theme> {
@@ -70,6 +80,18 @@ impl ThemeState {
         if let Some(theme) = self.available.iter().find(|t| t.name == name) {
             self.active = theme.clone();
         }
+    }
+
+    /// Set the active theme directly (used for custom themes).
+    pub fn set_active_theme(&mut self, theme: Arc<Theme>) {
+        self.active = theme;
+    }
+
+    /// Insert a custom theme into the available list and activate it.
+    /// If a theme with the same name already exists, it is replaced.
+    pub fn insert_theme(&mut self, theme: Arc<Theme>) {
+        upsert_theme_by_name(&mut self.available, theme.clone());
+        self.active = theme;
     }
 }
 
@@ -151,7 +173,7 @@ pub fn init(cx: &mut App) {
                             Ok(json) => match crate::json_theme::load_theme_from_json(&json) {
                                 Ok(theme) => {
                                     log::info!("Loaded custom theme: {}", theme.name);
-                                    available.push(Arc::new(theme));
+                                    upsert_theme_by_name(&mut available, Arc::new(theme));
                                 }
                                 Err(e) => {
                                     log::warn!("Failed to parse theme {}: {}", path.display(), e)
@@ -315,3 +337,51 @@ pub trait StyledExt: Styled + Sized {
 }
 
 impl<E: Styled> StyledExt for E {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_theme_by_name_replaces_existing_theme() {
+        let mut available = builtin_themes();
+        let replacement = Arc::new(Theme {
+            name: "Catppuccin Mocha".into(),
+            appearance: Appearance::Light,
+            colors: catppuccin_latte_colors(),
+            status: catppuccin_latte_status(),
+        });
+
+        upsert_theme_by_name(&mut available, replacement.clone());
+
+        assert_eq!(available.len(), builtin_themes().len());
+        let stored = available
+            .iter()
+            .find(|theme| theme.name == "Catppuccin Mocha")
+            .expect("replacement theme should be present");
+        assert_eq!(stored.appearance, Appearance::Light);
+    }
+
+    #[test]
+    fn upsert_theme_by_name_inserts_new_theme() {
+        let mut available = builtin_themes();
+        let initial_len = available.len();
+        let new_theme = Arc::new(Theme {
+            name: "My Custom Theme".into(),
+            appearance: Appearance::Dark,
+            colors: catppuccin_mocha_colors(),
+            status: catppuccin_mocha_status(),
+        });
+
+        upsert_theme_by_name(&mut available, new_theme.clone());
+
+        assert_eq!(available.len(), initial_len + 1);
+        let stored = available
+            .iter()
+            .find(|theme| theme.name == "My Custom Theme")
+            .expect("new theme should be present");
+        assert_eq!(stored.appearance, Appearance::Dark);
+        // Existing themes should be unaffected
+        assert!(available.iter().any(|t| t.name == "Catppuccin Mocha"));
+    }
+}
