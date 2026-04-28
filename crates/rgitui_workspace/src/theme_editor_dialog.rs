@@ -4,8 +4,8 @@ use gpui::{
     IntoElement, KeyDownEvent, ParentElement, Render, Window,
 };
 use rgitui_theme::{
-    hex_to_hsla_strict, hsla_to_hex, json_theme::save_theme_to_file, ActiveTheme,
-    Appearance, Color, StyledExt, Theme, ThemeState,
+    hex_to_hsla_strict, hsla_to_hex, json_theme::save_theme_to_file, ActiveTheme, Appearance,
+    Color, StyledExt, Theme, ThemeState,
 };
 use rgitui_theme::{StatusColors, ThemeColors};
 use rgitui_ui::{Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput};
