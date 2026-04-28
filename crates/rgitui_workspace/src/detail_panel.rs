@@ -1683,4 +1683,112 @@ mod tests {
             Color::Conflict
         );
     }
+
+    // --- build_cached_file_tree tests ---
+
+    fn make_file_diff(path: &str, kind: FileChangeKind) -> FileDiff {
+        FileDiff {
+            path: std::path::PathBuf::from(path),
+            hunks: vec![],
+            additions: 10,
+            deletions: 5,
+            kind,
+        }
+    }
+
+    #[test]
+    fn test_build_cached_file_tree_empty() {
+        let files: &[FileDiff] = &[];
+        let cached = build_cached_file_tree(files);
+        assert!(cached.flat_rows.is_empty());
+    }
+
+    #[test]
+    fn test_build_cached_file_tree_single_file() {
+        let files = vec![make_file_diff("src/main.rs", FileChangeKind::Modified)];
+        let cached = build_cached_file_tree(&files);
+        assert_eq!(cached.flat_rows.len(), 1);
+        let row = &cached.flat_rows[0];
+        assert_eq!(row.file_index, 0);
+        assert_eq!(row.file_name.as_str(), "main.rs");
+        assert_eq!(row.dir_path.as_str(), "src/");
+        assert_eq!(row.additions, 10);
+        assert_eq!(row.deletions, 5);
+    }
+
+    #[test]
+    fn test_build_cached_file_tree_file_at_root() {
+        let files = vec![make_file_diff("Cargo.toml", FileChangeKind::Added)];
+        let cached = build_cached_file_tree(&files);
+        assert_eq!(cached.flat_rows.len(), 1);
+        let row = &cached.flat_rows[0];
+        assert_eq!(row.file_name.as_str(), "Cargo.toml");
+        assert!(row.dir_path.is_empty());
+    }
+
+    #[test]
+    fn test_build_cached_file_tree_nested_path() {
+        let files = vec![make_file_diff(
+            "crates/rgitui_workspace/src/panel.rs",
+            FileChangeKind::Modified,
+        )];
+        let cached = build_cached_file_tree(&files);
+        let row = &cached.flat_rows[0];
+        assert_eq!(row.file_name.as_str(), "panel.rs");
+        assert_eq!(row.dir_path.as_str(), "crates/rgitui_workspace/src/");
+    }
+
+    #[test]
+    fn test_build_cached_file_tree_multiple_files_order_preserved() {
+        let files = vec![
+            make_file_diff("a.rs", FileChangeKind::Added),
+            make_file_diff("b.rs", FileChangeKind::Modified),
+            make_file_diff("c.rs", FileChangeKind::Deleted),
+        ];
+        let cached = build_cached_file_tree(&files);
+        assert_eq!(cached.flat_rows.len(), 3);
+        assert_eq!(cached.flat_rows[0].file_index, 0);
+        assert_eq!(cached.flat_rows[1].file_index, 1);
+        assert_eq!(cached.flat_rows[2].file_index, 2);
+    }
+
+    #[test]
+    fn test_build_cached_file_tree_file_change_kinds() {
+        let files = vec![
+            make_file_diff("added.rs", FileChangeKind::Added),
+            make_file_diff("modified.rs", FileChangeKind::Modified),
+            make_file_diff("deleted.rs", FileChangeKind::Deleted),
+            make_file_diff("renamed.rs", FileChangeKind::Renamed),
+            make_file_diff("copied.rs", FileChangeKind::Copied),
+            make_file_diff("type_change.rs", FileChangeKind::TypeChange),
+            make_file_diff("untracked.rs", FileChangeKind::Untracked),
+            make_file_diff("conflicted.rs", FileChangeKind::Conflicted),
+        ];
+        let cached = build_cached_file_tree(&files);
+        assert_eq!(cached.flat_rows.len(), 8);
+        // Verify each kind gets the correct short code
+        assert_eq!(cached.flat_rows[0].change_code.as_str(), "A");
+        assert_eq!(cached.flat_rows[1].change_code.as_str(), "M");
+        assert_eq!(cached.flat_rows[2].change_code.as_str(), "D");
+        assert_eq!(cached.flat_rows[3].change_code.as_str(), "R");
+        assert_eq!(cached.flat_rows[4].change_code.as_str(), "C");
+        assert_eq!(cached.flat_rows[5].change_code.as_str(), "T");
+        assert_eq!(cached.flat_rows[6].change_code.as_str(), "?");
+        assert_eq!(cached.flat_rows[7].change_code.as_str(), "!");
+    }
+
+    #[test]
+    fn test_build_cached_file_tree_deeply_nested() {
+        let files = vec![make_file_diff(
+            "very/deeply/nested/directory/structure/file.rs",
+            FileChangeKind::Modified,
+        )];
+        let cached = build_cached_file_tree(&files);
+        let row = &cached.flat_rows[0];
+        assert_eq!(row.file_name.as_str(), "file.rs");
+        assert_eq!(
+            row.dir_path.as_str(),
+            "very/deeply/nested/directory/structure/"
+        );
+    }
 }
