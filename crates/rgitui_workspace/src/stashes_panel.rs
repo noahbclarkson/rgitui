@@ -86,6 +86,18 @@ impl StashesPanel {
             });
         });
     }
+
+    /// Open the branch-from-stash dialog for the given stash entry.
+    fn branch_stash(&self, index: usize, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace.upgrade() else {
+            return;
+        };
+        ws.update(cx, |ws, cx| {
+            ws.dialogs.stash_branch_dialog.update(cx, |d, cx| {
+                d.show_visible(index, cx);
+            });
+        });
+    }
 }
 
 impl Render for StashesPanel {
@@ -306,6 +318,28 @@ impl StashesPanel {
                             );
                         }
 
+                        // Branch
+                        {
+                            let w = weak.clone();
+                            item = item.child(
+                                IconButton::new(
+                                    ElementId::NamedInteger("branch-stash".into(), i as u64),
+                                    IconName::GitBranch,
+                                )
+                                .size(btn_size)
+                                .style(btn_style)
+                                .color(Color::Default)
+                                .tooltip("Create branch from stash")
+                                .on_click(
+                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                        let _ = w.update(cx, |this: &mut StashesPanel, cx| {
+                                            this.branch_stash(idx, cx);
+                                        });
+                                    },
+                                ),
+                            );
+                        }
+
                         // Drop
                         {
                             let w = weak.clone();
@@ -385,6 +419,22 @@ mod tests {
             oid: git2::Oid::zero(),
         };
         assert_ne!(e0.message, e1.message);
+        assert_ne!(e0, e1);
+    }
+
+    #[test]
+    fn stash_entry_oid_different() {
+        let e0 = StashEntry {
+            index: 0,
+            message: "stash 0".into(),
+            oid: git2::Oid::zero(),
+        };
+        let e1 = StashEntry {
+            index: 0,
+            message: "stash 0".into(),
+            oid: git2::Oid::from_str("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2").unwrap(),
+        };
+        assert_ne!(e0.oid, e1.oid);
         assert_ne!(e0, e1);
     }
 
