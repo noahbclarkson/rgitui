@@ -12,6 +12,8 @@ use super::{BottomPanelMode, ProjectTab, RightPanelMode, Workspace};
 impl Workspace {
     /// Open a repository as a new tab.
     pub fn open_repo(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) -> Result<()> {
+        // Normalise UNC/WSL2 paths on Windows before any validation or open.
+        let path = rgitui_git::normalize_repo_path(path);
         log::info!("open_repo: path={}", path.display());
         // Check if already open
         if let Some(idx) = self
