@@ -4,7 +4,7 @@ use gpui::{
     IntoElement, KeyDownEvent, ParentElement, Render, Window,
 };
 use rgitui_theme::{
-    hex_to_hsla, hex_to_hsla_strict, hsla_to_hex, json_theme::save_theme_to_file, ActiveTheme,
+    hex_to_hsla_strict, hsla_to_hex, json_theme::save_theme_to_file, ActiveTheme,
     Appearance, Color, StyledExt, Theme, ThemeState,
 };
 use rgitui_theme::{StatusColors, ThemeColors};
@@ -537,18 +537,8 @@ impl Render for ThemeEditorDialog {
 }
 
 impl ThemeEditorDialog {
-    /// Resolve the swatch color: use the typed hex if it is a valid 6- or 8-char
-    /// value, otherwise fall back to the theme's current color for that field so
-    /// a half-typed or cleared input does not flash to black.
     fn preview_color(hex: &str, fallback: Hsla) -> Hsla {
-        let trimmed = hex.trim().trim_start_matches('#');
-        let valid_length = matches!(trimmed.len(), 6 | 8);
-        let all_hex = trimmed.chars().all(|c| c.is_ascii_hexdigit());
-        if valid_length && all_hex {
-            hex_to_hsla(hex)
-        } else {
-            fallback
-        }
+        hex_to_hsla_strict(hex.trim()).unwrap_or(fallback)
     }
 }
 

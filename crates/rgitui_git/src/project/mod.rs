@@ -21,18 +21,8 @@ use std::sync::Arc;
 
 use crate::types::*;
 
-/// Normalize a repository path before passing it to libgit2.
-///
-/// On Windows, libgit2 requires UNC paths (network shares, WSL2 filesystems)
-/// to use forward-slash separators instead of backslashes. This converts
-/// `\\server\share\path` → `//server/share/path`, which libgit2 can parse.
-///
-/// The most common case is WSL2: users on Windows can browse to a repo at
-/// `\\wsl.localhost\distro\home\user\repo` but libgit2 rejects the
-/// backslash form. After normalisation the path becomes
-/// `//wsl.localhost/distro/home/user/repo` and opens successfully.
-///
-/// On non-Windows platforms this function is a no-op.
+/// Normalize UNC paths (`\\server\share\…` → `//server/share/…`) for libgit2
+/// on Windows. No-op on other platforms.
 pub fn normalize_repo_path(path: PathBuf) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -54,14 +44,17 @@ pub fn normalize_repo_path(path: PathBuf) -> PathBuf {
 /// Create a `git` [`Command`] with `CREATE_NO_WINDOW` set on Windows so that
 /// spawning it from a GUI application never flashes a visible console window.
 pub(crate) fn git_command() -> Command {
-    #[allow(unused_mut)]
-    let mut cmd = Command::new("git");
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new("git");
         cmd.creation_flags(0x08000000);
+        cmd
     }
-    cmd
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("git")
+    }
 }
 
 pub use bisect::{compute_bisect_log, is_bisect_in_progress, BisectDecision, BisectLogEntry};

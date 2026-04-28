@@ -269,65 +269,15 @@ pub fn hex_to_hsla_strict(hex: &str) -> Option<Hsla> {
     })
 }
 
-/// Parse a hex color string (#RRGGBB or #RRGGBBAA) into an Hsla value.
+/// Parse a hex color string into an Hsla value, returning opaque black for invalid input.
+/// Accepts #RGB, #RGBA, #RRGGBB, #RRGGBBAA (case-insensitive).
 pub fn hex_to_hsla(hex: &str) -> Hsla {
-    let hex = hex.trim_start_matches('#');
-    let (r, g, b, a) = match hex.len() {
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32 / 255.0;
-            (r, g, b, 1.0)
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32 / 255.0;
-            let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255) as f32 / 255.0;
-            (r, g, b, a)
-        }
-        _ => (0.0, 0.0, 0.0, 1.0),
-    };
-
-    // RGB to HSL conversion
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let l = (max + min) / 2.0;
-
-    if (max - min).abs() < f32::EPSILON {
-        return Hsla {
-            h: 0.0,
-            s: 0.0,
-            l,
-            a,
-        };
-    }
-
-    let d = max - min;
-    let s = if l > 0.5 {
-        d / (2.0 - max - min)
-    } else {
-        d / (max + min)
-    };
-
-    let h = if (max - r).abs() < f32::EPSILON {
-        let mut h = (g - b) / d;
-        if g < b {
-            h += 6.0;
-        }
-        h
-    } else if (max - g).abs() < f32::EPSILON {
-        (b - r) / d + 2.0
-    } else {
-        (r - g) / d + 4.0
-    };
-
-    Hsla {
-        h: h / 6.0,
-        s,
-        l,
-        a,
-    }
+    hex_to_hsla_strict(hex).unwrap_or(Hsla {
+        h: 0.0,
+        s: 0.0,
+        l: 0.0,
+        a: 1.0,
+    })
 }
 
 /// Serialize an Hsla value to a hex string (#RRGGBB or #RRGGBBAA).
@@ -1150,8 +1100,8 @@ mod tests {
 
     #[test]
     fn hex_invalid_length_fallback_black() {
-        // Invalid length → (0, 0, 0, 1.0) fallback
-        let c = hex_to_hsla("#ABC");
+        // 5-digit hex is not a recognised length → (0, 0, 0, 1.0) fallback
+        let c = hex_to_hsla("#ABCDE");
         assert!(approx_eq(c.h, 0.0));
         assert!(approx_eq(c.s, 0.0));
         assert!(approx_eq(c.l, 0.0));
