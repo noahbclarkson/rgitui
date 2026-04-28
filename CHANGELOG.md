@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-04-28
+
+### Added
+
+- **Custom theme editor** (Ctrl+Shift+T / Alt+9): live color-picker UI for all
+  theme fields with hex input and swatch preview. Edited themes are saved as
+  JSON files to `~/.config/rgitui/themes/` and reloaded on next launch.
+- **JSON theme serialization**: themes can be exported and re-imported as JSON.
+  Built-in themes ship as embedded JSON; user themes are loaded from the config
+  directory at startup.
+- **Branch from stash**: a Branch button on each stash panel row lets you create
+  a branch from any stash entry directly, without going through the command
+  palette.
+
+### Fixed
+
+- **Theme editor black-on-save regression**: saving a theme no longer
+  momentarily resets all colors to black; the editable state is properly
+  resynced after save.
+- **Theme editor startup popup**: opening the editor no longer flashes an empty
+  or stale state on first render.
+- **Invalid hex fallback in theme editor**: typing a partial hex value no longer
+  silently snaps the swatch to black; the swatch holds the field's current theme
+  color until a valid hex is entered.
+- **Graph lane-0 gap**: lane 0 is now drawn continuously from the first
+  side-branch curve-in to `main_tip`, preventing gaps when the newest commits
+  are on side branches.
+- **`is_merged_into_main` correctness**: merge detection now uses `merge_base`
+  instead of `graph_descendant_of`, fixing false positives on non-linear
+  histories.
+- **Search output parser**: malformed `git grep` output no longer silently drops
+  results; a simple-split fallback preserves partial matches.
+- **Windows UNC paths (WSL2)**: repository paths beginning with
+  `\\server\share\…` are rewritten to `//server/share/…` for libgit2
+  compatibility. Extended-length (`\\?\`) and device (`\\.\`) prefixes are left
+  unchanged.
+
 ## [0.1.7] - 2026-04-18
 
 ### Added
@@ -211,7 +248,8 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/noahbclarkson/rgitui/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/noahbclarkson/rgitui/compare/v0.1.6...v0.1.7
 [0.1.2]: https://github.com/noahbclarkson/rgitui/compare/v0.1.0...v0.1.2
 [0.1.0]: https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.0
