@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use super::refresh::gather_refresh_data_lightweight;
+use super::refresh::{gather_refresh_data_lightweight_cached, WorktreeStatusCache};
 use super::{GitProject, GitProjectEvent};
 
 /// Compute the newest mtime across all critical `.git` sentinel files.
@@ -115,6 +115,8 @@ impl GitProject {
         let repo_path = self.repo_path.clone();
         let main_git_dir = repo_path.join(".git");
         let dirty = Arc::new(AtomicBool::new(false));
+        let worktree_cache: Arc<Mutex<WorktreeStatusCache>> =
+            self.worktree_status_cache.clone();
 
         // Keep the notify watcher behind a mutex so the poll loop can add /
         // remove watched paths when the all-worktrees setting flips.
@@ -172,6 +174,7 @@ impl GitProject {
             let dirty = dirty.clone();
             let repo_path = repo_path.clone();
             let main_git_dir = main_git_dir.clone();
+            let worktree_cache = worktree_cache.clone();
             async move |weak, cx: &mut AsyncApp| {
                 // Keep the watcher handle alive for the lifetime of this task.
                 // When the task ends (because the entity was dropped), the Arc
@@ -271,10 +274,15 @@ impl GitProject {
                         }
 
                         let path = repo_path.clone();
+                        let cache = worktree_cache.clone();
                         let data = cx
                             .background_executor()
                             .spawn(async move {
-                                gather_refresh_data_lightweight(&path, watcher_commit_limit)
+                                gather_refresh_data_lightweight_cached(
+                                    &path,
+                                    watcher_commit_limit,
+                                    &cache,
+                                )
                             })
                             .await;
 

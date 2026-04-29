@@ -1,7 +1,10 @@
 use anyhow::{Context as _, Result};
 use chrono::{TimeZone, Utc};
 use git2::{Repository, StatusOptions};
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::types::*;
 
@@ -10,6 +13,11 @@ use super::git_command;
 use super::GitProject;
 use super::GitProjectEvent;
 use super::RefreshData;
+
+/// Per-worktree status cache: maps the worktree path to a (fingerprint, status) pair.
+/// The fingerprint is derived from `repo.statuses()` output so it reflects both index
+/// and working-tree changes, not just `.git` sentinel file mtimes.
+pub(super) type WorktreeStatusCache = HashMap<PathBuf, (u64, WorkingTreeStatus)>;
 
 /// Remove valid Co-Authored-By trailer lines from a commit message.
 /// Only strips lines that have a parseable `Name <email>` format.
@@ -142,9 +150,42 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
     worktrees
 }
 
+/// Build a cheap fingerprint from `repo.statuses()` output.
+///
+/// Captures: file paths, status flags, staged blob OIDs (index state), and
+/// mtime+size for workdir-modified tracked files (content changes that don't
+/// move through the index). This is fast — libgit2 uses its own stat cache
+/// for `statuses()`, and the additional `metadata()` calls are only for files
+/// already flagged as workdir-modified.
+fn status_fingerprint(repo_path: &Path, statuses: &git2::Statuses<'_>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for entry in statuses.iter() {
+        let path = entry.path().unwrap_or("");
+        path.hash(&mut hasher);
+        entry.status().bits().hash(&mut hasher);
+        if let Some(delta) = entry.head_to_index() {
+            delta.new_file().id().as_bytes().hash(&mut hasher);
+        }
+        if entry.status().intersects(
+            git2::Status::WT_MODIFIED | git2::Status::WT_RENAMED | git2::Status::WT_TYPECHANGE,
+        ) {
+            if let Ok(meta) = std::fs::metadata(repo_path.join(path)) {
+                meta.len().hash(&mut hasher);
+                if let Ok(mtime) = meta.modified() {
+                    mtime.hash(&mut hasher);
+                }
+            }
+        }
+    }
+    hasher.finish()
+}
+
 /// Gather all refresh data from a repository at the given path.
 /// This is a standalone function (no `&self`) so it can run on a background thread.
-fn compute_working_tree_status(repo_path: &Path) -> Result<WorkingTreeStatus> {
+fn compute_working_tree_status(
+    repo_path: &Path,
+    cache: Option<&Mutex<WorktreeStatusCache>>,
+) -> Result<WorkingTreeStatus> {
     let repo = Repository::open(repo_path)?;
     let mut wt_status = WorkingTreeStatus::default();
 
@@ -154,6 +195,20 @@ fn compute_working_tree_status(repo_path: &Path) -> Result<WorkingTreeStatus> {
         .include_unmodified(false);
 
     let statuses = repo.statuses(Some(&mut opts))?;
+
+    // Compute fingerprint once; used for both the cache read and the cache write.
+    let fingerprint = cache.map(|_| status_fingerprint(repo_path, &statuses));
+
+    if let (Some(fp), Some(c)) = (fingerprint, cache) {
+        let guard = c.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_fp, cached_status)) = guard.get(repo_path) {
+            if *cached_fp == fp {
+                log::debug!("worktree status cache hit: {}", repo_path.display());
+                return Ok(cached_status.clone());
+            }
+        }
+    }
+
     let (staged_stats, unstaged_stats) = std::thread::scope(|s| {
         let staged_handle = s.spawn(|| {
             let repo = Repository::open(repo_path).ok();
@@ -244,12 +299,18 @@ fn compute_working_tree_status(repo_path: &Path) -> Result<WorkingTreeStatus> {
         }
     }
 
+    if let (Some(fp), Some(c)) = (fingerprint, cache) {
+        c.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(repo_path.to_path_buf(), (fp, wt_status.clone()));
+    }
+
     Ok(wt_status)
 }
 
 pub fn gather_refresh_data(repo_path: &Path, commit_limit: usize) -> Result<RefreshData> {
     log::debug!("gather_refresh_data: repo={}", repo_path.display());
-    gather_refresh_data_internal(repo_path, true, commit_limit)
+    gather_refresh_data_internal(repo_path, true, commit_limit, None)
 }
 
 /// Gather refresh data without computing ahead/behind for every branch.
@@ -265,13 +326,28 @@ pub fn gather_refresh_data_lightweight(
         "gather_refresh_data_lightweight: repo={}",
         repo_path.display()
     );
-    gather_refresh_data_internal(repo_path, false, commit_limit)
+    gather_refresh_data_internal(repo_path, false, commit_limit, None)
+}
+
+/// Like `gather_refresh_data_lightweight` but uses the per-worktree status cache to skip
+/// `batch_diff_stats` for worktrees whose content has not changed since the last refresh.
+pub(super) fn gather_refresh_data_lightweight_cached(
+    repo_path: &Path,
+    commit_limit: usize,
+    cache: &Mutex<WorktreeStatusCache>,
+) -> Result<RefreshData> {
+    log::debug!(
+        "gather_refresh_data_lightweight_cached: repo={}",
+        repo_path.display()
+    );
+    gather_refresh_data_internal(repo_path, false, commit_limit, Some(cache))
 }
 
 fn gather_refresh_data_internal(
     repo_path: &Path,
     compute_ahead_behind: bool,
     commit_limit: usize,
+    worktree_cache: Option<&Mutex<WorktreeStatusCache>>,
 ) -> Result<RefreshData> {
     let refresh_timer = std::time::Instant::now();
     let repo = Repository::open(repo_path)
@@ -444,7 +520,7 @@ fn gather_refresh_data_internal(
     // Run status, stashes, worktrees in parallel.
     // Status and stashes open their own repos; worktrees and revwalk use &repo.
     let (status, stashes, worktrees) = std::thread::scope(|s| {
-        let status_handle = s.spawn(|| compute_working_tree_status(repo_path));
+        let status_handle = s.spawn(|| compute_working_tree_status(repo_path, worktree_cache));
 
         let stash_handle = s.spawn(|| {
             let mut stashes = Vec::new();
@@ -470,7 +546,7 @@ fn gather_refresh_data_internal(
             let worktree_path = worktree.path.clone();
             worktree_status_handles.push((
                 idx,
-                s.spawn(move || compute_working_tree_status(&worktree_path)),
+                s.spawn(move || compute_working_tree_status(&worktree_path, worktree_cache)),
             ));
         }
 
@@ -674,13 +750,16 @@ impl GitProject {
         let commit_limit = self.commit_limit;
         let first_batch = FIRST_BATCH_SIZE.min(commit_limit);
         let t = std::time::Instant::now();
+        let cache = self.worktree_status_cache.clone();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             // Phase 1: lightweight refresh (skip ahead/behind) with a small commit batch
             let repo_path_p1 = repo_path.clone();
             let data = cx
                 .background_executor()
-                .spawn(async move { gather_refresh_data_lightweight(&repo_path_p1, first_batch) })
+                .spawn(async move {
+                    gather_refresh_data_lightweight_cached(&repo_path_p1, first_batch, &cache)
+                })
                 .await?;
 
             let needs_more = data.has_more_commits && first_batch < commit_limit;

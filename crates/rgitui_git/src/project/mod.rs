@@ -15,9 +15,10 @@ mod watcher;
 use anyhow::{Context as _, Result};
 use git2::{Repository, StatusOptions};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::types::*;
 
@@ -252,6 +253,9 @@ pub struct GitProject {
     commit_author_filter: Option<String>,
     /// Maximum number of commits to load (configurable via settings).
     commit_limit: usize,
+    /// Per-worktree status cache shared between GitProject::refresh() and the watcher loop.
+    /// Keyed by worktree path; value is (fingerprint, cached WorkingTreeStatus).
+    worktree_status_cache: Arc<Mutex<refresh::WorktreeStatusCache>>,
 }
 
 impl EventEmitter<GitProjectEvent> for GitProject {}
@@ -280,6 +284,7 @@ impl GitProject {
             current_user_email: None,
             commit_author_filter: None,
             commit_limit: 1000,
+            worktree_status_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -311,6 +316,7 @@ impl GitProject {
             current_user_email: None,
             commit_author_filter: None,
             commit_limit,
+            worktree_status_cache: Arc::new(Mutex::new(HashMap::new())),
         };
 
         project.start_watcher(cx);
