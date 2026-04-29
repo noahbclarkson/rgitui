@@ -115,8 +115,7 @@ impl GitProject {
         let repo_path = self.repo_path.clone();
         let main_git_dir = repo_path.join(".git");
         let dirty = Arc::new(AtomicBool::new(false));
-        let worktree_cache: Arc<Mutex<WorktreeStatusCache>> =
-            self.worktree_status_cache.clone();
+        let worktree_cache: Arc<Mutex<WorktreeStatusCache>> = self.worktree_status_cache.clone();
 
         // Keep the notify watcher behind a mutex so the poll loop can add /
         // remove watched paths when the all-worktrees setting flips.
