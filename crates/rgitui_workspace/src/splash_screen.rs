@@ -434,7 +434,7 @@ impl Render for SplashScreen {
             .bg(surface)
             .border_1()
             .border_color(border)
-            .rounded(px(8.))
+            .rounded_b(px(8.))
             .v_flex()
             .items_center()
             .justify_center()
