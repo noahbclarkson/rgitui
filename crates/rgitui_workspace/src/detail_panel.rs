@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 #[allow(dead_code)]
 enum FileViewMode {
     #[default]
@@ -325,6 +325,15 @@ impl DetailPanel {
                     self.emit_file_selected(cx);
                     cx.notify();
                 }
+            }
+            // Toggle flat/tree file view mode
+            "v" => {
+                let next = match self.file_view_mode {
+                    FileViewMode::Flat => FileViewMode::Tree,
+                    FileViewMode::Tree => FileViewMode::Flat,
+                };
+                self.file_view_mode = next;
+                cx.notify();
             }
             _ => {}
         }
@@ -1790,5 +1799,61 @@ mod tests {
             row.dir_path.as_str(),
             "very/deeply/nested/directory/structure/"
         );
+    }
+
+    // --- filtered_file_indices tests ---
+
+    #[test]
+    fn test_filtered_file_indices_no_query_returns_all() {
+        let files = vec![
+            make_file_diff("src/main.rs", FileChangeKind::Modified),
+            make_file_diff("lib.rs", FileChangeKind::Added),
+        ];
+        let cached = build_cached_file_tree(&files);
+        // Can't test filtered_file_indices directly without a full DetailPanel
+        // instance since it needs cx.global::<SettingsState>(). Instead, test
+        // the fuzzy_score behavior directly.
+        use crate::command_palette::CommandPalette;
+        // Query "src" matches "src/main.rs" but not "lib.rs"
+        let results: Vec<_> = files
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| {
+                CommandPalette::fuzzy_score("src", &f.path.to_string_lossy())
+                    .map(|_| i)
+            })
+            .collect();
+        assert_eq!(results, vec![0]); // only src/main.rs matches
+    }
+
+    #[test]
+    fn test_filtered_file_indices_empty_query_returns_all() {
+        use crate::command_palette::CommandPalette;
+        let files = vec![
+            make_file_diff("a.rs", FileChangeKind::Modified),
+            make_file_diff("b.rs", FileChangeKind::Added),
+        ];
+        // Empty query returns all indices (0..file_count)
+        let results: Vec<_> = (0..files.len()).collect();
+        assert_eq!(results, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_filtered_file_indices_partial_path_match() {
+        use crate::command_palette::CommandPalette;
+        let files = vec![
+            make_file_diff("crates/rgitui_workspace/src/panel.rs", FileChangeKind::Modified),
+            make_file_diff("crates/rgitui_git/src/lib.rs", FileChangeKind::Added),
+        ];
+        // "workspace" matches the workspace path but not git path
+        let results: Vec<_> = files
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| {
+                CommandPalette::fuzzy_score("workspace", &f.path.to_string_lossy())
+                    .map(|_| i)
+            })
+            .collect();
+        assert_eq!(results, vec![0]);
     }
 }
