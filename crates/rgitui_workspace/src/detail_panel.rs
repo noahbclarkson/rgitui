@@ -1415,7 +1415,7 @@ impl Render for DetailPanel {
             }
             content = content.child(header);
 
-            // Show search hint when not searching and there are files
+            // Show view mode toggle hint when not searching and there are files
             if !is_searching && total_file_count > 0 {
                 content = content.child(
                     div()
@@ -1426,7 +1426,7 @@ impl Render for DetailPanel {
                         .items_center()
                         .gap_1()
                         .child(
-                            Label::new("/ to search files")
+                            Label::new("/ to search  ·  v to toggle view")
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         )
