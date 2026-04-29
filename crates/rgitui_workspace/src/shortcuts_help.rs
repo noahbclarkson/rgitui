@@ -107,6 +107,7 @@ impl ShortcutsHelp {
                     ("Ctrl+F", "Toggle commit graph search"),
                     ("/", "Start in-graph search"),
                     ("d", "Toggle diff mode (unified / split)"),
+                    ("v", "Toggle changed-files view (flat / tree)"),
                     ("b", "Toggle blame view for selected file"),
                     ("h", "Toggle file history view for selected file"),
                     ("y", "Copy SHA of selected commit"),
