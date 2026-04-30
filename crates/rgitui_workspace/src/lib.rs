@@ -22,7 +22,7 @@ mod reflog_view;
 mod rename_dialog;
 mod repo_opener;
 mod search_panel;
-mod settings_modal;
+mod settings_window;
 mod shortcuts_help;
 mod sidebar;
 mod splash_screen;
@@ -58,7 +58,10 @@ pub use reflog_view::*;
 pub use rename_dialog::*;
 pub use repo_opener::*;
 pub use search_panel::*;
-pub use settings_modal::*;
+pub use settings_window::{
+    settings_window_options, SettingsView, SettingsViewEvent, SettingsWindow,
+    SettingsWindowAction, SettingsWindowActionGlobal,
+};
 pub use shortcuts_help::*;
 pub use sidebar::*;
 pub use splash_screen::*;

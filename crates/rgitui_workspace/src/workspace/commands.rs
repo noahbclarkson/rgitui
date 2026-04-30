@@ -8,9 +8,7 @@ impl Workspace {
     pub(super) fn execute_command(&mut self, cmd: CommandId, cx: &mut Context<Self>) {
         match cmd {
             CommandId::Settings => {
-                self.overlays.settings_modal.update(cx, |sm, cx| {
-                    sm.toggle_visible(cx);
-                });
+                self.open_or_focus_settings(cx);
             }
             CommandId::CreateBranch => {
                 self.dialogs.branch_dialog.update(cx, |bd, cx| {

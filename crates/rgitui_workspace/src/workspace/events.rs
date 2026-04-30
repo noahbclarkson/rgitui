@@ -17,10 +17,10 @@ use crate::{
     ConfirmAction, ConfirmDialog, ConfirmDialogEvent, CreatePrDialog, CreatePrDialogEvent,
     DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent, GlobalSearchView,
     GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent,
-    RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, SettingsModal,
-    SettingsModalEvent, ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent,
-    StashBranchDialog, StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog,
-    TagDialogEvent, ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
+    RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, ShortcutsHelp, ShortcutsHelpEvent,
+    Sidebar, SidebarEvent, StashBranchDialog, StashBranchDialogEvent, SubmoduleView,
+    SubmoduleViewEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent, WorktreeDialog,
+    WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -192,63 +192,6 @@ pub(super) fn update_sidebar_for_active_worktree(
     });
     update_commit_panel_for_active_worktree(workspace, cx);
     update_toolbar_for_active_worktree(workspace, cx);
-}
-
-pub(super) fn subscribe_settings_modal(
-    cx: &mut Context<Workspace>,
-    settings_modal: &Entity<SettingsModal>,
-) {
-    cx.subscribe(
-        settings_modal,
-        |this, _sm, event: &SettingsModalEvent, cx| match event {
-            SettingsModalEvent::Dismissed => {
-                cx.notify();
-            }
-            SettingsModalEvent::ThemeChanged(_name) => {
-                cx.notify();
-            }
-            SettingsModalEvent::SettingsChanged => {
-                // Re-configure issues and PRs panels with latest GitHub token
-                let token = rgitui_settings::current_auth_runtime()
-                    .git
-                    .providers
-                    .iter()
-                    .find(|p| p.host == "github.com")
-                    .and_then(|p| p.token.clone());
-
-                for tab in &this.tabs {
-                    let remotes = tab.project.read(cx).remotes();
-                    let remote_url = remotes
-                        .iter()
-                        .find(|r| r.name == "origin")
-                        .or_else(|| remotes.first())
-                        .and_then(|r| r.url.clone());
-
-                    if let Some(url) = remote_url {
-                        if let Some((owner, repo_name)) =
-                            crate::issues_panel::parse_github_owner_repo(&url)
-                        {
-                            tab.issues_panel.update(cx, |ip, cx| {
-                                ip.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
-                            });
-                            tab.prs_panel.update(cx, |pp, cx| {
-                                pp.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
-                            });
-                        }
-                    }
-                }
-
-                cx.notify();
-            }
-            SettingsModalEvent::OpenThemeEditor => {
-                this.overlays.theme_editor.update(cx, |te, cx| {
-                    te.show_for_active_theme(cx);
-                });
-                cx.notify();
-            }
-        },
-    )
-    .detach();
 }
 
 pub(super) fn subscribe_interactive_rebase(
@@ -2285,9 +2228,7 @@ pub(super) fn subscribe_toolbar(
                 });
             }
             ToolbarEvent::Settings => {
-                this.overlays.settings_modal.update(cx, |sm, cx| {
-                    sm.toggle_visible(cx);
-                });
+                this.open_or_focus_settings(cx);
             }
             ToolbarEvent::Search => {
                 if let Some(tab) = this.tabs.get(this.active_tab) {

@@ -1,3 +1,19 @@
+//! Workspace-window keyboard handler.
+//!
+//! Esc precedence: each window owns its Esc handling and Esc never bubbles
+//! cross-window. The handler in this file dismisses the topmost overlay or
+//! dialog within the workspace window — command palette, branch dialog,
+//! confirm dialog, etc.
+//!
+//! The settings window has its own Esc handler in
+//! `SettingsWindow::handle_key_down` (see
+//! [`crate::SettingsWindow`]) that calls `window.remove_window()`.
+//! Workspace overlays are not visible from there and cannot be dismissed
+//! from there.
+//!
+//! When introducing a new dialog or overlay, decide which window it lives
+//! in and add Esc dismissal to that window's handler.
+
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 
 use crate::{CommandId, ToastKind};
@@ -14,15 +30,6 @@ impl Workspace {
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
         let modifiers = &keystroke.modifiers;
-
-        // Dismiss settings modal on Escape
-        if key == "escape" && self.overlays.settings_modal.read(cx).is_visible() {
-            self.overlays.settings_modal.update(cx, |sm, cx| {
-                sm.dismiss(cx);
-            });
-            self.restore_focus(window, cx);
-            return;
-        }
 
         // Dismiss interactive rebase dialog on Escape
         if key == "escape" && self.overlays.interactive_rebase.read(cx).is_visible() {
@@ -128,7 +135,6 @@ impl Workspace {
         // Block all panel-specific shortcuts (j/k, Alt+1/2/3/4, Tab, resize, etc.)
         let any_overlay_active = self.overlays.command_palette.read(cx).is_visible()
             || self.overlays.interactive_rebase.read(cx).is_visible()
-            || self.overlays.settings_modal.read(cx).is_visible()
             || self.overlays.theme_editor.read(cx).is_visible()
             || self.dialogs.branch_dialog.read(cx).is_visible()
             || self.dialogs.tag_dialog.read(cx).is_visible()
@@ -225,9 +231,7 @@ impl Workspace {
         // Ctrl+, to open settings
         if (modifiers.control || modifiers.platform) && key == "," {
             self.save_focus(window, cx);
-            self.overlays.settings_modal.update(cx, |sm, cx| {
-                sm.toggle(window, cx);
-            });
+            self.open_or_focus_settings(cx);
             return;
         }
 

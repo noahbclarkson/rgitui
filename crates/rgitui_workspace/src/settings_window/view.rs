@@ -1,7 +1,22 @@
+//! The settings view rendered inside [`SettingsWindow`].
+//!
+//! Save semantics:
+//! - Booleans, dropdowns, and other simple controls auto-commit to
+//!   [`rgitui_settings::SettingsState`] and trigger an immediate
+//!   `state.save()`.
+//! - Text inputs commit ONLY on `TextInputEvent::Submit` (Enter). They
+//!   update local state on `Changed(_)` for live display (e.g. masking)
+//!   but never write through to settings on every keystroke. This avoids
+//!   round-tripping OS-keychain secrets on every character. Closing the
+//!   window with un-submitted text discards the change; the user must
+//!   re-paste and Enter to persist.
+//!
+//! [`SettingsWindow`]: super::SettingsWindow
+
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, FontWeight,
-    KeyDownEvent, Render, SharedString, Window,
+    div, px, AnyElement, ClickEvent, Context, ElementId, Entity, EventEmitter, FontWeight,
+    SharedString, Task, Window,
 };
 use rgitui_settings::{
     config_dir, AiSettings, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
@@ -13,16 +28,9 @@ use rgitui_ui::{
     LabelSize, TextInput, TextInputEvent,
 };
 
+use super::events::SettingsViewEvent;
+use super::{SettingsWindowAction, SettingsWindowActionGlobal};
 use crate::github_device_flow::{self, DeviceFlowStatus};
-
-/// Events emitted by the settings modal.
-#[derive(Debug, Clone)]
-pub enum SettingsModalEvent {
-    Dismissed,
-    ThemeChanged(String),
-    SettingsChanged,
-    OpenThemeEditor,
-}
 
 /// Which section of the settings is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,10 +213,8 @@ fn detect_available_editors() -> Vec<DetectedApp> {
     results
 }
 
-/// The settings modal.
-pub struct SettingsModal {
-    visible: bool,
-    focus_handle: FocusHandle,
+/// The settings view.
+pub struct SettingsView {
     active_section: SettingsSection,
 
     // Theme state
@@ -272,11 +278,12 @@ pub struct SettingsModal {
 
     // GitHub Device Flow
     device_flow_status: DeviceFlowStatus,
+    device_flow_task: Option<Task<()>>,
 }
 
-impl EventEmitter<SettingsModalEvent> for SettingsModal {}
+impl EventEmitter<SettingsViewEvent> for SettingsView {}
 
-impl SettingsModal {
+impl SettingsView {
     fn provider_kind_title(kind: &str) -> &'static str {
         match kind {
             "github" => "GitHub",
@@ -481,7 +488,7 @@ impl SettingsModal {
         cx.subscribe(
             &ai_api_key_editor,
             |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(_) = event {
+                if let TextInputEvent::Submit = event {
                     this.save_settings(cx);
                 }
             },
@@ -491,7 +498,7 @@ impl SettingsModal {
         cx.subscribe(
             &git_https_token_editor,
             |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(_) = event {
+                if let TextInputEvent::Submit = event {
                     this.save_settings(cx);
                 }
             },
@@ -501,7 +508,7 @@ impl SettingsModal {
         cx.subscribe(
             &git_ssh_key_path_editor,
             |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(_) = event {
+                if let TextInputEvent::Submit = event {
                     this.save_settings(cx);
                 }
             },
@@ -511,7 +518,7 @@ impl SettingsModal {
         cx.subscribe(
             &git_gpg_key_id_editor,
             |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(_) = event {
+                if let TextInputEvent::Submit = event {
                     this.save_settings(cx);
                 }
             },
@@ -520,12 +527,14 @@ impl SettingsModal {
 
         cx.subscribe(
             &provider_display_name_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(text) = event {
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Changed(text) => {
                     if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index)
                     {
                         provider.display_name = text.clone();
                     }
+                }
+                TextInputEvent::Submit => {
                     this.save_settings(cx);
                 }
             },
@@ -534,12 +543,14 @@ impl SettingsModal {
 
         cx.subscribe(
             &provider_host_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(text) = event {
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Changed(text) => {
                     if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index)
                     {
                         provider.host = text.clone();
                     }
+                }
+                TextInputEvent::Submit => {
                     this.save_settings(cx);
                 }
             },
@@ -548,12 +559,14 @@ impl SettingsModal {
 
         cx.subscribe(
             &provider_username_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(text) = event {
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Changed(text) => {
                     if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index)
                     {
                         provider.username = text.clone();
                     }
+                }
+                TextInputEvent::Submit => {
                     this.save_settings(cx);
                 }
             },
@@ -562,13 +575,15 @@ impl SettingsModal {
 
         cx.subscribe(
             &provider_token_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(text) = event {
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Changed(text) => {
                     if let Some(provider) = this.git_providers.get_mut(this.selected_provider_index)
                     {
                         provider.token = text.clone();
                         provider.has_token = !provider.token.is_empty();
                     }
+                }
+                TextInputEvent::Submit => {
                     this.complete_browser_onboarding_for_current_provider();
                     this.save_settings(cx);
                 }
@@ -578,8 +593,8 @@ impl SettingsModal {
 
         cx.subscribe(
             &terminal_command_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(text) = event {
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Changed(text) => {
                     if text.is_empty() {
                         this.selected_terminal_index = if this.detected_terminals.is_empty() {
                             None
@@ -592,6 +607,8 @@ impl SettingsModal {
                             .iter()
                             .position(|app| app.command == *text);
                     }
+                }
+                TextInputEvent::Submit => {
                     this.save_settings(cx);
                 }
             },
@@ -600,8 +617,8 @@ impl SettingsModal {
 
         cx.subscribe(
             &editor_command_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Changed(text) = event {
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Changed(text) => {
                     if text.is_empty() {
                         this.selected_editor_index = if this.detected_editors.is_empty() {
                             None
@@ -614,6 +631,8 @@ impl SettingsModal {
                             .iter()
                             .position(|app| app.command == *text);
                     }
+                }
+                TextInputEvent::Submit => {
                     this.save_settings(cx);
                 }
             },
@@ -621,8 +640,6 @@ impl SettingsModal {
         .detach();
 
         Self {
-            visible: false,
-            focus_handle: cx.focus_handle(),
             active_section: SettingsSection::Theme,
             selected_theme: settings.theme.clone(),
             available_themes,
@@ -670,37 +687,11 @@ impl SettingsModal {
             feedback_message: None,
             feedback_is_error: false,
             device_flow_status: DeviceFlowStatus::Idle,
+            device_flow_task: None,
         }
     }
 
-    pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.visible = !self.visible;
-        if self.visible {
-            self.reload_from_settings(cx);
-            self.focus_handle.focus(window, cx);
-        }
-        cx.notify();
-    }
-
-    pub fn toggle_visible(&mut self, cx: &mut Context<Self>) {
-        self.visible = !self.visible;
-        if self.visible {
-            self.reload_from_settings(cx);
-        }
-        cx.notify();
-    }
-
-    pub fn is_visible(&self) -> bool {
-        self.visible
-    }
-
-    pub fn dismiss(&mut self, cx: &mut Context<Self>) {
-        self.visible = false;
-        cx.emit(SettingsModalEvent::Dismissed);
-        cx.notify();
-    }
-
-    fn reload_from_settings(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn reload_from_settings(&mut self, cx: &mut Context<Self>) {
         let (ai_api_key_val, git_https_token_val, git_ssh_key_path_val, git_gpg_key_id_val) =
             cx.read_global::<SettingsState, _>(|state, _cx| {
                 let s = state.settings();
@@ -844,7 +835,8 @@ impl SettingsModal {
                 log::error!("Failed to save settings: {}", e);
             }
         });
-        cx.emit(SettingsModalEvent::ThemeChanged(theme_name));
+        cx.emit(SettingsViewEvent::ThemeChanged(theme_name.clone()));
+        SettingsWindowActionGlobal::try_send(cx, SettingsWindowAction::ThemeChanged(theme_name));
         cx.notify();
     }
 
@@ -941,7 +933,7 @@ impl SettingsModal {
             Ok(()) => {
                 self.feedback_message = None;
                 self.feedback_is_error = false;
-                cx.emit(SettingsModalEvent::SettingsChanged);
+                SettingsWindowActionGlobal::try_send(cx, SettingsWindowAction::SettingsChanged);
             }
             Err(error) => {
                 log::error!("Failed to save settings: {}", error);
@@ -1151,6 +1143,7 @@ impl SettingsModal {
         if self.pending_browser_auth_provider_id.as_deref() == Some(provider.id.as_str()) {
             self.pending_browser_auth_provider_id = None;
             self.device_flow_status = DeviceFlowStatus::Idle;
+            self.device_flow_task = None;
         }
         self.selected_provider_index = self
             .selected_provider_index
@@ -1306,7 +1299,9 @@ impl SettingsModal {
         cx.notify();
 
         let http = cx.http_client();
-        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        // Held on the entity so the polling future is dropped (and cancelled
+        // at its next .await) when the settings window closes.
+        let task = cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             let device_code_result = github_device_flow::request_device_code(http.clone()).await;
 
             let device_resp = match device_code_result {
@@ -1426,20 +1421,8 @@ impl SettingsModal {
                     }
                 }
             }
-        })
-        .detach();
-    }
-
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-        if key == "escape" {
-            self.dismiss(cx);
-        }
+        });
+        self.device_flow_task = Some(task);
     }
 
     // ── Helper: section header with icon ────────────────────────────────
@@ -1915,9 +1898,11 @@ impl SettingsModal {
                             .size(ButtonSize::Compact)
                             .style(ButtonStyle::Subtle)
                             .icon(IconName::Edit)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                cx.emit(SettingsModalEvent::OpenThemeEditor);
-                                this.dismiss(cx);
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                SettingsWindowActionGlobal::try_send(
+                                    cx,
+                                    SettingsWindowAction::OpenThemeEditor,
+                                );
                             })),
                     ),
             );
@@ -3842,12 +3827,14 @@ impl SettingsModal {
     }
 }
 
-impl Render for SettingsModal {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.visible {
-            return div().id("settings-modal").into_any_element();
-        }
-
+impl SettingsView {
+    /// Build the inner sidebar+content layout for the standalone
+    /// `SettingsWindow` host. The host provides its own close affordance.
+    pub fn render_window_body(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut content_container = div().v_flex().w_full().gap(px(16.));
 
         if let Some(message) = &self.feedback_message {
@@ -3922,51 +3909,40 @@ impl Render for SettingsModal {
             ),
         };
 
-        let backdrop = div()
-            .id("settings-modal-backdrop")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .flex()
-            .items_stretch()
-            .justify_center()
-            .p(px(20.))
-            .bg(gpui::Hsla {
-                h: 0.0,
-                s: 0.0,
-                l: 0.0,
-                a: 0.5,
-            })
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.dismiss(cx);
-            }))
-            .on_mouse_move(|_, _, cx| {
-                cx.stop_propagation();
-            })
-            .on_scroll_wheel(|_, _, cx| {
-                cx.stop_propagation();
-            });
+        let header = div()
+            .h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap(px(16.))
+            .px(px(28.))
+            .py(px(20.))
+            .bg(colors.surface_background)
+            .border_b_1()
+            .border_color(colors.border_variant)
+            .child(
+                div()
+                    .v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(2.))
+                    .child(
+                        Label::new(page_title)
+                            .size(LabelSize::Large)
+                            .weight(FontWeight::BOLD),
+                    )
+                    .child(
+                        Label::new(page_subtitle)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .truncate(),
+                    ),
+            );
 
-        let modal = div()
-            .id("settings-modal-container")
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+        div()
             .h_flex()
             .size_full()
-            .bg(colors.elevated_surface_background)
-            .border_1()
-            .border_color(colors.border)
-            .rounded(px(14.))
-            .elevation_3(cx)
-            .overflow_hidden()
-            .on_click(|_: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-            })
-            // Left sidebar
             .child(sidebar)
-            // Right content
             .child(
                 div()
                     .id("settings-page-shell")
@@ -3974,46 +3950,7 @@ impl Render for SettingsModal {
                     .flex_1()
                     .h_full()
                     .min_w_0()
-                    .child(
-                        div()
-                            .h_flex()
-                            .w_full()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(16.))
-                            .px(px(28.))
-                            .py(px(20.))
-                            .bg(colors.surface_background)
-                            .border_b_1()
-                            .border_color(colors.border_variant)
-                            .child(
-                                div()
-                                    .v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap(px(2.))
-                                    .child(
-                                        Label::new(page_title)
-                                            .size(LabelSize::Large)
-                                            .weight(FontWeight::BOLD),
-                                    )
-                                    .child(
-                                        Label::new(page_subtitle)
-                                            .size(LabelSize::Small)
-                                            .color(Color::Muted)
-                                            .truncate(),
-                                    ),
-                            )
-                            .child(
-                                Button::new("settings-close", "Close")
-                                    .style(ButtonStyle::Subtle)
-                                    .size(ButtonSize::Compact)
-                                    .icon(IconName::X)
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                        this.dismiss(cx);
-                                    })),
-                            ),
-                    )
+                    .child(header)
                     .child(
                         div()
                             .id("settings-content")
@@ -4026,8 +3963,8 @@ impl Render for SettingsModal {
                             .overflow_x_hidden()
                             .child(content_container),
                     ),
-            );
-
-        backdrop.child(modal).into_any_element()
+            )
+            .into_any_element()
     }
 }
+

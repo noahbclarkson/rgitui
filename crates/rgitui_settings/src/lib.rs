@@ -250,6 +250,20 @@ pub struct AppSettings {
     pub commit_limit: usize,
     #[serde(default)]
     pub watch_all_worktrees: bool,
+    /// Last known position/size of the standalone Settings window. Restored
+    /// on next open if the saved origin still falls within a connected display.
+    #[serde(default)]
+    pub settings_window_bounds: Option<SavedWindowBounds>,
+}
+
+/// Serializable rectangle in screen coordinates. Used to persist window
+/// geometry across sessions independently of GPUI's `Bounds<Pixels>`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SavedWindowBounds {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// Current settings version. Increment when making breaking changes.
@@ -519,6 +533,7 @@ impl Default for AppSettings {
             last_update_check_at: None,
             commit_limit: default_commit_limit(),
             watch_all_worktrees: false,
+            settings_window_bounds: None,
         }
     }
 }
@@ -543,6 +558,18 @@ impl SettingsState {
 
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.load_warnings)
+    }
+
+    /// The most recently persisted bounds for the standalone Settings window,
+    /// or `None` if the user has never moved/resized it.
+    pub fn settings_window_bounds(&self) -> Option<SavedWindowBounds> {
+        self.settings.settings_window_bounds
+    }
+
+    /// Update the persisted Settings window bounds. Caller is responsible for
+    /// invoking [`SettingsState::save`] afterwards if write-through is desired.
+    pub fn set_settings_window_bounds(&mut self, bounds: Option<SavedWindowBounds>) {
+        self.settings.settings_window_bounds = bounds;
     }
 
     pub fn save(&self) -> Result<()> {

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui::prelude::*;
-use gpui::{div, Bounds, Context, Entity, EventEmitter, Render, SharedString, Window};
+use gpui::{div, Bounds, Context, Entity, EventEmitter, Render, SharedString, Window, WindowHandle};
 use rgitui_ai::AiGenerator;
 use rgitui_git::GitProject;
 
@@ -194,16 +194,41 @@ pub struct Workspace {
     pub(super) layout_save_task: Option<gpui::Task<()>>,
     pub(super) cached_ui_font: Option<(String, gpui::Font)>,
     pub(super) update_notification: Option<UpdateNotification>,
+    pub(super) settings_window: Option<WindowHandle<crate::SettingsWindow>>,
+    pub(super) _settings_window_closed_subscription: Option<gpui::Subscription>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
 
 impl Workspace {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Install the cross-window action channel before any child entity that
+        // might want to send through it can be created. The settings window
+        // lives in a separate OS window, so it can only reach us via this
+        // App-scoped global. The receiver pumps actions back onto the
+        // workspace entity until the entity is dropped.
+        let (settings_action_tx, settings_action_rx) = crate::settings_window::channel();
+        cx.set_global(crate::SettingsWindowActionGlobal(settings_action_tx));
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            while let Ok(action) = settings_action_rx.recv().await {
+                if this.upgrade().is_none() {
+                    break;
+                }
+                let weak = this.clone();
+                cx.update(|app| {
+                    if let Some(entity) = weak.upgrade() {
+                        entity.update(app, |workspace, cx| {
+                            workspace.handle_settings_window_action(action, cx);
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+
         let ai = cx.new(|_cx| AiGenerator::new());
         let command_palette = cx.new(crate::CommandPalette::new);
         let interactive_rebase = cx.new(crate::InteractiveRebase::new);
-        let settings_modal = cx.new(crate::SettingsModal::new);
         let global_search = cx.new(crate::GlobalSearchView::new);
         let theme_editor = cx.new(crate::ThemeEditorDialog::new_for_active_theme);
         let toast_layer = cx.new(ToastLayer::new);
@@ -219,7 +244,6 @@ impl Workspace {
         let shortcuts_help = cx.new(crate::ShortcutsHelp::new);
 
         // Set up all event subscriptions
-        events::subscribe_settings_modal(cx, &settings_modal);
         events::subscribe_interactive_rebase(cx, &interactive_rebase);
         events::subscribe_ai(cx, &ai);
         events::subscribe_command_palette(cx, &command_palette);
@@ -270,7 +294,6 @@ impl Workspace {
             overlays: OverlayState {
                 command_palette,
                 interactive_rebase,
-                settings_modal,
                 repo_opener,
                 shortcuts_help,
                 global_search,
@@ -298,7 +321,67 @@ impl Workspace {
             layout_save_task: None,
             cached_ui_font: None,
             update_notification: None,
+            settings_window: None,
+            _settings_window_closed_subscription: None,
         }
+    }
+
+    /// Open the settings window, or focus it if one is already open.
+    ///
+    /// Maintains a single `WindowHandle<SettingsWindow>` on the workspace as a
+    /// duplicate-window guard. Stale handles (a window that closed before the
+    /// `on_window_closed` observer cleared the field) are detected and replaced.
+    pub(crate) fn open_or_focus_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.settings_window {
+            match handle.update(cx, |_, window, _| window.activate_window()) {
+                Ok(()) => return,
+                Err(_) => {
+                    self.settings_window = None;
+                }
+            }
+        }
+
+        let options = crate::settings_window_options(cx);
+        let opened = cx.open_window(options, |_, cx| cx.new(crate::SettingsWindow::new));
+
+        let handle = match opened {
+            Ok(handle) => handle,
+            Err(e) => {
+                log::error!("failed to open settings window: {}", e);
+                return;
+            }
+        };
+
+        self.settings_window = Some(handle);
+
+        let target_id = handle.window_id();
+        let weak = cx.entity().downgrade();
+        let subscription = cx.on_window_closed(move |app| {
+            if app.windows().iter().any(|w| w.window_id() == target_id) {
+                return;
+            }
+            if let Some(this) = weak.upgrade() {
+                this.update(app, |this, _| {
+                    if this
+                        .settings_window
+                        .map(|h| h.window_id() == target_id)
+                        .unwrap_or(false)
+                    {
+                        this.settings_window = None;
+                    }
+                });
+            }
+            // Flush in-memory bounds updates accumulated during the window's
+            // lifetime to disk now that the window is gone.
+            if app.has_global::<rgitui_settings::SettingsState>() {
+                app.update_global::<rgitui_settings::SettingsState, _>(|state, _| {
+                    if let Err(error) = state.save() {
+                        log::warn!("Failed to persist settings window bounds: {}", error);
+                    }
+                });
+            }
+        });
+        self._settings_window_closed_subscription = Some(subscription);
     }
 
     /// Set a status bar message that auto-clears after 5 seconds.
@@ -344,6 +427,67 @@ impl Workspace {
         if self.update_notification.take().is_some() {
             cx.notify();
         }
+    }
+
+    /// Dispatch a [`crate::SettingsWindowAction`] received from the settings
+    /// window's cross-window channel.
+    fn handle_settings_window_action(
+        &mut self,
+        action: crate::SettingsWindowAction,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            crate::SettingsWindowAction::OpenThemeEditor => {
+                self.overlays
+                    .theme_editor
+                    .update(cx, |te, cx| te.show_for_active_theme(cx));
+            }
+            crate::SettingsWindowAction::ThemeChanged(_) => {
+                cx.notify();
+            }
+            crate::SettingsWindowAction::SettingsChanged => {
+                self.on_settings_changed(cx);
+            }
+            crate::SettingsWindowAction::Toast(kind, message) => {
+                self.show_toast(message, kind, cx);
+            }
+        }
+    }
+
+    /// Re-configure issues and PR panels with the latest GitHub token after
+    /// settings have been saved. Called when the settings window dispatches
+    /// `SettingsWindowAction::SettingsChanged`.
+    pub(super) fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
+        let token = rgitui_settings::current_auth_runtime()
+            .git
+            .providers
+            .iter()
+            .find(|p| p.host == "github.com")
+            .and_then(|p| p.token.clone());
+
+        for tab in &self.tabs {
+            let remotes = tab.project.read(cx).remotes();
+            let remote_url = remotes
+                .iter()
+                .find(|r| r.name == "origin")
+                .or_else(|| remotes.first())
+                .and_then(|r| r.url.clone());
+
+            if let Some(url) = remote_url {
+                if let Some((owner, repo_name)) =
+                    crate::issues_panel::parse_github_owner_repo(&url)
+                {
+                    tab.issues_panel.update(cx, |ip, cx| {
+                        ip.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
+                    });
+                    tab.prs_panel.update(cx, |pp, cx| {
+                        pp.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
+                    });
+                }
+            }
+        }
+
+        cx.notify();
     }
 
     /// Set whether crash recovery is available (previous session didn't exit cleanly).

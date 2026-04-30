@@ -3,8 +3,8 @@ use rgitui_git::GitOperationUpdate;
 
 use crate::{
     BranchDialog, CommandPalette, ConfirmDialog, CreatePrDialog, GlobalSearchView,
-    InteractiveRebase, RenameDialog, RepoOpener, SettingsModal, ShortcutsHelp, StashBranchDialog,
-    TagDialog, ThemeEditorDialog, WorktreeDialog,
+    InteractiveRebase, RenameDialog, RepoOpener, ShortcutsHelp, StashBranchDialog, TagDialog,
+    ThemeEditorDialog, WorktreeDialog,
 };
 
 use super::{ActiveOperation, FocusedPanel, OperationOutput};
@@ -34,7 +34,6 @@ pub(crate) struct DialogState {
 pub(crate) struct OverlayState {
     pub command_palette: Entity<CommandPalette>,
     pub interactive_rebase: Entity<InteractiveRebase>,
-    pub settings_modal: Entity<SettingsModal>,
     pub repo_opener: Entity<RepoOpener>,
     pub shortcuts_help: Entity<ShortcutsHelp>,
     pub global_search: Entity<GlobalSearchView>,

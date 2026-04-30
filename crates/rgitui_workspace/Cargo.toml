@@ -33,3 +33,4 @@ pulldown-cmark = "0.13.1"
 smol.workspace = true
 semver.workspace = true
 urlencoding.workspace = true
+async-channel.workspace = true

@@ -72,7 +72,6 @@ impl Render for Workspace {
                 .child(self.toast_layer.clone())
                 .child(self.overlays.command_palette.clone())
                 .child(self.overlays.interactive_rebase.clone())
-                .child(self.overlays.settings_modal.clone())
                 .child(self.overlays.theme_editor.clone())
                 .child(self.dialogs.branch_dialog.clone())
                 .child(self.dialogs.tag_dialog.clone())
@@ -132,7 +131,6 @@ impl Render for Workspace {
         let repo_path_display: SharedString = project.repo_path().display().to_string().into();
         let overlays_active = self.overlays.command_palette.read(cx).is_visible()
             || self.overlays.interactive_rebase.read(cx).is_visible()
-            || self.overlays.settings_modal.read(cx).is_visible()
             || self.dialogs.branch_dialog.read(cx).is_visible()
             || self.dialogs.tag_dialog.read(cx).is_visible()
             || self.dialogs.worktree_dialog.read(cx).is_visible()
@@ -1165,8 +1163,6 @@ impl Render for Workspace {
             .child(self.overlays.command_palette.clone())
             // Interactive rebase dialog overlay
             .child(self.overlays.interactive_rebase.clone())
-            // Settings modal overlay
-            .child(self.overlays.settings_modal.clone())
             // Branch dialog overlay
             .child(self.dialogs.branch_dialog.clone())
             // Tag dialog overlay
