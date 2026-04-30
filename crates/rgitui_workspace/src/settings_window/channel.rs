@@ -40,9 +40,6 @@ impl SettingsWindowActionGlobal {
 
 /// Build an unbounded channel suitable for installing as the global sender and
 /// driving the workspace consumer loop.
-pub fn channel() -> (
-    Sender<SettingsWindowAction>,
-    Receiver<SettingsWindowAction>,
-) {
+pub fn channel() -> (Sender<SettingsWindowAction>, Receiver<SettingsWindowAction>) {
     unbounded()
 }

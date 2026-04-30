@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui::prelude::*;
-use gpui::{div, Bounds, Context, Entity, EventEmitter, Render, SharedString, Window, WindowHandle};
+use gpui::{
+    div, Bounds, Context, Entity, EventEmitter, Render, SharedString, Window, WindowHandle,
+};
 use rgitui_ai::AiGenerator;
 use rgitui_git::GitProject;
 
@@ -474,8 +476,7 @@ impl Workspace {
                 .and_then(|r| r.url.clone());
 
             if let Some(url) = remote_url {
-                if let Some((owner, repo_name)) =
-                    crate::issues_panel::parse_github_owner_repo(&url)
+                if let Some((owner, repo_name)) = crate::issues_panel::parse_github_owner_repo(&url)
                 {
                     tab.issues_panel.update(cx, |ip, cx| {
                         ip.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
