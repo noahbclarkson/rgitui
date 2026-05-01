@@ -264,7 +264,9 @@ fn test_headless_smoke() {
     // Create a temp repo to open
     let tmp = tempfile::tempdir().expect("failed to create temp dir");
     let repo_path = tmp.path();
-    let repo = git2::Repository::init(repo_path).expect("failed to init repo");
+    let mut init_opts = git2::RepositoryInitOptions::new();
+    init_opts.initial_head("main");
+    let repo = git2::Repository::init_opts(repo_path, &init_opts).expect("failed to init repo");
     let mut config = repo.config().expect("failed to get config");
     config
         .set_str("user.name", "Test")
@@ -364,7 +366,9 @@ fn test_compute_graph_handles_merge_commit() {
 
     let tmp = tempfile::tempdir().expect("failed to create temp dir");
     let repo_path = tmp.path().to_path_buf();
-    let repo = git2::Repository::init(&repo_path).expect("failed to init repo");
+    let mut init_opts = git2::RepositoryInitOptions::new();
+    init_opts.initial_head("main");
+    let repo = git2::Repository::init_opts(&repo_path, &init_opts).expect("failed to init repo");
 
     let mut config = repo.config().expect("failed to get repo config");
     config
