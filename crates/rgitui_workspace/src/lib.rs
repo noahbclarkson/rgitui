@@ -59,8 +59,8 @@ pub use rename_dialog::*;
 pub use repo_opener::*;
 pub use search_panel::*;
 pub use settings_window::{
-    settings_window_options, SettingsView, SettingsViewEvent, SettingsWindow,
-    SettingsWindowAction, SettingsWindowActionGlobal,
+    settings_window_options, SettingsView, SettingsViewEvent, SettingsWindow, SettingsWindowAction,
+    SettingsWindowActionGlobal,
 };
 pub use shortcuts_help::*;
 pub use sidebar::*;
