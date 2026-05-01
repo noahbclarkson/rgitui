@@ -17,10 +17,10 @@ use crate::{
     ConfirmAction, ConfirmDialog, ConfirmDialogEvent, CreatePrDialog, CreatePrDialogEvent,
     DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent, GlobalSearchView,
     GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent,
-    RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, ShortcutsHelp, ShortcutsHelpEvent,
-    Sidebar, SidebarEvent, StashBranchDialog, StashBranchDialogEvent, SubmoduleView,
-    SubmoduleViewEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent, WorktreeDialog,
-    WorktreeDialogEvent,
+    RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, ShortcutsHelp,
+    ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog, StashBranchDialogEvent,
+    SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
+    WorktreeDialog, WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
