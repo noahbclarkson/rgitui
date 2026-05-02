@@ -1806,7 +1806,6 @@ mod tests {
 
     #[test]
     fn test_filtered_file_indices_no_query_returns_all_in_order() {
-        use crate::command_palette::CommandPalette;
         // Manually test the scoring path: with no query the fallback returns
         // (MAX, index) pairs so sorted order = file order.
         let scored: Vec<(usize, usize)> = (0..3).map(|i| (usize::MAX, i)).collect();
