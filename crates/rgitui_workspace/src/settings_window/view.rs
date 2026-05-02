@@ -3967,4 +3967,3 @@ impl SettingsView {
             .into_any_element()
     }
 }
-
