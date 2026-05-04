@@ -867,38 +867,44 @@ impl Render for IssuesPanel {
             let err_text: SharedString = err.clone().into();
             return panel
                 .child(
-                    div().flex_1().flex().items_center().justify_center().p_4().child(
-                        div()
-                            .v_flex()
-                            .w_full()
-                            .max_w(px(480.))
-                            .items_center()
-                            .gap(px(12.))
-                            .px(px(32.))
-                            .py(px(24.))
-                            .child(
-                                Icon::new(IconName::AlertTriangle)
-                                    .size(IconSize::Large)
-                                    .color(Color::Error),
-                            )
-                            .child(
-                                div().w_full().text_center().child(
-                                    Label::new(err_text)
-                                        .size(LabelSize::Small)
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_4()
+                        .child(
+                            div()
+                                .v_flex()
+                                .w_full()
+                                .max_w(px(480.))
+                                .items_center()
+                                .gap(px(12.))
+                                .px(px(32.))
+                                .py(px(24.))
+                                .child(
+                                    Icon::new(IconName::AlertTriangle)
+                                        .size(IconSize::Large)
                                         .color(Color::Error),
+                                )
+                                .child(
+                                    div().w_full().text_center().child(
+                                        Label::new(err_text)
+                                            .size(LabelSize::Small)
+                                            .color(Color::Error),
+                                    ),
+                                )
+                                .child(
+                                    Button::new("retry-issues", "Retry")
+                                        .icon(IconName::Refresh)
+                                        .size(ButtonSize::Default)
+                                        .style(ButtonStyle::Filled)
+                                        .color(Color::Accent)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.fetch_issues(cx);
+                                        })),
                                 ),
-                            )
-                            .child(
-                                Button::new("retry-issues", "Retry")
-                                    .icon(IconName::Refresh)
-                                    .size(ButtonSize::Default)
-                                    .style(ButtonStyle::Filled)
-                                    .color(Color::Accent)
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                        this.fetch_issues(cx);
-                                    })),
-                            ),
-                    ),
+                        ),
                 )
                 .into_any_element();
         }

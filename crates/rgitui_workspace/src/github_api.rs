@@ -44,9 +44,8 @@ pub(crate) fn format_github_collection_error(
             owner, repo
         ),
         (401, _) => "GitHub token is invalid or expired".into(),
-        (403, Some(msg)) => {
-            rewrite_org_restriction(&msg, Some(owner)).unwrap_or_else(|| format!("Access denied: {}", msg))
-        }
+        (403, Some(msg)) => rewrite_org_restriction(&msg, Some(owner))
+            .unwrap_or_else(|| format!("Access denied: {}", msg)),
         (_, Some(msg)) => format!("GitHub API error {}: {}", status, msg),
         (_, None) => format!("GitHub API error: {}", status),
     }
