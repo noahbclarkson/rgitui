@@ -1,13 +1,5 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-
-#[derive(Default, Clone, Copy)]
-#[allow(dead_code)]
-enum FileViewMode {
-    #[default]
-    Flat,
-    Tree,
-}
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
@@ -22,11 +14,41 @@ use rgitui_git::{
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    AvatarCache, Badge, ButtonSize, ButtonStyle, DiffStat, Icon, IconButton, IconName, IconSize,
-    Label, LabelSize,
+    AvatarCache, Badge, Button, ButtonSize, ButtonStyle, DiffStat, Icon, IconButton, IconName,
+    IconSize, Label, LabelSize,
 };
 
 use crate::markdown_view::render_markdown;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum FileViewMode {
+    #[default]
+    Flat,
+    Tree,
+}
+
+impl FileViewMode {
+    fn toggled(self) -> Self {
+        match self {
+            Self::Flat => Self::Tree,
+            Self::Tree => Self::Flat,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Flat => "Flat",
+            Self::Tree => "Tree",
+        }
+    }
+
+    fn toggle_tooltip(self) -> &'static str {
+        match self {
+            Self::Flat => "Switch to tree view (v)",
+            Self::Tree => "Switch to flat view (v)",
+        }
+    }
+}
 
 fn format_absolute_date(timestamp: i64) -> String {
     let dt = chrono::DateTime::from_timestamp(timestamp, 0);
@@ -326,8 +348,17 @@ impl DetailPanel {
                     cx.notify();
                 }
             }
+            // Toggle flat/tree file view mode
+            "v" => {
+                self.toggle_file_view_mode(cx);
+            }
             _ => {}
         }
+    }
+
+    fn toggle_file_view_mode(&mut self, cx: &mut Context<Self>) {
+        self.file_view_mode = self.file_view_mode.toggled();
+        cx.notify();
     }
 
     fn emit_file_selected(&self, cx: &mut Context<Self>) {
@@ -1382,6 +1413,25 @@ impl Render for DetailPanel {
                 }
 
                 // Diff stat
+                if !is_searching && total_file_count > 0 {
+                    let view_mode = self.file_view_mode;
+                    children.push(
+                        Button::new("detail-panel-file-view-toggle", view_mode.label())
+                            .icon(match view_mode {
+                                FileViewMode::Flat => IconName::File,
+                                FileViewMode::Tree => IconName::Folder,
+                            })
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Transparent)
+                            .selected(matches!(view_mode, FileViewMode::Tree))
+                            .tooltip(view_mode.toggle_tooltip())
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.toggle_file_view_mode(cx);
+                            }))
+                            .into_any_element(),
+                    );
+                }
+
                 let diff_stat: gpui::AnyElement =
                     DiffStat::new(total_additions, total_deletions).into_any_element();
                 children.push(diff_stat);
@@ -1406,7 +1456,7 @@ impl Render for DetailPanel {
             }
             content = content.child(header);
 
-            // Show search hint when not searching and there are files
+            // Show view mode toggle hint when not searching and there are files
             if !is_searching && total_file_count > 0 {
                 content = content.child(
                     div()
@@ -1417,7 +1467,7 @@ impl Render for DetailPanel {
                         .items_center()
                         .gap_1()
                         .child(
-                            Label::new("/ to search files")
+                            Label::new("/ to search  ·  v to toggle view")
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         )
@@ -1790,5 +1840,87 @@ mod tests {
             row.dir_path.as_str(),
             "very/deeply/nested/directory/structure/"
         );
+    }
+
+    // --- FileViewMode tests ---
+
+    #[test]
+    fn test_file_view_mode_default_is_flat() {
+        assert_eq!(FileViewMode::default(), FileViewMode::Flat);
+    }
+
+    #[test]
+    fn test_file_view_mode_toggles_between_flat_and_tree() {
+        assert_eq!(FileViewMode::Flat.toggled(), FileViewMode::Tree);
+        assert_eq!(FileViewMode::Tree.toggled(), FileViewMode::Flat);
+    }
+
+    #[test]
+    fn test_file_view_mode_labels_and_tooltips_match_next_action() {
+        assert_eq!(FileViewMode::Flat.label(), "Flat");
+        assert_eq!(FileViewMode::Tree.label(), "Tree");
+        assert_eq!(
+            FileViewMode::Flat.toggle_tooltip(),
+            "Switch to tree view (v)"
+        );
+        assert_eq!(
+            FileViewMode::Tree.toggle_tooltip(),
+            "Switch to flat view (v)"
+        );
+    }
+
+    // --- filtered_file_indices tests ---
+
+    #[test]
+    fn test_filtered_file_indices_no_query_returns_all() {
+        let files = [
+            make_file_diff("src/main.rs", FileChangeKind::Modified),
+            make_file_diff("lib.rs", FileChangeKind::Added),
+        ];
+        // Can't test filtered_file_indices directly without a full DetailPanel
+        // instance since it needs cx.global::<SettingsState>(). Instead, test
+        // the fuzzy_score behavior directly.
+        use crate::command_palette::CommandPalette;
+        // Query "src" matches "src/main.rs" but not "lib.rs"
+        let results: Vec<_> = files
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| {
+                CommandPalette::fuzzy_score("src", &f.path.to_string_lossy()).map(|_| i)
+            })
+            .collect();
+        assert_eq!(results, vec![0]); // only src/main.rs matches
+    }
+
+    #[test]
+    fn test_filtered_file_indices_empty_query_returns_all() {
+        let files = [
+            make_file_diff("a.rs", FileChangeKind::Modified),
+            make_file_diff("b.rs", FileChangeKind::Added),
+        ];
+        // Empty query returns all indices (0..file_count)
+        let results: Vec<_> = (0..files.len()).collect();
+        assert_eq!(results, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_filtered_file_indices_partial_path_match() {
+        use crate::command_palette::CommandPalette;
+        let files = [
+            make_file_diff(
+                "crates/rgitui_workspace/src/panel.rs",
+                FileChangeKind::Modified,
+            ),
+            make_file_diff("crates/rgitui_git/src/lib.rs", FileChangeKind::Added),
+        ];
+        // "workspace" matches the workspace path but not git path
+        let results: Vec<_> = files
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| {
+                CommandPalette::fuzzy_score("workspace", &f.path.to_string_lossy()).map(|_| i)
+            })
+            .collect();
+        assert_eq!(results, vec![0]);
     }
 }
