@@ -6,6 +6,31 @@ fn github_error_detail(body: &str) -> Option<String> {
         .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
 }
 
+/// Recognise GitHub's verbose 403 messages for org-level access restrictions and
+/// rewrite them into a short, actionable instruction. Returns `None` if the message
+/// does not match a known pattern.
+fn rewrite_org_restriction(msg: &str, owner: Option<&str>) -> Option<String> {
+    let org_label = owner
+        .map(|o| format!("'{}'", o))
+        .unwrap_or_else(|| "this".into());
+
+    if msg.contains("OAuth App access restrictions") {
+        return Some(format!(
+            "The {} org restricts third-party app access. Ask an admin to approve this PAT in org Settings -> Third-party Access -> Personal access tokens, or use a fine-grained PAT approved by the org.",
+            org_label
+        ));
+    }
+
+    if msg.contains("SAML enforcement") || msg.contains("SAML single sign-on") {
+        return Some(format!(
+            "Your token needs SAML SSO authorization for the {} org. Open your PAT in GitHub settings and click 'Configure SSO' -> 'Authorize' for this org.",
+            org_label
+        ));
+    }
+
+    None
+}
+
 pub(crate) fn format_github_collection_error(
     status: StatusCode,
     body: &str,
@@ -19,7 +44,9 @@ pub(crate) fn format_github_collection_error(
             owner, repo
         ),
         (401, _) => "GitHub token is invalid or expired".into(),
-        (403, Some(msg)) => format!("Access denied: {}", msg),
+        (403, Some(msg)) => {
+            rewrite_org_restriction(&msg, Some(owner)).unwrap_or_else(|| format!("Access denied: {}", msg))
+        }
         (_, Some(msg)) => format!("GitHub API error {}: {}", status, msg),
         (_, None) => format!("GitHub API error: {}", status),
     }
@@ -27,7 +54,14 @@ pub(crate) fn format_github_collection_error(
 
 pub(crate) fn format_github_detail_error(status: StatusCode, body: &str) -> String {
     match github_error_detail(body) {
-        Some(msg) => format!("GitHub API error {}: {}", status, msg),
+        Some(msg) => {
+            if status.as_u16() == 403 {
+                if let Some(rewritten) = rewrite_org_restriction(&msg, None) {
+                    return rewritten;
+                }
+            }
+            format!("GitHub API error {}: {}", status, msg)
+        }
         None => format!("GitHub API error: {}", status),
     }
 }
@@ -76,6 +110,40 @@ mod tests {
             error,
             "Access denied: Resource not accessible by integration"
         );
+    }
+
+    #[test]
+    fn collection_error_rewrites_oauth_app_restrictions() {
+        let body = r#"{"message":"Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited. For more information on these restrictions, including how to enable this app, visit https://docs.github.com/articles/restricting-access-to-your-organizations-data/"}"#;
+        let error = format_github_collection_error(StatusCode::FORBIDDEN, body, "acme", "widgets");
+        assert!(error.contains("'acme' org restricts third-party app access"));
+        assert!(error.contains("Personal access tokens"));
+        assert!(!error.contains("OAuth App access restrictions"));
+    }
+
+    #[test]
+    fn collection_error_rewrites_saml_sso_enforcement() {
+        let body = r#"{"message":"Resource protected by organization SAML enforcement. You must grant your personal token access to this organization."}"#;
+        let error = format_github_collection_error(StatusCode::FORBIDDEN, body, "acme", "widgets");
+        assert!(error.contains("SAML SSO authorization"));
+        assert!(error.contains("'acme' org"));
+        assert!(error.contains("Configure SSO"));
+    }
+
+    #[test]
+    fn detail_error_rewrites_oauth_app_restrictions_without_owner() {
+        let body = r#"{"message":"the `acme` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited."}"#;
+        let error = format_github_detail_error(StatusCode::FORBIDDEN, body);
+        assert!(error.contains("third-party app access"));
+        assert!(error.contains("Personal access tokens"));
+    }
+
+    #[test]
+    fn detail_error_rewrites_saml_sso_without_owner() {
+        let body = r#"{"message":"Resource protected by organization SAML enforcement."}"#;
+        let error = format_github_detail_error(StatusCode::FORBIDDEN, body);
+        assert!(error.contains("SAML SSO authorization"));
+        assert!(error.contains("Configure SSO"));
     }
 
     #[test]
