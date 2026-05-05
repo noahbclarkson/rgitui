@@ -607,6 +607,7 @@ async fn create_github_pr(
 
 #[cfg(test)]
 mod tests {
+    #[test]
     fn create_pr_request_body_with_title_only() {
         // When body is None, only title/head/base/draft should be in JSON
         let request_body = serde_json::json!({ "title": "Test PR", "head": "feat-branch", "base": "main", "draft": false });
