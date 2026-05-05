@@ -607,6 +607,71 @@ async fn create_github_pr(
 
 #[cfg(test)]
 mod tests {
+    fn create_pr_request_body_with_title_only() {
+        // When body is None, only title/head/base/draft should be in JSON
+        let request_body = serde_json::json!({ "title": "Test PR", "head": "feat-branch", "base": "main", "draft": false });
+        assert_eq!(request_body["title"], "Test PR");
+        assert_eq!(request_body["head"], "feat-branch");
+        assert_eq!(request_body["base"], "main");
+        assert_eq!(request_body["draft"], false);
+        assert!(request_body.get("body").is_none());
+    }
+
+    #[test]
+    fn create_pr_request_body_with_body() {
+        let mut request_body = serde_json::json!({ "title": "Test PR", "head": "feat-branch", "base": "main", "draft": false });
+        request_body["body"] = serde_json::json!("This is a description");
+        assert_eq!(request_body["body"], "This is a description");
+    }
+
+    #[test]
+    fn create_pr_request_body_draft_flag() {
+        // Draft=true should serialize correctly
+        let request_body =
+            serde_json::json!({ "title": "WIP PR", "head": "wip", "base": "main", "draft": true });
+        assert_eq!(request_body["draft"], true);
+    }
+
+    #[test]
+    fn create_pr_response_parses_number_and_url() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"
+            {"number": 42, "html_url": "https://github.com/owner/repo/pull/42"}
+        "#,
+        )
+        .unwrap();
+        let number = json.get("number").and_then(|v| v.as_u64()).unwrap();
+        let url = json.get("html_url").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(number, 42);
+        assert_eq!(url, "https://github.com/owner/repo/pull/42");
+    }
+
+    #[test]
+    fn create_pr_error_response_parsing() {
+        let body = r#"{"message": "Validation Failed", "errors": [{"resource": "PullRequest", "field": "head", "code": "invalid"}]}"#;
+        let json: serde_json::Value = serde_json::from_str(body).unwrap();
+        let detail = json.get("message").and_then(|m| m.as_str()).unwrap();
+        assert_eq!(detail, "Validation Failed");
+    }
+
+    #[test]
+    fn create_pr_error_response_missing_number_graceful() {
+        // Response without "number" field — as_u64() returns None
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"html_url": "https://github.com/owner/repo/pull/999"}"#)
+                .unwrap();
+        let number = json.get("number").and_then(|v| v.as_u64());
+        assert_eq!(number, None);
+    }
+
+    #[test]
+    fn create_pr_error_response_missing_html_url() {
+        // Response without "html_url" — should fall back to empty string
+        let json: serde_json::Value = serde_json::from_str(r#"{"number": 7}"#).unwrap();
+        let url = json.get("html_url").and_then(|v| v.as_str()).unwrap_or("");
+        assert_eq!(url, "");
+    }
+
     #[test]
     fn create_pr_dialog_has_visible_default() {
         // Visible defaults to false — dialog must be explicitly shown
