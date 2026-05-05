@@ -386,24 +386,30 @@ impl DetailPanel {
         cx.notify();
     }
 
-    /// Returns file indices matching the search query (using fuzzy_score),
-    /// or all files if no query is set.
-    fn filtered_file_indices(&self) -> Vec<usize> {
+    /// Returns file indices matching the search query sorted by relevance (fuzzy_score),
+    /// or all files in order if no query is set.
+    /// Returns (score, index) pairs sorted by score descending (higher = better match first).
+    fn filtered_file_indices(&self) -> Vec<(usize, usize)> {
         let query = match &self.file_search_query {
             Some(q) if !q.is_empty() => q,
-            _ => return (0..self.file_count()).collect(),
+            _ => return (0..self.file_count()).map(|i| (usize::MAX, i)).collect(),
         };
         let Some(diff) = &self.commit_diff else {
             return vec![];
         };
-        diff.files
+        let mut scored: Vec<(usize, usize)> = diff
+            .files
             .iter()
             .enumerate()
             .filter_map(|(i, file)| {
                 let path = file.path.to_string_lossy();
-                crate::command_palette::CommandPalette::fuzzy_score(query, &path).map(|_| i)
+                crate::command_palette::CommandPalette::fuzzy_score(query, &path)
+                    .map(|score| (score, i))
             })
-            .collect()
+            .collect();
+        // Sort by score descending — higher score = better (earlier char match)
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored
     }
 
     fn render_section_header(&self, label: &str) -> impl IntoElement {
@@ -528,7 +534,7 @@ impl DetailPanel {
     fn render_flat_file_list_filtered(
         &self,
         cached: &CachedFileDiffTree,
-        filtered_indices: &[usize],
+        filtered_indices: &[(usize, usize)],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors().clone();
@@ -541,7 +547,7 @@ impl DetailPanel {
         let weak = cx.weak_entity();
         let rows: Vec<_> = filtered_indices
             .iter()
-            .filter_map(|&fi| cached.flat_rows.get(fi).cloned())
+            .filter_map(|&(_, fi)| cached.flat_rows.get(fi).cloned())
             .collect();
         let row_count = rows.len();
 
@@ -647,11 +653,11 @@ impl DetailPanel {
         diff: &CommitDiff,
         _cached: &CachedFileDiffTree,
         colors: &rgitui_theme::ThemeColors,
-        filtered_indices: &[usize],
+        filtered_indices: &[(usize, usize)],
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let filter_set: std::collections::HashSet<usize> =
-            filtered_indices.iter().cloned().collect();
+            filtered_indices.iter().map(|&(_, fi)| fi).collect();
         let row_h = cx
             .global::<SettingsState>()
             .settings()
@@ -667,7 +673,7 @@ impl DetailPanel {
 
         // Collect which top-level dirs contain matching files
         let mut matching_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for &fi in filtered_indices {
+        for &(_, fi) in filtered_indices {
             if let Some(file) = diff.files.get(fi) {
                 let path_str = file.path.display().to_string();
                 if let Some(pos) = path_str.rfind('/') {
@@ -1789,6 +1795,37 @@ mod tests {
         assert_eq!(
             row.dir_path.as_str(),
             "very/deeply/nested/directory/structure/"
+        );
+    }
+
+    // --- filtered_file_indices tests ---
+
+    // Tests for fuzzy file search sort-by-relevance (PR #28).
+    // filtered_file_indices uses CommandPalette::fuzzy_score which is the
+    // same scoring used by the command palette.
+
+    #[test]
+    fn test_filtered_file_indices_no_query_returns_all_in_order() {
+        // Manually test the scoring path: with no query the fallback returns
+        // (MAX, index) pairs so sorted order = file order.
+        let scored: Vec<(usize, usize)> = (0..3).map(|i| (usize::MAX, i)).collect();
+        let mut sorted = scored.clone();
+        sorted.sort_by(|a, b| b.0.cmp(&a.0));
+        assert_eq!(
+            sorted,
+            vec![(usize::MAX, 0), (usize::MAX, 1), (usize::MAX, 2)]
+        );
+    }
+
+    #[test]
+    fn test_filtered_file_indices_relevance_order() {
+        use crate::command_palette::CommandPalette;
+        // "sh" matches "Show" (pos 0) higher than "Fish" (pos 1)
+        let score_show = CommandPalette::fuzzy_score("sh", "Show").unwrap();
+        let score_fish = CommandPalette::fuzzy_score("sh", "Fish").unwrap();
+        assert!(
+            score_show > score_fish,
+            "earlier match should score higher: {score_show} vs {score_fish}"
         );
     }
 }

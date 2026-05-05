@@ -97,6 +97,7 @@ impl ShortcutsHelp {
                     ("Alt+8", "Toggle stashes panel"),
                     ("Ctrl+Shift+T / Alt+9", "Open theme editor"),
                     ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+                    ("v", "Toggle changed-files view (flat / tree)"),
                     ("Enter / Space", "Activate selected sidebar item"),
                 ],
             },

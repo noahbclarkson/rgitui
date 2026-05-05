@@ -735,4 +735,30 @@ mod tests {
             "Co-Authored-By: Bob Jr. <bob+tag@example.com>"
         );
     }
+
+    // --- CoAuthor trailer tests ---
+
+    #[test]
+    fn co_author_trailer_format() {
+        // CoAuthor trailer should follow git's Co-Authored-By convention
+        let ca = CoAuthor {
+            name: "Test User".into(),
+            email: "test@example.com".into(),
+        };
+        let trailer = ca.trailer();
+        assert!(trailer.starts_with("Co-Authored-By: "));
+        assert!(trailer.contains("<test@example.com>"));
+    }
+
+    #[test]
+    fn co_author_trailer_name_with_email() {
+        // Name and email should appear in trailer
+        let ca = CoAuthor {
+            name: "Jane Doe".into(),
+            email: "jane@example.org".into(),
+        };
+        let trailer = ca.trailer();
+        assert!(trailer.contains("Jane Doe"));
+        assert!(trailer.contains("<jane@example.org>"));
+    }
 }
