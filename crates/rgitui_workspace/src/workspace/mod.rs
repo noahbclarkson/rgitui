@@ -557,10 +557,13 @@ impl Workspace {
         let token = tab.prs_panel.read(cx).github_token().map(String::from);
         let owner = tab.prs_panel.read(cx).github_owner().to_string();
         let repo = tab.prs_panel.read(cx).github_repo().to_string();
+        let base = self
+            .active_project()
+            .and_then(|p| p.read(cx).default_branch().map(String::from))
+            .unwrap_or_else(|| "main".to_string());
         self.dialogs.create_pr_dialog.update(cx, |d, cx| {
             d.configure(token, owner, repo, cx);
-            // Default base is "main" — user can edit in the dialog
-            d.show_visible(head, "main".to_string(), cx);
+            d.show_visible(head, base, cx);
         });
     }
 
