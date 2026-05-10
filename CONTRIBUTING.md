@@ -64,6 +64,21 @@ cargo build
 cargo run
 ```
 
+## Packaging
+
+### Building a .deb package (Linux)
+
+```bash
+cargo install cargo-deb
+cargo deb --package rgitui
+```
+
+The resulting `.deb` is written to `target/debian/`. Install it with:
+
+```bash
+sudo dpkg -i target/debian/rgitui_*.deb
+```
+
 ## Development Workflow
 
 1. Fork the repository
