@@ -314,6 +314,7 @@ impl Render for BranchDialog {
                     div()
                         .h_flex()
                         .gap_2()
+                        .flex_nowrap()
                         .child(
                             Button::new("cancel-branch", "Cancel")
                                 .size(ButtonSize::Default)
