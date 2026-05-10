@@ -688,4 +688,53 @@ mod tests {
     fn error_message_none_by_default() {
         // Error message starts as None — only set when an error occurs
     }
+
+    #[test]
+    fn create_pr_dialog_event_pr_created_debug() {
+        let event = super::CreatePrDialogEvent::PrCreated {
+            number: 42,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+        };
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("42"));
+        assert!(debug.contains("PrCreated"));
+    }
+
+    #[test]
+    fn create_pr_dialog_event_dismissed_debug() {
+        let event = super::CreatePrDialogEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+    }
+
+    #[test]
+    fn create_pr_dialog_event_clone_pr_created() {
+        let event = super::CreatePrDialogEvent::PrCreated {
+            number: 99,
+            url: "https://github.com/test/repo/pull/99".to_string(),
+        };
+        let cloned = event.clone();
+        if let super::CreatePrDialogEvent::PrCreated { number, url } = cloned {
+            assert_eq!(number, 99);
+            assert_eq!(url, "https://github.com/test/repo/pull/99");
+        } else {
+            panic!("Clone should produce PrCreated variant");
+        }
+    }
+
+    #[test]
+    fn create_pr_dialog_event_clone_dismissed() {
+        let event = super::CreatePrDialogEvent::Dismissed;
+        let cloned = event.clone();
+        assert_eq!(format!("{:?}", cloned), "Dismissed");
+    }
+
+    #[test]
+    fn create_pr_dialog_event_pr_created_vs_dismissed() {
+        let pr = super::CreatePrDialogEvent::PrCreated {
+            number: 1,
+            url: String::new(),
+        };
+        let dismissed = super::CreatePrDialogEvent::Dismissed;
+        assert_ne!(format!("{:?}", pr), format!("{:?}", dismissed));
+    }
 }

@@ -515,6 +515,12 @@ mod tests {
     }
 
     #[test]
+    fn validate_branch_name_lock_in_middle_is_valid() {
+        // .lock only forbidden at end, not in the middle of a name
+        assert!(StashBranchDialog::validate_branch_name("feature.lock.tmp").is_none());
+    }
+
+    #[test]
     fn validate_branch_name_unicode_valid() {
         assert!(StashBranchDialog::validate_branch_name("feature-日本語").is_none());
         assert!(StashBranchDialog::validate_branch_name("功能分支").is_none());
@@ -568,5 +574,41 @@ mod tests {
         } else {
             panic!("Clone should produce CreateBranch variant");
         }
+    }
+
+    #[test]
+    fn stash_branch_dialog_event_create_branch_name_differs() {
+        let a = super::StashBranchDialogEvent::CreateBranch {
+            name: "a".to_string(),
+            stash_index: 0,
+        };
+        let b = super::StashBranchDialogEvent::CreateBranch {
+            name: "b".to_string(),
+            stash_index: 0,
+        };
+        assert_ne!(format!("{:?}", a), format!("{:?}", b));
+    }
+
+    #[test]
+    fn stash_branch_dialog_event_create_branch_stash_index_differs() {
+        let a = super::StashBranchDialogEvent::CreateBranch {
+            name: "feature".to_string(),
+            stash_index: 0,
+        };
+        let b = super::StashBranchDialogEvent::CreateBranch {
+            name: "feature".to_string(),
+            stash_index: 1,
+        };
+        assert_ne!(format!("{:?}", a), format!("{:?}", b));
+    }
+
+    #[test]
+    fn stash_branch_dialog_event_dismissed_vs_create_branch() {
+        let dismissed = super::StashBranchDialogEvent::Dismissed;
+        let create = super::StashBranchDialogEvent::CreateBranch {
+            name: "feature".to_string(),
+            stash_index: 0,
+        };
+        assert_ne!(format!("{:?}", dismissed), format!("{:?}", create));
     }
 }
