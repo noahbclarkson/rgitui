@@ -36,3 +36,18 @@ tempfile = "3.27.0"
 
 [build-dependencies]
 winresource = "0.1.31"
+
+[package.metadata.deb]
+maintainer = "Noah Clarkson <noah@noahbclarkson.com>"
+copyright = "MIT, Noah Clarkson"
+license-file = ["../../LICENSE"]
+extended-description = "rgitui is a GPU-accelerated Git client built with GPUI, featuring a commit graph, diff viewer, interactive rebase, AI commit messages, and more."
+depends = "$auto"
+section = "vcs"
+priority = "optional"
+assets = [
+  ["../../target/release/rgitui", "usr/bin/", "755"],
+  ["resources/linux/rgitui.desktop", "usr/share/applications/", "644"],
+  ["../../assets/icons/app-icon.png", "usr/share/icons/hicolor/512x512/apps/rgitui.png", "644"],
+  ["resources/linux/com.rgitui.app.metainfo.xml", "usr/share/metainfo/", "644"],
+]

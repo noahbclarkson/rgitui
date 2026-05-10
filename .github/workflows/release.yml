@@ -246,6 +246,14 @@ jobs:
           chmod +x script/bundle-linux.sh
           ./script/bundle-linux.sh
 
+      - name: Build .deb package
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          cargo install cargo-deb
+          cargo deb --package rgitui --deb-version "$VERSION"
+          cp target/debian/rgitui_*.deb "rgitui-${VERSION}-x86_64.deb"
+
       - name: Create plain tarball
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
