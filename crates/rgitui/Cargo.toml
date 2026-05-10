@@ -48,6 +48,11 @@ priority = "optional"
 assets = [
   ["../../target/release/rgitui", "usr/bin/", "755"],
   ["resources/linux/rgitui.desktop", "usr/share/applications/", "644"],
-  ["../../assets/icons/app-icon.png", "usr/share/icons/hicolor/512x512/apps/rgitui.png", "644"],
   ["resources/linux/com.rgitui.app.metainfo.xml", "usr/share/metainfo/", "644"],
+  ["../../assets/icons/app-icon-16.png",  "usr/share/icons/hicolor/16x16/apps/rgitui.png",   "644"],
+  ["../../assets/icons/app-icon-32.png",  "usr/share/icons/hicolor/32x32/apps/rgitui.png",   "644"],
+  ["../../assets/icons/app-icon-48.png",  "usr/share/icons/hicolor/48x48/apps/rgitui.png",   "644"],
+  ["../../assets/icons/app-icon-256.png", "usr/share/icons/hicolor/256x256/apps/rgitui.png", "644"],
+  ["../../assets/icons/app-icon-512.png", "usr/share/icons/hicolor/512x512/apps/rgitui.png", "644"],
+  ["../../assets/icons/app-icon.svg",     "usr/share/icons/hicolor/scalable/apps/rgitui.svg", "644"],
 ]
