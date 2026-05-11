@@ -698,3 +698,24 @@ impl Workspace {
         f
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_event_debug() {
+        let event = WorkspaceEvent::OpenRepo("/tmp/repo".to_string());
+        assert_eq!(format!("{:?}", event), "OpenRepo(\"/tmp/repo\")");
+    }
+
+    #[test]
+    fn test_workspace_event_match() {
+        let event = WorkspaceEvent::OpenRepo("/tmp/repo".to_string());
+        if let WorkspaceEvent::OpenRepo(path) = event {
+            assert_eq!(path, "/tmp/repo");
+        } else {
+            panic!("Expected OpenRepo");
+        }
+    }
+}
