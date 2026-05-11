@@ -446,10 +446,9 @@ impl Render for CreatePrDialog {
                             .pt_2()
                             .border_t_1()
                             .border_color(colors.border_variant)
-                            .h_flex()
+                            .v_flex()
                             .w_full()
-                            .justify_between()
-                            .items_center()
+                            .gap_2()
                             .child(
                                 Label::new("Shift+Enter to create | Esc to cancel")
                                     .size(LabelSize::XSmall)
@@ -459,6 +458,9 @@ impl Render for CreatePrDialog {
                                 div()
                                     .h_flex()
                                     .gap_2()
+                                    .flex_nowrap()
+                                    .justify_end()
+                                    .w_full()
                                     .pr(px(4.))
                                     .child(
                                         Button::new("create-pr-cancel", "Cancel")

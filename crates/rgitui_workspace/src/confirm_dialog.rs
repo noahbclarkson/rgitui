@@ -250,13 +250,11 @@ impl Render for ConfirmDialog {
                     .child(
                         div()
                             .pt_2()
-                            .px(px(4.))
                             .border_t_1()
                             .border_color(colors.border_variant)
-                            .h_flex()
+                            .v_flex()
                             .w_full()
-                            .justify_between()
-                            .items_center()
+                            .gap_2()
                             .child(
                                 Label::new("Enter to confirm | Esc to cancel")
                                     .size(LabelSize::XSmall)
@@ -266,7 +264,9 @@ impl Render for ConfirmDialog {
                                 div()
                                     .h_flex()
                                     .gap_2()
-                                    .pr(px(4.))
+                                    .flex_nowrap()
+                                    .justify_end()
+                                    .w_full()
                                     .child(
                                         Button::new("confirm-cancel", "Cancel")
                                             .size(ButtonSize::Default)

@@ -314,9 +314,9 @@ impl Render for StashBranchDialog {
                 .pt_2()
                 .border_t_1()
                 .border_color(colors.border_variant)
-                .h_flex()
-                .justify_between()
-                .items_center()
+                .v_flex()
+                .w_full()
+                .gap_2()
                 .child(
                     Label::new("Enter to create | Esc to cancel")
                         .size(LabelSize::XSmall)
@@ -326,6 +326,9 @@ impl Render for StashBranchDialog {
                     div()
                         .h_flex()
                         .gap_2()
+                        .flex_nowrap()
+                        .justify_end()
+                        .w_full()
                         .child(
                             Button::new("cancel-stash-branch", "Cancel")
                                 .size(ButtonSize::Default)
