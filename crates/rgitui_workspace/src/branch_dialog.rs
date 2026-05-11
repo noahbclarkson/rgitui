@@ -586,3 +586,35 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod branch_dialog_event_tests {
+    use super::*;
+
+    #[test]
+    fn test_branch_dialog_event_debug() {
+        let event = BranchDialogEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+
+        let event = BranchDialogEvent::CreateBranch { name: "feat/test".to_string(), base_ref: "HEAD".to_string() };
+        assert_eq!(format!("{:?}", event), "CreateBranch { name: \"feat/test\", base_ref: \"HEAD\" }");
+    }
+
+    #[test]
+    fn test_branch_dialog_event_match() {
+        let event = BranchDialogEvent::CreateBranch { name: "feature".to_string(), base_ref: "main".to_string() };
+        if let BranchDialogEvent::CreateBranch { name, base_ref } = event {
+            assert_eq!(name, "feature");
+            assert_eq!(base_ref, "main");
+        } else {
+            panic!("Expected CreateBranch");
+        }
+        
+        let event = BranchDialogEvent::Dismissed;
+        if let BranchDialogEvent::Dismissed = event {
+            // expected
+        } else {
+            panic!("Expected Dismissed");
+        }
+    }
+}
