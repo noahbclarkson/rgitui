@@ -406,3 +406,24 @@ impl Render for ShortcutsHelp {
         backdrop.child(modal).into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shortcuts_help_event_debug() {
+        let event = ShortcutsHelpEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+    }
+
+    #[test]
+    fn test_shortcuts_help_event_match() {
+        let event = ShortcutsHelpEvent::Dismissed;
+        if let ShortcutsHelpEvent::Dismissed = event {
+            // expected
+        } else {
+            panic!("Expected Dismissed");
+        }
+    }
+}
