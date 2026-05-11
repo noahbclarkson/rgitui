@@ -436,7 +436,7 @@ mod tests {
         } else {
             panic!("Expected InitSubmodule");
         }
-        
+
         let event = SubmoduleViewEvent::Dismissed;
         if let SubmoduleViewEvent::Dismissed = event {
             // expected

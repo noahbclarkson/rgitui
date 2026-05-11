@@ -450,3 +450,34 @@ impl Render for BisectView {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bisect_view_event_debug() {
+        let event = BisectViewEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+
+        let event = BisectViewEvent::CommitSelected("1234567".to_string());
+        assert_eq!(format!("{:?}", event), "CommitSelected(\"1234567\")");
+    }
+
+    #[test]
+    fn test_bisect_view_event_match() {
+        let event = BisectViewEvent::CommitSelected("deadbeef".to_string());
+        if let BisectViewEvent::CommitSelected(oid) = event {
+            assert_eq!(oid, "deadbeef");
+        } else {
+            panic!("Expected CommitSelected");
+        }
+
+        let event = BisectViewEvent::Dismissed;
+        if let BisectViewEvent::Dismissed = event {
+            // expected
+        } else {
+            panic!("Expected Dismissed");
+        }
+    }
+}

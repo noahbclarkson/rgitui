@@ -466,7 +466,7 @@ mod tests {
         } else {
             panic!("Expected CommitSelected");
         }
-        
+
         let event = ReflogViewEvent::Dismissed;
         if let ReflogViewEvent::Dismissed = event {
             // expected
