@@ -14,6 +14,7 @@ use rgitui_ui::{
 pub enum RepoOpenerEvent {
     OpenRepo(PathBuf),
     Dismissed,
+    ShowCloneDialog,
 }
 
 pub struct RepoOpener {
@@ -330,6 +331,17 @@ impl Render for RepoOpener {
                                 .icon(IconName::Folder)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.browse_folder(cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("clone-repo", "Clone")
+                                .style(ButtonStyle::Subtle)
+                                .icon(IconName::Plus)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.visible = false;
+                                    this.editor.update(cx, |e, cx| e.clear(cx));
+                                    cx.emit(RepoOpenerEvent::ShowCloneDialog);
+                                    cx.notify();
                                 })),
                         ),
                 ),

@@ -667,6 +667,12 @@ pub(super) fn subscribe_repo_opener(cx: &mut Context<Workspace>, repo_opener: &E
                 this.focus.pending_focus_restore = true;
                 cx.notify();
             }
+            RepoOpenerEvent::ShowCloneDialog => {
+                // To be wired up to actual Clone dialog logic if needed
+                // Currently just dismissing opener to allow a clone UI to appear
+                this.focus.pending_focus_restore = true;
+                cx.notify();
+            }
         },
     )
     .detach();
