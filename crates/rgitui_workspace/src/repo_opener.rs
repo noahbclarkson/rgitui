@@ -522,3 +522,34 @@ impl Render for RepoOpener {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_repo_opener_event_debug() {
+        let event = RepoOpenerEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+
+        let event = RepoOpenerEvent::OpenRepo(PathBuf::from("/tmp/repo"));
+        assert_eq!(format!("{:?}", event), "OpenRepo(\"/tmp/repo\")");
+    }
+
+    #[test]
+    fn test_repo_opener_event_match() {
+        let event = RepoOpenerEvent::OpenRepo(PathBuf::from("/tmp/repo"));
+        if let RepoOpenerEvent::OpenRepo(path) = event {
+            assert_eq!(path, PathBuf::from("/tmp/repo"));
+        } else {
+            panic!("Expected OpenRepo");
+        }
+        
+        let event = RepoOpenerEvent::Dismissed;
+        if let RepoOpenerEvent::Dismissed = event {
+            // expected
+        } else {
+            panic!("Expected Dismissed");
+        }
+    }
+}
