@@ -420,10 +420,8 @@ mod tests {
     #[test]
     fn test_shortcuts_help_event_match() {
         let event = ShortcutsHelpEvent::Dismissed;
-        if let ShortcutsHelpEvent::Dismissed = event {
-            // expected
-        } else {
-            panic!("Expected Dismissed");
+        match event {
+            ShortcutsHelpEvent::Dismissed => {}
         }
     }
 }

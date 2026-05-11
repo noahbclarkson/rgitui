@@ -22,10 +22,7 @@ mod tests {
     #[test]
     fn test_settings_view_event_match() {
         let event = SettingsViewEvent::ThemeChanged("dracula".to_string());
-        if let SettingsViewEvent::ThemeChanged(theme) = event {
-            assert_eq!(theme, "dracula");
-        } else {
-            panic!("Expected ThemeChanged");
-        }
+        let SettingsViewEvent::ThemeChanged(theme) = &event;
+        assert_eq!(*theme, "dracula");
     }
 }

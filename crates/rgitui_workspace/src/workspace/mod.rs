@@ -712,10 +712,7 @@ mod tests {
     #[test]
     fn test_workspace_event_match() {
         let event = WorkspaceEvent::OpenRepo("/tmp/repo".to_string());
-        if let WorkspaceEvent::OpenRepo(path) = event {
-            assert_eq!(path, "/tmp/repo");
-        } else {
-            panic!("Expected OpenRepo");
-        }
+        let WorkspaceEvent::OpenRepo(path) = &event;
+        assert_eq!(*path, "/tmp/repo");
     }
 }
