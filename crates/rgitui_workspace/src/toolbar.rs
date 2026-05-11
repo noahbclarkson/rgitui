@@ -525,3 +525,27 @@ impl Render for Toolbar {
             .child(right)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_toolbar_event_debug() {
+        let event = ToolbarEvent::Fetch;
+        assert_eq!(format!("{:?}", event), "Fetch");
+
+        let event = ToolbarEvent::CreatePr;
+        assert_eq!(format!("{:?}", event), "CreatePr");
+    }
+
+    #[test]
+    fn test_toolbar_event_match() {
+        let event = ToolbarEvent::Push;
+        if let ToolbarEvent::Push = event {
+            // expected
+        } else {
+            panic!("Expected Push");
+        }
+    }
+}
