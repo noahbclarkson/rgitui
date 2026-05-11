@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, FontWeight, KeyDownEvent, Render, Window,
+    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, FontWeight, KeyDownEvent,
+    Render, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Button, ButtonStyle, Label, LabelSize, TextInput};
@@ -45,7 +46,7 @@ impl RepoCloneDialog {
     pub fn show_visible(&mut self, default_path: Option<String>, cx: &mut Context<Self>) {
         self.visible = true;
         self.url_editor.update(cx, |e, cx| e.clear(cx));
-        
+
         self.path_editor.update(cx, |e, cx| {
             if let Some(path) = default_path {
                 e.set_text(path, cx);
@@ -53,7 +54,7 @@ impl RepoCloneDialog {
                 e.clear(cx);
             }
         });
-        
+
         cx.notify();
     }
 

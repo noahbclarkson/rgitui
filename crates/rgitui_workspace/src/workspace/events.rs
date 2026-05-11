@@ -18,9 +18,9 @@ use crate::{
     DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent, GlobalSearchView,
     GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent,
     RenameDialog, RenameDialogEvent, RepoCloneDialog, RepoCloneEvent, RepoOpener, RepoOpenerEvent,
-    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog, StashBranchDialogEvent,
-    SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
-    WorktreeDialog, WorktreeDialogEvent,
+    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog,
+    StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent,
+    ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};

@@ -20,6 +20,7 @@ mod markdown_view;
 mod prs_panel;
 mod reflog_view;
 mod rename_dialog;
+mod repo_clone_dialog;
 mod repo_opener;
 mod search_panel;
 mod settings_window;
@@ -30,7 +31,6 @@ mod stash_branch_dialog;
 mod status_bar;
 mod submodule_view;
 mod tag_dialog;
-mod repo_clone_dialog;
 mod theme_editor_dialog;
 pub(crate) mod time;
 mod title_bar;
@@ -57,8 +57,8 @@ pub use markdown_view::*;
 pub use prs_panel::*;
 pub use reflog_view::*;
 pub use rename_dialog::*;
-pub use repo_opener::*;
 pub use repo_clone_dialog::*;
+pub use repo_opener::*;
 pub use search_panel::*;
 pub use settings_window::{
     settings_window_options, SettingsView, SettingsViewEvent, SettingsWindow, SettingsWindowAction,
