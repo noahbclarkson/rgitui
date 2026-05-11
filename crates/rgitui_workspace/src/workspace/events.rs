@@ -2580,21 +2580,19 @@ pub(super) fn subscribe_repo_clone_dialog(
         repo_clone_dialog,
         |this, _cd, event: &RepoCloneEvent, cx| match event {
             RepoCloneEvent::CloneRepo { url, path } => {
-                // Actually perform the git clone operation
-                let url = url.clone();
-                let path = path.clone();
-                this.show_toast(
-                    format!("Cloning '{}' to '{}'", url, path.display()),
-                    ToastKind::Info,
-                    cx,
-                );
-                // TODO: Wire up to GitProject for actual clone operation
-                // For now, show a toast that this feature is pending
-                this.show_toast(
-                    "Clone functionality coming soon!".to_string(),
-                    ToastKind::Info,
-                    cx,
-                );
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    let project = tab.project.clone();
+                    let url = url.clone();
+                    let path = path.clone();
+                    this.show_toast(
+                        format!("Cloning '{}' to '{}'", url, path.display()),
+                        ToastKind::Info,
+                        cx,
+                    );
+                    project.update(cx, |proj, cx| {
+                        proj.clone_repo(&url, &path, cx).detach();
+                    });
+                }
             }
             RepoCloneEvent::Dismissed => {
                 this.focus.pending_focus_restore = true;

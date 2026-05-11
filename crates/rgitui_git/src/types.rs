@@ -328,6 +328,7 @@ pub enum GitOperationKind {
     Worktree,
     ResolveConflict,
     Clean,
+    Clone,
 }
 
 impl GitOperationKind {
@@ -354,6 +355,7 @@ impl GitOperationKind {
             GitOperationKind::Worktree => "Worktree",
             GitOperationKind::ResolveConflict => "Resolve conflict",
             GitOperationKind::Clean => "Clean",
+            GitOperationKind::Clone => "Clone",
         }
     }
 }
