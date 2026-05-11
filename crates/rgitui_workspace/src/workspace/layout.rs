@@ -79,6 +79,7 @@ impl Render for Workspace {
                 .child(self.dialogs.rename_dialog.clone())
                 .child(self.dialogs.stash_branch_dialog.clone())
                 .child(self.dialogs.create_pr_dialog.clone())
+                .child(self.dialogs.repo_clone_dialog.clone())
                 .child(self.overlays.repo_opener.clone())
                 .child(self.overlays.shortcuts_help.clone())
                 .child(self.overlays.global_search.clone())

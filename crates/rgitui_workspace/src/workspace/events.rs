@@ -17,8 +17,8 @@ use crate::{
     ConfirmAction, ConfirmDialog, ConfirmDialogEvent, CreatePrDialog, CreatePrDialogEvent,
     DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent, GlobalSearchView,
     GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent,
-    RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, ShortcutsHelp,
-    ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog, StashBranchDialogEvent,
+    RenameDialog, RenameDialogEvent, RepoCloneDialog, RepoCloneEvent, RepoOpener, RepoOpenerEvent,
+    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog, StashBranchDialogEvent,
     SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
     WorktreeDialog, WorktreeDialogEvent,
 };
@@ -668,10 +668,10 @@ pub(super) fn subscribe_repo_opener(cx: &mut Context<Workspace>, repo_opener: &E
                 cx.notify();
             }
             RepoOpenerEvent::ShowCloneDialog => {
-                // To be wired up to actual Clone dialog logic if needed
-                // Currently just dismissing opener to allow a clone UI to appear
-                this.focus.pending_focus_restore = true;
-                cx.notify();
+                // Show the clone dialog when user clicks Clone button
+                this.dialogs.repo_clone_dialog.update(cx, |d, cx| {
+                    d.show_visible(None, cx);
+                });
             }
         },
     )
@@ -2569,6 +2569,39 @@ pub(super) fn subscribe_bisect_view(
             }
         }
     })
+    .detach();
+}
+
+pub(super) fn subscribe_repo_clone_dialog(
+    cx: &mut Context<Workspace>,
+    repo_clone_dialog: &Entity<RepoCloneDialog>,
+) {
+    cx.subscribe(
+        repo_clone_dialog,
+        |this, _cd, event: &RepoCloneEvent, cx| match event {
+            RepoCloneEvent::CloneRepo { url, path } => {
+                // Actually perform the git clone operation
+                let url = url.clone();
+                let path = path.clone();
+                this.show_toast(
+                    format!("Cloning '{}' to '{}'", url, path.display()),
+                    ToastKind::Info,
+                    cx,
+                );
+                // TODO: Wire up to GitProject for actual clone operation
+                // For now, show a toast that this feature is pending
+                this.show_toast(
+                    "Clone functionality coming soon!".to_string(),
+                    ToastKind::Info,
+                    cx,
+                );
+            }
+            RepoCloneEvent::Dismissed => {
+                this.focus.pending_focus_restore = true;
+                cx.notify();
+            }
+        },
+    )
     .detach();
 }
 

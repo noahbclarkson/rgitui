@@ -242,6 +242,7 @@ impl Workspace {
         let confirm_dialog = cx.new(crate::ConfirmDialog::new);
         let stash_branch_dialog = cx.new(crate::StashBranchDialog::new);
         let create_pr_dialog = cx.new(crate::CreatePrDialog::new);
+        let repo_clone_dialog = cx.new(crate::RepoCloneDialog::new);
         let repo_opener = cx.new(crate::RepoOpener::new);
         let shortcuts_help = cx.new(crate::ShortcutsHelp::new);
 
@@ -257,6 +258,7 @@ impl Workspace {
         events::subscribe_stash_branch_dialog(cx, &stash_branch_dialog);
         events::subscribe_create_pr_dialog(cx, &create_pr_dialog);
         events::subscribe_repo_opener(cx, &repo_opener);
+        events::subscribe_repo_clone_dialog(cx, &repo_clone_dialog);
         events::subscribe_shortcuts_help(cx, &shortcuts_help);
         events::subscribe_global_search(cx, &global_search);
 
@@ -292,6 +294,7 @@ impl Workspace {
                 worktree_dialog,
                 stash_branch_dialog,
                 create_pr_dialog,
+                repo_clone_dialog,
             },
             overlays: OverlayState {
                 command_palette,
