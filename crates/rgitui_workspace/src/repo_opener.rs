@@ -544,7 +544,7 @@ mod tests {
         } else {
             panic!("Expected OpenRepo");
         }
-        
+
         let event = RepoOpenerEvent::Dismissed;
         if let RepoOpenerEvent::Dismissed = event {
             // expected
