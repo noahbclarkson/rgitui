@@ -405,3 +405,43 @@ impl Render for SubmoduleView {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_submodule_view_event_debug() {
+        let event = SubmoduleViewEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+
+        let event = SubmoduleViewEvent::InitSubmodule("libs/git2".to_string());
+        assert_eq!(format!("{:?}", event), "InitSubmodule(\"libs/git2\")");
+
+        let event = SubmoduleViewEvent::UpdateSubmodule("libs/git2".to_string());
+        assert_eq!(format!("{:?}", event), "UpdateSubmodule(\"libs/git2\")");
+
+        let event = SubmoduleViewEvent::InitAll;
+        assert_eq!(format!("{:?}", event), "InitAll");
+
+        let event = SubmoduleViewEvent::UpdateAll;
+        assert_eq!(format!("{:?}", event), "UpdateAll");
+    }
+
+    #[test]
+    fn test_submodule_view_event_match() {
+        let event = SubmoduleViewEvent::InitSubmodule("path/to/sub".to_string());
+        if let SubmoduleViewEvent::InitSubmodule(path) = event {
+            assert_eq!(path, "path/to/sub");
+        } else {
+            panic!("Expected InitSubmodule");
+        }
+        
+        let event = SubmoduleViewEvent::Dismissed;
+        if let SubmoduleViewEvent::Dismissed = event {
+            // expected
+        } else {
+            panic!("Expected Dismissed");
+        }
+    }
+}
