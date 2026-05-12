@@ -5,7 +5,7 @@ use gpui::{
     div, px, ClickEvent, Context, Entity, EventEmitter, FontWeight, KeyDownEvent, Render, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonStyle, Label, LabelSize, TextInput};
+use rgitui_ui::{Button, ButtonStyle, IconName, Label, LabelSize, TextInput};
 
 #[derive(Debug, Clone)]
 pub enum RepoCloneEvent {
@@ -81,6 +81,31 @@ impl RepoCloneDialog {
         }
     }
 
+    fn browse_path(&mut self, cx: &mut Context<Self>) {
+        let current_url = self.url_editor.read(cx).text().to_string();
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let picked = rfd::AsyncFileDialog::new()
+                .set_title("Select Parent Folder")
+                .pick_folder()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+            let Some(folder) = picked else { return };
+            let destination = match repo_name_from_url(&current_url) {
+                Some(name) => folder.join(name),
+                None => folder,
+            };
+            cx.update(|cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.path_editor.update(cx, |e, cx| {
+                        e.set_text(destination.to_string_lossy().into_owned(), cx);
+                    });
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
     fn handle_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
             "escape" => {
@@ -95,6 +120,23 @@ impl RepoCloneDialog {
 }
 
 impl EventEmitter<RepoCloneEvent> for RepoCloneDialog {}
+
+fn repo_name_from_url(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let last = trimmed
+        .rsplit_once(['/', ':'])
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
 
 impl Render for RepoCloneDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -149,11 +191,21 @@ impl Render for RepoCloneDialog {
                             .child(self.url_editor.clone()),
                     )
                     .child(
-                        div()
-                            .v_flex()
-                            .gap(px(8.))
-                            .child(Label::new("Path"))
-                            .child(self.path_editor.clone()),
+                        div().v_flex().gap(px(8.)).child(Label::new("Path")).child(
+                            div()
+                                .h_flex()
+                                .gap(px(8.))
+                                .items_center()
+                                .child(div().flex_1().child(self.path_editor.clone()))
+                                .child(
+                                    Button::new("browse-path", "Browse")
+                                        .style(ButtonStyle::Subtle)
+                                        .icon(IconName::Folder)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.browse_path(cx);
+                                        })),
+                                ),
+                        ),
                     )
                     .child(
                         div()
@@ -177,5 +229,61 @@ impl Render for RepoCloneDialog {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repo_name_from_url;
+
+    #[test]
+    fn https_url_with_git_suffix() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/repo.git"),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn https_url_without_git_suffix() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/repo"),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn https_url_trailing_slash() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/repo/"),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn scp_style_ssh_url() {
+        assert_eq!(
+            repo_name_from_url("git@github.com:user/repo.git"),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn ssh_url_scheme() {
+        assert_eq!(
+            repo_name_from_url("ssh://git@github.com/user/repo.git"),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_url_returns_none() {
+        assert_eq!(repo_name_from_url(""), None);
+        assert_eq!(repo_name_from_url("   "), None);
+    }
+
+    #[test]
+    fn bare_repo_name() {
+        assert_eq!(repo_name_from_url("repo.git"), Some("repo".to_string()));
     }
 }
