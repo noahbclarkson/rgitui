@@ -242,6 +242,7 @@ impl Workspace {
         let confirm_dialog = cx.new(crate::ConfirmDialog::new);
         let stash_branch_dialog = cx.new(crate::StashBranchDialog::new);
         let create_pr_dialog = cx.new(crate::CreatePrDialog::new);
+        let repo_clone_dialog = cx.new(crate::RepoCloneDialog::new);
         let repo_opener = cx.new(crate::RepoOpener::new);
         let shortcuts_help = cx.new(crate::ShortcutsHelp::new);
 
@@ -257,6 +258,7 @@ impl Workspace {
         events::subscribe_stash_branch_dialog(cx, &stash_branch_dialog);
         events::subscribe_create_pr_dialog(cx, &create_pr_dialog);
         events::subscribe_repo_opener(cx, &repo_opener);
+        events::subscribe_repo_clone_dialog(cx, &repo_clone_dialog);
         events::subscribe_shortcuts_help(cx, &shortcuts_help);
         events::subscribe_global_search(cx, &global_search);
 
@@ -292,6 +294,7 @@ impl Workspace {
                 worktree_dialog,
                 stash_branch_dialog,
                 create_pr_dialog,
+                repo_clone_dialog,
             },
             overlays: OverlayState {
                 command_palette,
@@ -557,10 +560,13 @@ impl Workspace {
         let token = tab.prs_panel.read(cx).github_token().map(String::from);
         let owner = tab.prs_panel.read(cx).github_owner().to_string();
         let repo = tab.prs_panel.read(cx).github_repo().to_string();
+        let base = self
+            .active_project()
+            .and_then(|p| p.read(cx).default_branch().map(String::from))
+            .unwrap_or_else(|| "main".to_string());
         self.dialogs.create_pr_dialog.update(cx, |d, cx| {
             d.configure(token, owner, repo, cx);
-            // Default base is "main" — user can edit in the dialog
-            d.show_visible(head, "main".to_string(), cx);
+            d.show_visible(head, base, cx);
         });
     }
 
@@ -693,5 +699,23 @@ impl Workspace {
         let mut f = gpui::font(SharedString::from(primary));
         f.fallbacks = Some(gpui::FontFallbacks::from_fonts(fallbacks));
         f
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_event_debug() {
+        let event = WorkspaceEvent::OpenRepo("/tmp/repo".to_string());
+        assert_eq!(format!("{:?}", event), "OpenRepo(\"/tmp/repo\")");
+    }
+
+    #[test]
+    fn test_workspace_event_match() {
+        let event = WorkspaceEvent::OpenRepo("/tmp/repo".to_string());
+        let WorkspaceEvent::OpenRepo(path) = &event;
+        assert_eq!(*path, "/tmp/repo");
     }
 }

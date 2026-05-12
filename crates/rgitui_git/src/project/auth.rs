@@ -130,7 +130,7 @@ fn can_use_https(repo_path: &Path, auth: &GitAuthRuntime, ssh_url: &str) -> bool
         || has_credential_helper_for_host(repo_path, &https_url)
 }
 
-fn inject_https_credentials(cmd: &mut Command, auth: &GitAuthRuntime, remote_url: &str) {
+pub(crate) fn inject_https_credentials(cmd: &mut Command, auth: &GitAuthRuntime, remote_url: &str) {
     let (username, token) = match find_https_credentials(auth, remote_url) {
         Some(creds) => creds,
         None => return,

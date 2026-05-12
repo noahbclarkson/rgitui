@@ -444,3 +444,34 @@ impl Render for ReflogView {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reflog_view_event_debug() {
+        let event = ReflogViewEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+
+        let event = ReflogViewEvent::CommitSelected("deadbeef".to_string());
+        assert_eq!(format!("{:?}", event), "CommitSelected(\"deadbeef\")");
+    }
+
+    #[test]
+    fn test_reflog_view_event_match() {
+        let event = ReflogViewEvent::CommitSelected("123456".to_string());
+        if let ReflogViewEvent::CommitSelected(oid) = event {
+            assert_eq!(oid, "123456");
+        } else {
+            panic!("Expected CommitSelected");
+        }
+
+        let event = ReflogViewEvent::Dismissed;
+        if let ReflogViewEvent::Dismissed = event {
+            // expected
+        } else {
+            panic!("Expected Dismissed");
+        }
+    }
+}

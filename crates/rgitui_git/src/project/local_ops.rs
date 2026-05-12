@@ -7,6 +7,7 @@ use rgitui_settings::current_git_auth_runtime;
 
 use crate::types::*;
 
+use super::auth::inject_https_credentials;
 use super::refresh::gather_refresh_data;
 use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent, RefreshData};
 
@@ -2441,6 +2442,86 @@ impl GitProject {
                     Ok(())
                 })
             })?
+        })
+    }
+
+    // ============================================================================
+    // Clone Operations
+    // ============================================================================
+
+    /// Clone a repository from a URL to a local path.
+    pub fn clone_repo(
+        &mut self,
+        url: &str,
+        path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("clone_repo: url={}, path={}", url, path.display());
+        let url = url.to_string();
+        let path = path.to_path_buf();
+        let operation_id = self.begin_operation(
+            GitOperationKind::Clone,
+            format!("Cloning '{}'...", url),
+            None,
+            None,
+            cx,
+        );
+        let commit_limit = self.commit_limit;
+        let auth = rgitui_settings::current_git_auth_runtime();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let url_inner = url.clone();
+            let path_inner = path.clone();
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    if let Err(git2_err) = git2::Repository::clone(&url_inner, &path_inner) {
+                        log::info!(
+                            "git2::Repository::clone failed ({}), falling back to system git",
+                            git2_err
+                        );
+                        let mut cmd = super::git_command();
+                        cmd.env("GIT_TERMINAL_PROMPT", "0");
+                        if !url_inner.starts_with("git@") && !url_inner.starts_with("ssh://") {
+                            inject_https_credentials(&mut cmd, &auth, &url_inner);
+                        }
+                        cmd.args(["clone", &url_inner, &path_inner.to_string_lossy()]);
+                        let output = cmd.output().context("git clone failed")?;
+                        if !output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            anyhow::bail!("git clone failed: {}", stderr);
+                        }
+                    }
+                    gather_refresh_data(&path_inner, commit_limit)
+                })
+                .await;
+            cx.update(|cx| {
+                this.update(cx, |this, cx| match result {
+                    Ok(data) => {
+                        this.apply_refresh_data(data);
+                        this.complete_op(
+                            operation_id,
+                            GitOperationKind::Clone,
+                            format!("Cloned '{}'", url),
+                            (Some(format!("Opened: {}", path.display())), None, None),
+                            cx,
+                        );
+                        cx.emit(GitProjectEvent::StatusChanged);
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        log::error!("clone_repo failed: {}", e);
+                        this.fail_op(
+                            operation_id,
+                            GitOperationKind::Clone,
+                            "Clone failed",
+                            e.to_string(),
+                            (None, None, false),
+                            cx,
+                        );
+                    }
+                })
+            })?;
+            Ok(())
         })
     }
 

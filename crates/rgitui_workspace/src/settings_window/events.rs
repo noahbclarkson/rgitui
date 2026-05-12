@@ -8,3 +8,21 @@
 pub enum SettingsViewEvent {
     ThemeChanged(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_view_event_debug() {
+        let event = SettingsViewEvent::ThemeChanged("dracula".to_string());
+        assert_eq!(format!("{:?}", event), "ThemeChanged(\"dracula\")");
+    }
+
+    #[test]
+    fn test_settings_view_event_match() {
+        let event = SettingsViewEvent::ThemeChanged("dracula".to_string());
+        let SettingsViewEvent::ThemeChanged(theme) = &event;
+        assert_eq!(*theme, "dracula");
+    }
+}

@@ -14,6 +14,7 @@ use rgitui_ui::{
 pub enum RepoOpenerEvent {
     OpenRepo(PathBuf),
     Dismissed,
+    ShowCloneDialog,
 }
 
 pub struct RepoOpener {
@@ -331,6 +332,17 @@ impl Render for RepoOpener {
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.browse_folder(cx);
                                 })),
+                        )
+                        .child(
+                            Button::new("clone-repo", "Clone")
+                                .style(ButtonStyle::Subtle)
+                                .icon(IconName::Plus)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.visible = false;
+                                    this.editor.update(cx, |e, cx| e.clear(cx));
+                                    cx.emit(RepoOpenerEvent::ShowCloneDialog);
+                                    cx.notify();
+                                })),
                         ),
                 ),
         );
@@ -520,5 +532,36 @@ impl Render for RepoOpener {
             }))
             .child(modal)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_repo_opener_event_debug() {
+        let event = RepoOpenerEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+
+        let event = RepoOpenerEvent::OpenRepo(PathBuf::from("/tmp/repo"));
+        assert_eq!(format!("{:?}", event), "OpenRepo(\"/tmp/repo\")");
+    }
+
+    #[test]
+    fn test_repo_opener_event_match() {
+        let event = RepoOpenerEvent::OpenRepo(PathBuf::from("/tmp/repo"));
+        if let RepoOpenerEvent::OpenRepo(path) = event {
+            assert_eq!(path, PathBuf::from("/tmp/repo"));
+        } else {
+            panic!("Expected OpenRepo");
+        }
+
+        let event = RepoOpenerEvent::Dismissed;
+        if let RepoOpenerEvent::Dismissed = event {
+            // expected
+        } else {
+            panic!("Expected Dismissed");
+        }
     }
 }

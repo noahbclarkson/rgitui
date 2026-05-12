@@ -314,9 +314,9 @@ impl Render for StashBranchDialog {
                 .pt_2()
                 .border_t_1()
                 .border_color(colors.border_variant)
-                .h_flex()
-                .justify_between()
-                .items_center()
+                .v_flex()
+                .w_full()
+                .gap_2()
                 .child(
                     Label::new("Enter to create | Esc to cancel")
                         .size(LabelSize::XSmall)
@@ -326,6 +326,9 @@ impl Render for StashBranchDialog {
                     div()
                         .h_flex()
                         .gap_2()
+                        .flex_nowrap()
+                        .justify_end()
+                        .w_full()
                         .child(
                             Button::new("cancel-stash-branch", "Cancel")
                                 .size(ButtonSize::Default)
@@ -515,6 +518,12 @@ mod tests {
     }
 
     #[test]
+    fn validate_branch_name_lock_in_middle_is_valid() {
+        // .lock only forbidden at end, not in the middle of a name
+        assert!(StashBranchDialog::validate_branch_name("feature.lock.tmp").is_none());
+    }
+
+    #[test]
     fn validate_branch_name_unicode_valid() {
         assert!(StashBranchDialog::validate_branch_name("feature-日本語").is_none());
         assert!(StashBranchDialog::validate_branch_name("功能分支").is_none());
@@ -568,5 +577,41 @@ mod tests {
         } else {
             panic!("Clone should produce CreateBranch variant");
         }
+    }
+
+    #[test]
+    fn stash_branch_dialog_event_create_branch_name_differs() {
+        let a = super::StashBranchDialogEvent::CreateBranch {
+            name: "a".to_string(),
+            stash_index: 0,
+        };
+        let b = super::StashBranchDialogEvent::CreateBranch {
+            name: "b".to_string(),
+            stash_index: 0,
+        };
+        assert_ne!(format!("{:?}", a), format!("{:?}", b));
+    }
+
+    #[test]
+    fn stash_branch_dialog_event_create_branch_stash_index_differs() {
+        let a = super::StashBranchDialogEvent::CreateBranch {
+            name: "feature".to_string(),
+            stash_index: 0,
+        };
+        let b = super::StashBranchDialogEvent::CreateBranch {
+            name: "feature".to_string(),
+            stash_index: 1,
+        };
+        assert_ne!(format!("{:?}", a), format!("{:?}", b));
+    }
+
+    #[test]
+    fn stash_branch_dialog_event_dismissed_vs_create_branch() {
+        let dismissed = super::StashBranchDialogEvent::Dismissed;
+        let create = super::StashBranchDialogEvent::CreateBranch {
+            name: "feature".to_string(),
+            stash_index: 0,
+        };
+        assert_ne!(format!("{:?}", dismissed), format!("{:?}", create));
     }
 }

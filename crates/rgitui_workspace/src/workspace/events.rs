@@ -17,10 +17,10 @@ use crate::{
     ConfirmAction, ConfirmDialog, ConfirmDialogEvent, CreatePrDialog, CreatePrDialogEvent,
     DetailPanel, DetailPanelEvent, FileHistoryView, FileHistoryViewEvent, GlobalSearchView,
     GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent,
-    RenameDialog, RenameDialogEvent, RepoOpener, RepoOpenerEvent, ShortcutsHelp,
-    ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog, StashBranchDialogEvent,
-    SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
-    WorktreeDialog, WorktreeDialogEvent,
+    RenameDialog, RenameDialogEvent, RepoCloneDialog, RepoCloneEvent, RepoOpener, RepoOpenerEvent,
+    ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog,
+    StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent,
+    ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -667,6 +667,12 @@ pub(super) fn subscribe_repo_opener(cx: &mut Context<Workspace>, repo_opener: &E
                 this.focus.pending_focus_restore = true;
                 cx.notify();
             }
+            RepoOpenerEvent::ShowCloneDialog => {
+                // Show the clone dialog when user clicks Clone button
+                this.dialogs.repo_clone_dialog.update(cx, |d, cx| {
+                    d.show_visible(None, cx);
+                });
+            }
         },
     )
     .detach();
@@ -788,6 +794,7 @@ pub(super) fn subscribe_project(
     project: &Entity<GitProject>,
     graph: &Entity<GraphView>,
     sidebar: &Entity<Sidebar>,
+    diff_viewer: &Entity<DiffViewer>,
     _commit_panel: &Entity<CommitPanel>,
     toolbar: &Entity<Toolbar>,
     diff_cache: Arc<Mutex<CommitDiffCache>>,
@@ -795,6 +802,7 @@ pub(super) fn subscribe_project(
     let graph = graph.clone();
     let sidebar = sidebar.clone();
     let toolbar = toolbar.clone();
+    let diff_viewer = diff_viewer.clone();
     let diff_cache = diff_cache.clone();
     let has_prewarmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -869,6 +877,35 @@ pub(super) fn subscribe_project(
                 }
 
                 update_sidebar_for_active_worktree(this, cx);
+
+                // Refresh diff viewer if currently displaying a changed file
+                if let Some(path) = diff_viewer.read(cx).file_path() {
+                    let path_str = path.to_string();
+                    let repo_path = project.read(cx).repo_path().to_path_buf();
+                    let dv = diff_viewer.clone();
+                    let path_str_for_spawn = path_str.clone();
+                    let path_str_for_update = path_str.clone();
+                    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move {
+                                rgitui_git::compute_file_diff(
+                                    &repo_path,
+                                    std::path::Path::new(&path_str_for_spawn),
+                                    false,
+                                )
+                            })
+                            .await;
+                        if let Ok(diff) = result {
+                            cx.update(|cx| {
+                                dv.update(cx, |dv, cx| {
+                                    dv.set_diff(diff, path_str_for_update, false, None, cx);
+                                });
+                            });
+                        }
+                    })
+                    .detach();
+                }
 
                 // Pre-warm diff cache once for the first 30 commits.
                 if has_prewarmed.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -2532,6 +2569,37 @@ pub(super) fn subscribe_bisect_view(
             }
         }
     })
+    .detach();
+}
+
+pub(super) fn subscribe_repo_clone_dialog(
+    cx: &mut Context<Workspace>,
+    repo_clone_dialog: &Entity<RepoCloneDialog>,
+) {
+    cx.subscribe(
+        repo_clone_dialog,
+        |this, _cd, event: &RepoCloneEvent, cx| match event {
+            RepoCloneEvent::CloneRepo { url, path } => {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    let project = tab.project.clone();
+                    let url = url.clone();
+                    let path = path.clone();
+                    this.show_toast(
+                        format!("Cloning '{}' to '{}'", url, path.display()),
+                        ToastKind::Info,
+                        cx,
+                    );
+                    project.update(cx, |proj, cx| {
+                        proj.clone_repo(&url, &path, cx).detach();
+                    });
+                }
+            }
+            RepoCloneEvent::Dismissed => {
+                this.focus.pending_focus_restore = true;
+                cx.notify();
+            }
+        },
+    )
     .detach();
 }
 
