@@ -1,13 +1,5 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-
-#[derive(Default, Clone, Copy)]
-#[allow(dead_code)]
-enum FileViewMode {
-    #[default]
-    Flat,
-    Tree,
-}
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
@@ -27,6 +19,36 @@ use rgitui_ui::{
 };
 
 use crate::markdown_view::render_markdown;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum FileViewMode {
+    #[default]
+    Flat,
+    Tree,
+}
+
+impl FileViewMode {
+    fn toggled(self) -> Self {
+        match self {
+            Self::Flat => Self::Tree,
+            Self::Tree => Self::Flat,
+        }
+    }
+
+    fn toggle_icon(self) -> IconName {
+        match self {
+            Self::Flat => IconName::Folder,
+            Self::Tree => IconName::File,
+        }
+    }
+
+    fn toggle_tooltip(self) -> &'static str {
+        match self {
+            Self::Flat => "Switch to Tree view (v)",
+            Self::Tree => "Switch to Flat view (v)",
+        }
+    }
+}
 
 fn format_absolute_date(timestamp: i64) -> String {
     let dt = chrono::DateTime::from_timestamp(timestamp, 0);
@@ -327,14 +349,15 @@ impl DetailPanel {
                 }
             }
             "v" => {
-                self.file_view_mode = match self.file_view_mode {
-                    FileViewMode::Flat => FileViewMode::Tree,
-                    FileViewMode::Tree => FileViewMode::Flat,
-                };
-                cx.notify();
+                self.toggle_file_view_mode(cx);
             }
             _ => {}
         }
+    }
+
+    fn toggle_file_view_mode(&mut self, cx: &mut Context<Self>) {
+        self.file_view_mode = self.file_view_mode.toggled();
+        cx.notify();
     }
 
     fn emit_file_selected(&self, cx: &mut Context<Self>) {
@@ -923,22 +946,14 @@ impl Render for DetailPanel {
                         .color(Color::Default),
                 )
                 .child(div().flex_1())
-                .child({
-                    let (icon, next_label) = match self.file_view_mode {
-                        FileViewMode::Flat => (IconName::Folder, "Tree"),
-                        FileViewMode::Tree => (IconName::File, "Flat"),
-                    };
-                    IconButton::new("view-mode-toggle", icon)
+                .child(
+                    IconButton::new("view-mode-toggle", self.file_view_mode.toggle_icon())
                         .size(ButtonSize::Compact)
-                        .tooltip(format!("Switch to {} view (v)", next_label))
+                        .tooltip(self.file_view_mode.toggle_tooltip())
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.file_view_mode = match this.file_view_mode {
-                                FileViewMode::Flat => FileViewMode::Tree,
-                                FileViewMode::Tree => FileViewMode::Flat,
-                            };
-                            cx.notify();
-                        }))
-                }),
+                            this.toggle_file_view_mode(cx);
+                        })),
+                ),
         );
 
         let mut content = div()
@@ -1819,6 +1834,31 @@ mod tests {
         assert_eq!(
             row.dir_path.as_str(),
             "very/deeply/nested/directory/structure/"
+        );
+    }
+
+    // --- FileViewMode tests ---
+
+    #[test]
+    fn test_file_view_mode_default_is_flat() {
+        assert_eq!(FileViewMode::default(), FileViewMode::Flat);
+    }
+
+    #[test]
+    fn test_file_view_mode_toggles_between_flat_and_tree() {
+        assert_eq!(FileViewMode::Flat.toggled(), FileViewMode::Tree);
+        assert_eq!(FileViewMode::Tree.toggled(), FileViewMode::Flat);
+    }
+
+    #[test]
+    fn test_file_view_mode_tooltips_describe_next_action() {
+        assert_eq!(
+            FileViewMode::Flat.toggle_tooltip(),
+            "Switch to Tree view (v)"
+        );
+        assert_eq!(
+            FileViewMode::Tree.toggle_tooltip(),
+            "Switch to Flat view (v)"
         );
     }
 
