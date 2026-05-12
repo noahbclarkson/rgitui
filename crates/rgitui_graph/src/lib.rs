@@ -1118,6 +1118,9 @@ impl Render for GraphView {
                         ),
                 )
             })
+            // Matches the 16px drag-to-rebase grip in each row so the
+            // Hash header lines up with the hash column below it.
+            .child(div().w(px(16.)).flex_shrink_0())
             .child(
                 div().w(px(80.)).flex_shrink_0().child(
                     Label::new("Hash")
