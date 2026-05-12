@@ -991,6 +991,120 @@ pub fn high_contrast_dark_status() -> StatusColors {
     }
 }
 
+// -- Cream & Blue theme colors --
+
+/// Cream & Blue light theme — near-paper surfaces with a Xero-style
+/// cyan-blue accent. A barely-warm off-white sits beneath cool-grey
+/// element layers, and the accent is a vibrant blue. Designed as a
+/// more formal alternative to Catppuccin Latte.
+pub fn cream_blue_colors() -> ThemeColors {
+    let paper = hsla(40.0, 27.0, 98.0, 1.0);
+    let paper_soft = hsla(40.0, 20.0, 96.0, 1.0);
+    let paper_softer = hsla(40.0, 16.0, 94.0, 1.0);
+
+    let surface0 = hsla(220.0, 12.0, 92.0, 1.0);
+    let surface1 = hsla(220.0, 10.0, 86.0, 1.0);
+    let surface2 = hsla(220.0, 9.0, 78.0, 1.0);
+
+    let overlay0 = hsla(220.0, 7.0, 65.0, 1.0);
+    let overlay1 = hsla(220.0, 7.0, 50.0, 1.0);
+    let subtext0 = hsla(220.0, 10.0, 36.0, 1.0);
+    let text = hsla(220.0, 25.0, 14.0, 1.0);
+
+    let accent = hsla(200.0, 72.0, 50.0, 1.0);
+    let accent_deep = hsla(205.0, 72.0, 40.0, 1.0);
+
+    let red = hsla(8.0, 65.0, 50.0, 1.0);
+    let green = hsla(150.0, 48.0, 38.0, 1.0);
+    let yellow = hsla(38.0, 78.0, 45.0, 1.0);
+    let orange = hsla(22.0, 80.0, 48.0, 1.0);
+    let teal = hsla(190.0, 55.0, 38.0, 1.0);
+
+    ThemeColors {
+        background: paper_softer,
+        surface_background: paper,
+        elevated_surface_background: paper_soft,
+        editor_background: paper,
+
+        border: surface1,
+        border_variant: surface0,
+        border_focused: accent_deep,
+        border_selected: accent_deep,
+        border_disabled: surface0,
+        border_transparent: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
+
+        element_background: surface0,
+        element_hover: surface1,
+        element_active: surface2,
+        element_selected: surface1,
+        element_disabled: surface0,
+        ghost_element_background: Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 0.0,
+        },
+        ghost_element_hover: hsla(220.0, 12.0, 92.0, 0.5),
+        ghost_element_active: hsla(220.0, 10.0, 86.0, 0.7),
+        ghost_element_selected: hsla(220.0, 10.0, 86.0, 0.7),
+
+        text,
+        text_muted: subtext0,
+        text_placeholder: overlay1,
+        text_disabled: overlay0,
+        text_accent: accent_deep,
+
+        icon: text,
+        icon_muted: subtext0,
+        icon_disabled: overlay0,
+        icon_accent: accent_deep,
+
+        title_bar_background: paper_soft,
+        toolbar_background: paper,
+        tab_bar_background: paper_soft,
+        tab_active_background: paper,
+        tab_inactive_background: paper_soft,
+        status_bar_background: paper_soft,
+        panel_background: paper,
+        scrollbar_thumb_background: surface1,
+        scrollbar_thumb_hover_background: surface2,
+
+        hint_background: Hsla { a: 0.10, ..accent },
+
+        vc_added: green,
+        vc_modified: yellow,
+        vc_deleted: red,
+        vc_conflict: orange,
+        vc_renamed: accent_deep,
+        vc_untracked: teal,
+    }
+}
+
+pub fn cream_blue_status() -> StatusColors {
+    let red = hsla(8.0, 65.0, 50.0, 1.0);
+    let yellow = hsla(38.0, 78.0, 45.0, 1.0);
+    let green = hsla(150.0, 48.0, 38.0, 1.0);
+    let blue = hsla(205.0, 72.0, 40.0, 1.0);
+    let teal = hsla(190.0, 55.0, 38.0, 1.0);
+
+    StatusColors {
+        error: red,
+        error_background: hsla(8.0, 65.0, 50.0, 0.10),
+        warning: yellow,
+        warning_background: hsla(38.0, 78.0, 45.0, 0.10),
+        success: green,
+        success_background: hsla(150.0, 48.0, 38.0, 0.10),
+        info: blue,
+        info_background: hsla(205.0, 72.0, 40.0, 0.10),
+        hint: teal,
+    }
+}
+
 /// Lane colors for the commit graph. Cycles through these for branch visualization.
 pub const GRAPH_LANE_COLORS: &[fn() -> Hsla] = &[
     || hsla(267.0, 84.0, 75.0, 1.0), // mauve (boosted)

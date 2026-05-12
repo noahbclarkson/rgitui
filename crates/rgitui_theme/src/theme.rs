@@ -6,9 +6,9 @@ use serde::Serialize;
 
 use crate::colors::{
     catppuccin_latte_colors, catppuccin_latte_status, catppuccin_mocha_colors,
-    catppuccin_mocha_status, dracula_colors, dracula_status, github_dark_colors,
-    github_dark_status, high_contrast_dark_colors, high_contrast_dark_status, one_dark_colors,
-    one_dark_status, StatusColors, ThemeColors,
+    catppuccin_mocha_status, cream_blue_colors, cream_blue_status, dracula_colors, dracula_status,
+    github_dark_colors, github_dark_status, high_contrast_dark_colors, high_contrast_dark_status,
+    one_dark_colors, one_dark_status, StatusColors, ThemeColors,
 };
 
 /// Visual appearance mode.
@@ -130,6 +130,12 @@ pub fn builtin_themes() -> Vec<Arc<Theme>> {
             appearance: Appearance::Light,
             colors: catppuccin_latte_colors(),
             status: catppuccin_latte_status(),
+        }),
+        Arc::new(Theme {
+            name: "Cream & Blue".into(),
+            appearance: Appearance::Light,
+            colors: cream_blue_colors(),
+            status: cream_blue_status(),
         }),
         Arc::new(Theme {
             name: "One Dark".into(),
