@@ -290,6 +290,7 @@ jobs:
           path: |
             rgitui-*.tar.gz
             rgitui-*.AppImage
+            rgitui-*.deb
 
   build-macos:
     name: Build macOS (aarch64)
@@ -354,7 +355,7 @@ jobs:
         run: |
           mkdir -p release-assets
           find artifacts -type f \
-            \( -name "*.zip" -o -name "*.exe" -o -name "*.tar.gz" -o -name "*.AppImage" -o -name "*.dmg" \) \
+            \( -name "*.zip" -o -name "*.exe" -o -name "*.tar.gz" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.deb" \) \
             -exec cp {} release-assets/ \;
           echo "--- release assets ---"
           ls -la release-assets/
