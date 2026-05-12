@@ -97,6 +97,7 @@ impl ShortcutsHelp {
                     ("Alt+8", "Toggle stashes panel"),
                     ("Ctrl+Shift+T / Alt+9", "Open theme editor"),
                     ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
+                    ("v", "Toggle changed-files view (flat / tree)"),
                     ("Enter / Space", "Activate selected sidebar item"),
                 ],
             },
@@ -403,5 +404,24 @@ impl Render for ShortcutsHelp {
             );
 
         backdrop.child(modal).into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shortcuts_help_event_debug() {
+        let event = ShortcutsHelpEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+    }
+
+    #[test]
+    fn test_shortcuts_help_event_match() {
+        let event = ShortcutsHelpEvent::Dismissed;
+        match event {
+            ShortcutsHelpEvent::Dismissed => {}
+        }
     }
 }

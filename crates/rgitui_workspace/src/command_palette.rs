@@ -387,6 +387,7 @@ impl TryFrom<&str> for CommandId {
 pub struct PaletteCommand {
     pub id: CommandId,
     pub label: &'static str,
+    pub description: Option<&'static str>,
     pub shortcut: Option<&'static str>,
     pub category: &'static str,
     /// Context predicate — evaluated at filter-time to determine visibility.
@@ -397,12 +398,14 @@ impl PaletteCommand {
     fn new(
         id: CommandId,
         label: &'static str,
+        description: Option<&'static str>,
         shortcut: Option<&'static str>,
         category: &'static str,
     ) -> Self {
         Self {
             id,
             label,
+            description,
             shortcut,
             category,
             predicate: always_show,
@@ -448,34 +451,90 @@ impl CommandPalette {
         //   in_progress_operation — only during merge/rebase/cherry-pick
         //   always_show  — no context restriction
         let commands: Vec<PaletteCommand> = vec![
-            PaletteCommand::new(CommandId::Fetch, "Git: Fetch", Some("Ctrl+Shift+F"), "Git")
-                .with_predicate(has_remotes),
-            PaletteCommand::new(CommandId::Pull, "Git: Pull", None, "Git")
-                .with_predicate(has_remotes),
-            PaletteCommand::new(CommandId::Push, "Git: Push", None, "Git")
-                .with_predicate(has_remotes),
-            PaletteCommand::new(CommandId::PushAll, "Git: Push All", None, "Git")
-                .with_predicate(has_remotes),
-            PaletteCommand::new(CommandId::PullAll, "Git: Pull All", None, "Git")
-                .with_predicate(has_remotes),
-            PaletteCommand::new(CommandId::ForcePush, "Git: Force Push", None, "Git")
-                .with_predicate(has_remotes),
-            PaletteCommand::new(CommandId::Commit, "Git: Commit", Some("Ctrl+Enter"), "Git")
-                .with_predicate(has_staged),
-            PaletteCommand::new(CommandId::StageAll, "Git: Stage All", Some("Ctrl+S"), "Git")
-                .with_predicate(has_changes),
+            PaletteCommand::new(
+                CommandId::Fetch,
+                "Git: Fetch",
+                Some("Download objects and refs from another repository"),
+                Some("Ctrl+Shift+F"),
+                "Git",
+            )
+            .with_predicate(has_remotes),
+            PaletteCommand::new(
+                CommandId::Pull,
+                "Git: Pull",
+                Some("Fetch from and integrate with another repository or a local branch"),
+                None,
+                "Git",
+            )
+            .with_predicate(has_remotes),
+            PaletteCommand::new(
+                CommandId::Push,
+                "Git: Push",
+                Some("Update remote refs along with associated objects"),
+                None,
+                "Git",
+            )
+            .with_predicate(has_remotes),
+            PaletteCommand::new(
+                CommandId::PushAll,
+                "Git: Push All",
+                Some("Push all branches to their configured remotes"),
+                None,
+                "Git",
+            )
+            .with_predicate(has_remotes),
+            PaletteCommand::new(
+                CommandId::PullAll,
+                "Git: Pull All",
+                Some("Pull updates for all configured branches"),
+                None,
+                "Git",
+            )
+            .with_predicate(has_remotes),
+            PaletteCommand::new(
+                CommandId::ForcePush,
+                "Git: Force Push",
+                Some("Force update remote refs (can overwrite history)"),
+                None,
+                "Git",
+            )
+            .with_predicate(has_remotes),
+            PaletteCommand::new(
+                CommandId::Commit,
+                "Git: Commit",
+                Some("Record changes to the repository"),
+                Some("Ctrl+Enter"),
+                "Git",
+            )
+            .with_predicate(has_staged),
+            PaletteCommand::new(
+                CommandId::StageAll,
+                "Git: Stage All",
+                Some("Add all changes to the staging area"),
+                Some("Ctrl+S"),
+                "Git",
+            )
+            .with_predicate(has_changes),
             PaletteCommand::new(
                 CommandId::UnstageAll,
                 "Git: Unstage All",
+                Some("Remove all changes from the staging area"),
                 Some("Ctrl+U"),
                 "Git",
             )
             .with_predicate(has_changes),
-            PaletteCommand::new(CommandId::StashSave, "Git: Stash", Some("Ctrl+Z"), "Git")
-                .with_predicate(has_changes),
+            PaletteCommand::new(
+                CommandId::StashSave,
+                "Git: Stash",
+                Some("Save your local modifications to a new stash"),
+                Some("Ctrl+Z"),
+                "Git",
+            )
+            .with_predicate(has_changes),
             PaletteCommand::new(
                 CommandId::StashPop,
                 "Git: Pop Stash",
+                Some("Apply the latest stash and remove it"),
                 Some("Ctrl+Shift+Z"),
                 "Git",
             )
@@ -483,49 +542,97 @@ impl CommandPalette {
             PaletteCommand::new(
                 CommandId::StashApply,
                 "Git: Apply Stash (keep)",
+                Some("Apply the latest stash but keep it in the list"),
                 None,
                 "Git",
             )
             .with_predicate(has_stashes),
-            PaletteCommand::new(CommandId::StashDrop, "Git: Drop Stash", None, "Git")
-                .with_predicate(has_stashes),
+            PaletteCommand::new(
+                CommandId::StashDrop,
+                "Git: Drop Stash",
+                Some("Delete the latest stash entry"),
+                None,
+                "Git",
+            )
+            .with_predicate(has_stashes),
             PaletteCommand::new(
                 CommandId::CreateBranch,
                 "Git: Create Branch",
+                Some("Create a new branch"),
                 Some("Ctrl+B"),
                 "Git",
             ),
             PaletteCommand::new(
                 CommandId::SwitchBranch,
                 "Git: Switch Branch",
+                Some("Switch to an existing branch"),
                 Some("Ctrl+Shift+B"),
                 "Git",
             ),
-            PaletteCommand::new(CommandId::DeleteBranch, "Git: Delete Branch", None, "Git"),
-            PaletteCommand::new(CommandId::RenameBranch, "Git: Rename Branch", None, "Git"),
-            PaletteCommand::new(CommandId::MergeBranch, "Git: Merge Branch", None, "Git")
-                .with_predicate(worktree_clean),
-            PaletteCommand::new(CommandId::CreateTag, "Git: Create Tag", None, "Git"),
             PaletteCommand::new(
-                CommandId::CreateWorktree,
-                "Git: Create Worktree",
+                CommandId::DeleteBranch,
+                "Git: Delete Branch",
+                Some("Delete a local branch"),
                 None,
                 "Git",
             ),
-            PaletteCommand::new(CommandId::CreatePr, "Git: Create Pull Request", None, "Git")
-                .with_predicate(has_github_token),
             PaletteCommand::new(
-                CommandId::CherryPick,
-                "Git: Cherry-pick Commit",
+                CommandId::RenameBranch,
+                "Git: Rename Branch",
+                Some("Rename the current or selected branch"),
+                None,
+                "Git",
+            ),
+            PaletteCommand::new(
+                CommandId::MergeBranch,
+                "Git: Merge Branch",
+                Some("Join two or more development histories together"),
                 None,
                 "Git",
             )
             .with_predicate(worktree_clean),
-            PaletteCommand::new(CommandId::RevertCommit, "Git: Revert Commit", None, "Git")
-                .with_predicate(worktree_clean),
+            PaletteCommand::new(
+                CommandId::CreateTag,
+                "Git: Create Tag",
+                Some("Create a tag at the selected commit"),
+                None,
+                "Git",
+            ),
+            PaletteCommand::new(
+                CommandId::CreateWorktree,
+                "Git: Create Worktree",
+                Some("Check out a branch into a separate working tree"),
+                None,
+                "Git",
+            ),
+            PaletteCommand::new(
+                CommandId::CreatePr,
+                "Git: Create Pull Request",
+                Some("Open a pull request for the current branch"),
+                None,
+                "Git",
+            )
+            .with_predicate(has_github_token),
+            PaletteCommand::new(
+                CommandId::CherryPick,
+                "Git: Cherry-pick Commit",
+                Some("Apply the changes introduced by some existing commits"),
+                None,
+                "Git",
+            )
+            .with_predicate(worktree_clean),
+            PaletteCommand::new(
+                CommandId::RevertCommit,
+                "Git: Revert Commit",
+                Some("Revert an existing commit"),
+                None,
+                "Git",
+            )
+            .with_predicate(worktree_clean),
             PaletteCommand::new(
                 CommandId::InteractiveRebase,
                 "Git: Interactive Rebase",
+                Some("Reapply commits on top of another base tip interactively"),
                 None,
                 "Git",
             )
@@ -533,6 +640,7 @@ impl CommandPalette {
             PaletteCommand::new(
                 CommandId::DiscardAll,
                 "Git: Discard All Changes",
+                Some("Discard every unstaged and staged working tree change"),
                 None,
                 "Git",
             )
@@ -540,12 +648,14 @@ impl CommandPalette {
             PaletteCommand::new(
                 CommandId::CleanUntracked,
                 "Git: Clean Untracked Files",
+                Some("Remove untracked files from the working tree"),
                 None,
                 "Git",
             ),
             PaletteCommand::new(
                 CommandId::ResetHard,
                 "Git: Reset Hard (to HEAD)",
+                Some("Discard all local changes, staged and unstaged"),
                 None,
                 "Git",
             )
@@ -553,75 +663,116 @@ impl CommandPalette {
             PaletteCommand::new(
                 CommandId::AbortOperation,
                 "Git: Abort Merge/Rebase",
+                Some("Abort the in-progress merge, rebase, cherry-pick, or revert"),
                 None,
                 "Git",
             )
             .with_predicate(in_progress_operation),
-            PaletteCommand::new(CommandId::ContinueMerge, "Git: Continue Merge", None, "Git")
-                .with_predicate(in_progress_operation),
+            PaletteCommand::new(
+                CommandId::ContinueMerge,
+                "Git: Continue Merge",
+                Some("Continue the in-progress merge, rebase, cherry-pick, or revert"),
+                None,
+                "Git",
+            )
+            .with_predicate(in_progress_operation),
             PaletteCommand::new(
                 CommandId::ToggleDiffMode,
                 "View: Toggle Diff Mode",
+                Some("Switch between inline and side-by-side diff"),
                 Some("d"),
                 "View",
             ),
             PaletteCommand::new(
                 CommandId::Search,
                 "View: Search Commits",
+                Some("Filter the commit graph by message, author, or hash"),
                 Some("Ctrl+F"),
                 "View",
             ),
             PaletteCommand::new(
                 CommandId::AiMessage,
                 "AI: Generate Commit Message",
+                Some("Use AI to generate a commit message based on staged changes"),
                 Some("Ctrl+G"),
                 "AI",
             )
             .with_predicate(has_staged),
-            PaletteCommand::new(CommandId::Refresh, "Git: Refresh", Some("F5"), "Git"),
+            PaletteCommand::new(
+                CommandId::Refresh,
+                "Git: Refresh",
+                Some("Reload repository status, branches, and graph data"),
+                Some("F5"),
+                "Git",
+            ),
             PaletteCommand::new(
                 CommandId::Settings,
                 "Preferences: Open Settings",
+                Some("Open the application settings window"),
                 Some("Ctrl+,"),
                 "Preferences",
             ),
             PaletteCommand::new(
                 CommandId::OpenRepo,
                 "File: Open Repository",
+                Some("Choose a repository to open"),
                 Some("Ctrl+O"),
                 "File",
             ),
             PaletteCommand::new(
                 CommandId::WorkspaceHome,
                 "Workspace: Home",
+                Some("Return to the workspace home screen"),
                 None,
                 "Workspace",
             ),
             PaletteCommand::new(
                 CommandId::RestoreLastWorkspace,
                 "Workspace: Restore Last",
+                Some("Reopen the last active workspace"),
                 None,
                 "Workspace",
             ),
             PaletteCommand::new(
                 CommandId::Shortcuts,
                 "Help: Keyboard Shortcuts",
+                Some("Show available keyboard shortcuts"),
                 Some("?"),
                 "Help",
             ),
-            PaletteCommand::new(CommandId::Blame, "View: Blame File", Some("b"), "View"),
+            PaletteCommand::new(
+                CommandId::Blame,
+                "View: Blame File",
+                Some("Show what revision and author last modified each line"),
+                Some("b"),
+                "View",
+            ),
             PaletteCommand::new(
                 CommandId::FileHistory,
                 "View: File History",
+                Some("Show commit history for the selected file"),
                 Some("h"),
                 "View",
             ),
-            PaletteCommand::new(CommandId::Undo, "Edit: Undo Last Operation", None, "Edit"),
-            PaletteCommand::new(CommandId::BisectStart, "Git: Bisect Start", None, "Git")
-                .with_predicate(worktree_clean),
+            PaletteCommand::new(
+                CommandId::Undo,
+                "Edit: Undo Last Operation",
+                Some("Undo the most recent git operation when possible"),
+                None,
+                "Edit",
+            ),
+            PaletteCommand::new(
+                CommandId::BisectStart,
+                "Git: Bisect Start",
+                Some("Start a binary search for the commit that introduced a bug"),
+                None,
+                "Git",
+            )
+            .with_predicate(worktree_clean),
             PaletteCommand::new(
                 CommandId::BisectGood,
                 "Git: Bisect Good (mark current)",
+                Some("Mark the current revision as good"),
                 None,
                 "Git",
             )
@@ -629,56 +780,88 @@ impl CommandPalette {
             PaletteCommand::new(
                 CommandId::BisectBad,
                 "Git: Bisect Bad (mark current)",
+                Some("Mark the current revision as bad"),
                 None,
                 "Git",
             )
             .with_predicate(is_bisecting),
-            PaletteCommand::new(CommandId::BisectReset, "Git: Bisect Reset", None, "Git")
-                .with_predicate(is_bisecting),
+            PaletteCommand::new(
+                CommandId::BisectReset,
+                "Git: Bisect Reset",
+                Some("Stop bisecting and return to the original branch"),
+                None,
+                "Git",
+            )
+            .with_predicate(is_bisecting),
             PaletteCommand::new(
                 CommandId::BisectSkip,
                 "Git: Bisect Skip (skip this commit)",
+                Some("Skip the current revision during bisect"),
                 None,
                 "Git",
             )
             .with_predicate(is_bisecting),
-            PaletteCommand::new(CommandId::Reflog, "View: Reflog", None, "View"),
-            PaletteCommand::new(CommandId::Submodules, "View: Submodules", None, "View"),
-            PaletteCommand::new(CommandId::Bisect, "View: Bisect Log", None, "View")
-                .with_predicate(is_bisecting),
+            PaletteCommand::new(
+                CommandId::Reflog,
+                "View: Reflog",
+                Some("Show recent branch and HEAD movements"),
+                None,
+                "View",
+            ),
+            PaletteCommand::new(
+                CommandId::Submodules,
+                "View: Submodules",
+                Some("Inspect configured git submodules"),
+                None,
+                "View",
+            ),
+            PaletteCommand::new(
+                CommandId::Bisect,
+                "View: Bisect Log",
+                Some("Show current bisect progress and selected revisions"),
+                None,
+                "View",
+            )
+            .with_predicate(is_bisecting),
             PaletteCommand::new(
                 CommandId::GlobalSearch,
                 "Search: Global Search",
+                Some("Search for text across the entire repository"),
                 Some("Ctrl+Shift+F"),
                 "Search",
             ),
             PaletteCommand::new(
                 CommandId::ToggleIssues,
                 "View: Issues Panel",
+                Some("Open the GitHub issues panel"),
                 Some("Alt+5"),
                 "View",
             ),
             PaletteCommand::new(
                 CommandId::TogglePullRequests,
                 "View: Pull Requests Panel",
+                Some("Open the GitHub pull requests panel"),
                 Some("Alt+6"),
                 "View",
             ),
             PaletteCommand::new(
                 CommandId::ToggleBranchHealth,
                 "View: Branch Health Panel",
+                Some("Open branch recency and merge-status checks"),
                 Some("Alt+7"),
                 "View",
             ),
             PaletteCommand::new(
                 CommandId::ToggleStashes,
                 "View: Stashes Panel",
+                Some("Open the stash management panel"),
                 Some("Alt+8"),
                 "View",
             ),
             PaletteCommand::new(
                 CommandId::StashBranch,
                 "Git: Create Branch from Stash",
+                Some("Create a new branch starting from a stash entry"),
                 None,
                 "Git",
             )
@@ -686,6 +869,7 @@ impl CommandPalette {
             PaletteCommand::new(
                 CommandId::OpenThemeEditor,
                 "View: Edit Theme",
+                Some("Customize and save the active theme"),
                 Some("Ctrl+Shift+T"),
                 "View",
             ),
@@ -968,6 +1152,7 @@ impl Render for CommandPalette {
                             let cmd_id = cmd.id;
                             let icon = CommandPalette::category_icon(cmd.category);
                             let shortcut = cmd.shortcut;
+                            let description = cmd.description;
 
                             let view_click = view.clone();
 
@@ -1010,6 +1195,16 @@ impl Render for CommandPalette {
                                     .size(LabelSize::Small)
                                     .when(is_selected, |l| l.weight(FontWeight::MEDIUM)),
                             );
+
+                            if let Some(desc_text) = description {
+                                row = row.child(
+                                    div().pl(px(8.)).child(
+                                        Label::new(SharedString::from(desc_text))
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    ),
+                                );
+                            }
 
                             row = row.child(div().flex_1());
 
@@ -1326,5 +1521,81 @@ mod tests {
         assert!(!ctx.worktree_clean);
         assert!(!ctx.is_bisecting);
         assert!(!ctx.in_progress_operation);
+    }
+
+    #[test]
+    fn command_context_update_stashes_persists() {
+        use super::CommandContext;
+        let mut ctx = CommandContext::none();
+        assert!(!ctx.has_stashes);
+        ctx.has_stashes = true;
+        assert!(ctx.has_stashes);
+    }
+
+    #[test]
+    fn command_context_update_staged_persists() {
+        use super::CommandContext;
+        let mut ctx = CommandContext::none();
+        assert!(!ctx.has_staged);
+        ctx.has_staged = true;
+        assert!(ctx.has_staged);
+    }
+
+    #[test]
+    fn command_context_update_remotes_persists() {
+        use super::CommandContext;
+        let mut ctx = CommandContext::none();
+        assert!(!ctx.has_remotes);
+        ctx.has_remotes = true;
+        assert!(ctx.has_remotes);
+    }
+
+    #[test]
+    fn command_context_update_changes_persists() {
+        use super::CommandContext;
+        let mut ctx = CommandContext::none();
+        assert!(!ctx.has_changes);
+        ctx.has_changes = true;
+        assert!(ctx.has_changes);
+    }
+
+    #[test]
+    fn palette_command_new_sets_all_fields() {
+        use super::{CommandId, PaletteCommand};
+        let cmd = PaletteCommand::new(
+            CommandId::Fetch,
+            "Git: Fetch",
+            Some("Download objects and refs"),
+            Some("Ctrl+Shift+F"),
+            "Git",
+        );
+        assert_eq!(cmd.label, "Git: Fetch");
+        assert_eq!(cmd.description, Some("Download objects and refs"));
+        assert_eq!(cmd.shortcut, Some("Ctrl+Shift+F"));
+        assert_eq!(cmd.category, "Git");
+    }
+
+    #[test]
+    fn palette_command_new_without_description() {
+        use super::{CommandId, PaletteCommand};
+        let cmd = PaletteCommand::new(CommandId::Refresh, "Git: Refresh", None, Some("F5"), "Git");
+        assert_eq!(cmd.label, "Git: Refresh");
+        assert_eq!(cmd.description, None);
+        assert_eq!(cmd.shortcut, Some("F5"));
+    }
+
+    #[test]
+    fn palette_command_with_predicate_returns_mutated_copy() {
+        use super::{CommandId, PaletteCommand};
+        let cmd = PaletteCommand::new(
+            CommandId::StashPop,
+            "Git: Pop Stash",
+            Some("Apply and remove stash"),
+            None,
+            "Git",
+        )
+        .with_predicate(super::has_stashes);
+        // The command was constructed — verify no panic on creation
+        assert_eq!(cmd.label, "Git: Pop Stash");
     }
 }

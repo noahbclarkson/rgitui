@@ -20,6 +20,7 @@ mod markdown_view;
 mod prs_panel;
 mod reflog_view;
 mod rename_dialog;
+mod repo_clone_dialog;
 mod repo_opener;
 mod search_panel;
 mod settings_window;
@@ -56,6 +57,7 @@ pub use markdown_view::*;
 pub use prs_panel::*;
 pub use reflog_view::*;
 pub use rename_dialog::*;
+pub use repo_clone_dialog::*;
 pub use repo_opener::*;
 pub use search_panel::*;
 pub use settings_window::{

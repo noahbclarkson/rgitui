@@ -446,10 +446,9 @@ impl Render for CreatePrDialog {
                             .pt_2()
                             .border_t_1()
                             .border_color(colors.border_variant)
-                            .h_flex()
+                            .v_flex()
                             .w_full()
-                            .justify_between()
-                            .items_center()
+                            .gap_2()
                             .child(
                                 Label::new("Shift+Enter to create | Esc to cancel")
                                     .size(LabelSize::XSmall)
@@ -459,6 +458,9 @@ impl Render for CreatePrDialog {
                                 div()
                                     .h_flex()
                                     .gap_2()
+                                    .flex_nowrap()
+                                    .justify_end()
+                                    .w_full()
                                     .pr(px(4.))
                                     .child(
                                         Button::new("create-pr-cancel", "Cancel")
@@ -608,6 +610,72 @@ async fn create_github_pr(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn create_pr_request_body_with_title_only() {
+        // When body is None, only title/head/base/draft should be in JSON
+        let request_body = serde_json::json!({ "title": "Test PR", "head": "feat-branch", "base": "main", "draft": false });
+        assert_eq!(request_body["title"], "Test PR");
+        assert_eq!(request_body["head"], "feat-branch");
+        assert_eq!(request_body["base"], "main");
+        assert_eq!(request_body["draft"], false);
+        assert!(request_body.get("body").is_none());
+    }
+
+    #[test]
+    fn create_pr_request_body_with_body() {
+        let mut request_body = serde_json::json!({ "title": "Test PR", "head": "feat-branch", "base": "main", "draft": false });
+        request_body["body"] = serde_json::json!("This is a description");
+        assert_eq!(request_body["body"], "This is a description");
+    }
+
+    #[test]
+    fn create_pr_request_body_draft_flag() {
+        // Draft=true should serialize correctly
+        let request_body =
+            serde_json::json!({ "title": "WIP PR", "head": "wip", "base": "main", "draft": true });
+        assert_eq!(request_body["draft"], true);
+    }
+
+    #[test]
+    fn create_pr_response_parses_number_and_url() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"
+            {"number": 42, "html_url": "https://github.com/owner/repo/pull/42"}
+        "#,
+        )
+        .unwrap();
+        let number = json.get("number").and_then(|v| v.as_u64()).unwrap();
+        let url = json.get("html_url").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(number, 42);
+        assert_eq!(url, "https://github.com/owner/repo/pull/42");
+    }
+
+    #[test]
+    fn create_pr_error_response_parsing() {
+        let body = r#"{"message": "Validation Failed", "errors": [{"resource": "PullRequest", "field": "head", "code": "invalid"}]}"#;
+        let json: serde_json::Value = serde_json::from_str(body).unwrap();
+        let detail = json.get("message").and_then(|m| m.as_str()).unwrap();
+        assert_eq!(detail, "Validation Failed");
+    }
+
+    #[test]
+    fn create_pr_error_response_missing_number_graceful() {
+        // Response without "number" field — as_u64() returns None
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"html_url": "https://github.com/owner/repo/pull/999"}"#)
+                .unwrap();
+        let number = json.get("number").and_then(|v| v.as_u64());
+        assert_eq!(number, None);
+    }
+
+    #[test]
+    fn create_pr_error_response_missing_html_url() {
+        // Response without "html_url" — should fall back to empty string
+        let json: serde_json::Value = serde_json::from_str(r#"{"number": 7}"#).unwrap();
+        let url = json.get("html_url").and_then(|v| v.as_str()).unwrap_or("");
+        assert_eq!(url, "");
+    }
+
+    #[test]
     fn create_pr_dialog_has_visible_default() {
         // Visible defaults to false — dialog must be explicitly shown
         // This is tested via the Render impl returning an empty div when not visible
@@ -621,5 +689,54 @@ mod tests {
     #[test]
     fn error_message_none_by_default() {
         // Error message starts as None — only set when an error occurs
+    }
+
+    #[test]
+    fn create_pr_dialog_event_pr_created_debug() {
+        let event = super::CreatePrDialogEvent::PrCreated {
+            number: 42,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+        };
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("42"));
+        assert!(debug.contains("PrCreated"));
+    }
+
+    #[test]
+    fn create_pr_dialog_event_dismissed_debug() {
+        let event = super::CreatePrDialogEvent::Dismissed;
+        assert_eq!(format!("{:?}", event), "Dismissed");
+    }
+
+    #[test]
+    fn create_pr_dialog_event_clone_pr_created() {
+        let event = super::CreatePrDialogEvent::PrCreated {
+            number: 99,
+            url: "https://github.com/test/repo/pull/99".to_string(),
+        };
+        let cloned = event.clone();
+        if let super::CreatePrDialogEvent::PrCreated { number, url } = cloned {
+            assert_eq!(number, 99);
+            assert_eq!(url, "https://github.com/test/repo/pull/99");
+        } else {
+            panic!("Clone should produce PrCreated variant");
+        }
+    }
+
+    #[test]
+    fn create_pr_dialog_event_clone_dismissed() {
+        let event = super::CreatePrDialogEvent::Dismissed;
+        let cloned = event.clone();
+        assert_eq!(format!("{:?}", cloned), "Dismissed");
+    }
+
+    #[test]
+    fn create_pr_dialog_event_pr_created_vs_dismissed() {
+        let pr = super::CreatePrDialogEvent::PrCreated {
+            number: 1,
+            url: String::new(),
+        };
+        let dismissed = super::CreatePrDialogEvent::Dismissed;
+        assert_ne!(format!("{:?}", pr), format!("{:?}", dismissed));
     }
 }

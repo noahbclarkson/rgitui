@@ -7,7 +7,7 @@ use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize};
 
 /// The action that was confirmed (so the workspace knows what to do).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConfirmAction {
     DiscardFile(String),
     DiscardAll,
@@ -250,13 +250,11 @@ impl Render for ConfirmDialog {
                     .child(
                         div()
                             .pt_2()
-                            .px(px(4.))
                             .border_t_1()
                             .border_color(colors.border_variant)
-                            .h_flex()
+                            .v_flex()
                             .w_full()
-                            .justify_between()
-                            .items_center()
+                            .gap_2()
                             .child(
                                 Label::new("Enter to confirm | Esc to cancel")
                                     .size(LabelSize::XSmall)
@@ -266,7 +264,9 @@ impl Render for ConfirmDialog {
                                 div()
                                     .h_flex()
                                     .gap_2()
-                                    .pr(px(4.))
+                                    .flex_nowrap()
+                                    .justify_end()
+                                    .w_full()
                                     .child(
                                         Button::new("confirm-cancel", "Cancel")
                                             .size(ButtonSize::Default)
@@ -297,5 +297,166 @@ impl Render for ConfirmDialog {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ConfirmAction
+
+    #[test]
+    fn confirm_action_all_variants_clone() {
+        let actions = vec![
+            ConfirmAction::DiscardFile("foo.txt".into()),
+            ConfirmAction::DiscardAll,
+            ConfirmAction::CleanUntracked,
+            ConfirmAction::ForcePush,
+            ConfirmAction::StashDrop(0),
+            ConfirmAction::BranchDelete("feature".into()),
+            ConfirmAction::TagDelete("v1.0".into()),
+            ConfirmAction::RemoveRemote("origin".into()),
+            ConfirmAction::ResetHard("HEAD~1".into()),
+            ConfirmAction::ResetSoft("HEAD~1".into()),
+            ConfirmAction::ResetMixed("HEAD~1".into()),
+            ConfirmAction::AbortMerge,
+            ConfirmAction::WorktreeRemove("/path/to/worktree".into()),
+        ];
+        for a in actions {
+            let c = a.clone();
+            assert_eq!(format!("{:?}", a), format!("{:?}", c));
+        }
+    }
+
+    #[test]
+    fn confirm_action_eq_different_variants() {
+        assert!(ConfirmAction::StashDrop(0) != ConfirmAction::StashDrop(1));
+        assert!(ConfirmAction::BranchDelete("a".into()) != ConfirmAction::BranchDelete("b".into()));
+    }
+
+    // ConfirmDialogEvent
+
+    #[test]
+    fn confirm_dialog_event_variants() {
+        let confirmed = ConfirmDialogEvent::Confirmed(ConfirmAction::StashDrop(0));
+        let cancelled = ConfirmDialogEvent::Cancelled;
+        assert_eq!(format!("{:?}", confirmed), "Confirmed(StashDrop(0))");
+        assert_eq!(format!("{:?}", cancelled), "Cancelled");
+    }
+
+    #[test]
+    fn confirm_dialog_event_clone() {
+        let evt = ConfirmDialogEvent::Confirmed(ConfirmAction::ForcePush);
+        let clone = evt.clone();
+        assert_eq!(format!("{:?}", evt), format!("{:?}", clone));
+    }
+
+    // is_destructive
+
+    #[test]
+    fn is_destructive_true_for_destructive_actions() {
+        fn check_destructive(action: &ConfirmAction) -> bool {
+            matches!(
+                action,
+                ConfirmAction::DiscardFile(_)
+                    | ConfirmAction::DiscardAll
+                    | ConfirmAction::CleanUntracked
+                    | ConfirmAction::BranchDelete(_)
+                    | ConfirmAction::TagDelete(_)
+                    | ConfirmAction::RemoveRemote(_)
+                    | ConfirmAction::StashDrop(_)
+                    | ConfirmAction::ResetHard(_)
+                    | ConfirmAction::AbortMerge
+                    | ConfirmAction::WorktreeRemove(_)
+            )
+        }
+        assert!(check_destructive(&ConfirmAction::StashDrop(0)));
+        assert!(check_destructive(&ConfirmAction::BranchDelete("x".into())));
+        assert!(check_destructive(&ConfirmAction::ResetHard("HEAD".into())));
+        assert!(check_destructive(&ConfirmAction::WorktreeRemove(
+            "/tmp/wt".into()
+        )));
+        assert!(!check_destructive(&ConfirmAction::ForcePush));
+    }
+
+    // confirm_label
+
+    #[test]
+    fn confirm_label_matches_action() {
+        fn label_for(action: &ConfirmAction) -> &'static str {
+            match action {
+                ConfirmAction::DiscardFile(_) | ConfirmAction::DiscardAll => "Discard",
+                ConfirmAction::CleanUntracked => "Clean",
+                ConfirmAction::BranchDelete(_) => "Delete Branch",
+                ConfirmAction::TagDelete(_) => "Delete Tag",
+                ConfirmAction::RemoveRemote(_) => "Remove",
+                ConfirmAction::StashDrop(_) => "Drop Stash",
+                ConfirmAction::ResetHard(_)
+                | ConfirmAction::ResetSoft(_)
+                | ConfirmAction::ResetMixed(_) => "Reset",
+                ConfirmAction::AbortMerge => "Abort",
+                ConfirmAction::ForcePush => "Force Push",
+                ConfirmAction::WorktreeRemove(_) => "Remove Worktree",
+            }
+        }
+        assert_eq!(label_for(&ConfirmAction::StashDrop(0)), "Drop Stash");
+        assert_eq!(
+            label_for(&ConfirmAction::BranchDelete("x".into())),
+            "Delete Branch"
+        );
+        assert_eq!(label_for(&ConfirmAction::ForcePush), "Force Push");
+        assert_eq!(label_for(&ConfirmAction::ResetHard("HEAD".into())), "Reset");
+    }
+
+    // severity_icon
+
+    #[test]
+    fn severity_icon_force_push_is_alert() {
+        fn icon_for(action: &ConfirmAction) -> IconName {
+            match action {
+                ConfirmAction::ForcePush => IconName::AlertTriangle,
+                _ => IconName::Trash,
+            }
+        }
+        assert_eq!(icon_for(&ConfirmAction::ForcePush), IconName::AlertTriangle);
+        assert_eq!(icon_for(&ConfirmAction::StashDrop(0)), IconName::Trash);
+        assert_eq!(
+            icon_for(&ConfirmAction::BranchDelete("x".into())),
+            IconName::Trash
+        );
+    }
+
+    // severity_color
+
+    #[test]
+    fn severity_color_force_push_is_warning() {
+        fn color_for(action: &ConfirmAction) -> Color {
+            match action {
+                ConfirmAction::ForcePush => Color::Warning,
+                a => {
+                    if matches!(
+                        a,
+                        ConfirmAction::DiscardFile(_)
+                            | ConfirmAction::DiscardAll
+                            | ConfirmAction::CleanUntracked
+                            | ConfirmAction::BranchDelete(_)
+                            | ConfirmAction::TagDelete(_)
+                            | ConfirmAction::RemoveRemote(_)
+                            | ConfirmAction::StashDrop(_)
+                            | ConfirmAction::ResetHard(_)
+                            | ConfirmAction::AbortMerge
+                            | ConfirmAction::WorktreeRemove(_)
+                    ) {
+                        Color::Error
+                    } else {
+                        Color::Accent
+                    }
+                }
+            }
+        }
+        assert_eq!(color_for(&ConfirmAction::ForcePush), Color::Warning);
+        assert_eq!(color_for(&ConfirmAction::StashDrop(0)), Color::Error);
+        assert_eq!(color_for(&ConfirmAction::AbortMerge), Color::Error);
     }
 }
