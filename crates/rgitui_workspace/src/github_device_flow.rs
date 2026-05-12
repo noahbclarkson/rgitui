@@ -182,7 +182,7 @@ mod tests {
         // If both true → Token. If token is empty → falls through to error case.
         // This is correct: empty token is NOT treated as success
         assert_eq!(poll.access_token.as_deref(), Some(""));
-        assert!(!poll.access_token.as_ref().unwrap().is_empty() == false); // empty string
+        assert!(poll.access_token.as_ref().unwrap().is_empty()); // empty string
     }
 
     #[test]
