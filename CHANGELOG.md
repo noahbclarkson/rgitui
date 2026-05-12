@@ -7,6 +7,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-12
+
+This release moves the **Settings UI into its own OS window**, adds **clone-from-URL**
+support with a folder picker, ships a new **Cream & Blue** light theme, and delivers
+a wave of polish across the command palette, dialogs, and graph view. A new
+per-worktree refresh cache cuts background CPU during file-system churn.
+
+### Added
+
+- **Clone repositories from a URL.** The Repo Opener now has a **Clone** button
+  that opens a dedicated dialog with URL and Path fields. The dialog includes a
+  **Browse** button that opens an OS folder picker and auto-appends the repo
+  name parsed from the URL (so picking `~/Github` with
+  `https://github.com/user/repo.git` fills `~/Github/repo`). Clone tries
+  in-process `git2` first and transparently falls back to system `git` with the
+  configured HTTPS credentials. Resolves #32.
+- **Settings now opens in a dedicated OS window** (`Ctrl+,`), not an overlay.
+  Window position and size are persisted across sessions, and the workspace and
+  settings windows talk over a cross-window action channel so theme changes and
+  settings updates apply live.
+- **Cream & Blue light theme.** A warm near-paper light theme with cool-grey
+  element layers and a Xero-style cyan-blue accent, intended as a more formal
+  alternative to Catppuccin Latte.
+- **Detail-panel view-mode toggle button.** A Folder/File icon in the detail
+  panel toolbar toggles between Flat and Tree file views, alongside the
+  existing `v` keyboard shortcut. The `v` shortcut is now documented in the
+  Navigation section of the in-app shortcuts help.
+- **Inline descriptions in the command palette.** Every command now shows a
+  short description next to its label. Long descriptions truncate with an
+  ellipsis and a hover tooltip shows the full text. The palette itself is
+  wider (480 → 720 px) so descriptions fit on common displays.
+- **Debian packaging.** The release pipeline now builds a `.deb` alongside the
+  AppImage / tarball, with the necessary `.desktop` and AppStream metadata.
+
+### Changed
+
+- **Command palette redesign.** Widened to 720 px, the heavy focused-blue
+  header underline replaced with a muted separator (the input renders its own
+  focus outline), and the navigate / select / dismiss footer switched from a
+  fixed 32 px row to padding-driven sizing so the labels aren't clipped at
+  small font metrics. Inter-label gap and modal max-height tuned to match.
+- **Settings secret fields commit on Enter, not on every keystroke.** The 10
+  fields that round-trip through the OS keychain (GitHub token, AI API keys,
+  Git provider tokens) no longer write to the keychain per character. Live UI
+  still updates as you type; the actual save happens on submit.
+- **Create-PR base branch defaults to the detected default branch.** Reads
+  `refs/remotes/origin/HEAD` and falls back to `main` only when unavailable, so
+  repositories whose default branch is `master` (or anything else) no longer
+  get a stuck "main" placeholder.
+- **Fuzzy file-search results are sorted by relevance.** The Ctrl+P-style fuzzy
+  filter previously returned matches in repo order; it now ranks by fuzzy
+  score, surfacing tighter character-position matches first in both flat and
+  tree views.
+- **CI is pinned to Rust 1.94.1** (matching `rust-toolchain.toml`) so a stable
+  bump no longer fails fmt checks on otherwise-green commits.
+
+### Fixed
+
+- **Diff preview now refreshes after stage / unstage / discard.** The diff
+  viewer was holding the pre-action contents until you re-selected the file.
+  It now subscribes to `GitProjectEvent::StatusChanged` and recomputes the
+  diff for the currently displayed file when its status changes. Fixes #31.
+- **Theme editor / clone / stash-branch dialogs render with a repo open.**
+  These three dialogs were only attached to the no-tabs welcome layout, so
+  clicking "Edit Theme" or "Clone" while a repo was open flipped their
+  internal `visible` flag but rendered nothing. They are now in the tab-open
+  render tree too.
+- **Clone dialog is no longer hidden behind the Repo Opener.** Welcome-screen
+  z-order was inverted so the clone dialog sits above the opener it was
+  launched from.
+- **Settings window closes when "Edit Theme" is clicked.** The theme editor
+  lives in the workspace window; previously the settings window stayed on
+  top, hiding the editor. Settings now closes when the editor is requested.
+- **Graph column headers align with their data rows.** The right-side header
+  hosts both the "my-commits" filter and the display-settings gear (52 px
+  total), but the trailing row spacer was still sized for a single button,
+  so Author / Date were pushed left of their columns. Hash / Message also
+  ignored the per-row 16 px drag-to-rebase grip. Both spacers are now in the
+  header, and the Author / Date drag-resize math is updated accordingly.
+- **Graph display-settings popover no longer leaks hover** into the commit
+  rows behind it. The popover only stopped left-click propagation, so
+  mouse-move still reached the underlying rows.
+- **Dialog buttons no longer overflow on narrow modals.** Branch / Confirm /
+  Create-PR / Stash-Branch / Tag dialogs lay their button row out below the
+  keybinding hint instead of squeezing it onto a single horizontal strip.
+  Branch dialog gains `flex_nowrap` to prevent button truncation. Fixes #30.
+- **GitHub 403 errors are now actionable.** OAuth-App access restrictions and
+  SAML SSO enforcement messages are rewritten into a single readable
+  sentence, and long error text wraps inside a 480 px container instead of
+  pushing the layout horizontally in the Issues / Pull Requests panels.
+- **GitHub OAuth device-flow polling cancels with the window.** Previously the
+  polling future was detached and could run for ~15 minutes after the
+  settings UI was dismissed; it is now bound to the settings entity.
+- **Settings window bounds save only on close**, not on every render frame
+  during a drag.
+- **Splash screen top corners squared** so they align with the title bar.
+
+### Performance
+
+- **Per-worktree diff-stat cache.** `GitProject::refresh()` and the watcher
+  loop now share a `WorktreeStatusCache` keyed on path + status flags +
+  staged blob OIDs + workdir mtime/size for modified files. Watcher-triggered
+  refreshes skip the expensive `batch_diff_stats()` scan when the fingerprint
+  is unchanged, cutting CPU during background file-system churn while typing
+  in another editor.
+
+### Internal
+
+- **Test coverage push.** Workspace event enums and dialog logic gained unit
+  tests across the board: `BranchDialog`, `ReflogView`, `SubmoduleView`,
+  `BisectView`, `Toolbar`, `ShortcutsHelp`, `SettingsView`, `RepoOpener`,
+  `Workspace`, `StashBranchDialog`, `CreatePrDialog` (including PR JSON
+  request/response parsing), `ConfirmDialog`, `BlameView`, `CommandPalette`
+  (`CommandContext` / `PaletteCommand`), `CommitPanel` co-author trailer
+  formatting, and fuzzy file-search ordering. Integration tests gained a
+  merge-commit graph test and an ignored headless GPU smoke test, and were
+  made robust to CI environments that lack a configured `init.defaultBranch`.
+
 ## [0.1.8] - 2026-04-28
 
 ### Added
@@ -248,7 +366,8 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/noahbclarkson/rgitui/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/noahbclarkson/rgitui/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/noahbclarkson/rgitui/compare/v0.1.6...v0.1.7
 [0.1.2]: https://github.com/noahbclarkson/rgitui/compare/v0.1.0...v0.1.2
