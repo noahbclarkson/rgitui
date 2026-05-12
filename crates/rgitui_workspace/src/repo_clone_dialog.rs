@@ -14,7 +14,7 @@ pub enum RepoCloneEvent {
 }
 
 pub struct RepoCloneDialog {
-    pub visible: bool,
+    visible: bool,
     url_editor: Entity<TextInput>,
     path_editor: Entity<TextInput>,
 }
@@ -37,6 +37,10 @@ impl RepoCloneDialog {
             url_editor,
             path_editor,
         }
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible
     }
 
     pub fn show_visible(&mut self, default_path: Option<String>, cx: &mut Context<Self>) {

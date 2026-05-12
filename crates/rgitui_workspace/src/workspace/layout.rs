@@ -79,8 +79,8 @@ impl Render for Workspace {
                 .child(self.dialogs.rename_dialog.clone())
                 .child(self.dialogs.stash_branch_dialog.clone())
                 .child(self.dialogs.create_pr_dialog.clone())
-                .child(self.dialogs.repo_clone_dialog.clone())
                 .child(self.overlays.repo_opener.clone())
+                .child(self.dialogs.repo_clone_dialog.clone())
                 .child(self.overlays.shortcuts_help.clone())
                 .child(self.overlays.global_search.clone())
                 .into_any_element();
@@ -132,11 +132,14 @@ impl Render for Workspace {
         let repo_path_display: SharedString = project.repo_path().display().to_string().into();
         let overlays_active = self.overlays.command_palette.read(cx).is_visible()
             || self.overlays.interactive_rebase.read(cx).is_visible()
+            || self.overlays.theme_editor.read(cx).is_visible()
             || self.dialogs.branch_dialog.read(cx).is_visible()
             || self.dialogs.tag_dialog.read(cx).is_visible()
             || self.dialogs.worktree_dialog.read(cx).is_visible()
             || self.dialogs.rename_dialog.read(cx).is_visible()
+            || self.dialogs.stash_branch_dialog.read(cx).is_visible()
             || self.overlays.repo_opener.read(cx).is_visible()
+            || self.dialogs.repo_clone_dialog.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()
             || self.dialogs.create_pr_dialog.read(cx).is_visible()
             || self.overlays.shortcuts_help.read(cx).is_visible()
@@ -1172,12 +1175,17 @@ impl Render for Workspace {
             .child(self.dialogs.worktree_dialog.clone())
             // Rename dialog overlay
             .child(self.dialogs.rename_dialog.clone())
+            // Stash branch dialog overlay
+            .child(self.dialogs.stash_branch_dialog.clone())
             // Repo opener overlay
             .child(self.overlays.repo_opener.clone())
+            .child(self.dialogs.repo_clone_dialog.clone())
             // Confirm dialog overlay
             .child(self.dialogs.confirm_dialog.clone())
             // Create PR dialog overlay
             .child(self.dialogs.create_pr_dialog.clone())
+            // Theme editor overlay
+            .child(self.overlays.theme_editor.clone())
             // Shortcuts help overlay
             .child(self.overlays.shortcuts_help.clone())
             // Global search overlay
