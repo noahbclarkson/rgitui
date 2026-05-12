@@ -2647,6 +2647,7 @@ impl Render for GraphView {
 
             let popover = div()
                 .id("graph-settings-popover")
+                .occlude()
                 .absolute()
                 .right(px(8.))
                 .top(px(28.))
@@ -2664,6 +2665,9 @@ impl Render for GraphView {
                         cx.stop_propagation();
                     },
                 )
+                .on_mouse_move(|_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                })
                 .child(
                     div().px(px(10.)).py(px(4.)).child(
                         Label::new("Display Settings")
