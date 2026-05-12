@@ -443,6 +443,9 @@ impl Workspace {
     ) {
         match action {
             crate::SettingsWindowAction::OpenThemeEditor => {
+                if let Some(handle) = self.settings_window.take() {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                }
                 self.overlays
                     .theme_editor
                     .update(cx, |te, cx| te.show_for_active_theme(cx));
