@@ -8,7 +8,7 @@ use gpui::{
     Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent};
+use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent, Tooltip};
 
 /// Pre-computed git context used for context-sensitive command filtering.
 /// Computed from GitProject state and passed to predicates.
@@ -1083,7 +1083,7 @@ impl Render for CommandPalette {
             .key_context("CommandPalette")
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
-            .w(px(480.))
+            .w(px(720.))
             .max_h(px(440.))
             .elevation_3(cx)
             .rounded(px(10.))
@@ -1098,23 +1098,22 @@ impl Render for CommandPalette {
                 cx.stop_propagation();
             });
 
-        let focused_border = colors.border_focused;
         modal = modal.child(
             div()
                 .h_flex()
                 .w_full()
-                .h(px(44.))
-                .px(px(14.))
+                .px(px(12.))
+                .py(px(10.))
                 .gap(px(10.))
                 .items_center()
                 .border_b_1()
-                .border_color(focused_border)
+                .border_color(colors.border_variant)
                 .child(
                     Icon::new(IconName::Search)
                         .size(IconSize::Small)
                         .color(Color::Muted),
                 )
-                .child(div().flex_1().child(self.query_editor.clone()))
+                .child(div().flex_1().min_w_0().child(self.query_editor.clone()))
                 .when(!query_is_empty, |el| {
                     let count_text: SharedString = format!("{filtered_count} results").into();
                     el.child(
@@ -1156,6 +1155,11 @@ impl Render for CommandPalette {
 
                             let view_click = view.clone();
 
+                            let tooltip_text: SharedString = match description {
+                                Some(desc) => format!("{} — {}", label, desc).into(),
+                                None => label.clone(),
+                            };
+
                             let mut row = div()
                                 .id(ElementId::NamedInteger(
                                     "palette-cmd".into(),
@@ -1172,6 +1176,7 @@ impl Render for CommandPalette {
                                 .cursor_pointer()
                                 .when(is_selected, move |el| el.bg(selected_bg))
                                 .hover(move |s| s.bg(hover_bg))
+                                .tooltip(Tooltip::text(tooltip_text))
                                 .on_click(move |_: &ClickEvent, _, cx| {
                                     view_click
                                         .update(cx, |this, cx| {
@@ -1191,22 +1196,25 @@ impl Render for CommandPalette {
                             ));
 
                             row = row.child(
-                                Label::new(label)
-                                    .size(LabelSize::Small)
-                                    .when(is_selected, |l| l.weight(FontWeight::MEDIUM)),
+                                div().flex_shrink_0().child(
+                                    Label::new(label)
+                                        .size(LabelSize::Small)
+                                        .when(is_selected, |l| l.weight(FontWeight::MEDIUM)),
+                                ),
                             );
 
                             if let Some(desc_text) = description {
                                 row = row.child(
-                                    div().pl(px(8.)).child(
+                                    div().pl(px(8.)).flex_1().min_w_0().child(
                                         Label::new(SharedString::from(desc_text))
                                             .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
+                                            .color(Color::Muted)
+                                            .truncate(),
                                     ),
                                 );
+                            } else {
+                                row = row.child(div().flex_1());
                             }
-
-                            row = row.child(div().flex_1());
 
                             if let Some(shortcut_text) = shortcut {
                                 row = row.child(
@@ -1217,6 +1225,7 @@ impl Render for CommandPalette {
                                         .rounded(px(4.))
                                         .bg(hint_bg)
                                         .items_center()
+                                        .flex_shrink_0()
                                         .child(
                                             Label::new(SharedString::from(shortcut_text))
                                                 .size(LabelSize::XSmall)
