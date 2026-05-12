@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, FontWeight, KeyDownEvent,
-    Render, Window,
+    div, px, ClickEvent, Context, Entity, EventEmitter, FontWeight, KeyDownEvent, Render, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Button, ButtonStyle, Label, LabelSize, TextInput};
@@ -18,8 +17,6 @@ pub struct RepoCloneDialog {
     pub visible: bool,
     url_editor: Entity<TextInput>,
     path_editor: Entity<TextInput>,
-    #[allow(dead_code)]
-    focus_handle: FocusHandle,
 }
 
 impl RepoCloneDialog {
@@ -39,7 +36,6 @@ impl RepoCloneDialog {
             visible: false,
             url_editor,
             path_editor,
-            focus_handle: cx.focus_handle(),
         }
     }
 

@@ -130,7 +130,7 @@ fn can_use_https(repo_path: &Path, auth: &GitAuthRuntime, ssh_url: &str) -> bool
         || has_credential_helper_for_host(repo_path, &https_url)
 }
 
-fn inject_https_credentials(cmd: &mut Command, auth: &GitAuthRuntime, remote_url: &str) {
+pub(crate) fn inject_https_credentials(cmd: &mut Command, auth: &GitAuthRuntime, remote_url: &str) {
     let (username, token) = match find_https_credentials(auth, remote_url) {
         Some(creds) => creds,
         None => return,
@@ -295,40 +295,4 @@ fn shell_escape(s: &str) -> String {
     } else {
         s.to_string()
     }
-}
-
-/// Find HTTPS credentials for a given URL (used by clone fallback).
-pub(crate) fn find_it2_https_credentials(
-    auth: &rgitui_settings::GitAuthRuntime,
-    remote_url: &str,
-) -> Option<(String, String)> {
-    find_https_credentials(auth, remote_url)
-}
-
-/// Ensure an askpass script exists for git clone operations.
-/// The script echoes the given username/token when git asks for credentials.
-pub(crate) fn ensure_clone_askpass(
-    _auth: &rgitui_settings::GitAuthRuntime,
-    username: &str,
-    token: &str,
-) -> Result<std::path::PathBuf> {
-    let dir = rgitui_settings::config_dir();
-    std::fs::create_dir_all(&dir)?;
-    let script_path = dir.join("clone_askpass.sh");
-    let script = format!(
-        "#!/usr/bin/env bash\n\
-            case \"$1\" in\n\
-            \x20   Username*|username*) echo \"{}\" ;;\n\
-            \x20   *) echo \"{}\" ;;\n\
-            esac\n",
-        shell_escape(username),
-        shell_escape(token)
-    );
-    std::fs::write(&script_path, script)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
-    }
-    Ok(script_path)
 }
