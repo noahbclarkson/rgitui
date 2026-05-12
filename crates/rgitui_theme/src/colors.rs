@@ -998,9 +998,9 @@ pub fn high_contrast_dark_status() -> StatusColors {
 /// element layers, and the accent is a vibrant blue. Designed as a
 /// more formal alternative to Catppuccin Latte.
 pub fn cream_blue_colors() -> ThemeColors {
-    let paper = hsla(40.0, 27.0, 98.0, 1.0);
-    let paper_soft = hsla(40.0, 20.0, 96.0, 1.0);
-    let paper_softer = hsla(40.0, 16.0, 94.0, 1.0);
+    let paper = hsla(40.0, 55.0, 96.0, 1.0);
+    let paper_soft = hsla(40.0, 48.0, 93.0, 1.0);
+    let paper_softer = hsla(40.0, 40.0, 90.0, 1.0);
 
     let surface0 = hsla(220.0, 12.0, 92.0, 1.0);
     let surface1 = hsla(220.0, 10.0, 86.0, 1.0);
