@@ -1077,7 +1077,7 @@ impl Render for GraphView {
                 move |this, e: &gpui::DragMoveEvent<AuthorColumnResize>, _, cx| {
                     let settings = cx.global_mut::<SettingsState>();
                     let right_edge = this.container_bounds.right()
-                        - px(22.0 + 8.0 + 12.0)
+                        - px(22.0 + 22.0 + 8.0 + 12.0)
                         - px(date_col_width)
                         - px(12.0);
                     let new_w = f32::from(e.event.position.x - (right_edge - px(author_col_width)))
@@ -1089,7 +1089,7 @@ impl Render for GraphView {
             .on_drag_move::<DateColumnResize>(cx.listener(
                 move |this, e: &gpui::DragMoveEvent<DateColumnResize>, _, cx| {
                     let settings = cx.global_mut::<SettingsState>();
-                    let right_edge = this.container_bounds.right() - px(22.0 + 8.0);
+                    let right_edge = this.container_bounds.right() - px(22.0 + 22.0 + 8.0);
                     let new_w = f32::from(e.event.position.x - (right_edge - px(date_col_width)))
                         .clamp(50., 300.);
                     settings.settings_mut().date_column_width = new_w;
@@ -2000,10 +2000,11 @@ impl Render for GraphView {
                             );
                         }
 
-                        // Spacer matching the gear icon width in the header
-                        // so the flex-1 message column is the same width in
-                        // both header and rows, keeping Author/Date aligned.
-                        row = row.child(div().w(px(26.)).flex_shrink_0());
+                        // Spacer matching the my-commits + settings buttons
+                        // (2 x 22px) plus the header's right padding (8px) so
+                        // the flex-1 message column is the same width in both
+                        // header and rows, keeping Author/Date aligned.
+                        row = row.child(div().w(px(52.)).flex_shrink_0());
 
                         row.into_any_element()
                     })
