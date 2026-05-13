@@ -1851,6 +1851,12 @@ mod tests {
     }
 
     #[test]
+    fn test_file_view_mode_icons_describe_next_action() {
+        assert_eq!(FileViewMode::Flat.toggle_icon(), IconName::Folder);
+        assert_eq!(FileViewMode::Tree.toggle_icon(), IconName::File);
+    }
+
+    #[test]
     fn test_file_view_mode_tooltips_describe_next_action() {
         assert_eq!(
             FileViewMode::Flat.toggle_tooltip(),
