@@ -79,6 +79,18 @@ fn file_view_toggle_tooltip(
     }
 }
 
+fn file_view_mode_after_toggle_request(
+    file_view_mode: FileViewMode,
+    file_count: usize,
+    is_searching: bool,
+) -> FileViewMode {
+    if can_toggle_file_view(file_count, is_searching) {
+        file_view_mode.toggled()
+    } else {
+        file_view_mode
+    }
+}
+
 fn format_absolute_date(timestamp: i64) -> String {
     let dt = chrono::DateTime::from_timestamp(timestamp, 0);
     match dt {
@@ -274,7 +286,6 @@ impl DetailPanel {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
         let file_count = self.file_count();
-        let is_searching = is_file_searching(self.file_search_active, &self.file_search_query);
 
         // Commit prev/next navigation — works regardless of file count
         match key {
@@ -378,16 +389,24 @@ impl DetailPanel {
                     cx.notify();
                 }
             }
-            "v" if can_toggle_file_view(file_count, is_searching) => {
-                self.toggle_file_view_mode(cx);
+            "v" => {
+                self.request_file_view_mode_toggle(cx);
             }
             _ => {}
         }
     }
 
-    fn toggle_file_view_mode(&mut self, cx: &mut Context<Self>) {
-        self.file_view_mode = self.file_view_mode.toggled();
-        cx.notify();
+    fn request_file_view_mode_toggle(&mut self, cx: &mut Context<Self>) {
+        let is_searching = is_file_searching(self.file_search_active, &self.file_search_query);
+        let next_mode = file_view_mode_after_toggle_request(
+            self.file_view_mode,
+            self.file_count(),
+            is_searching,
+        );
+        if next_mode != self.file_view_mode {
+            self.file_view_mode = next_mode;
+            cx.notify();
+        }
     }
 
     fn emit_file_selected(&self, cx: &mut Context<Self>) {
@@ -989,7 +1008,7 @@ impl Render for DetailPanel {
                         .disabled(toggle_disabled)
                         .tooltip(toggle_tooltip)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.toggle_file_view_mode(cx);
+                            this.request_file_view_mode_toggle(cx);
                         }))
                 }),
         );
@@ -1939,6 +1958,22 @@ mod tests {
         assert!(can_toggle_file_view(1, false));
         assert!(!can_toggle_file_view(0, false));
         assert!(!can_toggle_file_view(1, true));
+    }
+
+    #[test]
+    fn test_file_view_toggle_request_preserves_mode_when_disabled() {
+        assert_eq!(
+            file_view_mode_after_toggle_request(FileViewMode::Flat, 2, false),
+            FileViewMode::Tree
+        );
+        assert_eq!(
+            file_view_mode_after_toggle_request(FileViewMode::Flat, 0, false),
+            FileViewMode::Flat
+        );
+        assert_eq!(
+            file_view_mode_after_toggle_request(FileViewMode::Tree, 3, true),
+            FileViewMode::Tree
+        );
     }
 
     #[test]
