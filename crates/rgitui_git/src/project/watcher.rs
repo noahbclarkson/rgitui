@@ -123,6 +123,10 @@ impl GitProject {
 
         {
             let dirty_flag = dirty.clone();
+            // Open a Repository handle for gitignore filtering. `git2::Repository`
+            // is `Send`, and the notify callback is a single-threaded `FnMut`,
+            // so we can move it in directly. None means we skip the filter.
+            let ignore_repo: Option<git2::Repository> = git2::Repository::open(&repo_path).ok();
             let watcher =
                 notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                     if let Ok(event) = res {
@@ -132,6 +136,20 @@ impl GitProject {
                             .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
                         if dominated_by_git {
                             return;
+                        }
+                        // Skip events where every changed path is gitignored
+                        // (e.g. `target/`, `node_modules/`). Tracked files —
+                        // even modified ones — are never reported as ignored,
+                        // so legitimate changes still pass through.
+                        if let Some(repo) = ignore_repo.as_ref() {
+                            let all_ignored = !event.paths.is_empty()
+                                && event
+                                    .paths
+                                    .iter()
+                                    .all(|p| repo.status_should_ignore(p).unwrap_or(false));
+                            if all_ignored {
+                                return;
+                            }
                         }
                         match event.kind {
                             notify::EventKind::Create(_)

@@ -878,9 +878,23 @@ pub(super) fn subscribe_project(
 
                 update_sidebar_for_active_worktree(this, cx);
 
-                // Refresh diff viewer if currently displaying a changed file
-                if let Some(path) = diff_viewer.read(cx).file_path() {
-                    let path_str = path.to_string();
+                // Refresh diff viewer if currently displaying a working-tree
+                // diff. Commit diffs are immutable (don't refresh) and
+                // three-way conflict diffs are owned by the merge flow.
+                // Without this gate, the refresh would replace whatever was
+                // shown with an unstaged working-tree diff of the same path —
+                // emptying the panel when the path has no working-tree
+                // changes (e.g. while viewing a commit diff).
+                let refresh_state = {
+                    let dv = diff_viewer.read(cx);
+                    let is_commit_diff = !dv.commit_id().is_empty();
+                    if is_commit_diff || dv.has_three_way_diff() {
+                        None
+                    } else {
+                        dv.file_path().map(|p| (p.to_string(), dv.is_staged()))
+                    }
+                };
+                if let Some((path_str, is_staged)) = refresh_state {
                     let repo_path = project.read(cx).repo_path().to_path_buf();
                     let dv = diff_viewer.clone();
                     let path_str_for_spawn = path_str.clone();
@@ -892,14 +906,22 @@ pub(super) fn subscribe_project(
                                 rgitui_git::compute_file_diff(
                                     &repo_path,
                                     std::path::Path::new(&path_str_for_spawn),
-                                    false,
+                                    is_staged,
                                 )
                             })
                             .await;
                         if let Ok(diff) = result {
                             cx.update(|cx| {
                                 dv.update(cx, |dv, cx| {
-                                    dv.set_diff(diff, path_str_for_update, false, None, cx);
+                                    if dv.matches_current_diff(
+                                        &path_str_for_update,
+                                        is_staged,
+                                        None,
+                                        &diff,
+                                    ) {
+                                        return;
+                                    }
+                                    dv.set_diff(diff, path_str_for_update, is_staged, None, cx);
                                 });
                             });
                         }

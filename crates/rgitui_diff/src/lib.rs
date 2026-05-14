@@ -1062,6 +1062,45 @@ impl DiffViewer {
         self.is_staged
     }
 
+    /// Empty for working-tree diffs; non-empty hex OID for commit diffs.
+    pub fn commit_id(&self) -> &str {
+        &self.commit_id
+    }
+
+    pub fn has_three_way_diff(&self) -> bool {
+        self.three_way_diff.is_some()
+    }
+
+    /// True iff `set_diff` with these inputs would produce identical content to
+    /// what's already shown. Lets callers skip a refresh that would only churn
+    /// state (cleared selection / scroll reset) without visible benefit.
+    pub fn matches_current_diff(
+        &self,
+        path: &str,
+        is_staged: bool,
+        commit_id: Option<&str>,
+        diff: &FileDiff,
+    ) -> bool {
+        if self.has_three_way_diff() {
+            return false;
+        }
+        let Some(existing_path) = self.file_path.as_deref() else {
+            return false;
+        };
+        if existing_path != path
+            || self.is_staged != is_staged
+            || self.commit_id != commit_id.unwrap_or("")
+        {
+            return false;
+        }
+        let Some(existing) = self.diff.as_ref() else {
+            return false;
+        };
+        existing.hunks.len() == diff.hunks.len()
+            && existing.additions == diff.additions
+            && existing.deletions == diff.deletions
+    }
+
     /// Scroll to and highlight the given line number (1-indexed) in the new/right side
     /// of the diff. Used by global search to navigate from grep results to the
     /// corresponding location in the diff viewer. Returns true if the line was found.
