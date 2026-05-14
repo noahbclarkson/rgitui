@@ -65,6 +65,20 @@ fn can_toggle_file_view(file_count: usize, is_searching: bool) -> bool {
     file_count > 0 && !is_searching
 }
 
+fn file_view_toggle_tooltip(
+    file_count: usize,
+    is_searching: bool,
+    file_view_mode: FileViewMode,
+) -> &'static str {
+    if file_count == 0 {
+        "No changed files to display"
+    } else if is_searching {
+        "Clear file search to switch views"
+    } else {
+        file_view_mode.toggle_tooltip()
+    }
+}
+
 fn format_absolute_date(timestamp: i64) -> String {
     let dt = chrono::DateTime::from_timestamp(timestamp, 0);
     match dt {
@@ -963,17 +977,12 @@ impl Render for DetailPanel {
                 )
                 .child(div().flex_1())
                 .child({
-                    let toggle_disabled = !can_toggle_file_view(
-                        self.file_count(),
-                        is_file_searching(self.file_search_active, &self.file_search_query),
-                    );
-                    let toggle_tooltip = if self.file_count() == 0 {
-                        "No changed files to display"
-                    } else if toggle_disabled {
-                        "Clear file search to switch views"
-                    } else {
-                        self.file_view_mode.toggle_tooltip()
-                    };
+                    let file_count = self.file_count();
+                    let is_searching =
+                        is_file_searching(self.file_search_active, &self.file_search_query);
+                    let toggle_disabled = !can_toggle_file_view(file_count, is_searching);
+                    let toggle_tooltip =
+                        file_view_toggle_tooltip(file_count, is_searching, self.file_view_mode);
 
                     IconButton::new("view-mode-toggle", self.file_view_mode.toggle_icon())
                         .size(ButtonSize::Compact)
@@ -1894,6 +1903,22 @@ mod tests {
         assert_eq!(
             FileViewMode::Tree.toggle_tooltip(),
             "Switch to Flat view (v)"
+        );
+    }
+
+    #[test]
+    fn test_file_view_toggle_tooltip_describes_disabled_state() {
+        assert_eq!(
+            file_view_toggle_tooltip(0, false, FileViewMode::Flat),
+            "No changed files to display"
+        );
+        assert_eq!(
+            file_view_toggle_tooltip(2, true, FileViewMode::Flat),
+            "Clear file search to switch views"
+        );
+        assert_eq!(
+            file_view_toggle_tooltip(2, false, FileViewMode::Flat),
+            "Switch to Tree view (v)"
         );
     }
 
