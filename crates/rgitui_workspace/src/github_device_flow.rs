@@ -55,10 +55,28 @@ pub async fn request_device_code(http: Arc<dyn HttpClient>) -> Result<DeviceCode
     serde_json::from_slice(&buf).map_err(|e| format!("Failed to parse device code response: {e}"))
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum PollResult {
     Pending,
     SlowDown,
     Token(String),
+}
+
+fn token_poll_response_to_result(poll: TokenPollResponse) -> Result<PollResult, String> {
+    if let Some(token) = poll.access_token {
+        if poll.token_type.is_some() && !token.is_empty() {
+            return Ok(PollResult::Token(token));
+        }
+    }
+
+    match poll.error.as_deref() {
+        Some("authorization_pending") => Ok(PollResult::Pending),
+        Some("slow_down") => Ok(PollResult::SlowDown),
+        Some("expired_token") => Err("Device code expired. Please try again.".into()),
+        Some("access_denied") => Err("Access was denied. Please try again.".into()),
+        Some(err) => Err(format!("GitHub error: {err}")),
+        None => Err("Unexpected response from GitHub".into()),
+    }
 }
 
 pub async fn poll_for_token(
@@ -87,20 +105,7 @@ pub async fn poll_for_token(
     let poll: TokenPollResponse =
         serde_json::from_slice(&buf).map_err(|e| format!("Failed to parse token response: {e}"))?;
 
-    if let Some(token) = poll.access_token {
-        if poll.token_type.is_some() && !token.is_empty() {
-            return Ok(PollResult::Token(token));
-        }
-    }
-
-    match poll.error.as_deref() {
-        Some("authorization_pending") => Ok(PollResult::Pending),
-        Some("slow_down") => Ok(PollResult::SlowDown),
-        Some("expired_token") => Err("Device code expired. Please try again.".into()),
-        Some("access_denied") => Err("Access was denied. Please try again.".into()),
-        Some(err) => Err(format!("GitHub error: {err}")),
-        None => Err("Unexpected response from GitHub".into()),
-    }
+    token_poll_response_to_result(poll)
 }
 
 #[cfg(test)]
@@ -125,15 +130,13 @@ mod tests {
     }
 
     #[test]
-    fn test_device_code_response_missing_optional_fields() {
-        // interval is optional (defaults to 0)
+    fn test_device_code_response_requires_interval() {
         let json = r#"{
             "device_code": "ABCD1234",
             "user_code": "EFGH-5678",
             "verification_uri": "https://github.com/login/device",
             "expires_in": 900
         }"#;
-        // Since interval is required, we expect a parse error — verify the field is required
         let result: Result<DeviceCodeResponse, _> = serde_json::from_str(json);
         assert!(result.is_err());
     }
@@ -178,11 +181,23 @@ mod tests {
             token_type: Some("Bearer".to_string()),
             error: None,
         };
-        // The actual poll_for_token checks: token_type.is_some() && !token.is_empty()
-        // If both true → Token. If token is empty → falls through to error case.
-        // This is correct: empty token is NOT treated as success
-        assert_eq!(poll.access_token.as_deref(), Some(""));
-        assert!(poll.access_token.as_ref().unwrap().is_empty()); // empty string
+        assert_eq!(
+            token_poll_response_to_result(poll),
+            Err("Unexpected response from GitHub".to_string())
+        );
+    }
+
+    #[test]
+    fn test_poll_result_missing_token_type_is_rejected() {
+        let poll = TokenPollResponse {
+            access_token: Some("gho_sekret123".to_string()),
+            token_type: None,
+            error: None,
+        };
+        assert_eq!(
+            token_poll_response_to_result(poll),
+            Err("Unexpected response from GitHub".to_string())
+        );
     }
 
     #[test]
