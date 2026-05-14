@@ -48,6 +48,21 @@ impl FileViewMode {
             Self::Tree => "Switch to Flat view (v)",
         }
     }
+
+    fn list_element_id(self) -> &'static str {
+        match self {
+            Self::Flat => "detail-files-filtered",
+            Self::Tree => "detail-files-filtered-tree",
+        }
+    }
+}
+
+fn is_file_searching(file_search_active: bool, file_search_query: &Option<String>) -> bool {
+    file_search_active || file_search_query.is_some()
+}
+
+fn can_toggle_file_view(file_count: usize, is_searching: bool) -> bool {
+    file_count > 0 && !is_searching
 }
 
 fn format_absolute_date(timestamp: i64) -> String {
@@ -245,6 +260,7 @@ impl DetailPanel {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
         let file_count = self.file_count();
+        let is_searching = is_file_searching(self.file_search_active, &self.file_search_query);
 
         // Commit prev/next navigation — works regardless of file count
         match key {
@@ -348,7 +364,7 @@ impl DetailPanel {
                     cx.notify();
                 }
             }
-            "v" => {
+            "v" if can_toggle_file_view(file_count, is_searching) => {
                 self.toggle_file_view_mode(cx);
             }
             _ => {}
@@ -587,7 +603,7 @@ impl DetailPanel {
         let ghost_element_hover = colors.ghost_element_hover;
 
         uniform_list(
-            "detail-files-filtered",
+            self.file_view_mode.list_element_id(),
             row_count,
             move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
                 range
@@ -695,7 +711,7 @@ impl DetailPanel {
             .spacing(26.0);
 
         let mut file_list = div()
-            .id("detail-files-filtered-tree")
+            .id(self.file_view_mode.list_element_id())
             .v_flex()
             .w_full()
             .flex_shrink_0()
@@ -946,14 +962,27 @@ impl Render for DetailPanel {
                         .color(Color::Default),
                 )
                 .child(div().flex_1())
-                .child(
+                .child({
+                    let toggle_disabled = !can_toggle_file_view(
+                        self.file_count(),
+                        is_file_searching(self.file_search_active, &self.file_search_query),
+                    );
+                    let toggle_tooltip = if self.file_count() == 0 {
+                        "No changed files to display"
+                    } else if toggle_disabled {
+                        "Clear file search to switch views"
+                    } else {
+                        self.file_view_mode.toggle_tooltip()
+                    };
+
                     IconButton::new("view-mode-toggle", self.file_view_mode.toggle_icon())
                         .size(ButtonSize::Compact)
-                        .tooltip(self.file_view_mode.toggle_tooltip())
+                        .disabled(toggle_disabled)
+                        .tooltip(toggle_tooltip)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.toggle_file_view_mode(cx);
-                        })),
-                ),
+                        }))
+                }),
         );
 
         let mut content = div()
@@ -1345,7 +1374,7 @@ impl Render for DetailPanel {
         if let (Some(diff), Some(cached)) = (&self.commit_diff, &self.cached_file_tree) {
             let total_file_count = diff.files.len();
             let filtered_indices = self.filtered_file_indices();
-            let is_searching = self.file_search_active || self.file_search_query.is_some();
+            let is_searching = is_file_searching(self.file_search_active, &self.file_search_query);
             let query_str = self.file_search_query.clone().unwrap_or_default();
 
             let file_count_text: SharedString = if is_searching && !query_str.is_empty() {
@@ -1866,6 +1895,37 @@ mod tests {
             FileViewMode::Tree.toggle_tooltip(),
             "Switch to Flat view (v)"
         );
+    }
+
+    #[test]
+    fn test_file_view_mode_list_ids_select_distinct_renderers() {
+        assert_eq!(
+            FileViewMode::Flat.list_element_id(),
+            "detail-files-filtered"
+        );
+        assert_eq!(
+            FileViewMode::Tree.list_element_id(),
+            "detail-files-filtered-tree"
+        );
+    }
+
+    #[test]
+    fn test_file_view_toggle_requires_files_and_no_search() {
+        assert!(can_toggle_file_view(1, false));
+        assert!(!can_toggle_file_view(0, false));
+        assert!(!can_toggle_file_view(1, true));
+    }
+
+    #[test]
+    fn test_file_search_state_blocks_view_toggle_shortcut() {
+        assert!(is_file_searching(true, &None));
+        assert!(is_file_searching(false, &Some("view".to_string())));
+        assert!(!is_file_searching(false, &None));
+
+        assert!(!can_toggle_file_view(
+            3,
+            is_file_searching(true, &Some("view".to_string()))
+        ));
     }
 
     // --- filtered_file_indices tests ---
