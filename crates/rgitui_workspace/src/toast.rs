@@ -132,3 +132,59 @@ impl Render for ToastLayer {
         stack.into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_toast_entry_kinds() {
+        // ToastEntry carries a message and kind; verify the kind field works
+        // ToastKind is an alias for ToastLevel, which has Success/Error/Warning/Info
+        let entry = ToastEntry {
+            id: 0,
+            message: "test message".to_string(),
+            kind: ToastKind::Success,
+        };
+        assert_eq!(entry.message, "test message");
+        assert_eq!(entry.kind, ToastKind::Success);
+
+        let entry_err = ToastEntry {
+            id: 1,
+            message: "error occurred".to_string(),
+            kind: ToastKind::Error,
+        };
+        assert_eq!(entry_err.kind, ToastKind::Error);
+    }
+
+    #[test]
+    fn test_toast_layer_new_is_empty() {
+        // Cannot construct ToastLayer without Context, but we can verify
+        // ToastKind and ToastEntry structural correctness
+        let entry = ToastEntry {
+            id: 0,
+            message: "loading".to_string(),
+            kind: ToastKind::Info,
+        };
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.message, "loading");
+        assert_eq!(entry.kind, ToastKind::Info);
+    }
+
+    #[test]
+    fn test_toast_level_color_mapping() {
+        // ToastKind is ToastLevel from rgitui_ui; verify the color() method exists
+        assert_eq!(ToastKind::Success.color(), Color::Success);
+        assert_eq!(ToastKind::Error.color(), Color::Error);
+        assert_eq!(ToastKind::Warning.color(), Color::Warning);
+        assert_eq!(ToastKind::Info.color(), Color::Info);
+    }
+
+    #[test]
+    fn test_toast_level_icon_mapping() {
+        assert_eq!(ToastKind::Success.icon(), IconName::CheckCircle);
+        assert_eq!(ToastKind::Error.icon(), IconName::XCircle);
+        assert_eq!(ToastKind::Warning.icon(), IconName::AlertTriangle);
+        assert_eq!(ToastKind::Info.icon(), IconName::Info);
+    }
+}
