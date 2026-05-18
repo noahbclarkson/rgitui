@@ -71,6 +71,8 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
 
       - name: Check formatting
         run: cargo fmt --all -- --check

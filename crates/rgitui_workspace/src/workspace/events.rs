@@ -789,12 +789,14 @@ pub(super) fn subscribe_global_search(
 
 // ---- Per-tab subscriptions (called from open_repo) ----
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn subscribe_project(
     cx: &mut Context<Workspace>,
     project: &Entity<GitProject>,
     graph: &Entity<GraphView>,
     sidebar: &Entity<Sidebar>,
     diff_viewer: &Entity<DiffViewer>,
+    detail_panel: &Entity<DetailPanel>,
     _commit_panel: &Entity<CommitPanel>,
     toolbar: &Entity<Toolbar>,
     diff_cache: Arc<Mutex<CommitDiffCache>>,
@@ -803,6 +805,7 @@ pub(super) fn subscribe_project(
     let sidebar = sidebar.clone();
     let toolbar = toolbar.clone();
     let diff_viewer = diff_viewer.clone();
+    let detail_panel_ref = detail_panel.clone();
     let diff_cache = diff_cache.clone();
     let has_prewarmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -885,6 +888,12 @@ pub(super) fn subscribe_project(
                 // shown with an unstaged working-tree diff of the same path —
                 // emptying the panel when the path has no working-tree
                 // changes (e.g. while viewing a commit diff).
+                //
+                // We also need to clear the detail panel's selected_file_index
+                // if the file is no longer in the working-tree diff (e.g. it was
+                // discarded or fully staged/unstaged), but for now we clear it
+                // unconditionally on StatusChanged to avoid stale commit diff previews
+                // persisting when a staged file is discarded.
                 let refresh_state = {
                     let dv = diff_viewer.read(cx);
                     let is_commit_diff = !dv.commit_id().is_empty();
@@ -895,6 +904,7 @@ pub(super) fn subscribe_project(
                     }
                 };
                 if let Some((path_str, is_staged)) = refresh_state {
+                    let dp = detail_panel_ref.clone();
                     let repo_path = project.read(cx).repo_path().to_path_buf();
                     let dv = diff_viewer.clone();
                     let path_str_for_spawn = path_str.clone();
@@ -922,6 +932,12 @@ pub(super) fn subscribe_project(
                                         return;
                                     }
                                     dv.set_diff(diff, path_str_for_update, is_staged, None, cx);
+                                });
+                                dp.update(cx, |dp, cx| {
+                                    // If we are showing a working-tree diff in the diff viewer,
+                                    // ensure the detail panel's selected file is cleared if it
+                                    // was previously showing a commit file diff that is now stale.
+                                    dp.clear(cx);
                                 });
                             });
                         }
