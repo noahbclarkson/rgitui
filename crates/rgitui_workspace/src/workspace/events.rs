@@ -789,6 +789,7 @@ pub(super) fn subscribe_global_search(
 
 // ---- Per-tab subscriptions (called from open_repo) ----
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn subscribe_project(
     cx: &mut Context<Workspace>,
     project: &Entity<GitProject>,
