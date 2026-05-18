@@ -87,6 +87,7 @@ impl Workspace {
             &graph,
             &sidebar,
             &diff_viewer,
+            &detail_panel,
             &commit_panel,
             &toolbar,
             caches.diff.clone(),
