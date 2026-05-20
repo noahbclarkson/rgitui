@@ -3,8 +3,9 @@ use std::rc::Rc;
 
 use gpui::{
     fill, hsla, point, px, size, Along, App, Axis, Bounds, DispatchPhase, Element, ElementId,
-    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, LayoutId, ListState, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, Style, Window,
+    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, LayoutId, ListOffset, ListState,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, Style,
+    Window,
 };
 use rgitui_theme::ActiveTheme;
 
@@ -74,6 +75,75 @@ impl ScrollableHandle for ListState {
 
     fn drag_ended(&self) {
         self.scrollbar_drag_ended();
+    }
+}
+
+/// A [`ScrollableHandle`] for a [`ListState`] that derives scrollbar geometry from
+/// a fixed per-row height estimate rather than `ListState`'s measured content
+/// height.
+///
+/// `ListState` measures item heights lazily as rows scroll into view, so its
+/// reported content height grows while you scroll — a scrollbar driven directly
+/// off it resizes its thumb mid-scroll. Modelling content as
+/// `row_count * row_height` keeps the thumb a constant size. The mapped position
+/// is exact for rows that occupy a single line and approximate for rows that wrap
+/// to several visual lines, which is an acceptable trade for a stable, grabbable
+/// thumb (line wrapping is opt-in).
+#[derive(Clone)]
+pub struct EstimatedListScroll {
+    list: ListState,
+    row_count: usize,
+    row_height: Pixels,
+}
+
+impl EstimatedListScroll {
+    pub fn new(list: ListState, row_count: usize, row_height: Pixels) -> Self {
+        Self {
+            list,
+            row_count,
+            row_height,
+        }
+    }
+
+    fn content_height(&self) -> Pixels {
+        self.row_height * self.row_count as f32
+    }
+}
+
+impl ScrollableHandle for EstimatedListScroll {
+    fn max_offset(&self) -> Point<Pixels> {
+        let viewport = self.list.viewport_bounds().size.height;
+        point(
+            Pixels::ZERO,
+            (self.content_height() - viewport).max(Pixels::ZERO),
+        )
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        let top = self.list.logical_scroll_top();
+        // Clamp the intra-item pixel offset to one estimated row: a wrapped row
+        // (taller than the estimate) at the viewport top must not push the
+        // modelled offset past the next row boundary and overshoot max_offset.
+        let intra = self.row_height.min(top.offset_in_item);
+        let y = self.row_height * top.item_ix as f32 + intra;
+        point(Pixels::ZERO, -y)
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        if self.row_count == 0 || self.row_height <= Pixels::ZERO {
+            return;
+        }
+        let target = (-offset.y).max(Pixels::ZERO);
+        let item_ix = ((target / self.row_height).floor() as usize).min(self.row_count - 1);
+        let offset_in_item = target - self.row_height * item_ix as f32;
+        self.list.scroll_to(ListOffset {
+            item_ix,
+            offset_in_item,
+        });
+    }
+
+    fn viewport(&self) -> Bounds<Pixels> {
+        self.list.viewport_bounds()
     }
 }
 

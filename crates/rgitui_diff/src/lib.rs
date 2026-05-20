@@ -15,7 +15,8 @@ use gpui::{
 use rgitui_git::{DiffLine, FileDiff, ThreeWayFileDiff};
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
 use rgitui_ui::{
-    Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, Scrollbar,
+    Badge, Button, ButtonSize, ButtonStyle, EstimatedListScroll, Icon, IconName, IconSize, Label,
+    LabelSize, Scrollbar,
 };
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle as SyntectFontStyle, Theme, ThemeSet};
@@ -3351,7 +3352,18 @@ impl Render for DiffViewer {
         // backed by `gpui::list`, so the scrollbar drives `ListState`; the
         // no-wrap modes stay on the uniform list's base `ScrollHandle`.
         let vscroll: AnyElement = if wrap_enabled {
-            Scrollbar::vertical("diff-vscroll", self.wrap_list_state.clone()).into_any_element()
+            // Wrap mode is backed by `gpui::list`, whose measured content height
+            // grows as rows scroll into view. Drive the scrollbar from a fixed
+            // per-row estimate instead so the thumb keeps a constant size.
+            Scrollbar::vertical(
+                "diff-vscroll",
+                EstimatedListScroll::new(
+                    self.wrap_list_state.clone(),
+                    self.row_count(),
+                    px(row_height),
+                ),
+            )
+            .into_any_element()
         } else {
             Scrollbar::vertical(
                 "diff-vscroll",
