@@ -195,34 +195,8 @@ impl Workspace {
         let stashes_panel =
             cx.new(|cx| crate::StashesPanel::new(cx, project_weak, workspace_weak.clone()));
 
-        // Configure issues and PRs panels with GitHub remote info and token
-        {
-            let remotes = project.read(cx).remotes();
-            let remote_url = remotes
-                .iter()
-                .find(|r| r.name == "origin")
-                .or_else(|| remotes.first())
-                .and_then(|r| r.url.clone());
-
-            if let Some(url) = remote_url {
-                if let Some((owner, repo_name)) = crate::issues_panel::parse_github_owner_repo(&url)
-                {
-                    let token = rgitui_settings::current_auth_runtime()
-                        .git
-                        .providers
-                        .iter()
-                        .find(|p| p.host == "github.com")
-                        .and_then(|p| p.token.clone());
-
-                    issues_panel.update(cx, |ip, cx| {
-                        ip.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
-                    });
-                    prs_panel.update(cx, |pp, cx| {
-                        pp.configure(token, owner, repo_name, cx);
-                    });
-                }
-            }
-        }
+        // Configure issues and PRs panels with GitHub remote info and token.
+        Self::configure_github_panels(&project, &issues_panel, &prs_panel, cx);
 
         let name = project.read(cx).repo_name().to_string();
         self.tabs.push(ProjectTab {

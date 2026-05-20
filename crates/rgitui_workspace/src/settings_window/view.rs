@@ -977,9 +977,12 @@ impl SettingsView {
     }
 
     fn provider_has_token(&self, index: usize) -> bool {
+        // "Connected" reflects an actually-resolved token — loaded from the
+        // keyring when the window opened, or freshly entered — not the persisted
+        // `has_token` flag, which can read true while the keyring is empty.
         self.git_providers
             .get(index)
-            .map(|provider| provider.has_token || !provider.token.trim().is_empty())
+            .map(|provider| !provider.token.trim().is_empty())
             .unwrap_or(false)
     }
 
@@ -2598,7 +2601,7 @@ impl SettingsView {
             };
             let browser_login_pending =
                 self.pending_browser_auth_provider_id.as_deref() == Some(provider.id.as_str());
-            let has_token = !provider.token.trim().is_empty() || provider.has_token;
+            let has_token = !provider.token.trim().is_empty();
             let show_manual_username = kind == "custom"
                 || !provider.username.trim().is_empty()
                 || provider.host.trim() != default_host;

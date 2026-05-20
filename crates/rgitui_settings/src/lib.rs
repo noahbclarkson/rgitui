@@ -871,6 +871,12 @@ impl SettingsState {
     }
 
     pub fn set_git_provider_token(&mut self, provider_id: &str, value: Option<&str>) -> Result<()> {
+        // Write the secret unconditionally, keyed by provider id. A provider that
+        // was just added in the settings window is not yet present in
+        // `self.settings.git.providers` (it only arrives via
+        // `replace_git_providers`), so guarding the keyring write on its presence
+        // here would silently drop the token on first save.
+        let has_token = write_secret(&git_provider_account(provider_id), value)?;
         if let Some(provider) = self
             .settings
             .git
@@ -879,9 +885,9 @@ impl SettingsState {
             .find(|provider| provider.id == provider_id)
         {
             provider.legacy_token = None;
-            provider.has_token = write_secret(&git_provider_account(provider_id), value)?;
-            sync_auth_runtime(&self.settings);
+            provider.has_token = has_token;
         }
+        sync_auth_runtime(&self.settings);
         Ok(())
     }
 
@@ -969,8 +975,12 @@ pub fn init(cx: &mut App) {
     state.migrate_legacy_workspace_data();
     if let Err(error) = state.migrate_legacy_secrets() {
         log::warn!("Failed to migrate secrets into keychain: {}", error);
-        sync_auth_runtime(state.settings());
     }
+
+    // Resolve secrets from the keyring into the auth runtime on every startup —
+    // not only when migration failed. (`save()` below also syncs, but doing it
+    // here keeps the runtime correct even if the save is skipped or fails.)
+    sync_auth_runtime(state.settings());
 
     // Save if any migration occurred
     if version_migrated {

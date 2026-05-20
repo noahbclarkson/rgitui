@@ -466,35 +466,47 @@ impl Workspace {
     /// settings have been saved. Called when the settings window dispatches
     /// `SettingsWindowAction::SettingsChanged`.
     pub(super) fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
+        for tab in &self.tabs {
+            Self::configure_github_panels(&tab.project, &tab.issues_panel, &tab.prs_panel, cx);
+        }
+        cx.notify();
+    }
+
+    /// Resolve the GitHub token for `project`'s origin remote from the auth
+    /// runtime and (re)configure its Issues/PRs panels. Shared by tab creation
+    /// (`open_repo`) and `on_settings_changed` so both stay in sync and read the
+    /// token from one place.
+    pub(super) fn configure_github_panels(
+        project: &Entity<GitProject>,
+        issues_panel: &Entity<crate::IssuesPanel>,
+        prs_panel: &Entity<crate::PrsPanel>,
+        cx: &mut Context<Self>,
+    ) {
+        let remote_url = {
+            let proj = project.read(cx);
+            let remotes = proj.remotes();
+            remotes
+                .iter()
+                .find(|r| r.name == "origin")
+                .or_else(|| remotes.first())
+                .and_then(|r| r.url.clone())
+        };
+        let Some(url) = remote_url else { return };
+        let Some((owner, repo)) = crate::issues_panel::parse_github_owner_repo(&url) else {
+            return;
+        };
         let token = rgitui_settings::current_auth_runtime()
             .git
             .providers
             .iter()
-            .find(|p| p.host == "github.com")
+            .find(|p| p.host.eq_ignore_ascii_case("github.com"))
             .and_then(|p| p.token.clone());
-
-        for tab in &self.tabs {
-            let remotes = tab.project.read(cx).remotes();
-            let remote_url = remotes
-                .iter()
-                .find(|r| r.name == "origin")
-                .or_else(|| remotes.first())
-                .and_then(|r| r.url.clone());
-
-            if let Some(url) = remote_url {
-                if let Some((owner, repo_name)) = crate::issues_panel::parse_github_owner_repo(&url)
-                {
-                    tab.issues_panel.update(cx, |ip, cx| {
-                        ip.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
-                    });
-                    tab.prs_panel.update(cx, |pp, cx| {
-                        pp.configure(token.clone(), owner.clone(), repo_name.clone(), cx);
-                    });
-                }
-            }
-        }
-
-        cx.notify();
+        issues_panel.update(cx, |ip, cx| {
+            ip.configure(token.clone(), owner.clone(), repo.clone(), cx);
+        });
+        prs_panel.update(cx, |pp, cx| {
+            pp.configure(token, owner, repo, cx);
+        });
     }
 
     /// Set whether crash recovery is available (previous session didn't exit cleanly).

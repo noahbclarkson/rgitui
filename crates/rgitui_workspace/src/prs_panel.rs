@@ -9,7 +9,9 @@ use gpui::{
 };
 use http_client::HttpClient;
 
-use crate::github_api::{format_github_collection_error, format_github_detail_error};
+use crate::github_api::{
+    format_github_detail_error, github_get_collection_body, GithubCollectionError,
+};
 use crate::Workspace;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
@@ -138,6 +140,9 @@ pub struct PrsPanel {
     selected_index: Option<usize>,
     is_loading: bool,
     error_message: Option<String>,
+    /// Set when a fetch failed with 401/403/404 and no token is configured —
+    /// drives a "sign in" empty state instead of a raw error.
+    auth_required: bool,
     filter: PrFilter,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
@@ -162,6 +167,7 @@ impl PrsPanel {
             selected_index: None,
             is_loading: false,
             error_message: None,
+            auth_required: false,
             filter: PrFilter::Open,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -234,15 +240,10 @@ impl PrsPanel {
             return;
         }
 
-        let token = match &self.github_token {
-            Some(t) if !t.is_empty() => t.clone(),
-            _ => {
-                self.error_message =
-                    Some("Configure a GitHub token in settings to view pull requests".into());
-                cx.notify();
-                return;
-            }
-        };
+        // Public repositories are readable without a token, so attempt the
+        // fetch unauthenticated when none is configured; auth failures are
+        // reported through `auth_required` below.
+        let token = self.github_token.clone().filter(|t| !t.is_empty());
 
         // Skip refetch if data was loaded recently (within 60 seconds).
         if !self.prs.is_empty() {
@@ -256,6 +257,7 @@ impl PrsPanel {
 
         self.is_loading = true;
         self.error_message = None;
+        self.auth_required = false;
         cx.notify();
 
         let owner = self.github_owner.clone();
@@ -265,7 +267,7 @@ impl PrsPanel {
         let http = cx.http_client();
 
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            let result = fetch_github_prs(&http, &token, &owner, &repo, &state).await;
+            let result = fetch_github_prs(&http, token.as_deref(), &owner, &repo, &state).await;
             cx.update(|cx| {
                 this.update(cx, |panel, cx| {
                     panel.is_loading = false;
@@ -277,7 +279,9 @@ impl PrsPanel {
                             log::info!("fetch_prs complete: {} PRs", panel.prs.len());
                         }
                         Err(e) => {
-                            panel.error_message = Some(e);
+                            let no_token = panel.github_token.as_deref().unwrap_or("").is_empty();
+                            panel.auth_required = e.auth_required && no_token;
+                            panel.error_message = Some(e.message);
                         }
                     }
                     cx.notify();
@@ -299,10 +303,7 @@ impl PrsPanel {
         self.view_mode = PrsPanelView::Detail;
         cx.notify();
 
-        let token = match &self.github_token {
-            Some(t) if !t.is_empty() => t.clone(),
-            _ => return,
-        };
+        let token = self.github_token.clone().filter(|t| !t.is_empty());
 
         let owner = self.github_owner.clone();
         let repo = self.github_repo.clone();
@@ -311,7 +312,7 @@ impl PrsPanel {
         let pr_for_event = pr;
 
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            let result = fetch_pr_comments(&http, &token, &owner, &repo, pr_number).await;
+            let result = fetch_pr_comments(&http, token.as_deref(), &owner, &repo, pr_number).await;
             cx.update(|cx| {
                 this.update(cx, |panel, cx| {
                     panel.comments_loading = false;
@@ -988,12 +989,12 @@ impl Render for PrsPanel {
             return panel.into_any_element();
         }
 
-        if self.github_token.is_none() || self.github_token.as_deref() == Some("") {
+        if self.auth_required && self.github_token.as_deref().unwrap_or("").is_empty() {
             return panel
                 .child(self.render_empty_state(
                     IconName::Settings,
-                    "GitHub token required",
-                    "Configure a GitHub token in settings to view pull requests",
+                    "Sign in to view pull requests",
+                    "This repository is private or rate-limited. Add a GitHub token in Settings — for organization repos you may need a fine-grained token approved by an org owner.",
                     cx,
                 ))
                 .into_any_element();
@@ -1226,40 +1227,23 @@ impl Render for PrsPanel {
 
 async fn fetch_github_prs(
     http: &Arc<dyn HttpClient>,
-    token: &str,
+    token: Option<&str>,
     owner: &str,
     repo: &str,
     state: &str,
-) -> Result<Vec<PullRequest>, String> {
+) -> Result<Vec<PullRequest>, GithubCollectionError> {
     let url = format!(
         "https://api.github.com/repos/{}/{}/pulls?state={}&per_page=50&sort=updated",
         owner, repo, state
     );
 
-    let request = http_client::http::Request::builder()
-        .uri(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.github.v3+json")
-        .header("User-Agent", "rgitui")
-        .body(Default::default())
-        .map_err(|e| e.to_string())?;
+    let body = github_get_collection_body(http, &url, token, owner, repo).await?;
 
-    let response = http.send(request).await.map_err(|e| e.to_string())?;
-
-    let status = response.status();
-    let mut body = String::new();
-    let mut reader = response.into_body();
-    reader
-        .read_to_string(&mut body)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !status.is_success() {
-        return Err(format_github_collection_error(status, &body, owner, repo));
-    }
-
-    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-    let items = json.as_array().ok_or("Expected JSON array")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| GithubCollectionError::transport(e.to_string()))?;
+    let items = json
+        .as_array()
+        .ok_or_else(|| GithubCollectionError::transport("Expected JSON array".into()))?;
 
     let mut prs = Vec::new();
     for item in items {
@@ -1348,7 +1332,7 @@ async fn fetch_github_prs(
 
 async fn fetch_pr_comments(
     http: &Arc<dyn HttpClient>,
-    token: &str,
+    token: Option<&str>,
     owner: &str,
     repo: &str,
     pr_number: u64,
@@ -1359,27 +1343,9 @@ async fn fetch_pr_comments(
         owner, repo, pr_number
     );
 
-    let request = http_client::http::Request::builder()
-        .uri(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.github.v3+json")
-        .header("User-Agent", "rgitui")
-        .body(Default::default())
-        .map_err(|e| e.to_string())?;
-
-    let response = http.send(request).await.map_err(|e| e.to_string())?;
-
-    let status = response.status();
-    let mut body = String::new();
-    let mut reader = response.into_body();
-    reader
-        .read_to_string(&mut body)
+    let body = github_get_collection_body(http, &url, token, owner, repo)
         .await
-        .map_err(|e| e.to_string())?;
-
-    if !status.is_success() {
-        return Err(format_github_detail_error(status, &body));
-    }
+        .map_err(|e| e.message)?;
 
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let items = json.as_array().ok_or("Expected JSON array")?;

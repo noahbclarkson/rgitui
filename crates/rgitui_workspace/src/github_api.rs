@@ -1,4 +1,65 @@
+use futures::AsyncReadExt;
 use http_client::http::StatusCode;
+use http_client::HttpClient;
+use std::sync::Arc;
+
+/// Error from a GitHub collection fetch. `auth_required` is set for 401/403/404
+/// responses — a missing/invalid token on a private repo reads as 404 — so
+/// panels can prompt the user to authenticate instead of showing a raw error.
+pub(crate) struct GithubCollectionError {
+    pub auth_required: bool,
+    pub message: String,
+}
+
+impl GithubCollectionError {
+    pub(crate) fn transport(message: String) -> Self {
+        Self {
+            auth_required: false,
+            message,
+        }
+    }
+}
+
+/// GET a GitHub REST collection, attaching the bearer token only when present so
+/// public repositories can be read unauthenticated. Returns the response body on
+/// success, or a [`GithubCollectionError`] (with `auth_required` flagged for
+/// 401/403/404) otherwise.
+pub(crate) async fn github_get_collection_body(
+    http: &Arc<dyn HttpClient>,
+    url: &str,
+    token: Option<&str>,
+    owner: &str,
+    repo: &str,
+) -> Result<String, GithubCollectionError> {
+    let mut builder = http_client::http::Request::builder()
+        .uri(url)
+        .header("Accept", "application/vnd.github.v3+json")
+        .header("User-Agent", "rgitui");
+    if let Some(token) = token {
+        builder = builder.header("Authorization", format!("Bearer {}", token));
+    }
+    let request = builder
+        .body(Default::default())
+        .map_err(|e: http_client::http::Error| GithubCollectionError::transport(e.to_string()))?;
+    let response = http
+        .send(request)
+        .await
+        .map_err(|e| GithubCollectionError::transport(e.to_string()))?;
+    let status = response.status();
+    let mut body = String::new();
+    response
+        .into_body()
+        .read_to_string(&mut body)
+        .await
+        .map_err(|e| GithubCollectionError::transport(e.to_string()))?;
+    if !status.is_success() {
+        return Err(GithubCollectionError {
+            auth_required: matches!(status.as_u16(), 401 | 403 | 404),
+            message: format_github_collection_error(status, &body, owner, repo),
+        });
+    }
+    Ok(body)
+}
 
 fn github_error_detail(body: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(body)
