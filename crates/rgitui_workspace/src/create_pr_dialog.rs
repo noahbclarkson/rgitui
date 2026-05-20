@@ -187,17 +187,17 @@ impl CreatePrDialog {
         let draft = self.draft;
         let http = cx.http_client();
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            let result = create_github_pr(
-                &http,
-                &token,
-                &owner,
-                &repo,
-                &title,
-                if body.is_empty() { None } else { Some(&body) },
-                &head,
-                &base,
+            let result = create_github_pr(CreatePrRequest {
+                http: &http,
+                token: &token,
+                owner: &owner,
+                repo: &repo,
+                title: &title,
+                body: if body.is_empty() { None } else { Some(&body) },
+                head: &head,
+                base: &base,
                 draft,
-            )
+            })
             .await;
 
             cx.update(|cx| {
@@ -536,32 +536,42 @@ impl Render for CreatePrDialog {
     }
 }
 
+/// Inputs for creating a GitHub pull request, grouped so `create_github_pr`
+/// stays under the argument-count lint without an allow attribute.
+struct CreatePrRequest<'a> {
+    http: &'a Arc<dyn HttpClient>,
+    token: &'a str,
+    owner: &'a str,
+    repo: &'a str,
+    title: &'a str,
+    body: Option<&'a str>,
+    head: &'a str,
+    base: &'a str,
+    draft: bool,
+}
+
 /// Create a GitHub pull request via the API.
 /// Returns (pr_number, pr_url) on success.
-#[allow(clippy::too_many_arguments)]
-async fn create_github_pr(
-    http: &Arc<dyn HttpClient>,
-    token: &str,
-    owner: &str,
-    repo: &str,
-    title: &str,
-    body: Option<&str>,
-    head: &str,
-    base: &str,
-    draft: bool,
-) -> Result<(u64, String), String> {
-    let url = format!("https://api.github.com/repos/{}/{}/pulls", owner, repo);
+async fn create_github_pr(req: CreatePrRequest<'_>) -> Result<(u64, String), String> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/pulls",
+        req.owner, req.repo
+    );
 
-    let mut request_body =
-        serde_json::json!({ "title": title, "head": head, "base": base, "draft": draft });
-    if let Some(b) = body {
+    let mut request_body = serde_json::json!({
+        "title": req.title,
+        "head": req.head,
+        "base": req.base,
+        "draft": req.draft,
+    });
+    if let Some(b) = req.body {
         request_body["body"] = serde_json::json!(b);
     }
 
     let request = http_client::http::Request::builder()
         .uri(&url)
         .method(http_client::http::Method::POST)
-        .header("Authorization", format!("Bearer {}", token))
+        .header("Authorization", format!("Bearer {}", req.token))
         .header("Accept", "application/vnd.github.v3+json")
         .header("User-Agent", "rgitui")
         .header("Content-Type", "application/json")
@@ -570,7 +580,7 @@ async fn create_github_pr(
         ))
         .map_err(|e| e.to_string())?;
 
-    let response = http.send(request).await.map_err(|e| e.to_string())?;
+    let response = req.http.send(request).await.map_err(|e| e.to_string())?;
 
     let status = response.status();
     let mut body = String::new();

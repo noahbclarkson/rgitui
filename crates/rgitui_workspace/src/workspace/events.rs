@@ -789,21 +789,27 @@ pub(super) fn subscribe_global_search(
 
 // ---- Per-tab subscriptions (called from open_repo) ----
 
-pub(super) fn subscribe_project(
-    cx: &mut Context<Workspace>,
-    project: &Entity<GitProject>,
-    graph: &Entity<GraphView>,
-    sidebar: &Entity<Sidebar>,
-    diff_viewer: &Entity<DiffViewer>,
-    _commit_panel: &Entity<CommitPanel>,
-    toolbar: &Entity<Toolbar>,
-    diff_cache: Arc<Mutex<CommitDiffCache>>,
-) {
-    let graph = graph.clone();
-    let sidebar = sidebar.clone();
-    let toolbar = toolbar.clone();
-    let diff_viewer = diff_viewer.clone();
-    let diff_cache = diff_cache.clone();
+/// Entities a per-tab project subscription updates in response to
+/// `GitProjectEvent`s. Grouping them keeps `subscribe_project` under the
+/// argument-count lint without an allow attribute.
+pub(super) struct ProjectSubscriptions<'a> {
+    pub project: &'a Entity<GitProject>,
+    pub graph: &'a Entity<GraphView>,
+    pub sidebar: &'a Entity<Sidebar>,
+    pub diff_viewer: &'a Entity<DiffViewer>,
+    pub detail_panel: &'a Entity<DetailPanel>,
+    pub toolbar: &'a Entity<Toolbar>,
+    pub diff_cache: Arc<Mutex<CommitDiffCache>>,
+}
+
+pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscriptions) {
+    let project = subs.project;
+    let graph = subs.graph.clone();
+    let sidebar = subs.sidebar.clone();
+    let toolbar = subs.toolbar.clone();
+    let diff_viewer = subs.diff_viewer.clone();
+    let detail_panel_ref = subs.detail_panel.clone();
+    let diff_cache = subs.diff_cache;
     let has_prewarmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     cx.subscribe(project, {
@@ -895,6 +901,7 @@ pub(super) fn subscribe_project(
                     }
                 };
                 if let Some((path_str, is_staged)) = refresh_state {
+                    let dp = detail_panel_ref.clone();
                     let repo_path = project.read(cx).repo_path().to_path_buf();
                     let dv = diff_viewer.clone();
                     let path_str_for_spawn = path_str.clone();
@@ -922,6 +929,13 @@ pub(super) fn subscribe_project(
                                         return;
                                     }
                                     dv.set_diff(diff, path_str_for_update, is_staged, None, cx);
+                                });
+                                dp.update(cx, |dp, cx| {
+                                    // The detail panel only ever shows commit/stash details, never
+                                    // the working tree. Keep it cleared while a working-tree diff is
+                                    // shown so a stale commit preview can't linger through a
+                                    // background status refresh (e.g. after discarding a change).
+                                    dp.clear(cx);
                                 });
                             });
                         }
