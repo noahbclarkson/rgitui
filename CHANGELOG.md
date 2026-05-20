@@ -1,11 +1,20 @@
-# Changelog
-
-All notable changes to rgitui are documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [Unreleased]
+## [0.2.1] - 2026-05-20
+
+### Fixed
+
+- **Settings: Auth page layout broken on Windows 11.** The Auth page was misaligned in the normal window state and only rendered correctly after maximizing the window. Removed a conflicting `.h_full()` CSS property from the settings-page-shell container.
+
+### Changed
+
+- **Rebase: ghost preview for drag-to-reorder.** Visual ghost element follows the cursor when dragging commits to reorder them in the rebase todo list.
+- **Diff: clear detail panel on working-tree refresh.** Detail panel properly cleared when working-tree diff refreshes, preventing stale content.
+- **Detail panel: Flat/Tree file view toggle.** Folder/File icon button in the toolbar toggles between flat and tree file views.
+
+### Added
+
+- **Rebase: drop indicator line.** Accent-colored drop indicator line appears at the target position during drag-to-reorder.
+
 
 ## [0.2.1] - 2026-05-20
 
