@@ -167,7 +167,7 @@ pub struct WorkingTreeStatus {
 }
 
 /// A hunk in a diff.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffHunk {
     pub old_start: u32,
     pub old_lines: u32,
@@ -178,7 +178,7 @@ pub struct DiffHunk {
 }
 
 /// A single line in a diff hunk.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffLine {
     Context(String),
     Addition(String),
@@ -186,7 +186,7 @@ pub enum DiffLine {
 }
 
 /// A complete file diff.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     pub path: PathBuf,
     pub hunks: Vec<DiffHunk>,

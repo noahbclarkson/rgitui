@@ -901,6 +901,12 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     }
                 };
                 if let Some((path_str, is_staged)) = refresh_state {
+                    // Capture the viewer generation at the moment we commit to
+                    // this refresh. If the user selects a different file or commit
+                    // while the diff computes, the generation changes and we skip
+                    // applying — a stale recompute must not clobber the newer
+                    // selection (nor its detail panel).
+                    let viewer_generation = diff_viewer.read(cx).generation();
                     let dp = detail_panel_ref.clone();
                     let repo_path = project.read(cx).repo_path().to_path_buf();
                     let dv = diff_viewer.clone();
@@ -919,24 +925,34 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                             .await;
                         if let Ok(diff) = result {
                             cx.update(|cx| {
-                                dv.update(cx, |dv, cx| {
-                                    if dv.matches_current_diff(
-                                        &path_str_for_update,
-                                        is_staged,
-                                        None,
-                                        &diff,
-                                    ) {
-                                        return;
-                                    }
-                                    dv.set_diff(diff, path_str_for_update, is_staged, None, cx);
-                                });
-                                dp.update(cx, |dp, cx| {
-                                    // The detail panel only ever shows commit/stash details, never
-                                    // the working tree. Keep it cleared while a working-tree diff is
-                                    // shown so a stale commit preview can't linger through a
-                                    // background status refresh (e.g. after discarding a change).
-                                    dp.clear(cx);
-                                });
+                                // Bail if a newer selection superseded this refresh.
+                                if dv.read(cx).generation() != viewer_generation {
+                                    return;
+                                }
+                                if diff.hunks.is_empty() {
+                                    // The displayed file no longer has working-tree
+                                    // changes (e.g. it was discarded or fully
+                                    // staged). Clear rather than render an empty
+                                    // pane for a file that's left the change set.
+                                    dv.update(cx, |dv, cx| dv.clear(cx));
+                                    dp.update(cx, |dp, cx| dp.clear(cx));
+                                } else {
+                                    dv.update(cx, |dv, cx| {
+                                        if dv.matches_current_diff(
+                                            &path_str_for_update,
+                                            is_staged,
+                                            None,
+                                            &diff,
+                                        ) {
+                                            return;
+                                        }
+                                        dv.set_diff(diff, path_str_for_update, is_staged, None, cx);
+                                    });
+                                    // The detail panel only ever shows commit/stash
+                                    // details, never the working tree. Keep it
+                                    // cleared while a working-tree diff is shown.
+                                    dp.update(cx, |dp, cx| dp.clear(cx));
+                                }
                             });
                         }
                     })

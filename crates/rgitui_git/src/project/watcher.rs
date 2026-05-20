@@ -206,26 +206,30 @@ impl GitProject {
                     // list. Sync the notify watcher's watched paths and the
                     // fingerprint set to match. `None` signals the entity
                     // has been dropped so we should end the watcher loop.
-                    let desired: Option<HashSet<PathBuf>> = cx.update(|app| {
+                    let desired: Option<(HashSet<PathBuf>, usize)> = cx.update(|app| {
                         let entity = weak.upgrade()?;
                         let watch_all = app
                             .try_global::<rgitui_settings::SettingsState>()
                             .map(|s| s.settings().watch_all_worktrees)
                             .unwrap_or(false);
-                        if !watch_all {
-                            return Some(HashSet::new());
-                        }
-                        Some(
-                            entity
-                                .read(app)
-                                .worktrees
+                        let proj = entity.read(app);
+                        // Refetch at least as many commits as are currently loaded
+                        // so a background refresh doesn't truncate commits the user
+                        // paged in via "load more" (the gather otherwise replaces
+                        // the whole list with just `commit_limit` commits).
+                        let effective_limit = proj.loaded_commit_count().max(watcher_commit_limit);
+                        let paths = if watch_all {
+                            proj.worktrees
                                 .iter()
                                 .filter(|w| !w.is_current)
                                 .map(|w| w.path.clone())
-                                .collect::<HashSet<PathBuf>>(),
-                        )
+                                .collect::<HashSet<PathBuf>>()
+                        } else {
+                            HashSet::new()
+                        };
+                        Some((paths, effective_limit))
                     });
-                    let desired = match desired {
+                    let (desired, effective_limit) = match desired {
                         Some(d) => d,
                         None => break,
                     };
@@ -280,15 +284,12 @@ impl GitProject {
                     }
 
                     if dirty.swap(false, Ordering::Relaxed) {
+                        // Debounce: coalesce a burst of events (e.g. `git checkout`
+                        // touching many files) into one refresh. `swap` already
+                        // cleared the flag; any event arriving during this wait or
+                        // the refresh below re-arms `dirty` and is picked up on the
+                        // next poll tick, so no refresh is lost.
                         smol::Timer::after(Duration::from_millis(200)).await;
-
-                        // Only clear dirty if no new events arrived during the batch wait.
-                        // If dirty was re-set, loop back immediately to refresh again without
-                        // the 300ms poll interval delay — prevents missed refreshes under
-                        // bursty file system activity (e.g. git checkout touching 20 files).
-                        if !dirty.load(Ordering::Relaxed) {
-                            dirty.store(false, Ordering::Relaxed);
-                        }
 
                         let path = repo_path.clone();
                         let cache = worktree_cache.clone();
@@ -297,7 +298,7 @@ impl GitProject {
                             .spawn(async move {
                                 gather_refresh_data_lightweight_cached(
                                     &path,
-                                    watcher_commit_limit,
+                                    effective_limit,
                                     &cache,
                                 )
                             })

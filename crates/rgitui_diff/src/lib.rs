@@ -287,6 +287,22 @@ pub struct DiffViewer {
     pending_scroll_top: Option<usize>,
     /// LRU cache for computed display rows, keyed by (path, is_dark, commit_id, hunks, additions, deletions).
     display_cache: HashMap<DisplayCacheKey, CachedDisplayRows>,
+    /// Bumped on every call that changes what's displayed (`set_diff`,
+    /// `set_three_way_diff`, `clear`). A background refresh captures this before
+    /// computing and re-checks it before applying, so a stale recompute can't
+    /// clobber a newer user selection.
+    generation: u64,
+}
+
+/// Whether two file diffs would render identically. Used to skip a refresh that
+/// would only churn viewer state (cleared selection / reset scroll) with no
+/// visible change. Compares the actual hunk content — not just hunk/line counts —
+/// so an in-place edit that preserves counts is still detected as a change.
+fn file_diffs_render_equal(a: &FileDiff, b: &FileDiff) -> bool {
+    a.kind == b.kind
+        && a.additions == b.additions
+        && a.deletions == b.deletions
+        && a.hunks == b.hunks
 }
 
 impl EventEmitter<DiffViewerEvent> for DiffViewer {}
@@ -318,6 +334,7 @@ impl DiffViewer {
             current_appearance: Appearance::Dark,
             pending_scroll_top: None,
             display_cache: HashMap::new(),
+            generation: 0,
         }
     }
 
@@ -386,6 +403,7 @@ impl DiffViewer {
         cx: &mut Context<Self>,
     ) {
         log::debug!("DiffViewer::set_diff: path={} staged={}", path, staged);
+        self.generation = self.generation.wrapping_add(1);
         let appearance = cx.theme().appearance;
         let is_dark = appearance == Appearance::Dark;
         let cid = commit_id.unwrap_or("").to_string();
@@ -480,8 +498,11 @@ impl DiffViewer {
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         log::debug!("DiffViewer::clear");
+        self.generation = self.generation.wrapping_add(1);
         self.diff = None;
         self.file_path = None;
+        self.is_staged = false;
+        self.commit_id = String::new();
         self.display_rows = Arc::new(Vec::new());
         self.sbs_rows = Arc::new(Vec::new());
         self.three_way_rows = Arc::new(Vec::new());
@@ -496,11 +517,13 @@ impl DiffViewer {
 
     /// Set a 3-way conflict diff to display.
     pub fn set_three_way_diff(&mut self, diff: ThreeWayFileDiff, cx: &mut Context<Self>) {
+        self.generation = self.generation.wrapping_add(1);
         let appearance = cx.theme().appearance;
         self.current_appearance = appearance;
         self.diff = None; // No standard FileDiff when showing 3-way
         self.file_path = Some(diff.path.display().to_string());
         self.is_staged = false;
+        self.commit_id = String::new();
         self.three_way_diff = Some(diff.clone());
         self.three_way_rows = Arc::new(Self::compute_three_way_rows(&diff));
         self.highlighted_row = None;
@@ -1067,6 +1090,14 @@ impl DiffViewer {
         &self.commit_id
     }
 
+    /// Monotonic counter bumped whenever the displayed content changes
+    /// (`set_diff`, `set_three_way_diff`, `clear`). A background refresh captures
+    /// this before computing and re-checks it before applying, so a stale
+    /// recompute can't clobber a newer user selection.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn has_three_way_diff(&self) -> bool {
         self.three_way_diff.is_some()
     }
@@ -1096,9 +1127,7 @@ impl DiffViewer {
         let Some(existing) = self.diff.as_ref() else {
             return false;
         };
-        existing.hunks.len() == diff.hunks.len()
-            && existing.additions == diff.additions
-            && existing.deletions == diff.deletions
+        file_diffs_render_equal(existing, diff)
     }
 
     /// Scroll to and highlight the given line number (1-indexed) in the new/right side
@@ -3354,6 +3383,59 @@ impl Render for DiffViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rgitui_git::{DiffHunk, FileChangeKind};
+
+    fn test_hunk(line: DiffLine) -> DiffHunk {
+        DiffHunk {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            header: "@@ -1 +1 @@".to_string(),
+            lines: vec![line],
+        }
+    }
+
+    fn test_file_diff(hunks: Vec<DiffHunk>, additions: usize, deletions: usize) -> FileDiff {
+        FileDiff {
+            path: std::path::PathBuf::from("foo.txt"),
+            hunks,
+            additions,
+            deletions,
+            kind: FileChangeKind::Modified,
+        }
+    }
+
+    #[test]
+    fn file_diffs_render_equal_treats_identical_diffs_as_equal() {
+        let a = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
+        let b = a.clone();
+        assert!(file_diffs_render_equal(&a, &b));
+    }
+
+    #[test]
+    fn file_diffs_render_equal_detects_in_place_content_change() {
+        // Same hunk count and same +/- totals, but different line text. The old
+        // count-only heuristic wrongly treated these as equal and skipped the
+        // refresh, leaving stale text on screen — this is the regression guard.
+        let a = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
+        let b = test_file_diff(vec![test_hunk(DiffLine::Addition("world".into()))], 1, 0);
+        assert_eq!(a.additions, b.additions);
+        assert_eq!(a.deletions, b.deletions);
+        assert_eq!(a.hunks.len(), b.hunks.len());
+        assert!(!file_diffs_render_equal(&a, &b));
+    }
+
+    #[test]
+    fn file_diffs_render_equal_detects_count_and_kind_changes() {
+        let a = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
+        let emptied = test_file_diff(vec![], 0, 0);
+        assert!(!file_diffs_render_equal(&a, &emptied));
+
+        let mut renamed = a.clone();
+        renamed.kind = FileChangeKind::Added;
+        assert!(!file_diffs_render_equal(&a, &renamed));
+    }
 
     #[test]
     fn icon_for_path_uses_expected_fallback_icons() {
