@@ -93,8 +93,6 @@ pub struct InteractiveRebase {
     ghost_offset_y: Option<Pixels>,
     /// Last known window-relative mouse Y position (for slot calculation during drag).
     last_mouse_y: Option<Pixels>,
-    /// Last known window-relative mouse X position.
-    last_mouse_x: Option<Pixels>,
     /// Bounds of the entries container div (for mouse-to-slot conversion).
     /// These are the window-relative bounds of the visible viewport — they
     /// already reflect the container's scroll position, so no separate scroll
@@ -124,7 +122,6 @@ impl InteractiveRebase {
             entity: cx.weak_entity(),
             ghost_offset_y: None,
             last_mouse_y: None,
-            last_mouse_x: None,
         }
     }
 
@@ -555,9 +552,8 @@ impl Render for InteractiveRebase {
             .overflow_y_scroll()
             .max_h(px(400.))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                // Track global mouse position during drag for slot calculation
+                // Track the mouse Y so start_drag can seed the ghost at the cursor.
                 this.last_mouse_y = Some(event.position.y);
-                this.last_mouse_x = Some(event.position.x);
                 if this.dragging_index.is_some() {
                     this.update_drag_hover(event.position.y, cx);
                 }
@@ -977,12 +973,7 @@ impl Render for InteractiveRebase {
                         .left(px(80.0))
                         .w(px(600.))
                         .h(px(REBASE_ENTRY_HEIGHT))
-                        .bg(gpui::Hsla {
-                            h: 0.0,
-                            s: 0.0,
-                            l: 0.95,
-                            a: 0.95,
-                        })
+                        .bg(colors.element_background)
                         .border_1()
                         .border_color(colors.text_accent)
                         .rounded(px(4.))
