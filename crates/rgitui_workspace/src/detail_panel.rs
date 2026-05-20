@@ -135,7 +135,12 @@ fn file_change_color(kind: FileChangeKind) -> Color {
 }
 
 struct CachedFileDiffTree {
+    /// Rows for flat view: one per file, in diff order (the search-relevance
+    /// ordering is applied later by `filtered_file_indices`).
     flat_rows: Vec<CachedFlatRow>,
+    /// Rows for tree view: directory and file nodes flattened depth-first, with
+    /// single-child directory chains compacted (e.g. `crates/foo/src`).
+    tree_rows: Vec<CachedTreeRow>,
 }
 
 #[derive(Clone)]
@@ -151,8 +156,159 @@ struct CachedFlatRow {
     change_color: Color,
 }
 
+/// A file leaf in the tree view. Carries only what a file row renders — the
+/// basename lives on the enclosing [`CachedTreeRow::label`], and the directory
+/// path is intentionally absent (the tree shows hierarchy, not full paths).
+#[derive(Clone)]
+struct CachedTreeFile {
+    file_index: usize,
+    additions: usize,
+    deletions: usize,
+    icon_name: IconName,
+    icon_color: Color,
+    change_code: SharedString,
+    change_color: Color,
+}
+
+#[derive(Clone)]
+enum CachedTreeRowKind {
+    /// A directory node. `key` is its full path, used as the collapse identity.
+    Dir {
+        key: SharedString,
+    },
+    File(CachedTreeFile),
+}
+
+#[derive(Clone)]
+struct CachedTreeRow {
+    depth: usize,
+    /// Directory name (possibly compacted, e.g. `foo/bar`) or file basename.
+    label: SharedString,
+    kind: CachedTreeRowKind,
+}
+
+/// Intermediate nested structure used to build [`CachedTreeRow`]s. `BTreeMap`
+/// keeps directories in stable alphabetical order.
+#[derive(Default)]
+struct TreeBuilder {
+    dirs: std::collections::BTreeMap<String, TreeBuilder>,
+    file_indices: Vec<usize>,
+}
+
+/// Flatten the nested builder depth-first into ordered rows: directories first
+/// (alphabetical), then files (alphabetical), at each level. Single-child
+/// directory chains are compacted into one node so deep crate layouts read as
+/// `crates/foo/src` rather than three nested rows. The root builder is virtual —
+/// its children are emitted at `depth`, no row is emitted for the root itself.
+fn flatten_tree(
+    builder: &TreeBuilder,
+    path_prefix: &str,
+    depth: usize,
+    files: &[FileDiff],
+    flat_rows: &[CachedFlatRow],
+    out: &mut Vec<CachedTreeRow>,
+) {
+    for (name, child) in &builder.dirs {
+        let mut label = name.clone();
+        let mut full = if path_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{path_prefix}/{name}")
+        };
+        // Compact single-child directory chains: keep descending while a dir has
+        // no files of its own and exactly one subdirectory.
+        let mut node = child;
+        while node.file_indices.is_empty() && node.dirs.len() == 1 {
+            let (child_name, grandchild) = node.dirs.iter().next().unwrap();
+            label = format!("{label}/{child_name}");
+            full = format!("{full}/{child_name}");
+            node = grandchild;
+        }
+        out.push(CachedTreeRow {
+            depth,
+            label: label.into(),
+            kind: CachedTreeRowKind::Dir {
+                key: full.clone().into(),
+            },
+        });
+        flatten_tree(node, &full, depth + 1, files, flat_rows, out);
+    }
+
+    let mut file_indices = builder.file_indices.clone();
+    file_indices.sort_by(|&a, &b| files[a].path.file_name().cmp(&files[b].path.file_name()));
+    for fi in file_indices {
+        let fr = &flat_rows[fi];
+        out.push(CachedTreeRow {
+            depth,
+            label: fr.file_name.clone(),
+            kind: CachedTreeRowKind::File(CachedTreeFile {
+                file_index: fr.file_index,
+                additions: fr.additions,
+                deletions: fr.deletions,
+                icon_name: fr.icon_name,
+                icon_color: fr.icon_color,
+                change_code: fr.change_code.clone(),
+                change_color: fr.change_color,
+            }),
+        });
+    }
+}
+
+/// Indices of `rows` visible given the set of collapsed directory keys. A
+/// collapsed directory hides every row deeper than it until the next row at or
+/// above its depth; a single threshold suffices because an outer collapse
+/// already hides any nested collapses.
+fn visible_tree_row_indices(rows: &[CachedTreeRow], collapsed: &HashSet<String>) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut hide_below: Option<usize> = None;
+    for (i, row) in rows.iter().enumerate() {
+        if let Some(d) = hide_below {
+            if row.depth > d {
+                continue;
+            }
+            hide_below = None;
+        }
+        out.push(i);
+        if let CachedTreeRowKind::Dir { key } = &row.kind {
+            if collapsed.contains(key.as_ref()) {
+                hide_below = Some(row.depth);
+            }
+        }
+    }
+    out
+}
+
+/// Indices of `rows` to show when filtering by search: every file whose index is
+/// in `matches`, plus the ancestor directories on the path to it. Collapse state
+/// is ignored so matches are always revealed.
+fn searched_tree_row_indices(rows: &[CachedTreeRow], matches: &HashSet<usize>) -> Vec<usize> {
+    let mut keep = vec![false; rows.len()];
+    let mut ancestors: Vec<usize> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        while let Some(&a) = ancestors.last() {
+            if rows[a].depth >= row.depth {
+                ancestors.pop();
+            } else {
+                break;
+            }
+        }
+        match &row.kind {
+            CachedTreeRowKind::Dir { .. } => ancestors.push(i),
+            CachedTreeRowKind::File(f) => {
+                if matches.contains(&f.file_index) {
+                    keep[i] = true;
+                    for &a in &ancestors {
+                        keep[a] = true;
+                    }
+                }
+            }
+        }
+    }
+    (0..rows.len()).filter(|&i| keep[i]).collect()
+}
+
 fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
-    let flat_rows = files
+    let flat_rows: Vec<CachedFlatRow> = files
         .iter()
         .enumerate()
         .map(|(i, file)| {
@@ -190,7 +346,29 @@ fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
             }
         })
         .collect();
-    CachedFileDiffTree { flat_rows }
+
+    // Build the directory tree from file paths. Git diff paths are always
+    // '/'-separated, so split on '/' rather than the platform separator.
+    let mut root = TreeBuilder::default();
+    for (i, file) in files.iter().enumerate() {
+        let path_str = file.path.display().to_string();
+        let segments: Vec<&str> = path_str.split('/').filter(|s| !s.is_empty()).collect();
+        let Some((_file_name, dirs)) = segments.split_last() else {
+            continue;
+        };
+        let mut node = &mut root;
+        for dir in dirs {
+            node = node.dirs.entry((*dir).to_string()).or_default();
+        }
+        node.file_indices.push(i);
+    }
+    let mut tree_rows = Vec::new();
+    flatten_tree(&root, "", 0, files, &flat_rows, &mut tree_rows);
+
+    CachedFileDiffTree {
+        flat_rows,
+        tree_rows,
+    }
 }
 
 pub struct DetailPanel {
@@ -407,6 +585,14 @@ impl DetailPanel {
             self.file_view_mode = next_mode;
             cx.notify();
         }
+    }
+
+    /// Toggle a directory node's collapsed state in the tree view.
+    fn toggle_dir_collapsed(&mut self, key: String, cx: &mut Context<Self>) {
+        if !self.collapsed_dirs.remove(&key) {
+            self.collapsed_dirs.insert(key);
+        }
+        cx.notify();
     }
 
     fn emit_file_selected(&self, cx: &mut Context<Self>) {
@@ -725,131 +911,167 @@ impl DetailPanel {
         .into_any_element()
     }
 
-    /// Renders a filtered tree: only files/dirs whose path matches the search are shown.
-    /// Uses the same cached tree but only emits nodes that contain matching files.
-    fn render_tree_file_list_filtered(
+    /// Renders the directory tree: collapsible directory nodes and file leaves
+    /// (basename only), indented by depth. `rows` is the already-computed visible
+    /// set (collapse-filtered when browsing, match-filtered when searching), in
+    /// display order.
+    fn render_tree_file_list(
         &self,
-        diff: &CommitDiff,
-        _cached: &CachedFileDiffTree,
-        colors: &rgitui_theme::ThemeColors,
-        filtered_indices: &[(usize, usize)],
+        rows: Vec<CachedTreeRow>,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let filter_set: std::collections::HashSet<usize> =
-            filtered_indices.iter().map(|&(_, fi)| fi).collect();
+    ) -> gpui::AnyElement {
+        let colors = cx.colors().clone();
         let row_h = cx
             .global::<SettingsState>()
             .settings()
             .compactness
             .spacing(26.0);
+        let selected_file_index = self.selected_file_index;
+        let collapsed = self.collapsed_dirs.clone();
+        let weak = cx.weak_entity();
+        let row_count = rows.len();
 
-        let mut file_list = div()
-            .id(self.file_view_mode.list_element_id())
-            .v_flex()
-            .w_full()
-            .flex_shrink_0()
-            .pb_2();
+        let ghost_element_selected = colors.ghost_element_selected;
+        let text_accent = colors.text_accent;
+        let border_transparent = colors.border_transparent;
+        let ghost_element_hover = colors.ghost_element_hover;
 
-        // Collect which top-level dirs contain matching files
-        let mut matching_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for &(_, fi) in filtered_indices {
-            if let Some(file) = diff.files.get(fi) {
-                let path_str = file.path.display().to_string();
-                if let Some(pos) = path_str.rfind('/') {
-                    matching_dirs.insert(path_str[..pos].to_string());
-                }
-            }
-        }
-
-        // Render only matching top-level items (files + dirs that have matches)
-        for (i, file) in diff.files.iter().enumerate() {
-            if !filter_set.contains(&i) {
-                continue;
-            }
-            let path_str = file.path.display().to_string();
-            let file_name: SharedString = file
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&path_str)
-                .to_string()
-                .into();
-            let dir_path: SharedString = if let Some(pos) = path_str.rfind('/') {
-                format!("{}/", &path_str[..pos]).into()
-            } else {
-                SharedString::default()
-            };
-
-            let indent = px(16.0);
-            let colors = colors.clone();
-            let selected = self.selected_file_index == Some(i);
-            let file_idx = i;
-
-            file_list = file_list.child(
-                div()
-                    .id(ElementId::NamedInteger("detail-file".into(), i as u64))
-                    .h_flex()
-                    .w_full()
-                    .h(px(row_h))
-                    .pl(indent)
-                    .pr(px(12.))
-                    .gap(px(6.))
-                    .items_center()
-                    .flex_shrink_0()
-                    .border_l_2()
-                    .when(selected, |el| {
-                        el.bg(colors.ghost_element_selected)
-                            .border_color(colors.text_accent)
-                    })
-                    .when(!selected, |el| el.border_color(colors.border_transparent))
-                    .hover(|s| s.bg(colors.ghost_element_hover))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.selected_file_index = Some(file_idx);
-                        this.emit_file_selected(cx);
-                        cx.notify();
-                    }))
-                    .child(
-                        Icon::new(file_change_icon(file.kind))
-                            .size(IconSize::XSmall)
-                            .color(file_change_color(file.kind)),
-                    )
-                    .child(
-                        div()
-                            .h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(px(2.))
-                            .overflow_hidden()
-                            .when(!dir_path.is_empty(), |el| {
-                                el.child(
-                                    Label::new(dir_path)
-                                        .size(LabelSize::XSmall)
+        uniform_list(
+            self.file_view_mode.list_element_id(),
+            row_count,
+            move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
+                range
+                    .map(|ix| {
+                        let row = &rows[ix];
+                        // 12px base + 14px per depth level. Directory rows lead with
+                        // a chevron; file rows lead with a chevron-width spacer so
+                        // their icon aligns under the folder icon rather than just
+                        // shifting right.
+                        let indent = px(12.0 + row.depth as f32 * 14.0);
+                        let weak = weak.clone();
+                        match &row.kind {
+                            CachedTreeRowKind::Dir { key } => {
+                                let is_collapsed = collapsed.contains(key.as_ref());
+                                let key_str = key.to_string();
+                                div()
+                                    .id(ElementId::NamedInteger(
+                                        "detail-tree-dir".into(),
+                                        ix as u64,
+                                    ))
+                                    .h_flex()
+                                    .w_full()
+                                    .h(px(row_h))
+                                    .pl(indent)
+                                    .pr(px(12.))
+                                    .gap(px(4.))
+                                    .items_center()
+                                    .flex_shrink_0()
+                                    .border_l_2()
+                                    .border_color(border_transparent)
+                                    .hover(move |s| s.bg(ghost_element_hover))
+                                    .cursor_pointer()
+                                    .on_click(
+                                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            let key_str = key_str.clone();
+                                            weak.update(cx, |this, cx| {
+                                                this.toggle_dir_collapsed(key_str, cx);
+                                            })
+                                            .ok();
+                                        },
+                                    )
+                                    .child(
+                                        Icon::new(if is_collapsed {
+                                            IconName::ChevronRight
+                                        } else {
+                                            IconName::ChevronDown
+                                        })
+                                        .size(IconSize::XSmall)
                                         .color(Color::Muted),
-                                )
-                            })
-                            .child(Label::new(file_name).size(LabelSize::XSmall).truncate()),
-                    )
-                    .child(
-                        div()
-                            .h_flex()
-                            .w(px(16.))
-                            .h(px(16.))
-                            .rounded(px(3.))
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                Label::new(file.kind.short_code())
-                                    .size(LabelSize::XSmall)
-                                    .color(file_change_color(file.kind))
-                                    .weight(gpui::FontWeight::BOLD),
-                            ),
-                    )
-                    .child(DiffStat::new(file.additions, file.deletions)),
-            );
-        }
-
-        file_list
+                                    )
+                                    .child(
+                                        Icon::new(IconName::Folder)
+                                            .size(IconSize::XSmall)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(row.label.clone())
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .truncate(),
+                                    )
+                                    .into_any_element()
+                            }
+                            CachedTreeRowKind::File(file) => {
+                                let actual_file_index = file.file_index;
+                                let selected = selected_file_index == Some(actual_file_index);
+                                div()
+                                    .id(ElementId::NamedInteger("detail-file".into(), ix as u64))
+                                    .h_flex()
+                                    .w_full()
+                                    .h(px(row_h))
+                                    .pl(indent)
+                                    .pr(px(12.))
+                                    .gap(px(6.))
+                                    .items_center()
+                                    .flex_shrink_0()
+                                    .border_l_2()
+                                    .when(selected, |el| {
+                                        el.bg(ghost_element_selected).border_color(text_accent)
+                                    })
+                                    .when(!selected, |el| el.border_color(border_transparent))
+                                    .hover(move |s| s.bg(ghost_element_hover))
+                                    .cursor_pointer()
+                                    .on_click(
+                                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                            weak.update(cx, |this, cx| {
+                                                this.selected_file_index = Some(actual_file_index);
+                                                this.emit_file_selected(cx);
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                        },
+                                    )
+                                    .child(div().w(px(14.)).flex_shrink_0())
+                                    .child(
+                                        Icon::new(file.icon_name)
+                                            .size(IconSize::XSmall)
+                                            .color(file.icon_color),
+                                    )
+                                    .child(
+                                        div().h_flex().flex_1().min_w_0().overflow_hidden().child(
+                                            Label::new(row.label.clone())
+                                                .size(LabelSize::XSmall)
+                                                .truncate(),
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .h_flex()
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .rounded(px(3.))
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                Label::new(file.change_code.clone())
+                                                    .size(LabelSize::XSmall)
+                                                    .color(file.change_color)
+                                                    .weight(gpui::FontWeight::BOLD),
+                                            ),
+                                    )
+                                    .child(DiffStat::new(file.additions, file.deletions))
+                                    .into_any_element()
+                            }
+                        }
+                    })
+                    .collect()
+            },
+        )
+        .flex_shrink_0()
+        .pb_2()
+        .h(px(row_count as f32 * row_h + 8.0))
+        .with_sizing_behavior(ListSizingBehavior::Auto)
+        .into_any_element()
     }
 }
 
@@ -1546,19 +1768,28 @@ impl Render for DetailPanel {
 
             // Render file list with search filter applied
             if !filtered_indices.is_empty() {
+                let searching = is_searching && !query_str.is_empty();
                 let file_list: gpui::AnyElement = match self.file_view_mode {
                     FileViewMode::Flat => {
                         self.render_flat_file_list_filtered(cached, &filtered_indices, cx)
                     }
-                    FileViewMode::Tree => self
-                        .render_tree_file_list_filtered(
-                            diff,
-                            cached,
-                            &colors,
-                            &filtered_indices,
-                            cx,
-                        )
-                        .into_any_element(),
+                    FileViewMode::Tree => {
+                        // While searching, show a match-filtered tree (matching files
+                        // plus their ancestor directories, fully expanded); otherwise
+                        // apply the collapsed-directory state.
+                        let visible = if searching {
+                            let matches: HashSet<usize> =
+                                filtered_indices.iter().map(|&(_, fi)| fi).collect();
+                            searched_tree_row_indices(&cached.tree_rows, &matches)
+                        } else {
+                            visible_tree_row_indices(&cached.tree_rows, &self.collapsed_dirs)
+                        };
+                        let rows: Vec<CachedTreeRow> = visible
+                            .into_iter()
+                            .map(|i| cached.tree_rows[i].clone())
+                            .collect();
+                        self.render_tree_file_list(rows, cx)
+                    }
                 };
                 content = content.child(file_list);
             }
@@ -1796,6 +2027,107 @@ mod tests {
             deletions: 5,
             kind,
         }
+    }
+
+    /// (depth, label, is_dir) for each tree row, in display order.
+    fn tree_summary(cached: &CachedFileDiffTree) -> Vec<(usize, String, bool)> {
+        cached
+            .tree_rows
+            .iter()
+            .map(|r| {
+                (
+                    r.depth,
+                    r.label.to_string(),
+                    matches!(r.kind, CachedTreeRowKind::Dir { .. }),
+                )
+            })
+            .collect()
+    }
+
+    fn tree_labels(cached: &CachedFileDiffTree, indices: &[usize]) -> Vec<String> {
+        indices
+            .iter()
+            .map(|&i| cached.tree_rows[i].label.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn tree_renders_root_files_at_depth_zero() {
+        let files = vec![make_file_diff("README.md", FileChangeKind::Modified)];
+        let cached = build_cached_file_tree(&files);
+        assert_eq!(cached.tree_rows.len(), 1);
+        assert_eq!(cached.tree_rows[0].depth, 0);
+        assert_eq!(cached.tree_rows[0].label.as_str(), "README.md");
+        assert!(matches!(
+            cached.tree_rows[0].kind,
+            CachedTreeRowKind::File(_)
+        ));
+    }
+
+    #[test]
+    fn tree_compaction_stops_at_a_file() {
+        // `src` has a file, so it is not compacted; dirs render before files.
+        let files = vec![
+            make_file_diff("Cargo.toml", FileChangeKind::Modified),
+            make_file_diff("src/main.rs", FileChangeKind::Added),
+        ];
+        let cached = build_cached_file_tree(&files);
+        assert_eq!(
+            tree_summary(&cached),
+            vec![
+                (0, "src".to_string(), true),
+                (1, "main.rs".to_string(), false),
+                (0, "Cargo.toml".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_compacts_single_child_dir_chains() {
+        let files = vec![make_file_diff(
+            "crates/foo/src/lib.rs",
+            FileChangeKind::Modified,
+        )];
+        let cached = build_cached_file_tree(&files);
+        assert_eq!(
+            tree_summary(&cached),
+            vec![
+                (0, "crates/foo/src".to_string(), true),
+                (1, "lib.rs".to_string(), false),
+            ]
+        );
+        match &cached.tree_rows[0].kind {
+            CachedTreeRowKind::Dir { key } => assert_eq!(key.as_str(), "crates/foo/src"),
+            _ => panic!("expected a directory node"),
+        }
+    }
+
+    #[test]
+    fn collapsed_dir_hides_its_descendants() {
+        let files = vec![
+            make_file_diff("src/a.rs", FileChangeKind::Modified),
+            make_file_diff("src/b.rs", FileChangeKind::Modified),
+            make_file_diff("README.md", FileChangeKind::Modified),
+        ];
+        let cached = build_cached_file_tree(&files);
+        let mut collapsed = HashSet::new();
+        collapsed.insert("src".to_string());
+        let visible = visible_tree_row_indices(&cached.tree_rows, &collapsed);
+        assert_eq!(tree_labels(&cached, &visible), vec!["src", "README.md"]);
+    }
+
+    #[test]
+    fn search_filter_keeps_matches_and_ancestors() {
+        let files = vec![
+            make_file_diff("src/foo/a.rs", FileChangeKind::Modified), // index 0
+            make_file_diff("src/bar/b.rs", FileChangeKind::Modified), // index 1
+            make_file_diff("README.md", FileChangeKind::Modified),    // index 2
+        ];
+        let cached = build_cached_file_tree(&files);
+        let matches: HashSet<usize> = [0usize].into_iter().collect();
+        let visible = searched_tree_row_indices(&cached.tree_rows, &matches);
+        // Keeps the path src > foo > a.rs; excludes the bar subtree and README.md.
+        assert_eq!(tree_labels(&cached, &visible), vec!["src", "foo", "a.rs"]);
     }
 
     #[test]
