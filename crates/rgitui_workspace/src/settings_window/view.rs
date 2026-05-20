@@ -3948,7 +3948,6 @@ impl SettingsView {
                     .id("settings-page-shell")
                     .v_flex()
                     .flex_1()
-                    .h_full()
                     .min_w_0()
                     .child(header)
                     .child(
