@@ -789,24 +789,27 @@ pub(super) fn subscribe_global_search(
 
 // ---- Per-tab subscriptions (called from open_repo) ----
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn subscribe_project(
-    cx: &mut Context<Workspace>,
-    project: &Entity<GitProject>,
-    graph: &Entity<GraphView>,
-    sidebar: &Entity<Sidebar>,
-    diff_viewer: &Entity<DiffViewer>,
-    detail_panel: &Entity<DetailPanel>,
-    _commit_panel: &Entity<CommitPanel>,
-    toolbar: &Entity<Toolbar>,
-    diff_cache: Arc<Mutex<CommitDiffCache>>,
-) {
-    let graph = graph.clone();
-    let sidebar = sidebar.clone();
-    let toolbar = toolbar.clone();
-    let diff_viewer = diff_viewer.clone();
-    let detail_panel_ref = detail_panel.clone();
-    let diff_cache = diff_cache.clone();
+/// Entities a per-tab project subscription updates in response to
+/// `GitProjectEvent`s. Grouping them keeps `subscribe_project` under the
+/// argument-count lint without an allow attribute.
+pub(super) struct ProjectSubscriptions<'a> {
+    pub project: &'a Entity<GitProject>,
+    pub graph: &'a Entity<GraphView>,
+    pub sidebar: &'a Entity<Sidebar>,
+    pub diff_viewer: &'a Entity<DiffViewer>,
+    pub detail_panel: &'a Entity<DetailPanel>,
+    pub toolbar: &'a Entity<Toolbar>,
+    pub diff_cache: Arc<Mutex<CommitDiffCache>>,
+}
+
+pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscriptions) {
+    let project = subs.project;
+    let graph = subs.graph.clone();
+    let sidebar = subs.sidebar.clone();
+    let toolbar = subs.toolbar.clone();
+    let diff_viewer = subs.diff_viewer.clone();
+    let detail_panel_ref = subs.detail_panel.clone();
+    let diff_cache = subs.diff_cache;
     let has_prewarmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     cx.subscribe(project, {
@@ -888,12 +891,6 @@ pub(super) fn subscribe_project(
                 // shown with an unstaged working-tree diff of the same path —
                 // emptying the panel when the path has no working-tree
                 // changes (e.g. while viewing a commit diff).
-                //
-                // We also need to clear the detail panel's selected_file_index
-                // if the file is no longer in the working-tree diff (e.g. it was
-                // discarded or fully staged/unstaged), but for now we clear it
-                // unconditionally on StatusChanged to avoid stale commit diff previews
-                // persisting when a staged file is discarded.
                 let refresh_state = {
                     let dv = diff_viewer.read(cx);
                     let is_commit_diff = !dv.commit_id().is_empty();
@@ -934,9 +931,10 @@ pub(super) fn subscribe_project(
                                     dv.set_diff(diff, path_str_for_update, is_staged, None, cx);
                                 });
                                 dp.update(cx, |dp, cx| {
-                                    // If we are showing a working-tree diff in the diff viewer,
-                                    // ensure the detail panel's selected file is cleared if it
-                                    // was previously showing a commit file diff that is now stale.
+                                    // The detail panel only ever shows commit/stash details, never
+                                    // the working tree. Keep it cleared while a working-tree diff is
+                                    // shown so a stale commit preview can't linger through a
+                                    // background status refresh (e.g. after discarding a change).
                                     dp.clear(cx);
                                 });
                             });

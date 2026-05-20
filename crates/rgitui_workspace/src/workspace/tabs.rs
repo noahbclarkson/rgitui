@@ -83,14 +83,15 @@ impl Workspace {
         // Set up subscriptions for child component events
         super::events::subscribe_project(
             cx,
-            &project,
-            &graph,
-            &sidebar,
-            &diff_viewer,
-            &detail_panel,
-            &commit_panel,
-            &toolbar,
-            caches.diff.clone(),
+            super::events::ProjectSubscriptions {
+                project: &project,
+                graph: &graph,
+                sidebar: &sidebar,
+                diff_viewer: &diff_viewer,
+                detail_panel: &detail_panel,
+                toolbar: &toolbar,
+                diff_cache: caches.diff.clone(),
+            },
         );
         super::events::subscribe_sidebar(cx, &project, &sidebar, &diff_viewer, &detail_panel);
         super::events::subscribe_graph(
