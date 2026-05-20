@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-20
+
+A reliability release centered on **GitHub authentication** and the **diff
+viewer**. GitHub tokens now persist across restarts, public repositories no
+longer require a token to browse issues and pull requests, and a cluster of
+diff-viewer/file-watcher state bugs are fixed. It also lands a real directory
+tree for the changed-files list and a drag-to-reorder preview in interactive
+rebase.
+
+### Added
+
+- **Flat/tree toggle for the changed-files list** in the detail panel. Switch
+  between a flat list (full paths) and a real directory tree with collapsible
+  folders and single-child-chain compaction (e.g. `crates/foo/src` renders as one
+  node). Press `v` or use the toolbar button; the toggle is disabled during file
+  search or when there are no changes. (#24)
+- **Ghost preview when reordering commits** in the interactive rebase modal — a
+  floating, theme-matched copy of the dragged row tracks the cursor. (#37)
+
+### Fixed
+
+- **GitHub tokens persist on first connect.** A newly added provider — including
+  the first device-flow sign-in — had its token silently dropped on save while
+  Settings still reported "Connected", so Issues/PRs showed "GitHub token
+  required" and it never survived a restart. Tokens are now written to the OS
+  keyring unconditionally, the auth runtime is resolved from the keyring on every
+  startup, and the Settings "Connected" badge reflects the actually-resolved
+  token rather than a stale flag.
+- **Public repositories no longer require a token** to view issues and pull
+  requests. The panels now fetch unauthenticated when no token is configured and
+  only prompt for sign-in on a genuine authentication/visibility failure; that
+  prompt notes organization repos may need a fine-grained PAT approved by an org
+  owner.
+- **Diff content is no longer wiped by unrelated repository changes.** The
+  working-tree refresh is gated to working-tree diffs (commit and three-way diffs
+  are left intact) and ignores gitignored paths, and a generation guard prevents a
+  slow background refresh from clobbering a newer selection or its detail panel.
+- **Stale diff previews after an in-place edit.** The diff viewer compares hunk
+  content, not just hunk/line counts, so a same-shape edit is detected; it clears
+  when a displayed working-tree file loses all its changes (e.g. after discard).
+- **The wrap-mode diff scrollbar keeps a constant thumb size** while scrolling
+  instead of resizing as rows are measured, and stays grabbable.
+- **Background refreshes no longer truncate commits paged in via "load more."**
+- Removed `#[allow(clippy::too_many_arguments)]` attributes in favour of params
+  structs, and made GitHub provider host-matching case-insensitive.
+
 ## [0.2.0] - 2026-05-12
 
 This release moves the **Settings UI into its own OS window**, adds **clone-from-URL**
