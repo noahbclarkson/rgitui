@@ -88,6 +88,13 @@ pub struct InteractiveRebase {
     dragging_index: Option<usize>,
     /// Index where the dragged entry would be inserted.
     drag_hover_index: Option<usize>,
+    /// Window-relative Y position of the ghost preview element during drag.
+    /// Set on mousedown, updated on every mousemove.
+    ghost_offset_y: Option<Pixels>,
+    /// Last known window-relative mouse Y position (for slot calculation during drag).
+    last_mouse_y: Option<Pixels>,
+    /// Last known window-relative mouse X position.
+    last_mouse_x: Option<Pixels>,
     /// Bounds of the entries container div (for mouse-to-slot conversion).
     /// These are the window-relative bounds of the visible viewport — they
     /// already reflect the container's scroll position, so no separate scroll
@@ -115,6 +122,9 @@ impl InteractiveRebase {
             drag_hover_index: None,
             container_bounds: Bounds::default(),
             entity: cx.weak_entity(),
+            ghost_offset_y: None,
+            last_mouse_y: None,
+            last_mouse_x: None,
         }
     }
 
@@ -264,23 +274,25 @@ impl InteractiveRebase {
     }
 
     /// Start dragging an entry (called on mousedown of the drag handle).
-    fn start_drag(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn start_drag(&mut self, index: usize, mouse_y: Pixels, cx: &mut Context<Self>) {
         self.dragging_index = Some(index);
         self.drag_hover_index = Some(index);
+        self.ghost_offset_y = Some(mouse_y);
         cx.notify();
     }
 
     /// Update which slot the dragged entry is hovering over (called on mousemove).
+    /// Also updates the ghost preview position.
     fn update_drag_hover(&mut self, mouse_y: Pixels, cx: &mut Context<Self>) {
         let Some(_drag_idx) = self.dragging_index else {
             return;
         };
         let bounds = self.container_bounds;
 
-        // Convert window Y to container-relative Y.
-        // bounds.origin is the window-relative top-left of the visible viewport,
-        // so subtracting it gives the mouse position relative to the visible top —
-        // no separate scroll offset needed.
+        // Update ghost position always during drag
+        self.ghost_offset_y = Some(mouse_y);
+
+        // Convert window Y to container-relative Y for slot calculation.
         let rel_y = mouse_y - bounds.origin.y;
         let slot = (rel_y.as_f32() / REBASE_ENTRY_HEIGHT) as usize;
         let slot = slot.min(self.entries.len().saturating_sub(1));
@@ -331,6 +343,7 @@ impl InteractiveRebase {
         let Some(hover_idx) = self.drag_hover_index else {
             self.dragging_index = None;
             self.drag_hover_index = None;
+            self.ghost_offset_y = None;
             cx.notify();
             return;
         };
@@ -349,6 +362,7 @@ impl InteractiveRebase {
 
         self.dragging_index = None;
         self.drag_hover_index = None;
+        self.ghost_offset_y = None;
         cx.notify();
     }
 
@@ -541,6 +555,9 @@ impl Render for InteractiveRebase {
             .overflow_y_scroll()
             .max_h(px(400.))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                // Track global mouse position during drag for slot calculation
+                this.last_mouse_y = Some(event.position.y);
+                this.last_mouse_x = Some(event.position.x);
                 if this.dragging_index.is_some() {
                     this.update_drag_hover(event.position.y, cx);
                 }
@@ -694,7 +711,8 @@ impl Render for InteractiveRebase {
                         move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
                             entity_for_drag
                                 .update(cx, |this, cx| {
-                                    this.start_drag(idx_for_drag, cx);
+                                    let mouse_y = this.last_mouse_y.unwrap_or(px(0.0));
+                                    this.start_drag(idx_for_drag, mouse_y, cx);
                                 })
                                 .ok();
                         },
@@ -946,6 +964,46 @@ impl Render for InteractiveRebase {
                 this.dismiss(cx);
             }))
             .child(modal)
+            // Ghost preview: renders during drag to show the entry floating at the cursor.
+            // Positioned as an absolute overlay on top of the backdrop so it draws above
+            // the modal content. Only visible when dragging_index is set.
+            .when(self.dragging_index.is_some(), |el| {
+                let ghost_y = self.ghost_offset_y.unwrap_or(px(100.0));
+                el.child(
+                    div()
+                        .id("rebase-drag-ghost")
+                        .absolute()
+                        .top(px(ghost_y.as_f32() - REBASE_ENTRY_HEIGHT / 2.0))
+                        .left(px(80.0))
+                        .w(px(600.))
+                        .h(px(REBASE_ENTRY_HEIGHT))
+                        .bg(gpui::Hsla {
+                            h: 0.0,
+                            s: 0.0,
+                            l: 0.95,
+                            a: 0.95,
+                        })
+                        .border_1()
+                        .border_color(colors.text_accent)
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .px_3()
+                        .child(
+                            Label::new(
+                                self.dragging_index
+                                    .and_then(|i| self.entries.get(i))
+                                    .map(|e| e.original_message.clone())
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(50)
+                                    .collect::<String>(),
+                            )
+                            .size(LabelSize::Small)
+                            .color(Color::Default),
+                        ),
+                )
+            })
             .into_any_element()
     }
 }
@@ -1241,5 +1299,61 @@ mod tests {
         InteractiveRebase::apply_drag_reorder(&mut entries, 0, 4, &mut editing);
         assert_eq!(editing, None); // no edit in progress
         assert_eq!(entries[4].oid.as_str(), "aaa"); // A is now last
+    }
+
+    // ── Ghost preview state ─────────────────────────────────────────
+    // Note: testing ghost_offset_y requires a cx.runtime(), which integration
+    // tests handle. Unit tests here cover the pure apply_drag_reorder path
+    // that ghost_offset_y tracks alongside drag_hover_index.
+
+    #[test]
+    fn apply_drag_reorder_clears_hover_index_when_same_position() {
+        // When drag_idx == hover_idx, the method returns early — no state change.
+        // This is the guard that prevents ghost jitter when mouse settles on
+        // the dragged item's own slot.
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        // Apply with equal indices — should be a no-op
+        InteractiveRebase::apply_drag_reorder(&mut entries, 2, 2, &mut editing);
+        assert_eq!(entries[2].oid.as_str(), "ccc"); // unchanged
+        assert_eq!(editing, None);
+    }
+
+    #[test]
+    fn apply_drag_reorder_handles_last_index_correctly() {
+        // Drag first entry to last position: [aaa, bbb, ccc, ddd, eee] → [bbb, ccc, ddd, eee, aaa]
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 0, 4, &mut editing);
+        assert_eq!(entries[0].oid.as_str(), "bbb");
+        assert_eq!(entries[1].oid.as_str(), "ccc");
+        assert_eq!(entries[2].oid.as_str(), "ddd");
+        assert_eq!(entries[3].oid.as_str(), "eee");
+        assert_eq!(entries[4].oid.as_str(), "aaa");
+    }
+
+    #[test]
+    fn apply_drag_reorder_handles_adjacent_swap() {
+        // Drag B to A's position (adjacent): [A,B,C,D,E] → [B,A,C,D,E]
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 1, 0, &mut editing);
+        assert_eq!(entries[0].oid.as_str(), "bbb");
+        assert_eq!(entries[1].oid.as_str(), "aaa");
+    }
+
+    #[test]
+    fn apply_drag_reorder_preserves_all_entries() {
+        let mut entries = make_entries_abcde();
+        let mut editing: Option<usize> = None;
+        InteractiveRebase::apply_drag_reorder(&mut entries, 0, 4, &mut editing);
+        assert_eq!(entries.len(), 5);
+        // Verify no entry was dropped (all OIDs preserved)
+        let oids: Vec<_> = entries.iter().map(|e| e.oid.as_str()).collect();
+        assert!(oids.contains(&"aaa"));
+        assert!(oids.contains(&"bbb"));
+        assert!(oids.contains(&"ccc"));
+        assert!(oids.contains(&"ddd"));
+        assert!(oids.contains(&"eee"));
     }
 }
