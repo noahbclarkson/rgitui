@@ -1,13 +1,5 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-
-#[derive(Default, Clone, Copy)]
-#[allow(dead_code)]
-enum FileViewMode {
-    #[default]
-    Flat,
-    Tree,
-}
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
@@ -27,6 +19,77 @@ use rgitui_ui::{
 };
 
 use crate::markdown_view::render_markdown;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum FileViewMode {
+    #[default]
+    Flat,
+    Tree,
+}
+
+impl FileViewMode {
+    fn toggled(self) -> Self {
+        match self {
+            Self::Flat => Self::Tree,
+            Self::Tree => Self::Flat,
+        }
+    }
+
+    fn toggle_icon(self) -> IconName {
+        match self {
+            Self::Flat => IconName::Folder,
+            Self::Tree => IconName::File,
+        }
+    }
+
+    fn toggle_tooltip(self) -> &'static str {
+        match self {
+            Self::Flat => "Switch to Tree view (v)",
+            Self::Tree => "Switch to Flat view (v)",
+        }
+    }
+
+    fn list_element_id(self) -> &'static str {
+        match self {
+            Self::Flat => "detail-files-filtered",
+            Self::Tree => "detail-files-filtered-tree",
+        }
+    }
+}
+
+fn is_file_searching(file_search_active: bool, file_search_query: &Option<String>) -> bool {
+    file_search_active || file_search_query.is_some()
+}
+
+fn can_toggle_file_view(file_count: usize, is_searching: bool) -> bool {
+    file_count > 0 && !is_searching
+}
+
+fn file_view_toggle_tooltip(
+    file_count: usize,
+    is_searching: bool,
+    file_view_mode: FileViewMode,
+) -> &'static str {
+    if file_count == 0 {
+        "No changed files to display"
+    } else if is_searching {
+        "Clear file search to switch views"
+    } else {
+        file_view_mode.toggle_tooltip()
+    }
+}
+
+fn file_view_mode_after_toggle_request(
+    file_view_mode: FileViewMode,
+    file_count: usize,
+    is_searching: bool,
+) -> FileViewMode {
+    if can_toggle_file_view(file_count, is_searching) {
+        file_view_mode.toggled()
+    } else {
+        file_view_mode
+    }
+}
 
 fn format_absolute_date(timestamp: i64) -> String {
     let dt = chrono::DateTime::from_timestamp(timestamp, 0);
@@ -327,13 +390,22 @@ impl DetailPanel {
                 }
             }
             "v" => {
-                self.file_view_mode = match self.file_view_mode {
-                    FileViewMode::Flat => FileViewMode::Tree,
-                    FileViewMode::Tree => FileViewMode::Flat,
-                };
-                cx.notify();
+                self.request_file_view_mode_toggle(cx);
             }
             _ => {}
+        }
+    }
+
+    fn request_file_view_mode_toggle(&mut self, cx: &mut Context<Self>) {
+        let is_searching = is_file_searching(self.file_search_active, &self.file_search_query);
+        let next_mode = file_view_mode_after_toggle_request(
+            self.file_view_mode,
+            self.file_count(),
+            is_searching,
+        );
+        if next_mode != self.file_view_mode {
+            self.file_view_mode = next_mode;
+            cx.notify();
         }
     }
 
@@ -564,7 +636,7 @@ impl DetailPanel {
         let ghost_element_hover = colors.ghost_element_hover;
 
         uniform_list(
-            "detail-files-filtered",
+            self.file_view_mode.list_element_id(),
             row_count,
             move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
                 range
@@ -672,7 +744,7 @@ impl DetailPanel {
             .spacing(26.0);
 
         let mut file_list = div()
-            .id("detail-files-filtered-tree")
+            .id(self.file_view_mode.list_element_id())
             .v_flex()
             .w_full()
             .flex_shrink_0()
@@ -924,19 +996,19 @@ impl Render for DetailPanel {
                 )
                 .child(div().flex_1())
                 .child({
-                    let (icon, next_label) = match self.file_view_mode {
-                        FileViewMode::Flat => (IconName::Folder, "Tree"),
-                        FileViewMode::Tree => (IconName::File, "Flat"),
-                    };
-                    IconButton::new("view-mode-toggle", icon)
+                    let file_count = self.file_count();
+                    let is_searching =
+                        is_file_searching(self.file_search_active, &self.file_search_query);
+                    let toggle_disabled = !can_toggle_file_view(file_count, is_searching);
+                    let toggle_tooltip =
+                        file_view_toggle_tooltip(file_count, is_searching, self.file_view_mode);
+
+                    IconButton::new("view-mode-toggle", self.file_view_mode.toggle_icon())
                         .size(ButtonSize::Compact)
-                        .tooltip(format!("Switch to {} view (v)", next_label))
+                        .disabled(toggle_disabled)
+                        .tooltip(toggle_tooltip)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.file_view_mode = match this.file_view_mode {
-                                FileViewMode::Flat => FileViewMode::Tree,
-                                FileViewMode::Tree => FileViewMode::Flat,
-                            };
-                            cx.notify();
+                            this.request_file_view_mode_toggle(cx);
                         }))
                 }),
         );
@@ -1330,7 +1402,7 @@ impl Render for DetailPanel {
         if let (Some(diff), Some(cached)) = (&self.commit_diff, &self.cached_file_tree) {
             let total_file_count = diff.files.len();
             let filtered_indices = self.filtered_file_indices();
-            let is_searching = self.file_search_active || self.file_search_query.is_some();
+            let is_searching = is_file_searching(self.file_search_active, &self.file_search_query);
             let query_str = self.file_search_query.clone().unwrap_or_default();
 
             let file_count_text: SharedString = if is_searching && !query_str.is_empty() {
@@ -1820,6 +1892,100 @@ mod tests {
             row.dir_path.as_str(),
             "very/deeply/nested/directory/structure/"
         );
+    }
+
+    // --- FileViewMode tests ---
+
+    #[test]
+    fn test_file_view_mode_default_is_flat() {
+        assert_eq!(FileViewMode::default(), FileViewMode::Flat);
+    }
+
+    #[test]
+    fn test_file_view_mode_toggles_between_flat_and_tree() {
+        assert_eq!(FileViewMode::Flat.toggled(), FileViewMode::Tree);
+        assert_eq!(FileViewMode::Tree.toggled(), FileViewMode::Flat);
+    }
+
+    #[test]
+    fn test_file_view_mode_icons_describe_next_action() {
+        assert_eq!(FileViewMode::Flat.toggle_icon(), IconName::Folder);
+        assert_eq!(FileViewMode::Tree.toggle_icon(), IconName::File);
+    }
+
+    #[test]
+    fn test_file_view_mode_tooltips_describe_next_action() {
+        assert_eq!(
+            FileViewMode::Flat.toggle_tooltip(),
+            "Switch to Tree view (v)"
+        );
+        assert_eq!(
+            FileViewMode::Tree.toggle_tooltip(),
+            "Switch to Flat view (v)"
+        );
+    }
+
+    #[test]
+    fn test_file_view_toggle_tooltip_describes_disabled_state() {
+        assert_eq!(
+            file_view_toggle_tooltip(0, false, FileViewMode::Flat),
+            "No changed files to display"
+        );
+        assert_eq!(
+            file_view_toggle_tooltip(2, true, FileViewMode::Flat),
+            "Clear file search to switch views"
+        );
+        assert_eq!(
+            file_view_toggle_tooltip(2, false, FileViewMode::Flat),
+            "Switch to Tree view (v)"
+        );
+    }
+
+    #[test]
+    fn test_file_view_mode_list_ids_select_distinct_renderers() {
+        assert_eq!(
+            FileViewMode::Flat.list_element_id(),
+            "detail-files-filtered"
+        );
+        assert_eq!(
+            FileViewMode::Tree.list_element_id(),
+            "detail-files-filtered-tree"
+        );
+    }
+
+    #[test]
+    fn test_file_view_toggle_requires_files_and_no_search() {
+        assert!(can_toggle_file_view(1, false));
+        assert!(!can_toggle_file_view(0, false));
+        assert!(!can_toggle_file_view(1, true));
+    }
+
+    #[test]
+    fn test_file_view_toggle_request_preserves_mode_when_disabled() {
+        assert_eq!(
+            file_view_mode_after_toggle_request(FileViewMode::Flat, 2, false),
+            FileViewMode::Tree
+        );
+        assert_eq!(
+            file_view_mode_after_toggle_request(FileViewMode::Flat, 0, false),
+            FileViewMode::Flat
+        );
+        assert_eq!(
+            file_view_mode_after_toggle_request(FileViewMode::Tree, 3, true),
+            FileViewMode::Tree
+        );
+    }
+
+    #[test]
+    fn test_file_search_state_blocks_view_toggle_shortcut() {
+        assert!(is_file_searching(true, &None));
+        assert!(is_file_searching(false, &Some("view".to_string())));
+        assert!(!is_file_searching(false, &None));
+
+        assert!(!can_toggle_file_view(
+            3,
+            is_file_searching(true, &Some("view".to_string()))
+        ));
     }
 
     // --- filtered_file_indices tests ---
