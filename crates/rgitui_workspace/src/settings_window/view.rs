@@ -15,8 +15,8 @@
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, ClickEvent, Context, ElementId, Entity, EventEmitter, FontWeight,
-    SharedString, Task, Window,
+    div, point, px, AnyElement, ClickEvent, Context, ElementId, Entity, EventEmitter, FontWeight,
+    ScrollHandle, SharedString, Task, Window,
 };
 use rgitui_settings::{
     config_dir, AiSettings, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
@@ -279,6 +279,12 @@ pub struct SettingsView {
     // GitHub Device Flow
     device_flow_status: DeviceFlowStatus,
     device_flow_task: Option<Task<()>>,
+
+    /// Scroll position for the single scrollable content pane. Reset to the
+    /// top whenever the user navigates to a different section so they always
+    /// land on the section header rather than wherever a focused `TextInput`
+    /// last triggered an auto-scroll-into-view.
+    content_scroll: ScrollHandle,
 }
 
 impl EventEmitter<SettingsViewEvent> for SettingsView {}
@@ -688,6 +694,7 @@ impl SettingsView {
             feedback_is_error: false,
             device_flow_status: DeviceFlowStatus::Idle,
             device_flow_task: None,
+            content_scroll: ScrollHandle::new(),
         }
     }
 
@@ -1692,6 +1699,10 @@ impl SettingsView {
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.active_section = section;
+                        // Always land at the top of the new section: a focused
+                        // TextInput further down can otherwise trigger an
+                        // auto-scroll-into-view and dump the user mid-content.
+                        this.content_scroll.set_offset(point(px(0.), px(0.)));
                         cx.notify();
                     }))
                     .child(Icon::new(icon).size(IconSize::Small).color(if is_active {
@@ -3952,17 +3963,19 @@ impl SettingsView {
                     .v_flex()
                     .flex_1()
                     .min_w_0()
+                    .min_h_0()
                     .child(header)
                     .child(
                         div()
                             .id("settings-content")
                             .v_flex()
                             .flex_1()
-                            .h_full()
+                            .min_h_0()
                             .min_w_0()
                             .p(px(28.))
                             .overflow_y_scroll()
                             .overflow_x_hidden()
+                            .track_scroll(&self.content_scroll)
                             .child(content_container),
                     ),
             )
