@@ -2163,7 +2163,7 @@ impl SettingsView {
     // ── Git section ──────────────────────────────────────────────────────
     fn render_git_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
-        let mut section = div().v_flex().w_full().gap(px(16.));
+        let mut section = div().v_flex().w_full().flex_grow().gap(px(16.));
         section = section.child(Self::section_header(
             IconName::GitBranch,
             "Accounts & Credentials",
