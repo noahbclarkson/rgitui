@@ -866,6 +866,23 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     s.update_worktrees(worktrees_for_sidebar, cx);
                 });
 
+                // Remotes load asynchronously after a tab opens (the initial
+                // refresh emits StatusChanged), so reconfigure this project's
+                // GitHub panels now that the remote may be known. Without this
+                // the Issues/PRs panels stay stuck on "No GitHub remote
+                // configured" until something triggers on_settings_changed.
+                // configure() is idempotent, so repeated refreshes are cheap.
+                let github_panels = this.tabs.iter().find(|t| t.project == project).map(|t| {
+                    (
+                        t.project.clone(),
+                        t.issues_panel.clone(),
+                        t.prs_panel.clone(),
+                    )
+                });
+                if let Some((proj, issues_panel, prs_panel)) = github_panels {
+                    Workspace::configure_github_panels(&proj, &issues_panel, &prs_panel, cx);
+                }
+
                 if let Some(tab) = this.tabs.get_mut(this.active_tab) {
                     if let Some(inspecting) = &tab.inspecting_worktree {
                         let inspected_worktree =

@@ -227,9 +227,22 @@ impl PrsPanel {
         repo: String,
         cx: &mut Context<Self>,
     ) {
+        // Idempotent: a repository refresh fires on every working-tree change,
+        // so skip the notify churn when nothing actually changed.
+        if self.github_token == token && self.github_owner == owner && self.github_repo == repo {
+            return;
+        }
+        let now_configured = !owner.is_empty() && !repo.is_empty();
         self.github_token = token;
         self.github_owner = owner;
         self.github_repo = repo;
+        // Clear the stale "No GitHub remote configured" error once a valid
+        // remote is known (it loads asynchronously after the tab opens). The
+        // panel fetches lazily when next viewed.
+        if now_configured {
+            self.error_message = None;
+            self.auth_required = false;
+        }
         cx.notify();
     }
 

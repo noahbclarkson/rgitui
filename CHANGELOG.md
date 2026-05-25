@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Fixed
+
+- **Issues/PRs showed "No GitHub remote configured" until Settings was opened.**
+  The panels were configured at tab-open time, before the repository's remotes
+  finished loading asynchronously, and were never reconfigured afterward. They
+  now reconfigure when a repository refresh delivers the remote, so the GitHub
+  owner/repo is picked up automatically. Panel configuration is idempotent and
+  clears the stale error once a valid remote is known.
+
 ## [0.2.2] - 2026-05-25
 
 A UI polish and stability release: a crash when opening the theme editor is
