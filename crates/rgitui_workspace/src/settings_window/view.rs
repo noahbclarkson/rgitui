@@ -3944,6 +3944,7 @@ impl SettingsView {
 
         div()
             .h_flex()
+            .items_stretch()
             .size_full()
             .child(sidebar)
             .child(
@@ -3951,6 +3952,7 @@ impl SettingsView {
                     .id("settings-page-shell")
                     .v_flex()
                     .flex_1()
+                    .min_h_0()
                     .min_w_0()
                     .child(header)
                     .child(
@@ -3958,7 +3960,7 @@ impl SettingsView {
                             .id("settings-content")
                             .v_flex()
                             .flex_1()
-                            .h_full()
+                            .min_h_0()
                             .min_w_0()
                             .p(px(28.))
                             .overflow_y_scroll()

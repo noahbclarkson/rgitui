@@ -356,6 +356,7 @@ impl Render for ThemeEditorDialog {
                             .border_b_1()
                             .border_color(colors.border)
                             .bg(colors.surface_background)
+                            .rounded_t(px(12.))
                             .child(
                                 Icon::new(IconName::Edit)
                                     .size(IconSize::Small)
@@ -503,6 +504,7 @@ impl Render for ThemeEditorDialog {
                             .border_t_1()
                             .border_color(colors.border)
                             .bg(colors.surface_background)
+                            .rounded_b(px(12.))
                             .child({
                                 let (text, color) = match &self.save_status {
                                     Some(msg) if msg.starts_with("Save failed") => {

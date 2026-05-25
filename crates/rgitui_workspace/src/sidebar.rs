@@ -1388,11 +1388,13 @@ impl Render for Sidebar {
                                         ),
                                 )
                                 .child(
-                                    Label::new(name.clone())
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Accent)
-                                        .weight(gpui::FontWeight::BOLD)
-                                        .truncate(),
+                                    div().flex_1().min_w_0().child(
+                                        Label::new(name.clone())
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Accent)
+                                            .weight(gpui::FontWeight::BOLD)
+                                            .truncate(),
+                                    ),
                                 );
                         } else {
                             item = item
@@ -1423,15 +1425,17 @@ impl Render for Sidebar {
                                         ),
                                 )
                                 .child(
-                                    Label::new(name.clone())
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted)
-                                        .truncate(),
+                                    div().flex_1().min_w_0().child(
+                                        Label::new(name.clone())
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .truncate(),
+                                    ),
                                 );
                         }
 
                         if branch.ahead > 0 || branch.behind > 0 {
-                            item = item.child(div().flex_1()).child(
+                            item = item.child(
                                 div()
                                     .h_flex()
                                     .gap(px(4.))
@@ -1460,7 +1464,7 @@ impl Render for Sidebar {
                             let w_cp = w.clone();
                             let bn_cp = name.clone();
                             let mut actions = div()
-                                .ml_auto()
+                                .flex_shrink_0()
                                 .h_flex()
                                 .gap(px(2.))
                                 .child(
@@ -2463,6 +2467,7 @@ impl Render for Sidebar {
                 .px(px(8.))
                 .gap(px(4.))
                 .items_center()
+                .overflow_hidden()
                 .bg(colors.toolbar_background)
                 .border_b_1()
                 .border_color(colors.border_variant)
@@ -2491,16 +2496,20 @@ impl Render for Sidebar {
                 )
                 .child(div().flex_1())
                 .child(
-                    div().id("new-worktree-btn").child(
-                        Button::new("new-worktree", "New Worktree")
-                            .icon(IconName::Plus)
-                            .size(ButtonSize::Compact)
-                            .style(ButtonStyle::Subtle)
-                            .color(Color::Muted)
-                            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                                cx.emit(SidebarEvent::WorktreeCreate);
-                            })),
-                    ),
+                    div()
+                        .id("new-worktree-btn")
+                        .min_w_0()
+                        .overflow_hidden()
+                        .child(
+                            Button::new("new-worktree", "New Worktree")
+                                .icon(IconName::Plus)
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Subtle)
+                                .color(Color::Muted)
+                                .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                    cx.emit(SidebarEvent::WorktreeCreate);
+                                })),
+                        ),
                 )
                 .child(
                     div()
@@ -2512,6 +2521,7 @@ impl Render for Sidebar {
                         .bg(colors.ghost_element_hover)
                         .items_center()
                         .justify_center()
+                        .flex_shrink_0()
                         .child(
                             Label::new(SharedString::from(format!("{}", self.worktrees.len())))
                                 .size(LabelSize::XSmall)

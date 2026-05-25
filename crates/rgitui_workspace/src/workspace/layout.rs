@@ -537,7 +537,7 @@ impl Render for Workspace {
                         |this, e: &DragMoveEvent<SidebarResize>, _, cx| {
                             let new_w =
                                 f32::from(e.event.position.x - this.layout.content_bounds.left())
-                                    .clamp(120., 600.);
+                                    .clamp(super::MIN_SIDEBAR_WIDTH, super::MAX_SIDEBAR_WIDTH);
                             this.layout.sidebar_width = new_w;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -1270,7 +1270,7 @@ impl Workspace {
         let colors = cx.colors();
         let recent_workspaces = cx
             .try_global::<rgitui_settings::SettingsState>()
-            .map(|settings| settings.recent_workspaces(6))
+            .map(|settings| settings.recent_workspaces(5))
             .unwrap_or_default();
         let recent_repos = cx
             .try_global::<rgitui_settings::SettingsState>()
@@ -1278,7 +1278,7 @@ impl Workspace {
             .unwrap_or_default()
             .into_iter()
             .filter(|path| path.exists())
-            .take(6)
+            .take(5)
             .collect::<Vec<_>>();
 
         let mut content = div()
@@ -1352,7 +1352,7 @@ impl Workspace {
             );
 
         if !recent_workspaces.is_empty() {
-            let mut workspaces_list = div().v_flex().w_full().mt(px(4.)).gap(px(4.)).child(
+            let mut workspaces_list = div().v_flex().w_full().mt(px(4.)).gap(px(8.)).child(
                 Label::new("Recent Workspaces")
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
@@ -1444,7 +1444,7 @@ impl Workspace {
         }
 
         if !recent_repos.is_empty() {
-            let mut repos_list = div().v_flex().w_full().gap(px(2.)).child(
+            let mut repos_list = div().v_flex().w_full().mt(px(4.)).gap(px(8.)).child(
                 Label::new("Recent Repositories")
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
@@ -1465,11 +1465,12 @@ impl Workspace {
                         .id(ElementId::NamedInteger("recent-repo".into(), i as u64))
                         .h_flex()
                         .w_full()
-                        .h(px(32.))
+                        .min_h(px(44.))
                         .px_3()
+                        .py(px(8.))
                         .gap_2()
                         .items_center()
-                        .rounded(px(4.))
+                        .rounded(px(6.))
                         .cursor_pointer()
                         .hover(|s| s.bg(colors.ghost_element_hover))
                         .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {

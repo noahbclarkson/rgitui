@@ -1,4 +1,38 @@
 ## [Unreleased]
+
+## [0.2.2] - 2026-05-25
+
+A UI polish and stability release: a crash when opening the theme editor is
+fixed, the Settings pages scroll again, and the left sidebar and welcome screen
+get layout corrections.
+
+### Fixed
+
+- **Crash when opening the theme editor.** Clicking **Edit Theme** in Settings
+  closed the Settings window while the workspace was mid-update, causing a
+  reentrant-update panic that aborted the app. The window-close cleanup is now
+  deferred until the in-progress update finishes, so the editor opens cleanly.
+- **Settings pages could not be scrolled.** The content was vertically centered
+  with no bounded height, so longer pages were clipped and the scroll wheel did
+  nothing. The settings area now fills the window height and scrolls from the top
+  as expected.
+- **Theme editor had square corners.** The header and footer bars painted square
+  corners over the modal's rounded edges; their outer corners now follow the
+  12px radius so the dialog is uniformly rounded.
+- **Worktree count hidden in the sidebar.** At the default width the worktree
+  count beside **New Worktree** was pushed off-screen. The count is now pinned
+  and the button yields space first.
+
+### Changed
+
+- **Sidebar sizing and collapsing.** The default sidebar width is ~15% wider, a
+  minimum width is enforced (both when dragging the resize handle and when
+  loading a saved width), and branch rows with ahead/behind (`+x -y`) badges now
+  truncate and align identically to rows without them.
+- **Recent repositories and workspaces on the welcome screen.** Each list now
+  shows the five most recent entries with more vertical spacing between rows.
+
+
 ## [0.2.1] - 2026-05-20
 
 ### Fixed
@@ -421,7 +455,9 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/noahbclarkson/rgitui/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/noahbclarkson/rgitui/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/noahbclarkson/rgitui/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/noahbclarkson/rgitui/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/noahbclarkson/rgitui/compare/v0.1.6...v0.1.7

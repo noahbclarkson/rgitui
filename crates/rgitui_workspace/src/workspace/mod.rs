@@ -200,6 +200,13 @@ pub struct Workspace {
     pub(super) _settings_window_closed_subscription: Option<gpui::Subscription>,
 }
 
+/// Smallest width the left sidebar may take, whether reached by dragging the
+/// resize handle or loaded from persisted settings. Keeps section headers like
+/// the worktree controls readable instead of clipping their contents away.
+pub(super) const MIN_SIDEBAR_WIDTH: f32 = 200.0;
+/// Largest width the left sidebar may take.
+pub(super) const MAX_SIDEBAR_WIDTH: f32 = 600.0;
+
 impl EventEmitter<WorkspaceEvent> for Workspace {}
 
 impl Workspace {
@@ -269,7 +276,9 @@ impl Workspace {
         } else {
             rgitui_settings::LayoutSettings::default()
         };
-        let sidebar_width = layout_settings.sidebar_width;
+        let sidebar_width = layout_settings
+            .sidebar_width
+            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
         let detail_panel_width = layout_settings.detail_panel_width;
         let diff_viewer_height = layout_settings.diff_viewer_height;
         let commit_input_height = layout_settings.commit_input_height.max(300.0);
@@ -365,26 +374,34 @@ impl Workspace {
             if app.windows().iter().any(|w| w.window_id() == target_id) {
                 return;
             }
-            if let Some(this) = weak.upgrade() {
-                this.update(app, |this, _| {
-                    if this
-                        .settings_window
-                        .map(|h| h.window_id() == target_id)
-                        .unwrap_or(false)
-                    {
-                        this.settings_window = None;
-                    }
-                });
-            }
-            // Flush in-memory bounds updates accumulated during the window's
-            // lifetime to disk now that the window is gone.
-            if app.has_global::<rgitui_settings::SettingsState>() {
-                app.update_global::<rgitui_settings::SettingsState, _>(|state, _| {
-                    if let Err(error) = state.save() {
-                        log::warn!("Failed to persist settings window bounds: {}", error);
-                    }
-                });
-            }
+            // The window can be closed programmatically from within a Workspace
+            // update (e.g. opening the theme editor calls `remove_window`, which
+            // flushes close observers synchronously while this entity is leased).
+            // Defer the cleanup so the entity is back on the stack before we
+            // re-enter it, avoiding a reentrant-update panic.
+            let weak = weak.clone();
+            app.defer(move |app| {
+                if let Some(this) = weak.upgrade() {
+                    this.update(app, |this, _| {
+                        if this
+                            .settings_window
+                            .map(|h| h.window_id() == target_id)
+                            .unwrap_or(false)
+                        {
+                            this.settings_window = None;
+                        }
+                    });
+                }
+                // Flush in-memory bounds updates accumulated during the window's
+                // lifetime to disk now that the window is gone.
+                if app.has_global::<rgitui_settings::SettingsState>() {
+                    app.update_global::<rgitui_settings::SettingsState, _>(|state, _| {
+                        if let Err(error) = state.save() {
+                            log::warn!("Failed to persist settings window bounds: {}", error);
+                        }
+                    });
+                }
+            });
         });
         self._settings_window_closed_subscription = Some(subscription);
     }

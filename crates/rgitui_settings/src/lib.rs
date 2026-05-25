@@ -340,7 +340,7 @@ pub struct LayoutSettings {
 }
 
 fn default_sidebar_width() -> f32 {
-    240.0
+    276.0
 }
 fn default_detail_panel_width() -> f32 {
     352.0
