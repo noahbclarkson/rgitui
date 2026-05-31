@@ -247,6 +247,7 @@ impl Workspace {
         let worktree_dialog = cx.new(crate::WorktreeDialog::new);
         let rename_dialog = cx.new(crate::RenameDialog::new);
         let confirm_dialog = cx.new(crate::ConfirmDialog::new);
+        let stash_save_dialog = cx.new(crate::StashSaveDialog::new);
         let stash_branch_dialog = cx.new(crate::StashBranchDialog::new);
         let create_pr_dialog = cx.new(crate::CreatePrDialog::new);
         let repo_clone_dialog = cx.new(crate::RepoCloneDialog::new);
@@ -262,6 +263,7 @@ impl Workspace {
         events::subscribe_worktree_dialog(cx, &worktree_dialog);
         events::subscribe_rename_dialog(cx, &rename_dialog);
         events::subscribe_confirm_dialog(cx, &confirm_dialog);
+        events::subscribe_stash_save_dialog(cx, &stash_save_dialog);
         events::subscribe_stash_branch_dialog(cx, &stash_branch_dialog);
         events::subscribe_create_pr_dialog(cx, &create_pr_dialog);
         events::subscribe_repo_opener(cx, &repo_opener);
@@ -300,6 +302,7 @@ impl Workspace {
                 tag_dialog,
                 rename_dialog,
                 confirm_dialog,
+                stash_save_dialog,
                 worktree_dialog,
                 stash_branch_dialog,
                 create_pr_dialog,

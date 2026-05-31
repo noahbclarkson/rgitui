@@ -19,8 +19,9 @@ use crate::{
     GlobalSearchViewEvent, InteractiveRebase, InteractiveRebaseEvent, ReflogView, ReflogViewEvent,
     RenameDialog, RenameDialogEvent, RepoCloneDialog, RepoCloneEvent, RepoOpener, RepoOpenerEvent,
     ShortcutsHelp, ShortcutsHelpEvent, Sidebar, SidebarEvent, StashBranchDialog,
-    StashBranchDialogEvent, SubmoduleView, SubmoduleViewEvent, TagDialog, TagDialogEvent,
-    ToastKind, Toolbar, ToolbarEvent, WorktreeDialog, WorktreeDialogEvent,
+    StashBranchDialogEvent, StashSaveDialog, StashSaveDialogEvent, SubmoduleView,
+    SubmoduleViewEvent, TagDialog, TagDialogEvent, ToastKind, Toolbar, ToolbarEvent,
+    WorktreeDialog, WorktreeDialogEvent,
 };
 
 use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
@@ -338,6 +339,31 @@ pub(super) fn subscribe_tag_dialog(cx: &mut Context<Workspace>, tag_dialog: &Ent
                 }
             }
             TagDialogEvent::Dismissed => {}
+        },
+    )
+    .detach();
+}
+
+pub(super) fn subscribe_stash_save_dialog(
+    cx: &mut Context<Workspace>,
+    stash_save_dialog: &Entity<StashSaveDialog>,
+) {
+    cx.subscribe(
+        stash_save_dialog,
+        |this, _d, event: &StashSaveDialogEvent, cx| match event {
+            StashSaveDialogEvent::CreateStash { message } => {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    tab.project.update(cx, |proj, cx| {
+                        proj.stash_save(message.as_deref(), cx).detach();
+                    });
+                }
+                let msg_desc = message
+                    .as_ref()
+                    .map(|m| format!(" \"{}\"", m))
+                    .unwrap_or_default();
+                this.show_toast(format!("Stash created{}", msg_desc), ToastKind::Info, cx);
+            }
+            StashSaveDialogEvent::Dismissed => {}
         },
     )
     .detach();
@@ -2314,8 +2340,8 @@ pub(super) fn subscribe_toolbar(
                 });
             }
             ToolbarEvent::StashSave => {
-                _project.update(cx, |proj, cx| {
-                    proj.stash_save(None, cx).detach();
+                this.dialogs.stash_save_dialog.update(cx, |d, cx| {
+                    d.show_visible(cx);
                 });
             }
             ToolbarEvent::StashPop => {
