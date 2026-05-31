@@ -128,8 +128,8 @@ impl Workspace {
                 });
             }
             CommandId::StashSave => {
-                tab.project.update(cx, |proj, cx| {
-                    proj.stash_save(None, cx).detach();
+                self.dialogs.stash_save_dialog.update(cx, |d, cx| {
+                    d.show_visible(cx);
                 });
             }
             CommandId::StashPop => {

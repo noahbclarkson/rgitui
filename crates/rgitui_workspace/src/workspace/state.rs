@@ -4,7 +4,7 @@ use rgitui_git::GitOperationUpdate;
 use crate::{
     BranchDialog, CommandPalette, ConfirmDialog, CreatePrDialog, GlobalSearchView,
     InteractiveRebase, RenameDialog, RepoCloneDialog, RepoOpener, ShortcutsHelp, StashBranchDialog,
-    TagDialog, ThemeEditorDialog, WorktreeDialog,
+    StashSaveDialog, TagDialog, ThemeEditorDialog, WorktreeDialog,
 };
 
 use super::{ActiveOperation, FocusedPanel, OperationOutput};
@@ -25,6 +25,7 @@ pub(crate) struct DialogState {
     pub tag_dialog: Entity<TagDialog>,
     pub rename_dialog: Entity<RenameDialog>,
     pub confirm_dialog: Entity<ConfirmDialog>,
+    pub stash_save_dialog: Entity<StashSaveDialog>,
     pub worktree_dialog: Entity<WorktreeDialog>,
     pub stash_branch_dialog: Entity<StashBranchDialog>,
     pub create_pr_dialog: Entity<CreatePrDialog>,
