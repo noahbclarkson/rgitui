@@ -3333,6 +3333,15 @@ impl Render for DiffViewer {
                             .text_color(text_placeholder_color)
                             .child("\u{00B7}"),
                     )
+                    .child(if self.partial_mode {
+                        div()
+                            .text_xs()
+                            .text_color(Color::Warning.color(cx))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Partial")
+                    } else {
+                        div()
+                    })
                     .child(
                         Button::new("toggle-diff-mode", mode_label)
                             .size(ButtonSize::Compact)
