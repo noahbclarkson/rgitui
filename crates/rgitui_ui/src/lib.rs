@@ -19,6 +19,7 @@ mod tab_bar;
 mod text_input;
 mod toast;
 mod tooltip;
+mod window_controls;
 
 pub use avatar_cache::*;
 pub use badge::*;
@@ -41,6 +42,7 @@ pub use tab_bar::*;
 pub use text_input::*;
 pub use toast::*;
 pub use tooltip::*;
+pub use window_controls::*;
 
 // Re-export theme helpers that UI components need
 pub use rgitui_theme::{ActiveTheme, Color, StyledExt};
