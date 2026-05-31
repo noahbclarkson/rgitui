@@ -71,9 +71,13 @@ pub enum IconName {
     Dot,
     DotOutline,
     Menu,
-    MoreHorizontal,
+
+    // Window controls
     Maximize,
     Minimize,
+    Close,
+    Restore,
+    MoreHorizontal,
     GripVertical,
 }
 
@@ -136,6 +140,8 @@ impl IconName {
             IconName::MoreHorizontal => "icons/more-horizontal.svg",
             IconName::Maximize => "icons/maximize.svg",
             IconName::Minimize => "icons/minimize.svg",
+            IconName::Close => "icons/close.svg",
+            IconName::Restore => "icons/restore.svg",
             IconName::GripVertical => "icons/grip-vertical.svg",
         }
     }

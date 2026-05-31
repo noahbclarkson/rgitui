@@ -1,7 +1,9 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, ClickEvent, SharedString, Window};
+use gpui::{div, px, App, ClickEvent, Decorations, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
+use rgitui_ui::{
+    Icon, IconName, IconSize, Label, LabelSize, Tooltip, WindowControl, WindowControlType,
+};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
@@ -92,8 +94,8 @@ impl TitleBar {
 }
 
 impl RenderOnce for TitleBar {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let colors = cx.colors();
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = cx.colors().clone();
 
         let branch_color = if self.head_detached {
             Color::Warning
@@ -158,7 +160,38 @@ impl RenderOnce for TitleBar {
             .border_color(colors.border)
             .px(px(12.))
             .gap(px(8.))
-            .items_center()
+            .items_center();
+
+        // On Linux with server decorations, the WM owns the window controls so we
+        // don't render them here. On client decorations we render them.
+        let use_window_controls = matches!(window.window_decorations(), Decorations::Client { .. });
+
+        if use_window_controls {
+            // Window controls on the left (Linux CSD convention)
+            bar = bar.child(
+                div()
+                    .h_flex()
+                    .gap(px(4.))
+                    .items_center()
+                    .child(WindowControl::new(
+                        "minimize",
+                        WindowControlType::Minimize,
+                        cx,
+                    ))
+                    .child(WindowControl::new(
+                        "maximize",
+                        if window.is_maximized() {
+                            WindowControlType::Restore
+                        } else {
+                            WindowControlType::Maximize
+                        },
+                        cx,
+                    ))
+                    .child(WindowControl::new("close", WindowControlType::Close, cx)),
+            );
+        }
+
+        bar = bar
             .child(
                 div()
                     .h_flex()
@@ -176,7 +209,7 @@ impl RenderOnce for TitleBar {
                             .weight(gpui::FontWeight::BOLD),
                     ),
             )
-            .child(Self::render_separator(colors))
+            .child(Self::render_separator(&colors))
             .child(
                 div()
                     .h_flex()
@@ -193,7 +226,7 @@ impl RenderOnce for TitleBar {
                             .weight(gpui::FontWeight::SEMIBOLD),
                     ),
             )
-            .child(Self::render_separator(colors))
+            .child(Self::render_separator(&colors))
             .child(branch_pill);
 
         if let Some(state_label) = self.repo_state_label {
@@ -228,11 +261,11 @@ impl RenderOnce for TitleBar {
                 .gap(px(12.))
                 .items_center()
                 .child(Self::render_keyboard_hint(
-                    colors,
+                    &colors,
                     "Ctrl+Shift+P",
                     "Commands",
                 ))
-                .child(Self::render_keyboard_hint(colors, "?", "Help")),
+                .child(Self::render_keyboard_hint(&colors, "?", "Help")),
         )
     }
 }
