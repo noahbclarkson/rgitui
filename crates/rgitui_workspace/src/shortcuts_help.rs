@@ -133,6 +133,7 @@ impl ShortcutsHelp {
                         "Alt+S / Alt+U",
                         "Stage / unstage current hunk in diff viewer",
                     ),
+                    ("p", "Toggle partial (line-selection) staging mode"),
                     (
                         "s / u",
                         "Stage / unstage hunks under selection (or cursor hunk)",
