@@ -10,7 +10,7 @@ use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, FocusHandle, Render, SharedString,
     UniformListScrollHandle, WeakEntity, Window,
 };
-use rgitui_git::{BranchInfo, GitProject};
+use rgitui_git::{BranchInfo, GitProject, GitProjectEvent};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize};
 
@@ -48,9 +48,30 @@ pub struct BranchHealthPanel {
 
 impl BranchHealthPanel {
     pub fn new(cx: &mut Context<Self>, project: WeakEntity<GitProject>) -> Self {
+        let branches = project
+            .upgrade()
+            .map(|proj| proj.read(cx).branches().to_vec())
+            .unwrap_or_default();
+
+        if let Some(proj) = project.upgrade() {
+            cx.subscribe(&proj, |this, project, event: &GitProjectEvent, cx| {
+                if matches!(
+                    event,
+                    GitProjectEvent::StatusChanged
+                        | GitProjectEvent::HeadChanged
+                        | GitProjectEvent::RefsChanged
+                        | GitProjectEvent::AheadBehindRefreshed
+                ) {
+                    this.branches = project.read(cx).branches().to_vec();
+                    cx.notify();
+                }
+            })
+            .detach();
+        }
+
         Self {
             filter: BranchHealthFilter::All,
-            branches: Vec::new(),
+            branches,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             project,
@@ -85,9 +106,6 @@ impl Render for BranchHealthPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let panel_bg = colors.panel_background;
-
-        // Refresh data on each render
-        self.refresh(cx);
 
         let (total, unmerged, stale, diverged) = self.stats();
         let filtered: Vec<BranchInfo> = self.filtered_branches().into_iter().cloned().collect();

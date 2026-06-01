@@ -17,6 +17,21 @@ use super::{
     SidebarResize, Workspace,
 };
 
+/// Resize bounds for the right detail panel, shared by the drag handle and the
+/// Ctrl+[ / Ctrl+] keyboard shortcuts so both input paths clamp identically.
+pub(super) const MIN_DETAIL_PANEL_WIDTH: f32 = 180.0;
+pub(super) const MAX_DETAIL_PANEL_WIDTH: f32 = 720.0;
+
+/// Resize bounds for the bottom diff viewer, shared by the drag handle and the
+/// Ctrl+Up / Ctrl+Down keyboard shortcuts so both input paths clamp identically.
+pub(super) const MIN_DIFF_VIEWER_HEIGHT: f32 = 100.0;
+pub(super) const MAX_DIFF_VIEWER_HEIGHT: f32 = 600.0;
+
+/// Smallest width the center column (commit graph + diff viewer) is allowed to
+/// keep when the window is narrow. The fixed-width side panels are capped at
+/// render time so the primary view never collapses below this width.
+pub(super) const MIN_CENTER_WIDTH: f32 = 320.0;
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log::trace!(
@@ -514,6 +529,34 @@ impl Render for Workspace {
             // Main content area — drag_move listeners live here so they fire globally
             .child({
                 let entity = cx.entity();
+
+                // Responsive width capping: on a narrow window the two
+                // fixed-width side panels would crush the center graph/diff
+                // column toward zero. Cap their rendered widths so the center
+                // column keeps at least MIN_CENTER_WIDTH. The stored widths are
+                // left untouched, so panels restore to their full size when the
+                // window grows again. `content_bounds` is zero-sized on the very
+                // first frame (before the tracking canvas has run), so the cap
+                // is skipped until a real width is known.
+                let available_width = f32::from(self.layout.content_bounds.size.width);
+                let (sidebar_width, detail_panel_width) = if available_width > MIN_CENTER_WIDTH {
+                    let budget = (available_width - MIN_CENTER_WIDTH).max(0.0);
+                    let requested = self.layout.sidebar_width + self.layout.detail_panel_width;
+                    if requested > budget {
+                        // Shrink both panels proportionally so neither one
+                        // disappears entirely while the center stays usable.
+                        let scale = budget / requested;
+                        (
+                            (self.layout.sidebar_width * scale).max(0.0),
+                            (self.layout.detail_panel_width * scale).max(0.0),
+                        )
+                    } else {
+                        (self.layout.sidebar_width, self.layout.detail_panel_width)
+                    }
+                } else {
+                    (self.layout.sidebar_width, self.layout.detail_panel_width)
+                };
+
                 div()
                     .id("main-content")
                     .h_flex()
@@ -549,7 +592,7 @@ impl Render for Workspace {
                         |this, e: &DragMoveEvent<DetailPanelResize>, _, cx| {
                             let new_w =
                                 f32::from(this.layout.content_bounds.right() - e.event.position.x)
-                                    .clamp(180., 720.);
+                                    .clamp(MIN_DETAIL_PANEL_WIDTH, MAX_DETAIL_PANEL_WIDTH);
                             this.layout.detail_panel_width = new_w;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -559,7 +602,7 @@ impl Render for Workspace {
                         |this, e: &DragMoveEvent<DiffViewerResize>, _, cx| {
                             let new_h =
                                 f32::from(this.layout.content_bounds.bottom() - e.event.position.y)
-                                    .clamp(60., 500.);
+                                    .clamp(MIN_DIFF_VIEWER_HEIGHT, MAX_DIFF_VIEWER_HEIGHT);
                             this.layout.diff_viewer_height = new_h;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -580,7 +623,7 @@ impl Render for Workspace {
                     .child(
                         div()
                             .relative()
-                            .w(px(self.layout.sidebar_width))
+                            .w(px(sidebar_width))
                             .h_full()
                             .flex_shrink_0()
                             .when(sidebar_focused, |el| {
@@ -860,7 +903,7 @@ impl Render for Workspace {
                         let commit_input_height = self.layout.commit_input_height;
                         div()
                             .relative()
-                            .w(px(self.layout.detail_panel_width))
+                            .w(px(detail_panel_width))
                             .h_full()
                             .flex_shrink_0()
                             .v_flex()
@@ -1524,13 +1567,27 @@ impl Workspace {
                 .child(self.shortcut_hint("Settings", "Ctrl+,", colors)),
         );
 
+        // Scrollable outer container with an inner wrapper that fills at least
+        // the viewport height. Short content stays vertically centered; when the
+        // recents and hints exceed the window height the wrapper grows and the
+        // outer container scrolls, keeping the top (logo/title) and bottom
+        // (shortcut hints) reachable on short windows.
         div()
+            .id("welcome-scroll")
             .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
+            .overflow_y_scroll()
             .bg(colors.background)
-            .child(content)
+            .child(
+                div()
+                    .min_h_full()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .py(px(24.))
+                    .child(content),
+            )
     }
 
     fn shortcut_hint(
@@ -1639,7 +1696,12 @@ fn is_console_terminal(program: &str) -> bool {
 /// argument construct the final args list accordingly.
 ///
 /// This is a pure function to enable unit testing.
-#[allow(dead_code)]
+///
+/// Only the Windows terminal-spawning path (`open_terminal`) calls this at
+/// runtime; the non-Windows path parses the command inline. It is therefore
+/// gated to the configurations that actually reference it — Windows builds and
+/// test builds on any platform — so it never compiles as dead code.
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn build_terminal_args(
     custom_command: &str,
     path: &std::path::Path,

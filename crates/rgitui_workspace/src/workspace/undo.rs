@@ -140,6 +140,15 @@ impl Workspace {
             return;
         };
 
+        // TODO(audit): BUG-04 — undo applies to the ACTIVE tab's repo, not the repo
+        // the action was performed on. With multiple tabs open, performing an op in
+        // tab A, switching to tab B, then pressing Undo runs against B's repository
+        // (e.g. recreating a branch or resetting B to a foreign OID — data loss).
+        // Fix: stamp each UndoEntry with the originating repo path at push time
+        // (the active tab's `project.repo_path()` — the action always originates in
+        // the active tab) across the 8 push sites in events.rs, then route here to the
+        // tab whose project matches that path (showing an error toast if it is no
+        // longer open) instead of unconditionally using `self.active_tab`.
         let Some(tab) = self.tabs.get(self.active_tab) else {
             return;
         };

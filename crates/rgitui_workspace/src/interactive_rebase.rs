@@ -68,11 +68,6 @@ pub enum InteractiveRebaseEvent {
     Cancel,
 }
 
-/// Internal event carrying the entry index for a drag start.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct DragStartEvent(usize);
-
 /// Interactive rebase modal dialog.
 pub struct InteractiveRebase {
     visible: bool,
@@ -105,7 +100,6 @@ pub struct InteractiveRebase {
 const REBASE_ENTRY_HEIGHT: f32 = 36.0;
 
 impl EventEmitter<InteractiveRebaseEvent> for InteractiveRebase {}
-impl EventEmitter<DragStartEvent> for InteractiveRebase {}
 
 impl InteractiveRebase {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -909,6 +903,16 @@ impl Render for InteractiveRebase {
                     )
                     .child(
                         Label::new("p/r/s/f/d Set action")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new("Enter Start")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new("Esc Cancel")
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),

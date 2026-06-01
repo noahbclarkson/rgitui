@@ -31,6 +31,10 @@ pub struct StashBranchDialog {
     stash_index: usize,
     error_message: Option<String>,
     visible: bool,
+    /// Set when the dialog is shown so the next render focuses the branch-name
+    /// field. Lets us focus from call sites that have no `Window` without
+    /// leaving the user to click in first.
+    pending_focus: bool,
     focus_handle: FocusHandle,
 }
 
@@ -62,6 +66,7 @@ impl StashBranchDialog {
             stash_index: 0,
             error_message: None,
             visible: false,
+            pending_focus: false,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -79,6 +84,7 @@ impl StashBranchDialog {
     /// Show the dialog without focusing (for use where Window is unavailable).
     pub fn show_visible(&mut self, stash_index: usize, cx: &mut Context<Self>) {
         self.visible = true;
+        self.pending_focus = true;
         self.stash_index = stash_index;
         self.editor.update(cx, |e, cx| e.clear(cx));
         self.error_message = None;
@@ -167,9 +173,14 @@ impl StashBranchDialog {
 }
 
 impl Render for StashBranchDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().into_any_element();
+        }
+
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.editor.update(cx, |e, cx| e.focus(window, cx));
         }
 
         let colors = cx.colors();

@@ -1086,7 +1086,6 @@ impl Render for CommandPalette {
             .w(px(720.))
             .max_h(px(500.))
             .elevation_3(cx)
-            .rounded(px(10.))
             .overflow_hidden()
             .on_click(|_: &ClickEvent, _, cx| {
                 cx.stop_propagation();

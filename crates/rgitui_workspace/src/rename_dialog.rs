@@ -22,6 +22,10 @@ pub struct RenameDialog {
     editor: Entity<TextInput>,
     error_message: Option<String>,
     visible: bool,
+    /// Set when the dialog is shown so the next render focuses the name field.
+    /// Lets us focus from call sites that have no `Window` without leaving the
+    /// user to click in first.
+    pending_focus: bool,
     focus_handle: FocusHandle,
 }
 
@@ -57,6 +61,7 @@ impl RenameDialog {
             editor,
             error_message: None,
             visible: false,
+            pending_focus: false,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -67,6 +72,7 @@ impl RenameDialog {
         self.editor.update(cx, |e, cx| e.set_text(old_name, cx));
         self.error_message = None;
         self.visible = true;
+        self.pending_focus = true;
         cx.notify();
     }
 
@@ -158,9 +164,14 @@ impl RenameDialog {
 }
 
 impl Render for RenameDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("rename-dialog").into_any_element();
+        }
+
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.editor.update(cx, |e, cx| e.focus(window, cx));
         }
 
         let colors = cx.colors();

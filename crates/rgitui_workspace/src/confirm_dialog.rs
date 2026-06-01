@@ -38,6 +38,7 @@ pub struct ConfirmDialog {
     message: String,
     action: Option<ConfirmAction>,
     focus_handle: FocusHandle,
+    pending_focus: bool,
 }
 
 impl EventEmitter<ConfirmDialogEvent> for ConfirmDialog {}
@@ -50,6 +51,7 @@ impl ConfirmDialog {
             message: String::new(),
             action: None,
             focus_handle: cx.focus_handle(),
+            pending_focus: false,
         }
     }
 
@@ -82,6 +84,7 @@ impl ConfirmDialog {
         self.message = message.into();
         self.action = Some(action);
         self.visible = true;
+        self.pending_focus = true;
         cx.notify();
     }
 
@@ -171,9 +174,14 @@ impl ConfirmDialog {
 }
 
 impl Render for ConfirmDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("confirm-dialog").into_any_element();
+        }
+
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.focus_handle.focus(window, cx);
         }
 
         let colors = cx.colors();

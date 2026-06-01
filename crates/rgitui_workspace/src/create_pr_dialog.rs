@@ -52,7 +52,7 @@ impl CreatePrDialog {
         });
 
         let body_input = cx.new(|cx| {
-            let mut ti = TextInput::new(cx);
+            let mut ti = TextInput::new(cx).multiline();
             ti.set_placeholder("Add a description (optional)");
             ti
         });
@@ -450,9 +450,11 @@ impl Render for CreatePrDialog {
                             .w_full()
                             .gap_2()
                             .child(
-                                Label::new("Shift+Enter to create | Esc to cancel")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Placeholder),
+                                Label::new(
+                                    "Enter for a new line | Shift+Enter to create | Esc to cancel",
+                                )
+                                .size(LabelSize::XSmall)
+                                .color(Color::Placeholder),
                             )
                             .child(
                                 div()
@@ -595,11 +597,8 @@ async fn create_github_pr(req: CreatePrRequest<'_>) -> Result<(u64, String), Str
             .ok()
             .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from));
         return Err(detail.unwrap_or_else(|| {
-            format!(
-                "GitHub API error {}: {}",
-                status,
-                &body[..body.len().min(200)]
-            )
+            let snippet: String = body.chars().take(200).collect();
+            format!("GitHub API error {}: {}", status, snippet)
         }));
     }
 

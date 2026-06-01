@@ -405,10 +405,12 @@ pub(super) fn subscribe_create_pr_dialog(
         create_pr_dialog,
         |this, _d, event: &CreatePrDialogEvent, cx| match event {
             CreatePrDialogEvent::PrCreated { number, url } => {
-                // Refresh the PR list to show the new PR
+                // Refresh the PR list to show the new PR, bypassing the 60s fetch
+                // cache (a plain fetch_prs would be suppressed and the new PR would
+                // not appear for up to a minute).
                 if let Some(tab) = this.tabs.get(this.active_tab) {
                     tab.prs_panel.update(cx, |panel, cx| {
-                        panel.fetch_prs(cx);
+                        panel.force_fetch_prs(cx);
                     });
                 }
                 this.show_toast(
@@ -909,7 +911,10 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     Workspace::configure_github_panels(&proj, &issues_panel, &prs_panel, cx);
                 }
 
-                if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                // Scope the inspecting-worktree auto-exit to the tab whose project
+                // fired this event — NOT the active tab. A background tab's watcher
+                // event must not clear the active tab's inspected worktree.
+                if let Some(tab) = this.tabs.iter_mut().find(|t| t.project == project) {
                     if let Some(inspecting) = &tab.inspecting_worktree {
                         let inspected_worktree =
                             worktrees.iter().find(|wt| wt.path == inspecting.path);
@@ -1833,8 +1838,8 @@ pub(super) fn subscribe_graph(
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(msg.clone()));
                     // Show first line of message as confirmation
                     let first_line = msg.lines().next().unwrap_or(msg);
-                    let preview = if first_line.len() > 40 {
-                        format!("{}...", &first_line[..40])
+                    let preview = if first_line.chars().count() > 40 {
+                        format!("{}...", first_line.chars().take(40).collect::<String>())
                     } else {
                         first_line.to_string()
                     };

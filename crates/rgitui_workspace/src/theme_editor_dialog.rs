@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, Window,
+    div, px, relative, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Window,
 };
 use rgitui_theme::{
     hex_to_hsla_strict, hsla_to_hex, json_theme::save_theme_to_file, ActiveTheme, Appearance,
@@ -49,7 +49,18 @@ pub struct ThemeEditorDialog {
     status_fields: Vec<StatusFieldEntry>,
     color_inputs: Vec<Entity<TextInput>>,
     status_inputs: Vec<Entity<TextInput>>,
-    save_status: Option<String>,
+    save_status: Option<SaveStatus>,
+    invalid_color_fields: Vec<usize>,
+    invalid_status_fields: Vec<usize>,
+    needs_focus: bool,
+}
+
+enum SaveStatus {
+    Saved {
+        message: String,
+        invalid_count: usize,
+    },
+    Failed(String),
 }
 
 impl ThemeEditorDialog {
@@ -63,6 +74,9 @@ impl ThemeEditorDialog {
         self.editable_theme = theme;
         self.rebuild_inputs(cx);
         self.save_status = None;
+        self.invalid_color_fields.clear();
+        self.invalid_status_fields.clear();
+        self.needs_focus = true;
         self.visible = true;
         cx.notify();
     }
@@ -79,6 +93,9 @@ impl ThemeEditorDialog {
             color_inputs,
             status_inputs,
             save_status: None,
+            invalid_color_fields: Vec::new(),
+            invalid_status_fields: Vec::new(),
+            needs_focus: false,
         }
     }
 
@@ -119,7 +136,27 @@ impl ThemeEditorDialog {
                 |c: &ThemeColors| c.text_muted,
                 |c, v| c.text_muted = v,
             ),
+            (
+                "Text Accent",
+                |c: &ThemeColors| c.text_accent,
+                |c, v| c.text_accent = v,
+            ),
+            (
+                "Text Placeholder",
+                |c: &ThemeColors| c.text_placeholder,
+                |c, v| c.text_placeholder = v,
+            ),
             ("Icon", |c: &ThemeColors| c.icon, |c, v| c.icon = v),
+            (
+                "Focus Ring",
+                |c: &ThemeColors| c.border_focused,
+                |c, v| c.border_focused = v,
+            ),
+            (
+                "Selected Border",
+                |c: &ThemeColors| c.border_selected,
+                |c, v| c.border_selected = v,
+            ),
             ("Added", |c: &ThemeColors| c.vc_added, |c, v| c.vc_added = v),
             (
                 "Modified",
@@ -140,6 +177,11 @@ impl ThemeEditorDialog {
                 "Conflict",
                 |c: &ThemeColors| c.vc_conflict,
                 |c, v| c.vc_conflict = v,
+            ),
+            (
+                "Renamed",
+                |c: &ThemeColors| c.vc_renamed,
+                |c, v| c.vc_renamed = v,
             ),
         ];
 
@@ -233,7 +275,7 @@ impl ThemeEditorDialog {
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event.keystroke.key.as_str() {
@@ -243,22 +285,54 @@ impl ThemeEditorDialog {
             "enter" => {
                 self.save(cx);
             }
+            "tab" => {
+                self.advance_focus(event.keystroke.modifiers.shift, window, cx);
+            }
             _ => {}
         }
+    }
+
+    /// Cycle keyboard focus across the color and status inputs, wrapping at the
+    /// ends. Tab bubbles up from the focused input (which consumes it without
+    /// stopping propagation) to the modal's key handler, so this is the dialog's
+    /// own focus traversal.
+    fn advance_focus(&self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let handles: Vec<FocusHandle> = self
+            .color_inputs
+            .iter()
+            .chain(self.status_inputs.iter())
+            .map(|input| input.read(cx).focus_handle(cx))
+            .collect();
+        if handles.is_empty() {
+            return;
+        }
+
+        let current = handles.iter().position(|h| h.is_focused(window));
+        let len = handles.len();
+        let next = match current {
+            Some(idx) if reverse => (idx + len - 1) % len,
+            Some(idx) => (idx + 1) % len,
+            None => 0,
+        };
+        handles[next].focus(window, cx);
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
         let mut colors = self.editable_theme.colors.clone();
         let mut status = self.editable_theme.status.clone();
+        let mut invalid_color_fields = Vec::new();
+        let mut invalid_status_fields = Vec::new();
 
         for (i, field) in self.color_fields.iter().enumerate() {
             let text = self.color_inputs[i].read(cx).text().trim().to_string();
             if text.is_empty() {
                 continue;
             }
-            // Use strict parser: invalid hex → keep current color instead of silently saving black.
-            if let Some(hsla) = hex_to_hsla_strict(&text) {
-                (field.setter)(&mut colors, hsla);
+            // Use strict parser: invalid hex is flagged for feedback instead of
+            // silently reverting to the current color.
+            match hex_to_hsla_strict(&text) {
+                Some(hsla) => (field.setter)(&mut colors, hsla),
+                None => invalid_color_fields.push(i),
             }
         }
 
@@ -267,10 +341,15 @@ impl ThemeEditorDialog {
             if text.is_empty() {
                 continue;
             }
-            if let Some(hsla) = hex_to_hsla_strict(&text) {
-                (field.setter)(&mut status, hsla);
+            match hex_to_hsla_strict(&text) {
+                Some(hsla) => (field.setter)(&mut status, hsla),
+                None => invalid_status_fields.push(i),
             }
         }
+
+        let invalid_count = invalid_color_fields.len() + invalid_status_fields.len();
+        self.invalid_color_fields = invalid_color_fields;
+        self.invalid_status_fields = invalid_status_fields;
 
         let mut theme = (*self.editable_theme).clone();
         theme.colors = colors;
@@ -279,7 +358,21 @@ impl ThemeEditorDialog {
         match save_theme_to_file(&theme) {
             Ok(path) => {
                 log::info!("Theme saved to {}", path.display());
-                self.save_status = Some(format!("Saved to {}", path.display()));
+                let message = if invalid_count == 0 {
+                    format!("Saved to {}", path.display())
+                } else {
+                    format!(
+                        "Saved to {} · {} field{} had invalid hex and {} not changed",
+                        path.display(),
+                        invalid_count,
+                        if invalid_count == 1 { "" } else { "s" },
+                        if invalid_count == 1 { "was" } else { "were" }
+                    )
+                };
+                self.save_status = Some(SaveStatus::Saved {
+                    message,
+                    invalid_count,
+                });
                 let new_theme = Arc::new(theme);
                 cx.update_global::<ThemeState, _>(|state, _cx| {
                     state.insert_theme(new_theme.clone());
@@ -291,7 +384,7 @@ impl ThemeEditorDialog {
                 cx.emit(ThemeEditorEvent::Saved(new_theme.clone()));
             }
             Err(e) => {
-                self.save_status = Some(format!("Save failed: {}", e));
+                self.save_status = Some(SaveStatus::Failed(format!("Save failed: {}", e)));
             }
         }
         cx.notify();
@@ -301,12 +394,27 @@ impl ThemeEditorDialog {
 impl EventEmitter<ThemeEditorEvent> for ThemeEditorDialog {}
 
 impl Render for ThemeEditorDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("theme-editor").into_any_element();
         }
 
+        // Focus the first color input the first time the dialog renders after
+        // opening, so Enter/Tab work immediately without a manual click.
+        if self.needs_focus {
+            self.needs_focus = false;
+            if let Some(handle) = self
+                .color_inputs
+                .first()
+                .map(|i| i.read(cx).focus_handle(cx))
+            {
+                handle.focus(window, cx);
+            }
+        }
+
         let colors = cx.colors();
+        let invalid_border = cx.status().error;
+        let valid_border = colors.border_transparent;
         let theme = self.editable_theme.clone();
         let theme_name = theme.name.clone();
         let appearance = theme.appearance;
@@ -340,7 +448,9 @@ impl Render for ThemeEditorDialog {
                     })
                     .v_flex()
                     .w(px(860.))
+                    .max_w(relative(0.92))
                     .h(px(580.))
+                    .max_h(relative(0.9))
                     .elevation_3(cx)
                     .rounded(px(12.))
                     .overflow_hidden()
@@ -414,6 +524,8 @@ impl Render for ThemeEditorDialog {
                                                 let label_text = field.label.clone();
                                                 let fallback =
                                                     (field.getter)(&self.editable_theme.colors);
+                                                let invalid =
+                                                    self.invalid_color_fields.contains(&i);
                                                 div()
                                                     .h_flex()
                                                     .items_center()
@@ -421,6 +533,12 @@ impl Render for ThemeEditorDialog {
                                                     .px(px(8.))
                                                     .py(px(6.))
                                                     .rounded(px(6.))
+                                                    .border_1()
+                                                    .border_color(if invalid {
+                                                        invalid_border
+                                                    } else {
+                                                        valid_border
+                                                    })
                                                     .child(
                                                         div().w(px(180.)).overflow_hidden().child(
                                                             Label::new(label_text)
@@ -462,6 +580,8 @@ impl Render for ThemeEditorDialog {
                                                 let label_text = field.label.clone();
                                                 let fallback =
                                                     (field.getter)(&self.editable_theme.status);
+                                                let invalid =
+                                                    self.invalid_status_fields.contains(&i);
                                                 div()
                                                     .h_flex()
                                                     .items_center()
@@ -469,6 +589,12 @@ impl Render for ThemeEditorDialog {
                                                     .px(px(8.))
                                                     .py(px(6.))
                                                     .rounded(px(6.))
+                                                    .border_1()
+                                                    .border_color(if invalid {
+                                                        invalid_border
+                                                    } else {
+                                                        valid_border
+                                                    })
                                                     .child(
                                                         div().w(px(180.)).overflow_hidden().child(
                                                             Label::new(label_text)
@@ -507,12 +633,20 @@ impl Render for ThemeEditorDialog {
                             .rounded_b(px(12.))
                             .child({
                                 let (text, color) = match &self.save_status {
-                                    Some(msg) if msg.starts_with("Save failed") => {
-                                        (msg.clone(), Color::Error)
+                                    Some(SaveStatus::Failed(msg)) => (msg.clone(), Color::Error),
+                                    Some(SaveStatus::Saved {
+                                        message,
+                                        invalid_count,
+                                    }) => {
+                                        let color = if *invalid_count == 0 {
+                                            Color::Success
+                                        } else {
+                                            Color::Warning
+                                        };
+                                        (message.clone(), color)
                                     }
-                                    Some(msg) => (msg.clone(), Color::Success),
                                     None => (
-                                        "Enter to save · Esc to close".to_string(),
+                                        "Tab to move · Enter to save · Esc to close".to_string(),
                                         Color::Placeholder,
                                     ),
                                 };

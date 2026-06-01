@@ -24,8 +24,8 @@ use rgitui_settings::{
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
-    Button, ButtonSize, ButtonStyle, CheckState, Checkbox, Icon, IconName, IconSize, Label,
-    LabelSize, TextInput, TextInputEvent,
+    Button, ButtonSize, ButtonStyle, CheckState, Checkbox, Icon, IconButton, IconName, IconSize,
+    Label, LabelSize, TextInput, TextInputEvent,
 };
 
 use super::events::SettingsViewEvent;
@@ -173,24 +173,37 @@ fn detect_available_terminals() -> Vec<DetectedApp> {
     results
 }
 
-#[allow(unused_mut)]
 fn detect_available_editors() -> Vec<DetectedApp> {
-    let mut candidates: Vec<(&str, &str)> = vec![
-        ("VS Code", "code"),
-        ("Cursor", "cursor"),
-        ("Zed", "zed"),
-        ("Sublime Text", "subl"),
-        ("Neovim", "nvim"),
-        ("Vim", "vim"),
-        ("Nano", "nano"),
-        ("Emacs", "emacs"),
-    ];
-
-    #[cfg(target_os = "windows")]
-    {
-        candidates.push(("Notepad++", "notepad++"));
-        candidates.push(("Notepad", "notepad"));
-    }
+    let candidates: Vec<(&str, &str)> = {
+        #[cfg(target_os = "windows")]
+        {
+            vec![
+                ("VS Code", "code"),
+                ("Cursor", "cursor"),
+                ("Zed", "zed"),
+                ("Sublime Text", "subl"),
+                ("Neovim", "nvim"),
+                ("Vim", "vim"),
+                ("Nano", "nano"),
+                ("Emacs", "emacs"),
+                ("Notepad++", "notepad++"),
+                ("Notepad", "notepad"),
+            ]
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            vec![
+                ("VS Code", "code"),
+                ("Cursor", "cursor"),
+                ("Zed", "zed"),
+                ("Sublime Text", "subl"),
+                ("Neovim", "nvim"),
+                ("Vim", "vim"),
+                ("Nano", "nano"),
+                ("Emacs", "emacs"),
+            ]
+        }
+    };
 
     let mut results = Vec::new();
     for (name, cmd) in candidates {
@@ -275,10 +288,18 @@ pub struct SettingsView {
     selected_editor_index: Option<usize>,
     feedback_message: Option<String>,
     feedback_is_error: bool,
+    /// Monotonic id for the current feedback message. An auto-clear timer
+    /// captures the generation it was scheduled for and only clears the
+    /// banner if it is still the active message, so a newer message is never
+    /// dismissed by an older timer.
+    feedback_generation: u64,
 
     // GitHub Device Flow
     device_flow_status: DeviceFlowStatus,
     device_flow_task: Option<Task<()>>,
+    /// When the in-flight GitHub device code expires. Used to show the
+    /// remaining validity time in the waiting card.
+    device_flow_expires_at: Option<std::time::Instant>,
 
     /// Scroll position for the single scrollable content pane. Reset to the
     /// top whenever the user navigates to a different section so they always
@@ -692,8 +713,10 @@ impl SettingsView {
             selected_editor_index,
             feedback_message: None,
             feedback_is_error: false,
+            feedback_generation: 0,
             device_flow_status: DeviceFlowStatus::Idle,
             device_flow_task: None,
+            device_flow_expires_at: None,
             content_scroll: ScrollHandle::new(),
         }
     }
@@ -751,6 +774,7 @@ impl SettingsView {
                 self.confirm_destructive_operations = s.confirm_destructive_operations;
                 self.auto_check_updates = s.auto_check_updates;
                 self.watch_all_worktrees = s.watch_all_worktrees;
+                self.feedback_generation = self.feedback_generation.wrapping_add(1);
                 self.feedback_message = None;
                 self.feedback_is_error = false;
                 (
@@ -847,7 +871,64 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn save_settings(&mut self, cx: &mut Context<Self>) {
+    /// Show a feedback message in the header banner. Informational and success
+    /// messages auto-dismiss after a few seconds; errors stay until replaced or
+    /// dismissed so the user has time to read them.
+    fn set_feedback(&mut self, message: impl Into<String>, is_error: bool, cx: &mut Context<Self>) {
+        self.feedback_generation = self.feedback_generation.wrapping_add(1);
+        self.feedback_message = Some(message.into());
+        self.feedback_is_error = is_error;
+
+        if !is_error {
+            let generation = self.feedback_generation;
+            cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(5))
+                    .await;
+                this.update(cx, |this, cx| {
+                    if this.feedback_generation == generation {
+                        this.clear_feedback(cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+
+        cx.notify();
+    }
+
+    /// Clear the feedback banner.
+    fn clear_feedback(&mut self, cx: &mut Context<Self>) {
+        self.feedback_generation = self.feedback_generation.wrapping_add(1);
+        self.feedback_message = None;
+        self.feedback_is_error = false;
+        cx.notify();
+    }
+
+    /// Commit any text fields that have not yet been submitted via Enter and
+    /// persist all settings. The standalone settings window invokes this on
+    /// close so a pasted secret is not silently discarded.
+    pub(super) fn commit_pending_edits(&mut self, cx: &mut Context<Self>) {
+        self.complete_browser_onboarding_for_current_provider();
+        if self.save_settings(cx) {
+            self.set_feedback("Settings saved.", false, cx);
+        }
+    }
+
+    /// Cancel an in-flight GitHub device-flow login, dropping the polling task
+    /// and returning the view to its idle state.
+    fn cancel_github_device_flow(&mut self, cx: &mut Context<Self>) {
+        self.device_flow_task = None;
+        self.device_flow_expires_at = None;
+        self.device_flow_status = DeviceFlowStatus::Idle;
+        self.pending_browser_auth_provider_id = None;
+        self.set_feedback("GitHub login cancelled.", false, cx);
+    }
+
+    /// Persist all settings. Returns `true` when the save succeeded so callers
+    /// can surface explicit confirmation.
+    fn save_settings(&mut self, cx: &mut Context<Self>) -> bool {
         let ai_api_key = self.ai_api_key_editor.read(cx).text().to_string();
         let git_https_token = self.git_https_token_editor.read(cx).text().to_string();
         let git_ssh_key_path = self.git_ssh_key_path_editor.read(cx).text().to_string();
@@ -936,19 +1017,20 @@ impl SettingsView {
             Ok(())
         });
 
-        match result {
+        let succeeded = match result {
             Ok(()) => {
-                self.feedback_message = None;
-                self.feedback_is_error = false;
+                self.clear_feedback(cx);
                 SettingsWindowActionGlobal::try_send(cx, SettingsWindowAction::SettingsChanged);
+                true
             }
             Err(error) => {
                 log::error!("Failed to save settings: {}", error);
-                self.feedback_message = Some(error.to_string());
-                self.feedback_is_error = true;
+                self.set_feedback(error.to_string(), true, cx);
+                false
             }
-        }
+        };
         cx.notify();
+        succeeded
     }
 
     fn sync_provider_editors(&self, cx: &mut Context<Self>) {
@@ -1007,12 +1089,11 @@ impl SettingsView {
         self.sync_provider_editors(cx);
         self.provider_token_editor
             .update(cx, |e, cx| e.focus(window, cx));
-        self.feedback_message = Some(
-            "Paste the token into the selected profile. It will be saved to your OS keychain."
-                .into(),
+        self.set_feedback(
+            "Paste the token into the selected profile. It will be saved to your OS keychain.",
+            false,
+            cx,
         );
-        self.feedback_is_error = false;
-        cx.notify();
     }
 
     fn paste_provider_token_for_kind(
@@ -1057,6 +1138,7 @@ impl SettingsView {
             if token_present {
                 if self.pending_browser_auth_provider_id.as_deref() == Some(provider_id.as_str()) {
                     self.pending_browser_auth_provider_id = None;
+                    self.feedback_generation = self.feedback_generation.wrapping_add(1);
                     self.feedback_message =
                         Some("Saved token to keychain for the selected profile.".into());
                     self.feedback_is_error = false;
@@ -1127,6 +1209,7 @@ impl SettingsView {
         self.selected_provider_index = self.git_providers.len().saturating_sub(1);
         self.expanded_provider_kind = Some(kind.to_string());
         self.sync_provider_editors(cx);
+        self.feedback_generation = self.feedback_generation.wrapping_add(1);
         self.feedback_message = Some("Added a new auth profile.".into());
         self.feedback_is_error = false;
         self.save_settings(cx);
@@ -1159,6 +1242,7 @@ impl SettingsView {
             .selected_provider_index
             .min(self.git_providers.len().saturating_sub(1));
         self.sync_provider_editors(cx);
+        self.feedback_generation = self.feedback_generation.wrapping_add(1);
         self.feedback_message = Some(format!("Removed provider '{}'.", provider.display_name));
         self.feedback_is_error = false;
         self.save_settings(cx);
@@ -1198,16 +1282,12 @@ impl SettingsView {
 
     fn import_from_clipboard(&mut self, field: MaskedField, cx: &mut Context<Self>) {
         let Some(clipboard) = cx.read_from_clipboard() else {
-            self.feedback_message = Some("Clipboard did not contain text.".into());
-            self.feedback_is_error = true;
-            cx.notify();
+            self.set_feedback("Clipboard did not contain text.", true, cx);
             return;
         };
 
         let Some(text) = clipboard.text() else {
-            self.feedback_message = Some("Clipboard did not contain text.".into());
-            self.feedback_is_error = true;
-            cx.notify();
+            self.set_feedback("Clipboard did not contain text.", true, cx);
             return;
         };
 
@@ -1232,6 +1312,7 @@ impl SettingsView {
             }
         }
 
+        self.feedback_generation = self.feedback_generation.wrapping_add(1);
         self.feedback_message = Some("Imported secret from clipboard.".into());
         self.feedback_is_error = false;
         self.save_settings(cx);
@@ -1285,18 +1366,18 @@ impl SettingsView {
             .map(|provider| provider.host.as_str());
         if let Some(url) = self.provider_connect_url(kind, host) {
             cx.open_url(&url);
-            self.feedback_message = Some(
-                "Browser login started. Finish in the browser, then use Paste Token if the token is not captured automatically."
-                    .into(),
+            self.set_feedback(
+                "Browser login started. Finish in the browser, then use Paste Token if the token is not captured automatically.",
+                false,
+                cx,
             );
-            self.feedback_is_error = false;
         } else {
-            self.feedback_message = Some(
-                "Custom providers do not have a standard browser onboarding flow. Add the host details in Custom Settings and paste a token there.".into(),
+            self.set_feedback(
+                "Custom providers do not have a standard browser onboarding flow. Add the host details in Custom Settings and paste a token there.",
+                false,
+                cx,
             );
-            self.feedback_is_error = false;
         }
-        cx.notify();
     }
 
     fn start_github_device_flow(&mut self, cx: &mut Context<Self>) {
@@ -1304,9 +1385,8 @@ impl SettingsView {
             user_code: "Loading...".into(),
             verification_uri: String::new(),
         };
-        self.feedback_message = Some("Starting GitHub login...".into());
-        self.feedback_is_error = false;
-        cx.notify();
+        self.device_flow_expires_at = None;
+        self.set_feedback("Starting GitHub login...", false, cx);
 
         let http = cx.http_client();
         // Held on the entity so the polling future is dropped (and cancelled
@@ -1320,9 +1400,8 @@ impl SettingsView {
                     cx.update(|cx| {
                         this.update(cx, |modal, cx| {
                             modal.device_flow_status = DeviceFlowStatus::Error(e.clone());
-                            modal.feedback_message = Some(format!("Device flow failed: {e}"));
-                            modal.feedback_is_error = true;
-                            cx.notify();
+                            modal.device_flow_expires_at = None;
+                            modal.set_feedback(format!("Device flow failed: {e}"), true, cx);
                         })
                         .ok();
                     });
@@ -1343,11 +1422,13 @@ impl SettingsView {
                         user_code: user_code.clone(),
                         verification_uri: verification_uri.clone(),
                     };
-                    modal.feedback_message =
-                        Some(format!("Enter code {} at {}", user_code, verification_uri));
-                    modal.feedback_is_error = false;
+                    modal.device_flow_expires_at = Some(expires_at);
+                    modal.set_feedback(
+                        format!("Enter code {} at {}", user_code, verification_uri),
+                        false,
+                        cx,
+                    );
                     cx.open_url(&verification_uri);
-                    cx.notify();
                 })
                 .ok();
             });
@@ -1361,11 +1442,9 @@ impl SettingsView {
                             modal.device_flow_status = DeviceFlowStatus::Error(
                                 "Device code expired. Please try again.".into(),
                             );
-                            modal.feedback_message =
-                                Some("Device code expired. Please try again.".into());
-                            modal.feedback_is_error = true;
+                            modal.device_flow_expires_at = None;
                             modal.pending_browser_auth_provider_id = None;
-                            cx.notify();
+                            modal.set_feedback("Device code expired. Please try again.", true, cx);
                         })
                         .ok();
                     });
@@ -1405,12 +1484,14 @@ impl SettingsView {
                                     });
                                 }
                                 modal.device_flow_status = DeviceFlowStatus::Success;
+                                modal.device_flow_expires_at = None;
                                 modal.pending_browser_auth_provider_id = None;
                                 modal.save_settings(cx);
-                                modal.feedback_message =
-                                    Some("GitHub account connected successfully!".into());
-                                modal.feedback_is_error = false;
-                                cx.notify();
+                                modal.set_feedback(
+                                    "GitHub account connected successfully!",
+                                    false,
+                                    cx,
+                                );
                             })
                             .ok();
                         });
@@ -1420,10 +1501,9 @@ impl SettingsView {
                         cx.update(|cx| {
                             this.update(cx, |modal, cx| {
                                 modal.device_flow_status = DeviceFlowStatus::Error(e.clone());
-                                modal.feedback_message = Some(e);
-                                modal.feedback_is_error = true;
+                                modal.device_flow_expires_at = None;
                                 modal.pending_browser_auth_provider_id = None;
-                                cx.notify();
+                                modal.set_feedback(e, true, cx);
                             })
                             .ok();
                         });
@@ -1752,10 +1832,10 @@ impl SettingsView {
         let appearance_mode = cx.global::<SettingsState>().settings().appearance_mode;
         let mut app_options = div().h_flex().w_full().gap(px(8.));
 
-        for (mode, label, icon) in [
-            (AppearanceMode::Auto, "Auto", IconName::Info),
-            (AppearanceMode::Light, "Light", IconName::Info), // Replace with Sun/Moon icons if available
-            (AppearanceMode::Dark, "Dark", IconName::Info),
+        for (mode, label) in [
+            (AppearanceMode::Auto, "Auto"),
+            (AppearanceMode::Light, "Light"),
+            (AppearanceMode::Dark, "Dark"),
         ] {
             let is_selected = mode == appearance_mode;
             let colors_clone = colors.clone();
@@ -1783,7 +1863,6 @@ impl SettingsView {
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.set_appearance_mode(mode, cx);
                     }))
-                    .child(Icon::new(icon).size(IconSize::Small))
                     .child(Label::new(label).size(LabelSize::Small)),
             );
         }
@@ -2229,6 +2308,18 @@ impl SettingsView {
         {
             let code = user_code.clone();
             let uri: SharedString = verification_uri.clone().into();
+            let waiting_label: SharedString = match self.device_flow_expires_at {
+                Some(expires_at) => {
+                    let remaining = expires_at.saturating_duration_since(std::time::Instant::now());
+                    let minutes = remaining.as_secs() / 60;
+                    if minutes >= 1 {
+                        format!("Waiting for authorization — code expires in {minutes} min").into()
+                    } else {
+                        "Waiting for authorization — code expires in under a minute".into()
+                    }
+                }
+                None => "Waiting for authorization...".into(),
+            };
             let mut device_card = Self::setting_card(cx);
             device_card = device_card
                 .child(Self::setting_label(
@@ -2296,17 +2387,34 @@ impl SettingsView {
                         .child(
                             div()
                                 .h_flex()
+                                .w_full()
                                 .items_center()
-                                .gap(px(6.))
+                                .justify_between()
+                                .gap(px(8.))
                                 .child(
-                                    Icon::new(IconName::Refresh)
-                                        .size(IconSize::XSmall)
-                                        .color(Color::Warning),
+                                    div()
+                                        .h_flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            Icon::new(IconName::Refresh)
+                                                .size(IconSize::XSmall)
+                                                .color(Color::Warning),
+                                        )
+                                        .child(
+                                            Label::new(waiting_label)
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Warning),
+                                        ),
                                 )
                                 .child(
-                                    Label::new("Waiting for authorization...")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Warning),
+                                    Button::new("cancel-device-flow", "Cancel")
+                                        .style(ButtonStyle::Subtle)
+                                        .size(ButtonSize::Compact)
+                                        .icon(IconName::X)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.cancel_github_device_flow(cx);
+                                        })),
                                 ),
                         ),
                 );
@@ -2449,6 +2557,7 @@ impl SettingsView {
                         .h_flex()
                         .w_full()
                         .items_center()
+                        .flex_wrap()
                         .gap(px(12.))
                         .px(px(12.))
                         .py(px(10.))
@@ -2469,8 +2578,9 @@ impl SettingsView {
                         .child(
                             div()
                                 .v_flex()
+                                .flex_1()
                                 .w(px(210.))
-                                .min_w(px(210.))
+                                .min_w(px(140.))
                                 .gap(px(2.))
                                 .child(
                                     Label::new(label)
@@ -3542,9 +3652,12 @@ impl SettingsView {
                 terminal_section.child(Label::new(msg).size(LabelSize::XSmall).color(Color::Muted));
         } else {
             let mut list = div()
+                .id("detected-terminals-list")
                 .v_flex()
                 .gap(px(2.))
                 .p(px(4.))
+                .max_h(px(180.))
+                .overflow_y_scroll()
                 .rounded(px(6.))
                 .bg(colors.element_background);
 
@@ -3636,9 +3749,12 @@ impl SettingsView {
                 editor_section.child(Label::new(msg).size(LabelSize::XSmall).color(Color::Muted));
         } else {
             let mut list = div()
+                .id("detected-editors-list")
                 .v_flex()
                 .gap(px(2.))
                 .p(px(4.))
+                .max_h(px(180.))
+                .overflow_y_scroll()
                 .rounded(px(6.))
                 .bg(colors.element_background);
 
@@ -3851,49 +3967,6 @@ impl SettingsView {
     ) -> AnyElement {
         let mut content_container = div().v_flex().w_full().gap(px(16.));
 
-        if let Some(message) = &self.feedback_message {
-            content_container = content_container.child(
-                div()
-                    .w_full()
-                    .h_flex()
-                    .gap(px(8.))
-                    .items_center()
-                    .p(px(10.))
-                    .rounded(px(8.))
-                    .bg(if self.feedback_is_error {
-                        cx.status().error_background
-                    } else {
-                        cx.status().success_background
-                    })
-                    .border_1()
-                    .border_color(if self.feedback_is_error {
-                        cx.status().error
-                    } else {
-                        cx.status().success
-                    })
-                    .child(
-                        Icon::new(if self.feedback_is_error {
-                            IconName::X
-                        } else {
-                            IconName::Check
-                        })
-                        .size(IconSize::Small)
-                        .color(if self.feedback_is_error {
-                            Color::Error
-                        } else {
-                            Color::Success
-                        }),
-                    )
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Label::new(message.clone())
-                                .size(LabelSize::Small)
-                                .color(Color::Default),
-                        ),
-                    ),
-            );
-        }
-
         let content = match self.active_section {
             SettingsSection::Theme => self.render_theme_section(cx).into_any_element(),
             SettingsSection::Ai => self.render_ai_section(cx).into_any_element(),
@@ -3923,17 +3996,12 @@ impl SettingsView {
             ),
         };
 
-        let header = div()
+        let title_row = div()
             .h_flex()
             .w_full()
             .items_center()
             .justify_between()
             .gap(px(16.))
-            .px(px(28.))
-            .py(px(20.))
-            .bg(colors.surface_background)
-            .border_b_1()
-            .border_color(colors.border_variant)
             .child(
                 div()
                     .v_flex()
@@ -3951,7 +4019,83 @@ impl SettingsView {
                             .color(Color::Muted)
                             .truncate(),
                     ),
+            )
+            .child(
+                Button::new("settings-save", "Save")
+                    .style(ButtonStyle::Filled)
+                    .color(Color::Accent)
+                    .size(ButtonSize::Default)
+                    .icon(IconName::Check)
+                    .tooltip("Commit any unsubmitted text fields and save all settings")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.commit_pending_edits(cx);
+                    })),
             );
+
+        let mut header = div()
+            .v_flex()
+            .w_full()
+            .gap(px(12.))
+            .px(px(28.))
+            .py(px(20.))
+            .bg(colors.surface_background)
+            .border_b_1()
+            .border_color(colors.border_variant)
+            .child(title_row);
+
+        if let Some(message) = &self.feedback_message {
+            let is_error = self.feedback_is_error;
+            header = header.child(
+                div()
+                    .w_full()
+                    .h_flex()
+                    .gap(px(8.))
+                    .items_center()
+                    .p(px(10.))
+                    .rounded(px(8.))
+                    .bg(if is_error {
+                        cx.status().error_background
+                    } else {
+                        cx.status().success_background
+                    })
+                    .border_1()
+                    .border_color(if is_error {
+                        cx.status().error
+                    } else {
+                        cx.status().success
+                    })
+                    .child(
+                        Icon::new(if is_error {
+                            IconName::X
+                        } else {
+                            IconName::Check
+                        })
+                        .size(IconSize::Small)
+                        .color(if is_error {
+                            Color::Error
+                        } else {
+                            Color::Success
+                        }),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Label::new(message.clone())
+                                .size(LabelSize::Small)
+                                .color(Color::Default),
+                        ),
+                    )
+                    .child(
+                        IconButton::new("dismiss-feedback", IconName::Close)
+                            .style(ButtonStyle::Transparent)
+                            .size(ButtonSize::Compact)
+                            .color(Color::Muted)
+                            .tooltip("Dismiss")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.clear_feedback(cx);
+                            })),
+                    ),
+            );
+        }
 
         div()
             .h_flex()

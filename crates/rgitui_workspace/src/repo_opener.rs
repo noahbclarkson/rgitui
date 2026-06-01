@@ -121,12 +121,26 @@ impl RepoOpener {
                 .map(|(i, _)| i)
                 .collect();
         }
-        self.selected_index = None;
+        match self.selected_index {
+            Some(_) if self.filtered_indices.is_empty() => self.selected_index = None,
+            Some(index) => {
+                self.selected_index = Some(index.min(self.filtered_indices.len() - 1));
+            }
+            None => {}
+        }
     }
 
     fn try_open(&mut self, cx: &mut Context<Self>) {
-        let query = self.editor.read(cx).text().to_string();
-        let path = if !query.is_empty() {
+        let path = if let Some(selected_index) = self.selected_index {
+            match self.filtered_indices.get(selected_index) {
+                Some(&idx) => self.recent_repos[idx].clone(),
+                None => return,
+            }
+        } else {
+            let query = self.editor.read(cx).text().to_string();
+            if query.is_empty() {
+                return;
+            }
             if let Some(stripped) = query.strip_prefix('~') {
                 if let Some(home) = dirs::home_dir() {
                     home.join(stripped.trim_start_matches('/'))
@@ -136,14 +150,6 @@ impl RepoOpener {
             } else {
                 PathBuf::from(&query)
             }
-        } else if let Some(selected_index) = self.selected_index {
-            if let Some(&idx) = self.filtered_indices.get(selected_index) {
-                self.recent_repos[idx].clone()
-            } else {
-                return;
-            }
-        } else {
-            return;
         };
 
         self.visible = false;
@@ -291,7 +297,6 @@ impl Render for RepoOpener {
                 ),
         );
 
-        let focused_border = colors.border_focused;
         modal = modal.child(
             div()
                 .px(px(16.))
@@ -314,10 +319,6 @@ impl Render for RepoOpener {
                                 .h_flex()
                                 .items_center()
                                 .gap(px(8.))
-                                .px(px(8.))
-                                .border_1()
-                                .border_color(focused_border)
-                                .rounded(px(6.))
                                 .child(
                                     Icon::new(IconName::Folder)
                                         .size(IconSize::Small)

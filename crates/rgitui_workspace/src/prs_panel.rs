@@ -5,15 +5,17 @@ use futures::AsyncReadExt;
 use gpui::prelude::*;
 use gpui::{
     div, http_client::AsyncBody, px, uniform_list, App, ClickEvent, Context, ElementId, Entity,
-    EventEmitter, FocusHandle, Render, SharedString, UniformListScrollHandle, WeakEntity, Window,
+    EventEmitter, FocusHandle, KeyDownEvent, Render, ScrollStrategy, SharedString,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use http_client::HttpClient;
 
 use crate::github_api::{
     format_github_detail_error, github_get_collection_body, GithubCollectionError,
 };
+use crate::markdown_view::render_markdown;
 use crate::Workspace;
-use rgitui_theme::{ActiveTheme, Color, StyledExt};
+use rgitui_theme::{hex_to_hsla_strict, ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
     TextInput, TintColor,
@@ -136,7 +138,7 @@ enum PrsPanelView {
 }
 
 pub struct PrsPanel {
-    prs: Vec<PullRequest>,
+    prs: Arc<[PullRequest]>,
     selected_index: Option<usize>,
     is_loading: bool,
     error_message: Option<String>,
@@ -153,6 +155,10 @@ pub struct PrsPanel {
     selected_pr: Option<PullRequest>,
     selected_comments: Vec<PrComment>,
     comments_loading: bool,
+    /// Detail-scoped error surfaced when a PR's comments fail to load. Kept
+    /// separate from `error_message` so a transient comment-fetch failure
+    /// renders inside the detail view instead of leaking into the list view.
+    comments_error: Option<String>,
     workspace: WeakEntity<Workspace>,
     last_fetched: Option<std::time::Instant>,
     review_submitting: bool,
@@ -163,7 +169,7 @@ pub struct PrsPanel {
 impl PrsPanel {
     pub fn new(cx: &mut Context<Self>, workspace: WeakEntity<Workspace>) -> Self {
         Self {
-            prs: Vec::new(),
+            prs: Vec::new().into(),
             selected_index: None,
             is_loading: false,
             error_message: None,
@@ -178,6 +184,7 @@ impl PrsPanel {
             selected_pr: None,
             selected_comments: Vec::new(),
             comments_loading: false,
+            comments_error: None,
             workspace,
             last_fetched: None,
             review_submitting: false,
@@ -246,6 +253,13 @@ impl PrsPanel {
         cx.notify();
     }
 
+    /// Fetch the PR list, bypassing the freshness cache. Used after creating a PR
+    /// so the new entry shows immediately instead of after the 60s cache expires.
+    pub fn force_fetch_prs(&mut self, cx: &mut Context<Self>) {
+        self.last_fetched = None;
+        self.fetch_prs(cx);
+    }
+
     pub fn fetch_prs(&mut self, cx: &mut Context<Self>) {
         if self.github_owner.is_empty() || self.github_repo.is_empty() {
             self.error_message = Some("No GitHub remote configured".into());
@@ -286,7 +300,7 @@ impl PrsPanel {
                     panel.is_loading = false;
                     match result {
                         Ok(prs) => {
-                            panel.prs = prs;
+                            panel.prs = prs.into();
                             panel.selected_index = None;
                             panel.last_fetched = Some(std::time::Instant::now());
                             log::info!("fetch_prs complete: {} PRs", panel.prs.len());
@@ -312,6 +326,7 @@ impl PrsPanel {
         self.selected_index = Some(index);
         self.selected_pr = Some(pr.clone());
         self.selected_comments = Vec::new();
+        self.comments_error = None;
         self.comments_loading = true;
         self.view_mode = PrsPanelView::Detail;
         cx.notify();
@@ -335,7 +350,7 @@ impl PrsPanel {
                             cx.emit(PrsPanelEvent::PrSelected(pr_for_event, comments));
                         }
                         Err(e) => {
-                            panel.error_message = Some(e);
+                            panel.comments_error = Some(e);
                         }
                     }
                     cx.notify();
@@ -350,6 +365,7 @@ impl PrsPanel {
         self.view_mode = PrsPanelView::List;
         self.selected_pr = None;
         self.selected_comments = Vec::new();
+        self.comments_error = None;
         self.review_result = None;
         self.review_comment_input.update(cx, |ti, cx| ti.clear(cx));
         cx.notify();
@@ -517,6 +533,60 @@ impl PrsPanel {
             .child(el)
     }
 
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+
+        if self.view_mode == PrsPanelView::Detail {
+            if key == "escape" {
+                self.go_back(cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
+
+        let count = self.prs.len();
+        if count == 0 {
+            return;
+        }
+
+        match key {
+            "down" | "j" => {
+                let next = self
+                    .selected_index
+                    .map(|i| (i + 1).min(count - 1))
+                    .unwrap_or(0);
+                self.selected_index = Some(next);
+                self.scroll_handle
+                    .scroll_to_item(next, ScrollStrategy::Nearest);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "up" | "k" => {
+                let prev = self
+                    .selected_index
+                    .map(|i| i.saturating_sub(1))
+                    .unwrap_or(0);
+                self.selected_index = Some(prev);
+                self.scroll_handle
+                    .scroll_to_item(prev, ScrollStrategy::Nearest);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "enter" => {
+                if let Some(index) = self.selected_index {
+                    self.select_pr(index, cx);
+                    cx.stop_propagation();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         if self.view_mode == PrsPanelView::Detail {
             return div()
@@ -642,7 +712,7 @@ impl PrsPanel {
             .into_any_element()
     }
 
-    fn render_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_detail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(pr) = &self.selected_pr else {
             return div().into_any_element();
         };
@@ -774,14 +844,13 @@ impl PrsPanel {
             let mut labels_row = div().h_flex().gap(px(4.)).flex_wrap();
             for label in &pr.labels {
                 let label_name: SharedString = label.name.clone().into();
-                labels_row = labels_row.child(Badge::new(label_name).color(Color::Info));
+                labels_row = labels_row.child(Badge::new(label_name).color(label_color(label)));
             }
             card = card.child(labels_row);
         }
 
         if let Some(body) = &pr.body {
             if !body.is_empty() {
-                let body_text: SharedString = body.clone().into();
                 card = card.child(
                     div()
                         .w_full()
@@ -789,11 +858,7 @@ impl PrsPanel {
                         .mt_1()
                         .border_t_1()
                         .border_color(cx.colors().border_variant)
-                        .child(
-                            Label::new(body_text)
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
+                        .child(render_markdown(body, window, cx)),
                 );
             }
         }
@@ -823,6 +888,27 @@ impl PrsPanel {
                         Label::new("Loading comments...")
                             .size(LabelSize::Small)
                             .color(Color::Muted),
+                    ),
+            );
+        } else if let Some(err) = &self.comments_error {
+            let err_text: SharedString = format!("Failed to load comments: {err}").into();
+            content = content.child(
+                div()
+                    .h_flex()
+                    .w_full()
+                    .py(px(16.))
+                    .gap(px(8.))
+                    .justify_center()
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::AlertTriangle)
+                            .size(IconSize::Small)
+                            .color(Color::Error),
+                    )
+                    .child(
+                        Label::new(err_text)
+                            .size(LabelSize::Small)
+                            .color(Color::Error),
                     ),
             );
         } else if !self.selected_comments.is_empty() {
@@ -856,7 +942,6 @@ impl PrsPanel {
             for (i, comment) in self.selected_comments.iter().enumerate() {
                 let comment_author: SharedString = comment.author.clone().into();
                 let comment_date: SharedString = comment.created_at.clone().into();
-                let comment_body: SharedString = comment.body.clone().into();
 
                 content = content.child(
                     div()
@@ -900,11 +985,7 @@ impl PrsPanel {
                                         .color(Color::Muted),
                                 ),
                         )
-                        .child(
-                            Label::new(comment_body)
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
+                        .child(render_markdown(&comment.body, window, cx)),
                 );
             }
         }
@@ -981,7 +1062,7 @@ impl PrsPanel {
 }
 
 impl Render for PrsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_bg = cx.colors().panel_background;
         let ghost_selected = cx.colors().ghost_element_selected;
         let text_accent = cx.colors().text_accent;
@@ -991,6 +1072,7 @@ impl Render for PrsPanel {
         let mut panel = div()
             .id("prs-panel")
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
             .size_full()
             .bg(panel_bg);
@@ -998,7 +1080,7 @@ impl Render for PrsPanel {
         panel = panel.child(self.render_toolbar(cx));
 
         if self.view_mode == PrsPanelView::Detail {
-            panel = panel.child(self.render_detail(cx));
+            panel = panel.child(self.render_detail(window, cx));
             return panel.into_any_element();
         }
 
@@ -1080,7 +1162,7 @@ impl Render for PrsPanel {
                 .into_any_element();
         }
 
-        let prs_snapshot: Vec<PullRequest> = self.prs.clone();
+        let prs_snapshot: Arc<[PullRequest]> = self.prs.clone();
         let selected_index = self.selected_index;
         let weak = cx.weak_entity();
 
@@ -1168,8 +1250,8 @@ impl Render for PrsPanel {
                                 let mut labels_row = div().h_flex().gap(px(3.)).flex_shrink_0();
                                 for label in labels.iter().take(2) {
                                     let label_name: SharedString = label.name.clone().into();
-                                    labels_row =
-                                        labels_row.child(Badge::new(label_name).color(Color::Info));
+                                    labels_row = labels_row
+                                        .child(Badge::new(label_name).color(label_color(label)));
                                 }
                                 if labels.len() > 2 {
                                     let more: SharedString =
@@ -1392,6 +1474,14 @@ async fn fetch_pr_comments(
     }
 
     Ok(comments)
+}
+
+/// Resolve a GitHub label's stored hex color into a renderable `Color`.
+/// Falls back to `Color::Info` when the hex string is missing or malformed.
+fn label_color(label: &PrLabel) -> Color {
+    hex_to_hsla_strict(&label.color)
+        .map(Color::Custom)
+        .unwrap_or(Color::Info)
 }
 
 fn format_github_date(date_str: &str) -> String {

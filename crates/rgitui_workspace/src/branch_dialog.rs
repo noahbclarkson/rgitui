@@ -22,6 +22,10 @@ pub struct BranchDialog {
     base_ref: String,
     error_message: Option<String>,
     visible: bool,
+    /// Set when the dialog is shown so the next render focuses the branch-name
+    /// field. Lets us focus from call sites that have no `Window` (command
+    /// palette, sidebar context menu) without leaving the user to click in first.
+    pending_focus: bool,
     focus_handle: FocusHandle,
 }
 
@@ -57,6 +61,7 @@ impl BranchDialog {
             base_ref: "HEAD".to_string(),
             error_message: None,
             visible: false,
+            pending_focus: false,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -71,9 +76,11 @@ impl BranchDialog {
         cx.notify();
     }
 
-    /// Show the dialog without focusing (for use from contexts where Window is unavailable).
+    /// Show the dialog and focus the branch-name field on the next render
+    /// (for use from contexts where `Window` is unavailable).
     pub fn show_visible(&mut self, base_ref: Option<String>, cx: &mut Context<Self>) {
         self.visible = true;
+        self.pending_focus = true;
         self.editor.update(cx, |e, cx| e.clear(cx));
         self.error_message = None;
         self.base_ref = base_ref.unwrap_or_else(|| "HEAD".to_string());
@@ -164,9 +171,14 @@ impl BranchDialog {
 }
 
 impl Render for BranchDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("branch-dialog").into_any_element();
+        }
+
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.editor.update(cx, |e, cx| e.focus(window, cx));
         }
 
         let colors = cx.colors();
@@ -305,6 +317,9 @@ impl Render for BranchDialog {
                 .v_flex()
                 .w_full()
                 .gap_2()
+                // TODO(audit): UX-44 footer hint copy should move to a shared
+                // dialog-footer component (parameterised by verb/modifier) so all
+                // dialogs share one style; cross-file refactor, deferred.
                 .child(
                     Label::new("Enter to create | Esc to cancel")
                         .size(LabelSize::XSmall)

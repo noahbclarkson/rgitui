@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, Render,
-    SharedString, UniformListScrollHandle, Window,
+    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
+    KeyDownEvent, Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
 };
 use http_client::HttpClient;
 
 use crate::github_api::{github_get_collection_body, GithubCollectionError};
+use crate::markdown_view::render_markdown;
 use gpui::Entity;
-use rgitui_theme::{ActiveTheme, Color, StyledExt};
+use rgitui_theme::{hex_to_hsla_strict, ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
     TextInput, TextInputEvent,
@@ -85,7 +86,7 @@ enum IssuesPanelView {
 }
 
 pub struct IssuesPanel {
-    issues: Vec<Issue>,
+    issues: Arc<[Issue]>,
     selected_index: Option<usize>,
     is_loading: bool,
     error_message: Option<String>,
@@ -102,6 +103,10 @@ pub struct IssuesPanel {
     selected_issue: Option<Issue>,
     selected_comments: Vec<IssueComment>,
     comments_loading: bool,
+    /// Detail-scoped error surfaced when an issue's comments fail to load. Kept
+    /// separate from `error_message` so a transient comment-fetch failure
+    /// renders inside the detail view instead of leaking into the list view.
+    comments_error: Option<String>,
     last_fetched: Option<std::time::Instant>,
     search_query: Option<String>,
     is_searching: bool,
@@ -111,7 +116,7 @@ pub struct IssuesPanel {
 impl IssuesPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            issues: Vec::new(),
+            issues: Vec::new().into(),
             selected_index: None,
             is_loading: false,
             error_message: None,
@@ -126,6 +131,7 @@ impl IssuesPanel {
             selected_issue: None,
             selected_comments: Vec::new(),
             comments_loading: false,
+            comments_error: None,
             last_fetched: None,
             search_query: None,
             is_searching: false,
@@ -229,7 +235,7 @@ impl IssuesPanel {
                     panel.is_loading = false;
                     match result {
                         Ok(issues) => {
-                            panel.issues = issues;
+                            panel.issues = issues.into();
                             panel.selected_index = None;
                             panel.last_fetched = Some(std::time::Instant::now());
                             log::info!("fetch_issues complete: {} issues", panel.issues.len());
@@ -255,6 +261,7 @@ impl IssuesPanel {
         self.selected_index = Some(index);
         self.selected_issue = Some(issue.clone());
         self.selected_comments = Vec::new();
+        self.comments_error = None;
         self.comments_loading = true;
         self.view_mode = IssuesPanelView::Detail;
         cx.notify();
@@ -279,7 +286,7 @@ impl IssuesPanel {
                             cx.emit(IssuesPanelEvent::IssueSelected(issue_for_event, comments));
                         }
                         Err(e) => {
-                            panel.error_message = Some(e);
+                            panel.comments_error = Some(e);
                         }
                     }
                     cx.notify();
@@ -294,6 +301,7 @@ impl IssuesPanel {
         self.view_mode = IssuesPanelView::List;
         self.selected_issue = None;
         self.selected_comments = Vec::new();
+        self.comments_error = None;
         cx.notify();
     }
 
@@ -308,11 +316,16 @@ impl IssuesPanel {
     }
 
     fn toggle_search(&mut self, cx: &mut Context<Self>) {
+        let had_query = self.search_query.is_some();
         self.is_searching = !self.is_searching;
         if !self.is_searching {
             self.search_query = None;
-            // Refetch normal list when exiting search
-            if self.issues.is_empty() {
+            // Exiting search must restore the normal filtered list. Search
+            // results may have replaced `issues`, so force a refetch by
+            // clearing the cache timestamp rather than relying on the list
+            // being empty.
+            if had_query || self.issues.is_empty() {
+                self.last_fetched = None;
                 self.fetch_issues(cx);
             }
         }
@@ -355,7 +368,7 @@ impl IssuesPanel {
                     panel.is_loading = false;
                     match result {
                         Ok(issues) => {
-                            panel.issues = issues;
+                            panel.issues = issues.into();
                             panel.selected_index = None;
                             panel.last_fetched = Some(std::time::Instant::now());
                             log::info!("search_issues complete: {} results", panel.issues.len());
@@ -371,6 +384,66 @@ impl IssuesPanel {
             });
         })
         .detach();
+    }
+
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+
+        if self.view_mode == IssuesPanelView::Detail {
+            if key == "escape" {
+                self.go_back(cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
+
+        // While searching the text input owns the keyboard; list navigation
+        // must not steal j/k or hijack Enter from the search submission.
+        if self.is_searching {
+            return;
+        }
+
+        let count = self.issues.len();
+        if count == 0 {
+            return;
+        }
+
+        match key {
+            "down" | "j" => {
+                let next = self
+                    .selected_index
+                    .map(|i| (i + 1).min(count - 1))
+                    .unwrap_or(0);
+                self.selected_index = Some(next);
+                self.scroll_handle
+                    .scroll_to_item(next, ScrollStrategy::Nearest);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "up" | "k" => {
+                let prev = self
+                    .selected_index
+                    .map(|i| i.saturating_sub(1))
+                    .unwrap_or(0);
+                self.selected_index = Some(prev);
+                self.scroll_handle
+                    .scroll_to_item(prev, ScrollStrategy::Nearest);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "enter" => {
+                if let Some(index) = self.selected_index {
+                    self.select_issue(index, cx);
+                    cx.stop_propagation();
+                }
+            }
+            _ => {}
+        }
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -422,7 +495,7 @@ impl IssuesPanel {
             .border_b_1()
             .border_color(colors.border_variant)
             .child(
-                Icon::new(IconName::GitPullRequest)
+                Icon::new(IconName::DotOutline)
                     .size(IconSize::XSmall)
                     .color(Color::Accent),
             )
@@ -514,13 +587,19 @@ impl IssuesPanel {
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Subtle)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // Force a fresh fetch even within the cache window, and
+                        // discard any active search so Refresh always restores
+                        // the normal filtered list.
+                        this.is_searching = false;
+                        this.search_query = None;
+                        this.last_fetched = None;
                         this.fetch_issues(cx);
                     })),
             )
             .into_any_element()
     }
 
-    fn render_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_detail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
         let Some(issue) = &self.selected_issue else {
             return div().into_any_element();
@@ -629,14 +708,13 @@ impl IssuesPanel {
             let mut labels_row = div().h_flex().gap(px(4.)).flex_wrap();
             for label in &issue.labels {
                 let label_name: SharedString = label.name.clone().into();
-                labels_row = labels_row.child(Badge::new(label_name).color(Color::Info));
+                labels_row = labels_row.child(Badge::new(label_name).color(label_color(label)));
             }
             card = card.child(labels_row);
         }
 
         if let Some(body) = &issue.body {
             if !body.is_empty() {
-                let body_text: SharedString = body.clone().into();
                 card = card.child(
                     div()
                         .w_full()
@@ -644,11 +722,7 @@ impl IssuesPanel {
                         .mt_1()
                         .border_t_1()
                         .border_color(colors.border_variant)
-                        .child(
-                            Label::new(body_text)
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
+                        .child(render_markdown(body, window, cx)),
                 );
             }
         }
@@ -673,6 +747,27 @@ impl IssuesPanel {
                         Label::new("Loading comments...")
                             .size(LabelSize::Small)
                             .color(Color::Muted),
+                    ),
+            );
+        } else if let Some(err) = &self.comments_error {
+            let err_text: SharedString = format!("Failed to load comments: {err}").into();
+            content = content.child(
+                div()
+                    .h_flex()
+                    .w_full()
+                    .py(px(16.))
+                    .gap(px(8.))
+                    .justify_center()
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::AlertTriangle)
+                            .size(IconSize::Small)
+                            .color(Color::Error),
+                    )
+                    .child(
+                        Label::new(err_text)
+                            .size(LabelSize::Small)
+                            .color(Color::Error),
                     ),
             );
         } else if !self.selected_comments.is_empty() {
@@ -706,7 +801,6 @@ impl IssuesPanel {
             for (i, comment) in self.selected_comments.iter().enumerate() {
                 let comment_author: SharedString = comment.author.clone().into();
                 let comment_date: SharedString = comment.created_at.clone().into();
-                let comment_body: SharedString = comment.body.clone().into();
 
                 content = content.child(
                     div()
@@ -750,11 +844,7 @@ impl IssuesPanel {
                                         .color(Color::Muted),
                                 ),
                         )
-                        .child(
-                            Label::new(comment_body)
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
+                        .child(render_markdown(&comment.body, window, cx)),
                 );
             }
         }
@@ -833,7 +923,7 @@ impl IssuesPanel {
 }
 
 impl Render for IssuesPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_bg = cx.colors().panel_background;
         let ghost_selected = cx.colors().ghost_element_selected;
         let text_accent = cx.colors().text_accent;
@@ -843,6 +933,7 @@ impl Render for IssuesPanel {
         let mut panel = div()
             .id("issues-panel")
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
             .size_full()
             .bg(panel_bg);
@@ -850,7 +941,7 @@ impl Render for IssuesPanel {
         panel = panel.child(self.render_toolbar(cx));
 
         if self.view_mode == IssuesPanelView::Detail {
-            panel = panel.child(self.render_detail(cx));
+            panel = panel.child(self.render_detail(window, cx));
             return panel.into_any_element();
         }
 
@@ -929,7 +1020,7 @@ impl Render for IssuesPanel {
                 .into_any_element();
         }
 
-        let issues_snapshot: Vec<Issue> = self.issues.clone();
+        let issues_snapshot: Arc<[Issue]> = self.issues.clone();
         let selected_index = self.selected_index;
         let weak = cx.weak_entity();
 
@@ -1011,8 +1102,8 @@ impl Render for IssuesPanel {
                                 let mut labels_row = div().h_flex().gap(px(3.)).flex_shrink_0();
                                 for label in labels.iter().take(2) {
                                     let label_name: SharedString = label.name.clone().into();
-                                    labels_row =
-                                        labels_row.child(Badge::new(label_name).color(Color::Info));
+                                    labels_row = labels_row
+                                        .child(Badge::new(label_name).color(label_color(label)));
                                 }
                                 if labels.len() > 2 {
                                     let more: SharedString =
@@ -1313,6 +1404,14 @@ async fn fetch_github_comments(
     }
 
     Ok(comments)
+}
+
+/// Resolve a GitHub label's stored hex color into a renderable `Color`.
+/// Falls back to `Color::Info` when the hex string is missing or malformed.
+fn label_color(label: &IssueLabel) -> Color {
+    hex_to_hsla_strict(&label.color)
+        .map(Color::Custom)
+        .unwrap_or(Color::Info)
 }
 
 fn format_github_date(date_str: &str) -> String {
