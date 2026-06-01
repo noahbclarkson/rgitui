@@ -125,65 +125,6 @@ pub fn load_theme_from_json(json: &str) -> Result<Theme> {
     })
 }
 
-/// Embedded JSON theme files (compiled into the binary).
-const BUILTIN_THEME_FILES: &[(&str, &str)] = &[
-    (
-        "catppuccin-mocha",
-        include_str!("../../../assets/themes/catppuccin-mocha.json"),
-    ),
-    (
-        "catppuccin-latte",
-        include_str!("../../../assets/themes/catppuccin-latte.json"),
-    ),
-    (
-        "one-dark",
-        include_str!("../../../assets/themes/one-dark.json"),
-    ),
-    (
-        "github-dark",
-        include_str!("../../../assets/themes/github-dark.json"),
-    ),
-    (
-        "dracula",
-        include_str!("../../../assets/themes/dracula.json"),
-    ),
-];
-
-/// Load all JSON-based built-in themes. Falls back to hardcoded themes on parse errors.
-pub fn load_json_themes() -> Vec<Theme> {
-    let mut themes = Vec::new();
-    for (_slug, json) in BUILTIN_THEME_FILES {
-        match load_theme_from_json(json) {
-            Ok(theme) => themes.push(theme),
-            Err(e) => {
-                log::warn!("Failed to load built-in theme: {}", e);
-            }
-        }
-    }
-    themes
-}
-
-/// Return the names of all available built-in themes.
-pub fn available_themes() -> Vec<String> {
-    BUILTIN_THEME_FILES
-        .iter()
-        .filter_map(|(_slug, json)| load_theme_from_json(json).ok().map(|t| t.name))
-        .collect()
-}
-
-/// Load a specific theme by name. Falls back to Catppuccin Mocha if not found.
-pub fn load_theme_by_name(name: &str) -> Theme {
-    for (_slug, json) in BUILTIN_THEME_FILES {
-        if let Ok(theme) = load_theme_from_json(json) {
-            if theme.name == name {
-                return theme;
-            }
-        }
-    }
-    // Fallback: load first theme (Catppuccin Mocha)
-    load_theme_from_json(BUILTIN_THEME_FILES[0].1).expect("default theme must parse")
-}
-
 fn theme_filename(name: &str) -> String {
     let mut slug = String::with_capacity(name.len());
     let mut last_was_dash = false;
@@ -366,78 +307,17 @@ mod tests {
         assert_eq!(theme.name, "No Hint");
     }
 
-    // ── load_json_themes / available_themes ───────────────────────
-
-    #[test]
-    fn all_builtin_themes_parse() {
-        let themes = load_json_themes();
-        // 5 built-in themes: mocha, latte, one-dark, github-dark, dracula
-        assert_eq!(
-            themes.len(),
-            5,
-            "expected 5 built-in themes, got {}",
-            themes.len()
-        );
-    }
-
-    #[test]
-    fn builtin_theme_names_are_known() {
-        let themes = load_json_themes();
-        let names: Vec<&str> = themes.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"Catppuccin Mocha"));
-        assert!(names.contains(&"Catppuccin Latte"));
-        assert!(names.contains(&"One Dark"));
-        assert!(names.contains(&"GitHub Dark"));
-        assert!(names.contains(&"Dracula"));
-    }
-
-    #[test]
-    fn catppuccin_mocha_is_dark() {
-        let themes = load_json_themes();
-        let mocha = themes
-            .iter()
-            .find(|t| t.name == "Catppuccin Mocha")
-            .expect("Catppuccin Mocha should exist");
-        assert_eq!(mocha.appearance, crate::theme::Appearance::Dark);
-    }
-
-    #[test]
-    fn catppuccin_latte_is_light() {
-        let themes = load_json_themes();
-        let latte = themes
-            .iter()
-            .find(|t| t.name == "Catppuccin Latte")
-            .expect("Catppuccin Latte should exist");
-        assert_eq!(latte.appearance, crate::theme::Appearance::Light);
-    }
-
-    #[test]
-    fn available_themes_returns_five_names() {
-        let names = available_themes();
-        assert_eq!(names.len(), 5);
-    }
-
-    #[test]
-    fn load_theme_by_name_catppuccin_mocha() {
-        let theme = load_theme_by_name("Catppuccin Mocha");
-        assert_eq!(theme.name, "Catppuccin Mocha");
-    }
-
-    #[test]
-    fn load_theme_by_name_unknown_falls_back_to_default() {
-        // Unknown name → falls back to first theme (Catppuccin Mocha)
-        let theme = load_theme_by_name("does not exist");
-        assert_eq!(theme.name, "Catppuccin Mocha");
-    }
+    // ── serialize / roundtrip ──────────────────────────────────────
 
     #[test]
     fn serialize_theme_to_json_produces_valid_json() {
-        let theme = load_theme_by_name("Catppuccin Mocha");
+        let theme =
+            load_theme_from_json(&minimal_dark_theme_json("Roundtrip Test")).expect("should parse");
         let json = serialize_theme_to_json(&theme).expect("should serialize");
         // Should be parseable as JSON
         let reparsed: serde_json::Value =
             serde_json::from_str(&json).expect("should be valid JSON");
-        assert_eq!(reparsed["name"], "Catppuccin Mocha");
+        assert_eq!(reparsed["name"], "Roundtrip Test");
         assert_eq!(reparsed["appearance"], "dark");
         // Colors should be present as hex strings
         let colors = &reparsed["colors"];
@@ -449,7 +329,8 @@ mod tests {
 
     #[test]
     fn serialize_deserialize_roundtrip() {
-        let theme = load_theme_by_name("Catppuccin Mocha");
+        let theme =
+            load_theme_from_json(&minimal_dark_theme_json("Roundtrip Test")).expect("should parse");
         let json = serialize_theme_to_json(&theme).expect("should serialize");
         let loaded = load_theme_from_json(&json).expect("should deserialize");
         assert_eq!(loaded.name, theme.name);
@@ -461,8 +342,11 @@ mod tests {
 
     #[test]
     fn serialize_deserialize_roundtrip_light_appearance() {
-        // Latte is a Light theme — ensure Light appearance and all colors roundtrip correctly
-        let theme = load_theme_by_name("Catppuccin Latte");
+        // A Light theme — ensure Light appearance and all colors roundtrip correctly
+        let theme = load_theme_from_json(
+            &minimal_dark_theme_json("Light Test").replace("\"dark\"", "\"light\""),
+        )
+        .expect("should parse");
         assert_eq!(theme.appearance, crate::theme::Appearance::Light);
         let json = serialize_theme_to_json(&theme).expect("should serialize");
         let loaded = load_theme_from_json(&json).expect("should deserialize");
@@ -484,7 +368,8 @@ mod tests {
         // Build a theme with explicit alpha != 1.0 and verify it roundtrips.
         // Hsla serializes as #RRGGBBAA (8-char with alpha suffix).
         // load_theme_from_json -> hex_to_hsla parses the 8-char form back to Hsla.
-        let theme = load_theme_by_name("Catppuccin Mocha");
+        let theme =
+            load_theme_from_json(&minimal_dark_theme_json("Roundtrip Test")).expect("should parse");
         let json = serialize_theme_to_json(&theme).expect("should serialize");
         // Verify 8-char hex appears in the serialized JSON (alpha suffix)
         assert!(

@@ -483,7 +483,8 @@ fn build_prompt(
 
     let max_diff_len = 200_000;
     let diff_text = if diff.len() > max_diff_len {
-        let truncation_point = diff[..max_diff_len].rfind('\n').unwrap_or(max_diff_len);
+        let truncated = crate::tools::safe_truncate(diff, max_diff_len);
+        let truncation_point = truncated.rfind('\n').unwrap_or(truncated.len());
         format!(
             "{}\n\n[diff truncated -- showing {}/{} bytes]",
             &diff[..truncation_point],
@@ -529,9 +530,10 @@ fn collect_project_context(repo_path: &Path) -> Option<String> {
     }
 
     if combined.len() > MAX_PROJECT_CONTEXT_BYTES {
-        let truncation_point = combined[..MAX_PROJECT_CONTEXT_BYTES]
-            .rfind('\n')
-            .unwrap_or(MAX_PROJECT_CONTEXT_BYTES);
+        let truncation_point = {
+            let safe = crate::tools::safe_truncate(&combined, MAX_PROJECT_CONTEXT_BYTES);
+            safe.rfind('\n').unwrap_or(safe.len())
+        };
         combined.truncate(truncation_point);
         combined.push_str("\n\n[project context truncated]");
     }
@@ -975,7 +977,8 @@ fn build_tool_prompt(
 
     let max_diff_len = 200_000;
     let diff_text = if diff.len() > max_diff_len {
-        let truncation_point = diff[..max_diff_len].rfind('\n').unwrap_or(max_diff_len);
+        let truncated = crate::tools::safe_truncate(diff, max_diff_len);
+        let truncation_point = truncated.rfind('\n').unwrap_or(truncated.len());
         format!(
             "{}\n\n[diff truncated -- showing {}/{} bytes]",
             &diff[..truncation_point],

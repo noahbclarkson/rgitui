@@ -124,11 +124,16 @@ impl RenderOnce for Tab {
                 ElementId::Name(format!("{}-close", self.id).into()),
                 IconName::X,
             )
-            .size(crate::ButtonSize::None)
+            .size(crate::ButtonSize::Compact)
             .color(Color::Muted);
 
             if let Some(on_close) = self.on_close {
-                close_btn = close_btn.on_click(on_close);
+                close_btn = close_btn.on_click(move |event, window, cx| {
+                    // Prevent the click from bubbling to the tab row, which would
+                    // otherwise activate the tab on the same gesture that closes it.
+                    cx.stop_propagation();
+                    on_close(event, window, cx);
+                });
             }
 
             // Only show close button on hover or when tab is active

@@ -18,6 +18,17 @@ const MAX_DIFF_SIZE: usize = 100_000;
 /// Maximum directory depth for file tree.
 const MAX_TREE_DEPTH: usize = 5;
 
+/// Truncate a string to at most `max` bytes without splitting a multi-byte
+/// UTF-8 character. Returns a prefix whose length is the largest char boundary
+/// at or below `max`, so slicing never panics on repo-controlled content.
+pub(crate) fn safe_truncate(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Tool names used by the AI.
 pub const TOOL_GET_FILE_CONTENT: &str = "get_file_content";
 pub const TOOL_GET_RECENT_COMMITS: &str = "get_recent_commits";
@@ -510,7 +521,13 @@ fn execute_get_diff(repo_path: &Path, kind: &str, commit: &str) -> Result<String
             if commit.is_empty() {
                 return Err("Commit SHA required when kind='commit'".to_string());
             }
-            vec!["show", commit]
+            if commit.starts_with('-') {
+                return Err(format!("Invalid commit ref: {}", commit));
+            }
+            // `--end-of-options` stops git from interpreting the revision as an
+            // option flag while still treating it as a revision (not a pathspec,
+            // which is what a bare `--` would force).
+            vec!["show", "--end-of-options", commit]
         }
         _ => {
             return Err(format!(
@@ -539,11 +556,11 @@ fn execute_get_diff(repo_path: &Path, kind: &str, commit: &str) -> Result<String
 
     // Truncate if too large
     if stdout.len() > MAX_DIFF_SIZE {
-        let truncated = &stdout[..MAX_DIFF_SIZE];
-        let last_newline = truncated.rfind('\n').unwrap_or(MAX_DIFF_SIZE);
+        let truncated = safe_truncate(&stdout, MAX_DIFF_SIZE);
+        let last_newline = truncated.rfind('\n').unwrap_or(truncated.len());
         return Ok(format!(
             "{}\n\n[diff truncated -- showing {}/{} bytes]",
-            &stdout[..last_newline],
+            &truncated[..last_newline],
             last_newline,
             stdout.len()
         ));

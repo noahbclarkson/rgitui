@@ -895,7 +895,7 @@ pub fn high_contrast_dark_colors() -> ThemeColors {
     let text = hsla(0.0, 0.0, 100.0, 1.0); // #ffffff
                                            // Muted text: light gray — still >7:1 on black (WCAG AAA)
     let text_muted = hsla(0.0, 0.0, 80.0, 1.0); // #cccccc
-    let text_placeholder = hsla(0.0, 0.0, 55.0, 1.0); // #8c8c8c
+    let text_placeholder = hsla(0.0, 0.0, 64.0, 1.0); // #a3a3a3 — ~7.4:1 on the 4% surface (WCAG AAA)
     let text_disabled = hsla(0.0, 0.0, 35.0, 1.0); // #595959
 
     // Git status — bright saturated for unambiguous distinction

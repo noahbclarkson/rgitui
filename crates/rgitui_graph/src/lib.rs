@@ -35,6 +35,28 @@ impl Render for DateColumnResize {
     }
 }
 
+/// Width of the commit graph context menu.
+const CONTEXT_MENU_WIDTH: f32 = 200.0;
+/// Number of action rows in the context menu.
+const CONTEXT_MENU_ITEM_COUNT: f32 = 14.0;
+/// Height of a single context-menu action row (`.h(px(26.))`).
+const CONTEXT_MENU_ITEM_HEIGHT: f32 = 26.0;
+/// Number of separators drawn between menu groups.
+const CONTEXT_MENU_SEPARATOR_COUNT: f32 = 4.0;
+/// Effective height of one separator: `.h(px(1.))` plus `.my(px(2.))` top and bottom.
+const CONTEXT_MENU_SEPARATOR_HEIGHT: f32 = 1.0 + 2.0 + 2.0;
+/// Combined top and bottom padding on the menu container (`.py(px(3.))`).
+const CONTEXT_MENU_VERTICAL_PADDING: f32 = 3.0 + 3.0;
+
+/// Natural rendered height of the context menu, derived from its real item and
+/// separator metrics. Shared by clamping and the dismiss hit-test so both agree
+/// on where the menu actually sits.
+const fn context_menu_height() -> f32 {
+    CONTEXT_MENU_ITEM_COUNT * CONTEXT_MENU_ITEM_HEIGHT
+        + CONTEXT_MENU_SEPARATOR_COUNT * CONTEXT_MENU_SEPARATOR_HEIGHT
+        + CONTEXT_MENU_VERTICAL_PADDING
+}
+
 /// Pre-computed unit circle vertex offsets (cos, sin) for 36-step circles.
 /// Computed once and reused across all frames to avoid per-frame trig calls.
 fn unit_circle_offsets() -> &'static [(f32, f32)] {
@@ -199,11 +221,15 @@ pub struct GraphView {
     /// Used when a search returns no matches but more commits are available.
     pending_search_query: Option<SharedString>,
     cached_graph_hash: u64,
+    /// Monotonic counter incremented on each background graph computation. The
+    /// completion handler only applies results whose captured generation still
+    /// matches, so a slow stale compute cannot clobber a newer one.
+    compute_generation: u64,
     search_debounce_task: Option<gpui::Task<()>>,
     worktree_infos: Vec<WorktreeGraphInfo>,
     worktree_row_positions: Vec<WorktreeRowPosition>,
     worktree_row_set: HashSet<usize>,
-    virtual_rows_prefix: Vec<usize>,
+    virtual_rows_prefix: Arc<Vec<usize>>,
     show_settings_popover: bool,
     /// SHA display length: 0 = default short (7), or specific length (7/8/10/12/40).
     sha_display_length: u8,
@@ -268,11 +294,12 @@ impl GraphView {
             pending_scroll_oid: None,
             pending_search_query: None,
             cached_graph_hash: 0,
+            compute_generation: 0,
             search_debounce_task: None,
             worktree_infos: Vec::new(),
             worktree_row_positions: Vec::new(),
             worktree_row_set: HashSet::new(),
-            virtual_rows_prefix: Vec::new(),
+            virtual_rows_prefix: Arc::new(Vec::new()),
             show_settings_popover: false,
             sha_display_length: 0,
             show_author_column: true,
@@ -334,7 +361,10 @@ impl GraphView {
         self.commits = commits.clone();
         self.recompute_worktree_positions();
 
-        // Spawn graph computation on the background executor.
+        // Spawn graph computation on the background executor. Capture the current
+        // generation so a stale compute that finishes after a newer one is dropped.
+        self.compute_generation = self.compute_generation.wrapping_add(1);
+        let generation = self.compute_generation;
         let commits_for_bg = commits;
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             let graph_rows = cx
@@ -343,6 +373,11 @@ impl GraphView {
                 .await;
 
             this.update(cx, |this: &mut GraphView, cx| {
+                // Drop results from a superseded computation: a newer set_commits
+                // has already started (or finished) a more recent compute.
+                if this.compute_generation != generation {
+                    return;
+                }
                 this.global_max_lane = graph_rows
                     .iter()
                     .map(|r| r.lane_count)
@@ -407,6 +442,30 @@ impl GraphView {
         self.all_commits_loaded = loaded;
     }
 
+    /// Compute the context menu's container-relative placement and visible size.
+    ///
+    /// Returns `(clamped_x, clamped_y, menu_w, visible_h)` where the position is
+    /// clamped to keep the menu inside the container and the height is capped to
+    /// the container height (the menu scrolls internally when it cannot fit).
+    /// Both the render path and the dismiss hit-test use this so they agree on
+    /// exactly where the menu sits, even when clamping or scrolling occurs.
+    fn context_menu_geometry(&self, click: Point<Pixels>) -> (Pixels, Pixels, Pixels, Pixels) {
+        let menu_w = px(CONTEXT_MENU_WIDTH);
+        let natural_h = px(context_menu_height());
+        let bounds = self.container_bounds;
+        // Cap the visible height to the container so a short window scrolls
+        // rather than overflowing and clipping unreachable items.
+        let visible_h = natural_h.min(bounds.size.height.max(px(0.)));
+        // Convert the window-relative click into container-relative coordinates.
+        let rel_x = click.x - bounds.origin.x;
+        let rel_y = click.y - bounds.origin.y;
+        let max_x = (bounds.size.width - menu_w).max(px(0.));
+        let max_y = (bounds.size.height - visible_h).max(px(0.));
+        let clamped_x = rel_x.max(px(0.)).min(max_x);
+        let clamped_y = rel_y.max(px(0.)).min(max_y);
+        (clamped_x, clamped_y, menu_w, visible_h)
+    }
+
     /// Update the worktree node data shown in the graph.
     pub fn set_worktree_statuses(&mut self, infos: Vec<WorktreeGraphInfo>, cx: &mut Context<Self>) {
         let filtered: Vec<WorktreeGraphInfo> = infos
@@ -421,7 +480,6 @@ impl GraphView {
     fn recompute_worktree_positions(&mut self) {
         self.worktree_row_positions.clear();
         self.worktree_row_set.clear();
-        self.virtual_rows_prefix.clear();
 
         let visible_commit_count = self.commits.len().min(self.graph_rows.len());
         let mut anchored = Vec::new();
@@ -502,14 +560,15 @@ impl GraphView {
         }
 
         let total_items = visible_commit_count + self.worktree_row_positions.len();
-        self.virtual_rows_prefix = vec![0; total_items];
+        let mut virtual_rows_prefix = vec![0; total_items];
         let mut virtual_count = 0;
-        for list_index in 0..total_items {
+        for (list_index, prefix) in virtual_rows_prefix.iter_mut().enumerate() {
             if self.worktree_row_set.contains(&list_index) {
                 virtual_count += 1;
             }
-            self.virtual_rows_prefix[list_index] = virtual_count;
+            *prefix = virtual_count;
         }
+        self.virtual_rows_prefix = Arc::new(virtual_rows_prefix);
     }
 
     fn worktree_row_at_list_index(&self, list_index: usize) -> Option<&WorktreeRowPosition> {
@@ -930,12 +989,12 @@ impl Render for GraphView {
                     div()
                         .h_flex()
                         .w_full()
-                        .h(px(28.))
-                        .pl(px(10.))
+                        .h(px(26.))
+                        .pl(px(8.))
                         .pr(px(8.))
                         .gap(px(4.))
                         .items_center()
-                        .bg(colors.surface_background)
+                        .bg(colors.toolbar_background)
                         .border_b_1()
                         .border_color(colors.border_variant)
                         .child(
@@ -2053,18 +2112,26 @@ impl Render for GraphView {
                 move |event: &MouseDownEvent, _: &mut Window, cx: &mut App| {
                     view_dismiss
                         .update(cx, |this: &mut GraphView, cx| {
-                            // Only dismiss if click is outside the context menu bounds.
-                            // Menu dimensions: 200px wide, 280px tall (12 items), anchored at clamped_x/clamped_y.
-                            let click_inside_menu = this.context_menu.as_ref().is_some_and(|cm| {
-                                let menu_w: Pixels = px(200.);
-                                let menu_h: Pixels = px(280.);
-                                let x = event.position.x;
-                                let y = event.position.y;
-                                x >= cm.position.x
-                                    && x < cm.position.x + menu_w
-                                    && y >= cm.position.y
-                                    && y < cm.position.y + menu_h
-                            });
+                            // Only dismiss if the click falls outside the menu's
+                            // actual rendered rectangle. The menu is placed at the
+                            // clamped, container-relative position; convert that
+                            // back to window coordinates to match event.position.
+                            let click_inside_menu = this
+                                .context_menu
+                                .as_ref()
+                                .map(|cm| cm.position)
+                                .map(|click| this.context_menu_geometry(click))
+                                .is_some_and(|(clamped_x, clamped_y, menu_w, menu_h)| {
+                                    let origin = this.container_bounds.origin;
+                                    let left = origin.x + clamped_x;
+                                    let top = origin.y + clamped_y;
+                                    let x = event.position.x;
+                                    let y = event.position.y;
+                                    x >= left
+                                        && x < left + menu_w
+                                        && y >= top
+                                        && y < top + menu_h
+                                });
                             if !click_inside_menu {
                                 this.dismiss_context_menu(cx);
                             }
@@ -2281,19 +2348,9 @@ impl Render for GraphView {
                     ("View on GitHub", IconName::ExternalLink),
                 ];
 
-                // Convert window-relative click position to container-relative coordinates,
-                // then clamp to keep the menu within the container bounds.
-                let menu_w = px(200.);
-                let menu_h = px(330.);
-                let container_bounds = self.container_bounds;
-                // Convert click position from window coordinates to container-relative.
-                let rel_x = pos.x - container_bounds.origin.x;
-                let rel_y = pos.y - container_bounds.origin.y;
-                // Clamp so menu stays within container.
-                let max_x = container_bounds.size.width - menu_w;
-                let max_y = container_bounds.size.height - menu_h;
-                let clamped_x = rel_x.max(px(0.)).min(max_x);
-                let clamped_y = rel_y.max(px(0.)).min(max_y);
+                // Placement and visible height, clamped to the container. Shared
+                // with the dismiss hit-test so both agree on the menu rectangle.
+                let (clamped_x, clamped_y, menu_w, menu_h) = self.context_menu_geometry(pos);
 
                 let mut menu = div()
                     .id("graph-context-menu")
@@ -2301,7 +2358,9 @@ impl Render for GraphView {
                     .left(clamped_x)
                     .top(clamped_y)
                     .v_flex()
-                    .min_w(px(200.))
+                    .min_w(menu_w)
+                    .max_h(menu_h)
+                    .overflow_y_scroll()
                     .py(px(3.))
                     .bg(menu_bg)
                     .border_1()
