@@ -149,12 +149,29 @@ pub(crate) fn inject_https_credentials(cmd: &mut Command, auth: &GitAuthRuntime,
     cmd.env("RGITUI_GIT_TOKEN", token);
 }
 
-fn find_https_credentials(auth: &GitAuthRuntime, remote_url: &str) -> Option<(String, String)> {
-    let host = remote_url
+/// Extract the bare host from an HTTP(S) URL for credential matching.
+///
+/// Strips the scheme, any `user@` userinfo prefix, and any `:port` suffix so
+/// that URLs like `https://user@host:443/owner/repo.git` resolve to `host`.
+/// Userinfo is removed before the port so a `:` inside `user:pass@` is not
+/// mistaken for the port separator. IPv6 literals are not handled.
+fn extract_host(url: &str) -> &str {
+    let authority = url
         .strip_prefix("https://")
-        .or_else(|| remote_url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("http://"))
         .and_then(|rest| rest.split('/').next())
         .unwrap_or("");
+
+    let host = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+
+    host.split(':').next().unwrap_or(host)
+}
+
+fn find_https_credentials(auth: &GitAuthRuntime, remote_url: &str) -> Option<(String, String)> {
+    let host = extract_host(remote_url);
 
     let matching_provider: Option<&GitProviderRuntime> = auth
         .providers
@@ -211,6 +228,10 @@ fn extract_remote_name(args: &[&str]) -> Option<String> {
 fn ensure_askpass_script() -> Result<std::path::PathBuf> {
     let dir = rgitui_settings::config_dir();
     std::fs::create_dir_all(&dir)?;
+
+    #[cfg(windows)]
+    let script_path = dir.join("askpass.cmd");
+    #[cfg(not(windows))]
     let script_path = dir.join("askpass.sh");
 
     let needs_write = match std::fs::metadata(&script_path) {
@@ -219,16 +240,34 @@ fn ensure_askpass_script() -> Result<std::path::PathBuf> {
     };
 
     if needs_write {
-        let script = "#!/usr/bin/env bash\n\
-            case \"$1\" in\n\
-            \x20   Username*|username*) echo \"$RGITUI_GIT_USER\" ;;\n\
-            \x20   *) echo \"$RGITUI_GIT_TOKEN\" ;;\n\
-            esac\n";
-        std::fs::write(&script_path, script)?;
-        #[cfg(unix)]
+        #[cfg(windows)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+            // Batch helper invoked by git as `askpass.cmd "<prompt>"`. Delayed
+            // expansion (`!VAR!`) avoids re-parsing token characters such as
+            // `& | < > ^`, and CRLF line endings keep cmd.exe happy.
+            let script = "@echo off\r\n\
+                setlocal enabledelayedexpansion\r\n\
+                echo %~1 | findstr /B /I \"Username\" >nul\r\n\
+                if not errorlevel 1 (\r\n\
+                \x20   echo !RGITUI_GIT_USER!\r\n\
+                ) else (\r\n\
+                \x20   echo !RGITUI_GIT_TOKEN!\r\n\
+                )\r\n";
+            std::fs::write(&script_path, script)?;
+        }
+        #[cfg(not(windows))]
+        {
+            let script = "#!/usr/bin/env bash\n\
+                case \"$1\" in\n\
+                \x20   Username*|username*) echo \"$RGITUI_GIT_USER\" ;;\n\
+                \x20   *) echo \"$RGITUI_GIT_TOKEN\" ;;\n\
+                esac\n";
+            std::fs::write(&script_path, script)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+            }
         }
     }
 
@@ -265,11 +304,7 @@ fn insteadof_pair(ssh_url: &str) -> Option<(String, String)> {
 }
 
 fn has_credential_helper_for_host(repo_path: &Path, https_url: &str) -> bool {
-    let host = https_url
-        .strip_prefix("https://")
-        .or_else(|| https_url.strip_prefix("http://"))
-        .and_then(|rest| rest.split('/').next())
-        .unwrap_or("");
+    let host = extract_host(https_url);
     if host.is_empty() {
         return false;
     }

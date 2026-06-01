@@ -256,6 +256,10 @@ pub struct GitProject {
     /// Per-worktree status cache shared between GitProject::refresh() and the watcher loop.
     /// Keyed by worktree path; value is (fingerprint, cached WorkingTreeStatus).
     worktree_status_cache: Arc<Mutex<refresh::WorktreeStatusCache>>,
+    /// Monotonic counter bumped on every `apply_refresh_data`. The watcher uses it
+    /// to discard a stale lightweight refresh that would otherwise clobber a newer
+    /// full/operation refresh that landed while the watcher's snapshot was in flight.
+    refresh_generation: u64,
 }
 
 impl EventEmitter<GitProjectEvent> for GitProject {}
@@ -285,6 +289,7 @@ impl GitProject {
             commit_author_filter: None,
             commit_limit: 1000,
             worktree_status_cache: Arc::new(Mutex::new(HashMap::new())),
+            refresh_generation: 0,
         }
     }
 
@@ -317,6 +322,7 @@ impl GitProject {
             commit_author_filter: None,
             commit_limit,
             worktree_status_cache: Arc::new(Mutex::new(HashMap::new())),
+            refresh_generation: 0,
         };
 
         project.start_watcher(cx);
@@ -550,6 +556,16 @@ impl GitProject {
         self.current_user_email = data.current_user_email;
         // Reset offset — the full refresh replaces all commits.
         self.commit_offset = self.recent_commits.len();
+        // Advance the refresh generation so an in-flight watcher snapshot that
+        // started before this apply discards its now-stale lightweight result.
+        self.refresh_generation = self.refresh_generation.wrapping_add(1);
+    }
+
+    /// The current refresh generation, bumped on every `apply_refresh_data`.
+    /// The watcher captures this before gathering and drops its result if the
+    /// generation advanced in the meantime (a newer full refresh won).
+    pub(crate) fn refresh_generation(&self) -> u64 {
+        self.refresh_generation
     }
 
     /// Whether there are more commits beyond the currently loaded set.
@@ -591,7 +607,11 @@ impl GitProject {
     /// graph view re-renders.
     pub fn load_more_commits(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let repo_path = self.repo_path.clone();
-        let skip = self.commit_offset;
+        let already_loaded = self.commit_offset;
+        // Stable pagination cursor: the OID of the last loaded commit. Re-anchoring
+        // on it (rather than a raw `--skip`) avoids dropping a commit if refs change
+        // between pages.
+        let after_oid = self.recent_commits.last().map(|c| c.oid);
         // Collect the branch/tag ref-map data we need for labelling
         let branch_tips: Vec<(git2::Oid, bool, String)> = self
             .branches
@@ -609,7 +629,8 @@ impl GitProject {
                 .spawn(async move {
                     refresh::load_more_commits_from_repo(
                         &repo_path,
-                        skip,
+                        already_loaded,
+                        after_oid,
                         commit_limit,
                         &branch_tips,
                         &tag_tips,
@@ -623,15 +644,15 @@ impl GitProject {
                     // Append the new commits, deduplicated by OID.
                     let existing_oids: std::collections::HashSet<git2::Oid> =
                         this.recent_commits.iter().map(|c| c.oid).collect();
-                    let mut combined: Vec<CommitInfo> = (*this.recent_commits).clone();
+                    // Append in place (no full-Vec clone) via Arc::make_mut.
+                    let combined = Arc::make_mut(&mut this.recent_commits);
                     for commit in new_commits {
                         if !existing_oids.contains(&commit.oid) {
                             combined.push(commit);
                         }
                     }
-                    this.commit_offset = combined.len();
+                    this.commit_offset = this.recent_commits.len();
                     this.has_more_commits = has_more;
-                    this.recent_commits = Arc::new(combined);
                     cx.emit(GitProjectEvent::StatusChanged);
                     cx.notify();
                     Ok(())

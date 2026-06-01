@@ -2,7 +2,6 @@ use super::GitProject;
 use anyhow::{Context as AnyhowContext, Result};
 use gpui::{AsyncApp, Context, Task, WeakEntity};
 use std::path::Path;
-use std::process::Command;
 
 /// A single entry in the bisect log.
 #[derive(Debug, Clone)]
@@ -74,7 +73,7 @@ fn parse_bisect_line(line: &str) -> Option<BisectLogEntry> {
 
 /// Compute bisect log entries from the repository.
 pub fn compute_bisect_log(repo_path: &Path) -> Result<Vec<BisectLogEntry>> {
-    let output = Command::new("git")
+    let output = super::git_command()
         .current_dir(repo_path)
         .args(["bisect", "log"])
         .output()
@@ -94,7 +93,7 @@ pub fn compute_bisect_log(repo_path: &Path) -> Result<Vec<BisectLogEntry>> {
 
 /// Check if bisect is currently in progress.
 pub fn is_bisect_in_progress(repo_path: &Path) -> bool {
-    let output = Command::new("git")
+    let output = super::git_command()
         .current_dir(repo_path)
         .args(["bisect", "status"])
         .output();
