@@ -16,7 +16,7 @@ use rgitui_git::{DiffLine, FileDiff, ThreeWayFileDiff};
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, EstimatedListScroll, Icon, IconName, IconSize, Label,
-    LabelSize, Scrollbar,
+    LabelSize, Scrollbar, Spinner,
 };
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle as SyntectFontStyle, Theme, ThemeSet};
@@ -286,6 +286,12 @@ pub struct DiffViewer {
     current_appearance: Appearance,
     /// Top item index to restore after a display mode switch.
     pending_scroll_top: Option<usize>,
+    /// True while a diff is being fetched in the background. Drives the loading
+    /// spinner in place of the content/placeholder states.
+    loading: bool,
+    /// Set when a diff fetch fails so the viewer can surface the error instead of
+    /// silently falling back to the empty placeholder.
+    error: Option<String>,
     /// LRU cache for computed display rows, keyed by (path, is_dark, commit_id, hunks, additions, deletions).
     display_cache: HashMap<DisplayCacheKey, CachedDisplayRows>,
     /// Bumped on every call that changes what's displayed (`set_diff`,
@@ -334,6 +340,8 @@ impl DiffViewer {
             commit_id: String::new(),
             current_appearance: Appearance::Dark,
             pending_scroll_top: None,
+            loading: false,
+            error: None,
             display_cache: HashMap::new(),
             generation: 0,
         }
@@ -405,6 +413,19 @@ impl DiffViewer {
     ) {
         log::debug!("DiffViewer::set_diff: path={} staged={}", path, staged);
         self.generation = self.generation.wrapping_add(1);
+        self.loading = false;
+        self.error = None;
+        // Showing a standard diff supersedes any active conflict view. Clearing
+        // the three-way state here (before the cache-hit early-return) prevents the
+        // render match from routing to the stale ThreeWay arm after switching from a
+        // conflict file to a normal one.
+        if self.three_way_diff.is_some() {
+            self.three_way_diff = None;
+            self.three_way_rows = Arc::new(Vec::new());
+        }
+        if self.display_mode == DiffDisplayMode::ThreeWay {
+            self.display_mode = DiffDisplayMode::Unified;
+        }
         let appearance = cx.theme().appearance;
         let is_dark = appearance == Appearance::Dark;
         let cid = commit_id.unwrap_or("").to_string();
@@ -500,6 +521,8 @@ impl DiffViewer {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         log::debug!("DiffViewer::clear");
         self.generation = self.generation.wrapping_add(1);
+        self.loading = false;
+        self.error = None;
         self.diff = None;
         self.file_path = None;
         self.is_staged = false;
@@ -519,6 +542,8 @@ impl DiffViewer {
     /// Set a 3-way conflict diff to display.
     pub fn set_three_way_diff(&mut self, diff: ThreeWayFileDiff, cx: &mut Context<Self>) {
         self.generation = self.generation.wrapping_add(1);
+        self.loading = false;
+        self.error = None;
         let appearance = cx.theme().appearance;
         self.current_appearance = appearance;
         self.diff = None; // No standard FileDiff when showing 3-way
@@ -527,11 +552,30 @@ impl DiffViewer {
         self.commit_id = String::new();
         self.three_way_diff = Some(diff.clone());
         self.three_way_rows = Arc::new(Self::compute_three_way_rows(&diff));
+        // Switch to the three-way renderer. This must precede `sync_wrap_list_state`,
+        // which sizes the wrap list off `row_count()` for the active `display_mode`.
+        self.display_mode = DiffDisplayMode::ThreeWay;
         self.highlighted_row = None;
         self.selected_lines = None;
         self.partial_mode = false;
         self.selection_anchor = None;
         self.sync_wrap_list_state();
+        cx.notify();
+    }
+
+    /// Mark that a diff fetch is in progress so the viewer shows a loading
+    /// spinner instead of stale content or the empty placeholder.
+    pub fn set_loading(&mut self, cx: &mut Context<Self>) {
+        self.loading = true;
+        self.error = None;
+        cx.notify();
+    }
+
+    /// Surface a diff-fetch failure in the viewer instead of silently leaving
+    /// the previous file's content (or the generic placeholder) on screen.
+    pub fn set_error(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.loading = false;
+        self.error = Some(message.into());
         cx.notify();
     }
 
@@ -654,19 +698,48 @@ impl DiffViewer {
     /// Resize the virtualized wrap-mode list so its SumTree matches the current
     /// row set. Call this after any mutation that changes the number or
     /// identity of rows for the active `display_mode`.
+    ///
+    /// `ListState::reset` discards `logical_scroll_top`, which would snap the wrap
+    /// view back to the top on every refresh (e.g. after staging a hunk or a theme
+    /// re-highlight). The no-wrap path keeps its position because its
+    /// `UniformListScrollHandle` is untouched here; to stay consistent we capture
+    /// the logical scroll offset and restore it (clamped to the new row count) so a
+    /// content refresh preserves the user's place. Callers that want a specific
+    /// position (`toggle_display_mode`, `scroll_to_line`) set it afterward.
     fn sync_wrap_list_state(&self) {
-        self.wrap_list_state.reset(self.row_count());
+        let row_count = self.row_count();
+        let prev = self.wrap_list_state.logical_scroll_top();
+        self.wrap_list_state.reset(row_count);
+        if row_count == 0 {
+            return;
+        }
+        let mut restored = prev;
+        if restored.item_ix >= row_count {
+            restored.item_ix = row_count - 1;
+            restored.offset_in_item = px(0.);
+        }
+        self.wrap_list_state.scroll_to(restored);
+    }
+
+    /// Whether the active layout renders through the wrap-mode `gpui::list`
+    /// (backed by `wrap_list_state`) rather than the uniform list. Side-by-side and
+    /// three-way always wrap so their columns stay aligned, regardless of the
+    /// `diff_wrap_lines` setting; unified follows the setting.
+    fn wrap_active(&self, cx: &App) -> bool {
+        cx.global::<rgitui_settings::SettingsState>()
+            .settings()
+            .diff_wrap_lines
+            || matches!(
+                self.display_mode,
+                DiffDisplayMode::SideBySide | DiffDisplayMode::ThreeWay
+            )
     }
 
     /// Reveal row `ix` in whichever scrollable container is currently active.
     /// The uniform list scroll handle is used for no-wrap rendering, while
     /// wrap mode lives inside a `gpui::list` backed by `wrap_list_state`.
     fn scroll_row_into_view(&self, ix: usize, cx: &App) {
-        if cx
-            .global::<rgitui_settings::SettingsState>()
-            .settings()
-            .diff_wrap_lines
-        {
+        if self.wrap_active(cx) {
             self.wrap_list_state.scroll_to_reveal_item(ix);
         } else {
             self.scroll_handle.scroll_to_item(ix, ScrollStrategy::Top);
@@ -807,20 +880,25 @@ impl DiffViewer {
                 // s: stage hunks under selection (or cursor hunk if no selection)
                 if !self.is_staged {
                     if self.partial_mode {
-                        // Line-level staging: emit selected addition lines
+                        // Line-level staging: emit the selected change lines (additions
+                        // and deletions). Each pair carries its old/new line number; the
+                        // git layer matches additions on the new side and deletions on the
+                        // old side, so deletions must flow through unfiltered.
                         let line_pairs = if let Some(sel) = &self.selected_lines {
-                            let lines = self.lines_under_selection(sel.clone());
-                            // Filter to additions only (new_num is Some)
-                            lines
+                            self.lines_under_selection(sel.clone())
                                 .into_iter()
-                                .filter(|(_, new_num)| new_num.is_some())
+                                .filter(|pair| Self::is_change_line(pair))
                                 .collect()
                         } else {
-                            self.current_hunk_additions()
+                            self.current_hunk_changes()
                         };
                         if !line_pairs.is_empty() {
                             cx.emit(DiffViewerEvent::LineStageRequested(line_pairs));
                         }
+                        // TODO(audit): BUG-15 surface a "no stageable lines" toast when a
+                        // partial selection yields nothing — needs a new DiffViewerEvent
+                        // variant + a handler arm in rgitui_workspace events.rs (the toast
+                        // system lives there), which can't be added from this crate alone.
                     } else {
                         let hunks = if let Some(sel) = &self.selected_lines {
                             self.hunks_under_selection(sel.clone())
@@ -840,15 +918,17 @@ impl DiffViewer {
                 // u: unstage hunks under selection (or cursor hunk if no selection)
                 if self.is_staged {
                     if self.partial_mode {
-                        // Line-level unstaging: emit selected addition lines
+                        // Line-level unstaging: emit the selected change lines (additions
+                        // and deletions). Deletions must flow through so the git layer can
+                        // match them on the old side; filtering to additions would make
+                        // unstaging a pure deletion a silent no-op.
                         let line_pairs = if let Some(sel) = &self.selected_lines {
-                            let lines = self.lines_under_selection(sel.clone());
-                            lines
+                            self.lines_under_selection(sel.clone())
                                 .into_iter()
-                                .filter(|(_, new_num)| new_num.is_some())
+                                .filter(|pair| Self::is_change_line(pair))
                                 .collect()
                         } else {
-                            self.current_hunk_additions()
+                            self.current_hunk_changes()
                         };
                         if !line_pairs.is_empty() {
                             cx.emit(DiffViewerEvent::LineUnstageRequested(line_pairs));
@@ -897,12 +977,13 @@ impl DiffViewer {
         let pos = self.highlighted_row?;
         match self.display_mode {
             DiffDisplayMode::Unified => {
-                // Check current position first
-                if let DisplayRow::HunkHeader { hunk_index, .. } = &self.display_rows[pos] {
+                // Check current position first. `.get` guards against a stale
+                // `highlighted_row` left over from a different mode's longer row set.
+                if let Some(DisplayRow::HunkHeader { hunk_index, .. }) = self.display_rows.get(pos) {
                     return Some(*hunk_index);
                 }
                 // Search backwards for nearest hunk header
-                (0..pos).rev().find_map(|i| {
+                (0..pos.min(self.display_rows.len())).rev().find_map(|i| {
                     if let DisplayRow::HunkHeader { hunk_index, .. } = &self.display_rows[i] {
                         Some(*hunk_index)
                     } else {
@@ -911,10 +992,10 @@ impl DiffViewer {
                 })
             }
             DiffDisplayMode::SideBySide => {
-                if let SideBySideRow::HunkHeader { hunk_index, .. } = &self.sbs_rows[pos] {
+                if let Some(SideBySideRow::HunkHeader { hunk_index, .. }) = self.sbs_rows.get(pos) {
                     return Some(*hunk_index);
                 }
-                (0..pos).rev().find_map(|i| {
+                (0..pos.min(self.sbs_rows.len())).rev().find_map(|i| {
                     if let SideBySideRow::HunkHeader { hunk_index, .. } = &self.sbs_rows[i] {
                         Some(*hunk_index)
                     } else {
@@ -924,10 +1005,10 @@ impl DiffViewer {
             }
             DiffDisplayMode::ThreeWay => {
                 // Check current position first
-                if let ThreeWayRow::HunkHeader { .. } = &self.three_way_rows[pos] {
+                if let Some(ThreeWayRow::HunkHeader { .. }) = self.three_way_rows.get(pos) {
                     return Some(pos); // In 3-way mode, row index = hunk index
                 }
-                (0..pos)
+                (0..pos.min(self.three_way_rows.len()))
                     .rev()
                     .find(|&i| matches!(self.three_way_rows[i], ThreeWayRow::HunkHeader { .. }))
             }
@@ -1011,12 +1092,23 @@ impl DiffViewer {
                 for i in start..end {
                     if let SideBySideRow::Pair {
                         left_num,
+                        left_kind,
                         right_num,
+                        right_kind,
                         ..
                     } = &rows[i]
                     {
-                        // For side-by-side, use the non-None of left/right as the line reference
-                        lines.push((*left_num, *right_num));
+                        // A pair can carry a deletion on the left and an addition on
+                        // the right (a modification row). Split it into its constituent
+                        // change lines — keyed on the side's kind — so each side is
+                        // staged against the correct (old / new) target set. Context
+                        // pairs contribute nothing.
+                        if *left_kind == SideBySideLineKind::Deletion {
+                            lines.push((*left_num, None));
+                        }
+                        if *right_kind == SideBySideLineKind::Addition {
+                            lines.push((None, *right_num));
+                        }
                     }
                 }
             }
@@ -1027,9 +1119,17 @@ impl DiffViewer {
         lines
     }
 
-    /// Returns addition lines in the current hunk: (old_num, new_num) pairs.
-    /// Filters to only lines where new_num is Some (actual additions).
-    fn current_hunk_additions(&self) -> Vec<(Option<usize>, Option<usize>)> {
+    /// True for an addition `(None, Some)` or deletion `(Some, None)` line; false
+    /// for context `(Some, Some)` and empty `(None, None)` rows. Used to keep
+    /// non-change rows out of a partial-staging selection.
+    fn is_change_line(pair: &(Option<usize>, Option<usize>)) -> bool {
+        pair.0.is_some() ^ pair.1.is_some()
+    }
+
+    /// Returns the change lines (additions and deletions) in the current hunk as
+    /// (old_num, new_num) pairs. Deletions are emitted as (Some, None) and
+    /// additions as (None, Some) so the git layer can stage either side.
+    fn current_hunk_changes(&self) -> Vec<(Option<usize>, Option<usize>)> {
         let hunk_idx = match self.current_hunk_index() {
             Some(i) => i,
             None => return Vec::new(),
@@ -1049,9 +1149,17 @@ impl DiffViewer {
                         }
                     }
                     DisplayRow::Line {
-                        old_num, new_num, ..
+                        old_num,
+                        new_num,
+                        kind,
+                        ..
                     } => {
-                        if in_hunk && new_num.is_some() {
+                        if in_hunk
+                            && matches!(
+                                kind,
+                                DisplayLineKind::Addition | DisplayLineKind::Deletion
+                            )
+                        {
                             lines.push((*old_num, *new_num));
                         }
                     }
@@ -1062,15 +1170,41 @@ impl DiffViewer {
     }
 
     pub fn toggle_display_mode(&mut self, cx: &mut Context<Self>) {
-        // Capture the current top item so we can restore scroll position after the switch.
-        let top_item = self.scroll_handle.0.borrow().base_handle.top_item();
+        // A three-way conflict has no unified/side-by-side representation, so the
+        // toggle is inert while one is shown — flipping to Unified would render an
+        // empty diff.
+        if self.three_way_diff.is_some() {
+            return;
+        }
+
+        // Capture the current top item so we can restore scroll position after the
+        // switch. No-wrap reads the uniform list's base handle; wrap mode lives in a
+        // `gpui::list` whose `logical_scroll_top` is the authoritative position (the
+        // uniform handle is never rendered in wrap mode and stays at 0).
+        let top_item = if self.wrap_active(cx) {
+            self.wrap_list_state.logical_scroll_top().item_ix
+        } else {
+            self.scroll_handle.0.borrow().base_handle.top_item()
+        };
         self.pending_scroll_top = Some(top_item);
+
         self.display_mode = match self.display_mode {
             DiffDisplayMode::Unified => DiffDisplayMode::SideBySide,
             DiffDisplayMode::SideBySide => DiffDisplayMode::Unified,
             DiffDisplayMode::ThreeWay => DiffDisplayMode::Unified,
         };
         self.sync_wrap_list_state();
+
+        // The new mode's row set differs in length (a unified modification pair maps
+        // to one side-by-side row), so clamp any highlighted row back into bounds to
+        // keep later index lookups from panicking.
+        let row_count = self.row_count();
+        self.highlighted_row = match self.highlighted_row {
+            Some(_) if row_count == 0 => None,
+            Some(r) => Some(r.min(row_count - 1)),
+            None => None,
+        };
+
         cx.notify();
     }
 
@@ -1135,11 +1269,12 @@ impl DiffViewer {
     /// of the diff. Used by global search to navigate from grep results to the
     /// corresponding location in the diff viewer. Returns true if the line was found.
     pub fn scroll_to_line(&mut self, line_number: usize, cx: &Context<Self>) -> bool {
-        let rows = &self.display_rows;
-        if rows.is_empty() {
+        // A three-way conflict has no `display_rows` to navigate; bail before the
+        // mode-switch logic below acts on a stale unified row set.
+        if self.three_way_diff.is_some() || self.display_rows.is_empty() {
             return false;
         }
-        let target = rows.iter().position(|row| {
+        let target = self.display_rows.iter().position(|row| {
             matches!(
                 row,
                 DisplayRow::Line {
@@ -1149,6 +1284,14 @@ impl DiffViewer {
             )
         });
         if let Some(idx) = target {
+            // The target index addresses `display_rows`, so `highlighted_row` is only
+            // valid against the unified row set. Switch to unified first (search
+            // navigation is a unified-view concept) so the highlight and scroll land
+            // on the right row regardless of the prior mode.
+            if self.display_mode != DiffDisplayMode::Unified {
+                self.display_mode = DiffDisplayMode::Unified;
+                self.sync_wrap_list_state();
+            }
             self.highlighted_row = Some(idx);
             self.scroll_row_into_view(idx, cx);
             return true;
@@ -2100,7 +2243,7 @@ impl DiffViewer {
 }
 
 impl Render for DiffViewer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log::trace!(
             "DiffViewer::render: path={:?} display_rows={} sbs_rows={}",
             self.file_path,
@@ -2109,62 +2252,82 @@ impl Render for DiffViewer {
         );
         let colors = cx.colors();
 
-        if self.diff.is_none() {
+        let has_content = self.diff.is_some() || self.three_way_diff.is_some();
+        if self.error.is_some() || self.loading || !has_content {
+            let header = div()
+                .h_flex()
+                .w_full()
+                .h(px(26.))
+                .px(px(10.))
+                .gap(px(4.))
+                .items_center()
+                .bg(colors.toolbar_background)
+                .border_b_1()
+                .border_color(colors.border_variant)
+                .child(
+                    Icon::new(IconName::File)
+                        .size(IconSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(
+                    Label::new("Diff")
+                        .size(LabelSize::XSmall)
+                        .weight(FontWeight::SEMIBOLD)
+                        .color(Color::Muted),
+                );
+
+            let card = div()
+                .v_flex()
+                .gap(px(12.))
+                .items_center()
+                .px(px(32.))
+                .py(px(24.))
+                .rounded(px(8.))
+                .bg(colors.element_background);
+
+            let card = if let Some(message) = &self.error {
+                card.child(
+                    Icon::new(IconName::AlertTriangle)
+                        .size(IconSize::Large)
+                        .color(Color::Error),
+                )
+                .child(
+                    Label::new("Failed to load diff")
+                        .size(LabelSize::Small)
+                        .color(Color::Error),
+                )
+                .child(
+                    Label::new(message.clone())
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+            } else if self.loading {
+                card.child(Spinner::new().label("Loading diff..."))
+            } else {
+                card.child(
+                    Icon::new(IconName::File)
+                        .size(IconSize::Large)
+                        .color(Color::Placeholder),
+                )
+                .child(
+                    Label::new("Select a file to view changes")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                )
+                .child(
+                    Label::new("Click a file in the sidebar or detail panel")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Placeholder),
+                )
+            };
+
             return div()
                 .id("diff-viewer")
                 .v_flex()
                 .size_full()
                 .bg(colors.editor_background)
-                .child(
-                    div()
-                        .h_flex()
-                        .w_full()
-                        .h(px(26.))
-                        .px(px(10.))
-                        .gap(px(4.))
-                        .items_center()
-                        .bg(colors.toolbar_background)
-                        .border_b_1()
-                        .border_color(colors.border_variant)
-                        .child(
-                            Icon::new(IconName::File)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                        .child(
-                            Label::new("Diff")
-                                .size(LabelSize::XSmall)
-                                .weight(FontWeight::SEMIBOLD)
-                                .color(Color::Muted),
-                        ),
-                )
-                .child(
-                    div().flex_1().flex().items_center().justify_center().child(
-                        div()
-                            .v_flex()
-                            .gap(px(12.))
-                            .items_center()
-                            .px(px(32.))
-                            .py(px(24.))
-                            .rounded(px(8.))
-                            .bg(colors.element_background)
-                            .child(
-                                Icon::new(IconName::File)
-                                    .size(IconSize::Large)
-                                    .color(Color::Placeholder),
-                            )
-                            .child(
-                                Label::new("Select a file to view changes")
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                Label::new("Click a file in the sidebar or detail panel")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Placeholder),
-                            ),
-                    ),
-                )
+                .child(header)
+                .child(div().flex_1().flex().items_center().justify_center().child(card))
                 .into_any_element();
         }
 
@@ -2184,6 +2347,7 @@ impl Render for DiffViewer {
         let vc_deleted = colors.vc_deleted;
         let element_bg = colors.element_background;
         let toolbar_bg = colors.toolbar_background;
+        let border_focused = colors.border_focused;
 
         let added_line_bg = gpui::Hsla {
             a: 0.12,
@@ -2215,7 +2379,16 @@ impl Render for DiffViewer {
 
         let settings_state = cx.global::<rgitui_settings::SettingsState>();
         let compactness = settings_state.settings().compactness;
-        let wrap_enabled = settings_state.settings().diff_wrap_lines;
+        // Side-by-side and three-way columns scroll horizontally per row with no
+        // scrollbar, so a line wider than its column is silently clipped and adjacent
+        // rows fall out of alignment. Force wrap for those layouts so overflow is
+        // always visible and the columns stay aligned; the unified layout keeps the
+        // user's wrap preference (it has a global horizontal scrollbar).
+        let wrap_enabled = settings_state.settings().diff_wrap_lines
+            || matches!(
+                self.display_mode,
+                DiffDisplayMode::SideBySide | DiffDisplayMode::ThreeWay
+            );
         let row_height = compactness.spacing(20.0);
         let hunk_header_height = row_height;
 
@@ -2242,23 +2415,23 @@ impl Render for DiffViewer {
             self.scroll_row_into_view(target_ix, cx);
         }
 
-        // Compute once before rows move into per-mode build closures.
-        let longest_row_ix =
-            Self::longest_row_ix(display_mode, &display_rows, &sbs_rows, &three_way_rows);
         log::debug!(
             target: "rgitui::diff",
-            "render mode={:?} wrap={} row_height={} rows={} longest_ix={}",
+            "render mode={:?} wrap={} row_height={} rows={}",
             display_mode,
             wrap_enabled,
             row_height,
             self.row_count(),
-            longest_row_ix,
         );
 
         let list = match display_mode {
             DiffDisplayMode::Unified => {
                 let view = view.clone();
                 let row_count = display_rows.len();
+                // Only the no-wrap unified list seeds its horizontal scroll range from
+                // the longest row, so the O(rows) scan is confined to that branch
+                // rather than running every frame in modes that discard it.
+                let longest_rows = display_rows.clone();
                 let build_unified = move |range: Range<usize>,
                                           window: &mut Window,
                                           _cx: &mut App|
@@ -2569,6 +2742,12 @@ impl Render for DiffViewer {
                         .child(list_body)
                         .into_any_element()
                 } else {
+                    let longest_row_ix = Self::longest_row_ix(
+                        DiffDisplayMode::Unified,
+                        &longest_rows,
+                        &[],
+                        &[],
+                    );
                     uniform_list("diff-lines", row_count, build_unified)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
                         .with_horizontal_sizing_behavior(
@@ -2963,7 +3142,6 @@ impl Render for DiffViewer {
                     // Split view: each column has an independent per-row horizontal
                     // scroll area, so the list itself should be viewport-width
                     // (no Unconstrained sizing, no global horizontal scrollbar).
-                    let _ = longest_row_ix;
                     uniform_list("diff-lines-sbs", row_count, build_sbs)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
                         .flex_grow()
@@ -3223,7 +3401,6 @@ impl Render for DiffViewer {
                         .child(list_body)
                         .into_any_element()
                 } else {
-                    let _ = longest_row_ix;
                     uniform_list("diff-lines-tw", row_count, build_tw)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
                         .flex_grow()
@@ -3233,6 +3410,12 @@ impl Render for DiffViewer {
             }
         };
 
+        let is_focused = self.focus_handle.is_focused(window);
+        let focus_ring_color = if is_focused {
+            border_focused
+        } else {
+            gpui::transparent_black()
+        };
         let mut container = div()
             .id("diff-viewer")
             .track_focus(&self.focus_handle)
@@ -3244,6 +3427,11 @@ impl Render for DiffViewer {
             .v_flex()
             .size_full()
             .overflow_hidden()
+            // Focus ring so j/k navigation is discoverable: an accent border when the
+            // pane holds keyboard focus, a transparent border of the same width
+            // otherwise so toggling focus never shifts layout or adds chrome.
+            .border_1()
+            .border_color(focus_ring_color)
             .bg(editor_bg);
 
         if let Some(path) = &self.file_path {
@@ -3333,33 +3521,58 @@ impl Render for DiffViewer {
                             .text_color(text_placeholder_color)
                             .child("\u{00B7}"),
                     )
-                    .child(if self.partial_mode {
-                        div()
-                            .text_xs()
-                            .text_color(Color::Warning.color(cx))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Partial")
-                    } else {
-                        div()
+                    .child({
+                        // Always-present partial-mode affordance so the line-level
+                        // staging entry point is discoverable: emphasized while active,
+                        // a muted "Partial (p)" hint otherwise. Hidden for the
+                        // three-way conflict view, which has no line-level staging.
+                        let partial_tooltip = if self.partial_mode {
+                            "Line-level staging: select lines, then s / u. Press p to exit."
+                        } else {
+                            "Partial line-level staging — press p to toggle."
+                        };
+                        let (partial_label, partial_color) = if self.partial_mode {
+                            ("Partial", Color::Warning.color(cx))
+                        } else {
+                            ("Partial (p)", text_placeholder_color)
+                        };
+                        if self.display_mode == DiffDisplayMode::ThreeWay {
+                            div().into_any_element()
+                        } else {
+                            div()
+                                .id("diff-partial-indicator")
+                                .text_xs()
+                                .text_color(partial_color)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(partial_label)
+                                .tooltip(rgitui_ui::Tooltip::text(partial_tooltip))
+                                .into_any_element()
+                        }
                     })
-                    .child(
+                    .child({
+                        let toggle_tooltip = match self.display_mode {
+                            DiffDisplayMode::Unified => "Switch to side-by-side view (d)",
+                            DiffDisplayMode::SideBySide => "Switch to unified view (d)",
+                            DiffDisplayMode::ThreeWay => "Three-way conflict view",
+                        };
                         Button::new("toggle-diff-mode", mode_label)
                             .size(ButtonSize::Compact)
                             .style(ButtonStyle::Subtle)
+                            .tooltip(toggle_tooltip)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.toggle_display_mode(cx);
-                            })),
-                    ),
+                            }))
+                    }),
             );
         }
 
         // Wrap the list in a row container that holds a vertical scrollbar on
-        // the right, then append a horizontal scrollbar below for modes that
-        // scroll the whole list horizontally (unified, no-wrap). Split and
-        // three-way use per-row scroll areas per column, so a global
-        // horizontal scrollbar would not reflect their state. Wrap mode is
-        // backed by `gpui::list`, so the scrollbar drives `ListState`; the
-        // no-wrap modes stay on the uniform list's base `ScrollHandle`.
+        // the right, then append a horizontal scrollbar below only for the one
+        // mode that scrolls the whole list horizontally: no-wrap unified. Split
+        // and three-way always wrap (their columns never scroll horizontally), so
+        // they need no horizontal scrollbar. Wrap mode is backed by `gpui::list`,
+        // so the vertical scrollbar drives `ListState`; no-wrap unified stays on
+        // the uniform list's base `ScrollHandle`.
         let vscroll: AnyElement = if wrap_enabled {
             // Wrap mode is backed by `gpui::list`, whose measured content height
             // grows as rows scroll into view. Drive the scrollbar from a fixed
@@ -3445,6 +3658,19 @@ mod tests {
         assert_eq!(a.deletions, b.deletions);
         assert_eq!(a.hunks.len(), b.hunks.len());
         assert!(!file_diffs_render_equal(&a, &b));
+    }
+
+    #[test]
+    fn is_change_line_accepts_additions_and_deletions_only() {
+        // Addition: (None, Some) — staged on the new side.
+        assert!(DiffViewer::is_change_line(&(None, Some(3))));
+        // Deletion: (Some, None) — staged on the old side. The pre-fix viewer
+        // dropped these because it filtered to `new_num.is_some()`.
+        assert!(DiffViewer::is_change_line(&(Some(7), None)));
+        // Context: (Some, Some) — carried by the git layer, never a change target.
+        assert!(!DiffViewer::is_change_line(&(Some(7), Some(7))));
+        // Empty / non-line row.
+        assert!(!DiffViewer::is_change_line(&(None, None)));
     }
 
     #[test]
