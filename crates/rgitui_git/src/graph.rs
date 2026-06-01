@@ -1046,19 +1046,9 @@ mod tests {
         let oid_to_idx = make_oid_to_idx(&commits);
         let mut ancestry = AncestorCache::new();
         // oid2 IS ancestor of oid1 (direct parent)
-        assert!(ancestry.is_ancestor_of(
-            make_oid(2),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(ancestry.is_ancestor_of(make_oid(2), make_oid(1), &commits, &oid_to_idx));
         // oid1 is NOT ancestor of oid2 (reverse direction)
-        assert!(!ancestry.is_ancestor_of(
-            make_oid(1),
-            make_oid(2),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(!ancestry.is_ancestor_of(make_oid(1), make_oid(2), &commits, &oid_to_idx));
     }
 
     #[test]
@@ -1073,26 +1063,11 @@ mod tests {
         let oid_to_idx = make_oid_to_idx(&commits);
         let mut ancestry = AncestorCache::new();
         // oid3 is ancestor of oid1 (grandparent)
-        assert!(ancestry.is_ancestor_of(
-            make_oid(3),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(ancestry.is_ancestor_of(make_oid(3), make_oid(1), &commits, &oid_to_idx));
         // oid2 is ancestor of oid1 (direct parent)
-        assert!(ancestry.is_ancestor_of(
-            make_oid(2),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(ancestry.is_ancestor_of(make_oid(2), make_oid(1), &commits, &oid_to_idx));
         // oid1 is NOT ancestor of oid3 (reverse direction)
-        assert!(!ancestry.is_ancestor_of(
-            make_oid(1),
-            make_oid(3),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(!ancestry.is_ancestor_of(make_oid(1), make_oid(3), &commits, &oid_to_idx));
     }
 
     #[test]
@@ -1101,12 +1076,7 @@ mod tests {
         let commits = vec![make_commit(1, &[], vec![RefLabel::Head])];
         let oid_to_idx = make_oid_to_idx(&commits);
         let mut ancestry = AncestorCache::new();
-        assert!(ancestry.is_ancestor_of(
-            make_oid(1),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(ancestry.is_ancestor_of(make_oid(1), make_oid(1), &commits, &oid_to_idx));
     }
 
     #[test]
@@ -1121,31 +1091,11 @@ mod tests {
         let oid_to_idx = make_oid_to_idx(&commits);
         let mut ancestry = AncestorCache::new();
         // No cross-branch ancestry
-        assert!(!ancestry.is_ancestor_of(
-            make_oid(1),
-            make_oid(10),
-            &commits,
-            &oid_to_idx
-        ));
-        assert!(!ancestry.is_ancestor_of(
-            make_oid(10),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(!ancestry.is_ancestor_of(make_oid(1), make_oid(10), &commits, &oid_to_idx));
+        assert!(!ancestry.is_ancestor_of(make_oid(10), make_oid(1), &commits, &oid_to_idx));
         // Within each chain: parent is ancestor of child
-        assert!(ancestry.is_ancestor_of(
-            make_oid(2),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
-        assert!(ancestry.is_ancestor_of(
-            make_oid(20),
-            make_oid(10),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(ancestry.is_ancestor_of(make_oid(2), make_oid(1), &commits, &oid_to_idx));
+        assert!(ancestry.is_ancestor_of(make_oid(20), make_oid(10), &commits, &oid_to_idx));
     }
 
     #[test]
@@ -1164,33 +1114,13 @@ mod tests {
         let oid_to_idx = make_oid_to_idx(&commits);
         let mut ancestry = AncestorCache::new();
         // oid3 is ancestor of oid1 (via either branch)
-        assert!(ancestry.is_ancestor_of(
-            make_oid(3),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(ancestry.is_ancestor_of(make_oid(3), make_oid(1), &commits, &oid_to_idx));
         // oid2 is ancestor of oid1 (direct merge parent)
-        assert!(ancestry.is_ancestor_of(
-            make_oid(2),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(ancestry.is_ancestor_of(make_oid(2), make_oid(1), &commits, &oid_to_idx));
         // oid20 is ancestor of oid1 (direct merge parent)
-        assert!(ancestry.is_ancestor_of(
-            make_oid(20),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(ancestry.is_ancestor_of(make_oid(20), make_oid(1), &commits, &oid_to_idx));
         // Reverse: oid1 is NOT ancestor of oid3
-        assert!(!ancestry.is_ancestor_of(
-            make_oid(1),
-            make_oid(3),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(!ancestry.is_ancestor_of(make_oid(1), make_oid(3), &commits, &oid_to_idx));
     }
 
     #[test]
@@ -1200,19 +1130,9 @@ mod tests {
         let oid_to_idx = make_oid_to_idx(&commits);
         let mut ancestry = AncestorCache::new();
         // Nonexistent OID is not ancestor of anything
-        assert!(!ancestry.is_ancestor_of(
-            make_oid(99),
-            make_oid(1),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(!ancestry.is_ancestor_of(make_oid(99), make_oid(1), &commits, &oid_to_idx));
         // Nothing is ancestor of a nonexistent OID
-        assert!(!ancestry.is_ancestor_of(
-            make_oid(1),
-            make_oid(99),
-            &commits,
-            &oid_to_idx
-        ));
+        assert!(!ancestry.is_ancestor_of(make_oid(1), make_oid(99), &commits, &oid_to_idx));
     }
 
     // ── Main-branch-awareness tests ────────────────────────────────────

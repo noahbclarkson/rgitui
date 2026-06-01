@@ -887,7 +887,7 @@ impl DiffViewer {
                         let line_pairs = if let Some(sel) = &self.selected_lines {
                             self.lines_under_selection(sel.clone())
                                 .into_iter()
-                                .filter(|pair| Self::is_change_line(pair))
+                                .filter(Self::is_change_line)
                                 .collect()
                         } else {
                             self.current_hunk_changes()
@@ -925,7 +925,7 @@ impl DiffViewer {
                         let line_pairs = if let Some(sel) = &self.selected_lines {
                             self.lines_under_selection(sel.clone())
                                 .into_iter()
-                                .filter(|pair| Self::is_change_line(pair))
+                                .filter(Self::is_change_line)
                                 .collect()
                         } else {
                             self.current_hunk_changes()
@@ -979,7 +979,8 @@ impl DiffViewer {
             DiffDisplayMode::Unified => {
                 // Check current position first. `.get` guards against a stale
                 // `highlighted_row` left over from a different mode's longer row set.
-                if let Some(DisplayRow::HunkHeader { hunk_index, .. }) = self.display_rows.get(pos) {
+                if let Some(DisplayRow::HunkHeader { hunk_index, .. }) = self.display_rows.get(pos)
+                {
                     return Some(*hunk_index);
                 }
                 // Search backwards for nearest hunk header
@@ -1155,10 +1156,7 @@ impl DiffViewer {
                         ..
                     } => {
                         if in_hunk
-                            && matches!(
-                                kind,
-                                DisplayLineKind::Addition | DisplayLineKind::Deletion
-                            )
+                            && matches!(kind, DisplayLineKind::Addition | DisplayLineKind::Deletion)
                         {
                             lines.push((*old_num, *new_num));
                         }
@@ -2327,7 +2325,14 @@ impl Render for DiffViewer {
                 .size_full()
                 .bg(colors.editor_background)
                 .child(header)
-                .child(div().flex_1().flex().items_center().justify_center().child(card))
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(card),
+                )
                 .into_any_element();
         }
 
@@ -2742,12 +2747,8 @@ impl Render for DiffViewer {
                         .child(list_body)
                         .into_any_element()
                 } else {
-                    let longest_row_ix = Self::longest_row_ix(
-                        DiffDisplayMode::Unified,
-                        &longest_rows,
-                        &[],
-                        &[],
-                    );
+                    let longest_row_ix =
+                        Self::longest_row_ix(DiffDisplayMode::Unified, &longest_rows, &[], &[]);
                     uniform_list("diff-lines", row_count, build_unified)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
                         .with_horizontal_sizing_behavior(

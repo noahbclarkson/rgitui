@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::mpsc::{Sender, SyncSender, channel, sync_channel};
+use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender};
 use std::sync::{Mutex, OnceLock, RwLock};
 use uuid::Uuid;
 

@@ -284,16 +284,16 @@ impl RenderOnce for ButtonLike {
             // otherwise fall back to the hover background so the ring is visible.
             if resolved.border.is_some() {
                 let focus_color = colors.border_focused;
-                container = container
-                    .focus_visible(move |s: StyleRefinement| s.border_color(focus_color));
+                container =
+                    container.focus_visible(move |s: StyleRefinement| s.border_color(focus_color));
             } else if let Some(hover) = resolved.hover {
                 container = container.focus_visible(move |s: StyleRefinement| s.bg(hover));
             }
 
             container = match (resolved.hover, resolved.active) {
-                (Some(hover), Some(active)) => {
-                    container.hover(move |s| s.bg(hover)).active(move |s| s.bg(active))
-                }
+                (Some(hover), Some(active)) => container
+                    .hover(move |s| s.bg(hover))
+                    .active(move |s| s.bg(active)),
                 (Some(hover), None) => container.hover(move |s| s.bg(hover)),
                 (None, Some(active)) => container.active(move |s| s.bg(active)),
                 (None, None) => container,
@@ -442,9 +442,11 @@ impl RenderOnce for Button {
             self.label_color.unwrap_or(Color::Default)
         };
 
-        let icon_el = self
-            .icon
-            .map(|name| Icon::new(name).size(self.size.icon_size()).color(label_color));
+        let icon_el = self.icon.map(|name| {
+            Icon::new(name)
+                .size(self.size.icon_size())
+                .color(label_color)
+        });
         let label_el = Label::new(self.label)
             .size(self.size.label_size())
             .color(label_color);

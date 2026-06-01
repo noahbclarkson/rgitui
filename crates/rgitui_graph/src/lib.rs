@@ -2127,10 +2127,7 @@ impl Render for GraphView {
                                     let top = origin.y + clamped_y;
                                     let x = event.position.x;
                                     let y = event.position.y;
-                                    x >= left
-                                        && x < left + menu_w
-                                        && y >= top
-                                        && y < top + menu_h
+                                    x >= left && x < left + menu_w && y >= top && y < top + menu_h
                                 });
                             if !click_inside_menu {
                                 this.dismiss_context_menu(cx);
