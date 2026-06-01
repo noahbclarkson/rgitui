@@ -1350,3 +1350,4 @@ mod tests {
         assert!(name.contains("+1"));
     }
 }
+pub mod shortcuts;
