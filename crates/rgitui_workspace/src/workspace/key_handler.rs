@@ -31,7 +31,9 @@ impl Workspace {
         let key = keystroke.key.as_str();
         let modifiers = &keystroke.modifiers;
 
-        let mut custom_shortcuts: Option<std::sync::Arc<rgitui_settings::shortcuts::CustomShortcuts>> = None;
+        let mut custom_shortcuts: Option<
+            std::sync::Arc<rgitui_settings::shortcuts::CustomShortcuts>,
+        > = None;
         if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>() {
             let cloned = std::sync::Arc::new(state.settings().shortcuts.clone());
             custom_shortcuts = Some(cloned);
