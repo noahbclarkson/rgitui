@@ -685,9 +685,22 @@ impl GitProject {
         hunk_index: usize,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.stage_hunk_at(file_path, hunk_index, &worktree_path, cx)
+    }
+
+    /// Stage a specific hunk in the given worktree.
+    pub fn stage_hunk_at(
+        &mut self,
+        file_path: &Path,
+        hunk_index: usize,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -705,12 +718,12 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let patch_text =
                         generate_hunk_patch_for_repo(&repo, &task_file_path, hunk_index, false)?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     repo.apply(&diff, git2::ApplyLocation::Index, None)?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 
@@ -757,9 +770,22 @@ impl GitProject {
         hunk_index: usize,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.unstage_hunk_at(file_path, hunk_index, &worktree_path, cx)
+    }
+
+    /// Unstage a specific hunk from a staged file diff in the given worktree.
+    pub fn unstage_hunk_at(
+        &mut self,
+        file_path: &Path,
+        hunk_index: usize,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -777,13 +803,13 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let patch_text =
                         generate_hunk_patch_for_repo(&repo, &task_file_path, hunk_index, true)?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     let mut opts = git2::ApplyOptions::new();
                     repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut opts))?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 
@@ -832,9 +858,22 @@ impl GitProject {
         line_pairs: &[(Option<usize>, Option<usize>)],
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.stage_lines_at(file_path, line_pairs, &worktree_path, cx)
+    }
+
+    /// Stage specific lines within a file's diff in the given worktree.
+    pub fn stage_lines_at(
+        &mut self,
+        file_path: &Path,
+        line_pairs: &[(Option<usize>, Option<usize>)],
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let line_count = line_pairs.len();
@@ -855,7 +894,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let patch_text = generate_line_patch_for_repo(
                         &repo,
                         &task_file_path,
@@ -864,7 +903,7 @@ impl GitProject {
                     )?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     repo.apply(&diff, git2::ApplyLocation::Index, None)?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 
@@ -912,9 +951,22 @@ impl GitProject {
         line_pairs: &[(Option<usize>, Option<usize>)],
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.unstage_lines_at(file_path, line_pairs, &worktree_path, cx)
+    }
+
+    /// Unstage specific lines from a staged file diff in the given worktree.
+    pub fn unstage_lines_at(
+        &mut self,
+        file_path: &Path,
+        line_pairs: &[(Option<usize>, Option<usize>)],
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let line_count = line_pairs.len();
@@ -935,7 +987,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     // staged=true: diff is HEAD→index; we negate signs to remove from index.
                     let patch_text = generate_line_patch_for_repo(
                         &repo,
@@ -946,7 +998,7 @@ impl GitProject {
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     let mut opts = git2::ApplyOptions::new();
                     repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut opts))?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 

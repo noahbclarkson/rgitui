@@ -2204,36 +2204,43 @@ pub(super) fn subscribe_diff_viewer(
     let diff_viewer_ref = diff_viewer.clone();
 
     cx.subscribe(diff_viewer, {
-        move |_this, _dv, event: &DiffViewerEvent, cx| {
+        move |this, _dv, event: &DiffViewerEvent, cx| {
             let file_path = diff_viewer_ref
                 .read(cx)
                 .file_path()
                 .map(std::path::PathBuf::from);
 
             if let Some(path) = file_path {
+                // Hunk/line staging must target the inspected worktree's index, not
+                // the main repo's. Route every op through the `_at` variant with the
+                // active tab's effective worktree (the main repo path when no
+                // worktree is being inspected).
+                let worktree_path = this.effective_worktree_path(cx);
                 match event {
                     DiffViewerEvent::HunkStageRequested(hunk_idx) => {
                         let idx = *hunk_idx;
                         project.update(cx, |proj, cx| {
-                            proj.stage_hunk(&path, idx, cx).detach();
+                            proj.stage_hunk_at(&path, idx, &worktree_path, cx).detach();
                         });
                     }
                     DiffViewerEvent::HunkUnstageRequested(hunk_idx) => {
                         let idx = *hunk_idx;
                         project.update(cx, |proj, cx| {
-                            proj.unstage_hunk(&path, idx, cx).detach();
+                            proj.unstage_hunk_at(&path, idx, &worktree_path, cx).detach();
                         });
                     }
                     DiffViewerEvent::LineStageRequested(line_pairs) => {
                         let pairs = line_pairs.clone();
                         project.update(cx, |proj, cx| {
-                            proj.stage_lines(&path, &pairs, cx).detach();
+                            proj.stage_lines_at(&path, &pairs, &worktree_path, cx)
+                                .detach();
                         });
                     }
                     DiffViewerEvent::LineUnstageRequested(line_pairs) => {
                         let pairs = line_pairs.clone();
                         project.update(cx, |proj, cx| {
-                            proj.unstage_lines(&path, &pairs, cx).detach();
+                            proj.unstage_lines_at(&path, &pairs, &worktree_path, cx)
+                                .detach();
                         });
                     }
                 }
