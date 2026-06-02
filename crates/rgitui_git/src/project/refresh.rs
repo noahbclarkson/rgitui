@@ -80,6 +80,97 @@ fn parse_co_authors(message: &str) -> (String, Vec<Signature>) {
     (cleaned, co_authors)
 }
 
+/// Record separator that won't appear in commit messages.
+const LOG_RECORD_SEP: &str = "\x1e";
+/// Field separator within a single commit-log record.
+const LOG_FIELD_SEP: &str = "\x1d";
+
+/// The `--format` argument value for the commit-log subprocess, shared by the
+/// full-refresh loader and the incremental load-more loader so the field layout
+/// stays in lockstep. Fields, in order: oid, short_id, author_name,
+/// author_email, committer_name, committer_email, timestamp, parent_oids,
+/// summary, body.
+fn commit_log_format() -> String {
+    format!(
+        "{rs}%H{gs}%h{gs}%an{gs}%ae{gs}%cn{gs}%ce{gs}%ct{gs}%P{gs}%s{gs}%b{gs}",
+        rs = LOG_RECORD_SEP,
+        gs = LOG_FIELD_SEP,
+    )
+}
+
+/// Parse the stdout of a `git log --format=commit_log_format()` invocation into
+/// `CommitInfo`s, attaching ref labels from `ref_map`.
+///
+/// Every record in `stdout` is parsed; pagination (the `-(limit + 1)` extra
+/// record that signals "there are more", and the stable-cursor windowing used
+/// by the incremental loader) is owned by the callers, so a single parser
+/// serves both the full-refresh and load-more paths.
+fn parse_git_log_records(
+    stdout: &str,
+    ref_map: &mut HashMap<git2::Oid, Vec<RefLabel>>,
+) -> Vec<CommitInfo> {
+    let mut commits = Vec::new();
+
+    for record in stdout.split(LOG_RECORD_SEP) {
+        let record = record.trim();
+        if record.is_empty() {
+            continue;
+        }
+
+        let fields: Vec<&str> = record.splitn(11, LOG_FIELD_SEP).collect();
+        if fields.len() < 10 {
+            continue;
+        }
+
+        let oid = match git2::Oid::from_str(fields[0]) {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let short_id = fields[1].to_string();
+        let author_name = fields[2].to_string();
+        let author_email = fields[3].to_string();
+        let committer_name = fields[4].to_string();
+        let committer_email = fields[5].to_string();
+        let timestamp: i64 = fields[6].parse().unwrap_or(0);
+        let parent_oids: Vec<git2::Oid> = fields[7]
+            .split_whitespace()
+            .filter_map(|s| git2::Oid::from_str(s).ok())
+            .collect();
+        let summary = fields[8].to_string();
+        let body = fields[9].trim();
+        let message = if body.is_empty() {
+            summary.clone()
+        } else {
+            format!("{}\n\n{}", summary, clean_co_author_lines(body))
+        };
+
+        let time = Utc.timestamp_opt(timestamp, 0).single();
+        let refs = ref_map.remove(&oid).unwrap_or_default();
+
+        commits.push(CommitInfo {
+            oid,
+            short_id,
+            summary,
+            message,
+            author: Signature {
+                name: author_name,
+                email: author_email,
+            },
+            committer: Signature {
+                name: committer_name,
+                email: committer_email,
+            },
+            co_authors: Vec::new(),
+            time: time.unwrap_or_else(Utc::now),
+            parent_oids,
+            refs,
+            is_signed: false,
+        });
+    }
+
+    commits
+}
+
 /// Gather information about all worktrees attached to this repository.
 fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
     let mut worktrees = Vec::new();
@@ -209,6 +300,10 @@ fn compute_working_tree_status(
         }
     }
 
+    // TODO(audit): QUAL-06 — run this fan-out on the GPUI BackgroundExecutor
+    // instead of raw OS threads. Blocked by the two-file edit scope: the gather
+    // functions are synchronous and have no executor handle; threading one in
+    // requires async signatures plus touching every external call site.
     let (staged_stats, unstaged_stats) = std::thread::scope(|s| {
         let staged_handle = s.spawn(|| {
             let repo = Repository::open(repo_path).ok();
@@ -310,7 +405,7 @@ fn compute_working_tree_status(
 
 pub fn gather_refresh_data(repo_path: &Path, commit_limit: usize) -> Result<RefreshData> {
     log::debug!("gather_refresh_data: repo={}", repo_path.display());
-    gather_refresh_data_internal(repo_path, true, commit_limit, None)
+    gather_refresh_data_internal(repo_path, true, commit_limit, None, None)
 }
 
 /// Gather refresh data without computing ahead/behind for every branch.
@@ -326,21 +421,26 @@ pub fn gather_refresh_data_lightweight(
         "gather_refresh_data_lightweight: repo={}",
         repo_path.display()
     );
-    gather_refresh_data_internal(repo_path, false, commit_limit, None)
+    gather_refresh_data_internal(repo_path, false, commit_limit, None, None)
 }
 
 /// Like `gather_refresh_data_lightweight` but uses the per-worktree status cache to skip
 /// `batch_diff_stats` for worktrees whose content has not changed since the last refresh.
+///
+/// `author_filter`, when `Some`, restricts the loaded commit list to commits by
+/// that author so a watcher-driven refresh keeps the "My Commits" view intact
+/// instead of replacing it with the full unfiltered log.
 pub(super) fn gather_refresh_data_lightweight_cached(
     repo_path: &Path,
     commit_limit: usize,
     cache: &Mutex<WorktreeStatusCache>,
+    author_filter: Option<&str>,
 ) -> Result<RefreshData> {
     log::debug!(
         "gather_refresh_data_lightweight_cached: repo={}",
         repo_path.display()
     );
-    gather_refresh_data_internal(repo_path, false, commit_limit, Some(cache))
+    gather_refresh_data_internal(repo_path, false, commit_limit, Some(cache), author_filter)
 }
 
 fn gather_refresh_data_internal(
@@ -348,6 +448,7 @@ fn gather_refresh_data_internal(
     compute_ahead_behind: bool,
     commit_limit: usize,
     worktree_cache: Option<&Mutex<WorktreeStatusCache>>,
+    author_filter: Option<&str>,
 ) -> Result<RefreshData> {
     let refresh_timer = std::time::Instant::now();
     let repo = Repository::open(repo_path)
@@ -519,6 +620,9 @@ fn gather_refresh_data_internal(
 
     // Run status, stashes, worktrees in parallel.
     // Status and stashes open their own repos; worktrees and revwalk use &repo.
+    // TODO(audit): QUAL-06 — dispatch this fan-out through the GPUI
+    // BackgroundExecutor instead of raw OS threads (see the note at the inner
+    // scope in compute_working_tree_status). Same two-file-scope blocker.
     let (status, stashes, worktrees) = std::thread::scope(|s| {
         let status_handle = s.spawn(|| compute_working_tree_status(repo_path, worktree_cache));
 
@@ -596,25 +700,26 @@ fn gather_refresh_data_internal(
                 .push(RefLabel::Tag(tag.name.clone()));
         }
 
-        // Record separator that won't appear in commit messages
-        const RS: &str = "\x1e";
-        const GS: &str = "\x1d";
-        // Format: oid, short_id, author_name, author_email, committer_name, committer_email, timestamp, parent_oids, summary, body
-        let format = format!(
-            "{}%H{}%h{}%an{}%ae{}%cn{}%ce{}%ct{}%P{}%s{}%b{}",
-            RS, GS, GS, GS, GS, GS, GS, GS, GS, GS, GS
-        );
-
-        let output = git_command()
-            .current_dir(repo_path)
-            .args([
-                "log",
-                "--all",
-                &format!("--format={}", format),
-                &format!("-{}", limit + 1),
-            ])
-            .output()
-            .with_context(|| "Failed to run git log")?;
+        // `--topo-order` makes the subprocess emit commits in topological order
+        // (descendants before ancestors), the invariant the graph layout relies
+        // on. Without it git defaults to commit-date order, which is non-monotonic
+        // with topology for rebased/amended/cherry-picked or clock-skewed history
+        // and produces dangling lanes and misdrawn merges.
+        let mut log_cmd = git_command();
+        log_cmd.current_dir(repo_path).args([
+            "log",
+            "--all",
+            "--topo-order",
+            &format!("--format={}", commit_log_format()),
+        ]);
+        // Preserve an active "My Commits" filter across watcher/operation
+        // refreshes; without it the filtered list would be replaced by the full
+        // unfiltered log.
+        if let Some(author) = author_filter {
+            log_cmd.arg(format!("--author={}", author));
+        }
+        log_cmd.arg(format!("-{}", limit + 1));
+        let output = log_cmd.output().with_context(|| "Failed to run git log")?;
 
         if !output.status.success() {
             anyhow::bail!(
@@ -624,73 +729,11 @@ fn gather_refresh_data_internal(
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut commits = Vec::new();
-        let mut has_more = false;
-
-        for record in stdout.split(RS) {
-            let record = record.trim();
-            if record.is_empty() {
-                continue;
-            }
-            if commits.len() >= limit {
-                has_more = true;
-                break;
-            }
-
-            let fields: Vec<&str> = record.splitn(11, GS).collect();
-            if fields.len() < 10 {
-                continue;
-            }
-
-            let oid = match git2::Oid::from_str(fields[0]) {
-                Ok(o) => o,
-                Err(_) => continue,
-            };
-            let short_id = fields[1].to_string();
-            let author_name = fields[2].to_string();
-            let author_email = fields[3].to_string();
-            let committer_name = fields[4].to_string();
-            let committer_email = fields[5].to_string();
-            let timestamp: i64 = fields[6].parse().unwrap_or(0);
-            let parent_oids: Vec<git2::Oid> = fields[7]
-                .split_whitespace()
-                .filter_map(|s| git2::Oid::from_str(s).ok())
-                .collect();
-            let summary = fields[8].to_string();
-            let body = if fields.len() > 9 {
-                fields[9].trim()
-            } else {
-                ""
-            };
-            let message = if body.is_empty() {
-                summary.clone()
-            } else {
-                format!("{}\n\n{}", summary, clean_co_author_lines(body))
-            };
-
-            let time = Utc.timestamp_opt(timestamp, 0).single();
-            let refs = ref_map.remove(&oid).unwrap_or_default();
-
-            commits.push(CommitInfo {
-                oid,
-                short_id,
-                summary,
-                message,
-                author: Signature {
-                    name: author_name,
-                    email: author_email,
-                },
-                committer: Signature {
-                    name: committer_name,
-                    email: committer_email,
-                },
-                co_authors: Vec::new(),
-                time: time.unwrap_or_else(Utc::now),
-                parent_oids,
-                refs,
-                is_signed: false,
-            });
-        }
+        let mut commits = parse_git_log_records(&stdout, &mut ref_map);
+        // The subprocess requested one extra commit (`-{limit + 1}`); its
+        // presence signals more history is available beyond the loaded window.
+        let has_more = commits.len() > limit;
+        commits.truncate(limit);
 
         log::debug!(
             "git log completed in {:?}: {} commits",
@@ -751,14 +794,23 @@ impl GitProject {
         let first_batch = FIRST_BATCH_SIZE.min(commit_limit);
         let t = std::time::Instant::now();
         let cache = self.worktree_status_cache.clone();
+        // Honour an active "My Commits" filter so the initial load matches the
+        // toggle instead of showing every author.
+        let author_filter = self.commit_author_filter.clone();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             // Phase 1: lightweight refresh (skip ahead/behind) with a small commit batch
             let repo_path_p1 = repo_path.clone();
+            let author_filter_p1 = author_filter.clone();
             let data = cx
                 .background_executor()
                 .spawn(async move {
-                    gather_refresh_data_lightweight_cached(&repo_path_p1, first_batch, &cache)
+                    gather_refresh_data_lightweight_cached(
+                        &repo_path_p1,
+                        first_batch,
+                        &cache,
+                        author_filter_p1.as_deref(),
+                    )
                 })
                 .await?;
 
@@ -791,16 +843,29 @@ impl GitProject {
             if needs_more {
                 let remaining = commit_limit - first_batch;
                 let repo_path_p2 = repo_path.clone();
+                let author_filter_p2 = author_filter.clone();
+                // Page from the stable cursor (the oldest commit loaded in phase 1)
+                // rather than a numeric skip, so a ref change between the two
+                // subprocesses can't shift the boundary and skip a commit.
+                let (already_loaded, cursor) = cx.update(|cx| {
+                    this.update(cx, |this, _| {
+                        (
+                            this.recent_commits.len(),
+                            this.recent_commits.last().map(|c| c.oid),
+                        )
+                    })
+                })?;
                 let (more_commits, has_more) = cx
                     .background_executor()
                     .spawn(async move {
                         load_more_commits_from_repo(
                             &repo_path_p2,
-                            first_batch,
+                            already_loaded,
+                            cursor,
                             remaining,
                             &branch_tips,
                             &tag_tips,
-                            None,
+                            author_filter_p2.as_deref(),
                         )
                     })
                     .await?;
@@ -809,15 +874,17 @@ impl GitProject {
                     this.update(cx, |this, cx| {
                         let existing_oids: std::collections::HashSet<git2::Oid> =
                             this.recent_commits.iter().map(|c| c.oid).collect();
-                        let mut combined: Vec<CommitInfo> = (*this.recent_commits).clone();
+                        // The background task handed us a fresh Arc, so it is
+                        // uniquely held here; `make_mut` appends in place rather
+                        // than deep-cloning the entire loaded list each page.
+                        let combined = Arc::make_mut(&mut this.recent_commits);
                         for commit in more_commits {
                             if !existing_oids.contains(&commit.oid) {
                                 combined.push(commit);
                             }
                         }
-                        this.commit_offset = combined.len();
+                        this.commit_offset = this.recent_commits.len();
                         this.has_more_commits = has_more;
-                        this.recent_commits = Arc::new(combined);
                         log::info!(
                             "refresh phase 2 applied in {:?}: {} commits total",
                             t.elapsed(),
@@ -835,11 +902,21 @@ impl GitProject {
     }
 }
 
-/// Load the next batch of commits starting at `skip`, without re-fetching branches/status/etc.
-/// Returns `(new_commits, has_more)`.
+/// Load the next batch of commits after the already-loaded window, without
+/// re-fetching branches/status/etc. Returns `(new_commits, has_more)`.
+///
+/// Pagination is driven by a stable cursor (`after_oid`, the OID of the last
+/// commit already shown) rather than a numeric `--skip`. A single
+/// `git log --all --topo-order` window of `already_loaded + limit + 1` commits
+/// is fetched, then everything up to and including the cursor is dropped and the
+/// next `limit` commits are returned. Anchoring on the cursor OID means a
+/// concurrent ref change between the initial load and this call cannot shift the
+/// page boundary and skip (or duplicate) a commit the way `--skip` would; the
+/// `-n` bound keeps `.output()` from buffering an unbounded log.
 pub(super) fn load_more_commits_from_repo(
     repo_path: &Path,
-    skip: usize,
+    already_loaded: usize,
+    after_oid: Option<git2::Oid>,
     limit: usize,
     branch_tips: &[(git2::Oid, bool, String)],
     tag_tips: &[(git2::Oid, String)],
@@ -869,20 +946,23 @@ pub(super) fn load_more_commits_from_repo(
             .push(RefLabel::Tag(name.clone()));
     }
 
-    const RS: &str = "\x1e";
-    const GS: &str = "\x1d";
-    let format = format!(
-        "{}%H{}%h{}%an{}%ae{}%cn{}%ce{}%ct{}%P{}%s{}%b{}",
-        RS, GS, GS, GS, GS, GS, GS, GS, GS, GS, GS
-    );
+    let format = commit_log_format();
+    // Fetch the already-loaded prefix plus this page plus one probe commit. The
+    // window is re-anchored on `after_oid` below, so the prefix only needs to be
+    // large enough to reach the cursor — it does not have to land exactly on it.
+    let window = already_loaded.saturating_add(limit).saturating_add(1);
 
     let mut cmd = git_command();
-    cmd.current_dir(repo_path)
-        .args(["log", "--all", &format!("--format={}", format)]);
+    cmd.current_dir(repo_path).args([
+        "log",
+        "--all",
+        "--topo-order",
+        &format!("--format={}", format),
+    ]);
     if let Some(author) = author_filter {
         cmd.arg(format!("--author={}", author));
     }
-    cmd.args([&format!("--skip={}", skip), &format!("-{}", limit + 1)]);
+    cmd.arg(format!("-{}", window));
     let output = cmd.output().with_context(|| "Failed to run git log")?;
 
     if !output.status.success() {
@@ -893,75 +973,26 @@ pub(super) fn load_more_commits_from_repo(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut commits = Vec::new();
-    let mut has_more = false;
+    let parsed = parse_git_log_records(&stdout, &mut ref_map);
 
-    for record in stdout.split(RS) {
-        let record = record.trim();
-        if record.is_empty() {
-            continue;
-        }
-        if commits.len() >= limit {
-            has_more = true;
-            break;
-        }
+    // Re-anchor on the stable cursor: drop everything up to and including the
+    // last already-loaded commit. If the cursor is no longer present (its ref
+    // was rewritten or deleted since the prior load), fall back to the numeric
+    // count so paging still makes forward progress.
+    let start = match after_oid {
+        Some(cursor) => match parsed.iter().position(|c| c.oid == cursor) {
+            Some(idx) => idx + 1,
+            None => already_loaded.min(parsed.len()),
+        },
+        None => 0,
+    };
 
-        let fields: Vec<&str> = record.splitn(11, GS).collect();
-        if fields.len() < 10 {
-            continue;
-        }
+    let mut remaining = parsed;
+    remaining.drain(..start);
+    let has_more = remaining.len() > limit;
+    remaining.truncate(limit);
 
-        let oid = match git2::Oid::from_str(fields[0]) {
-            Ok(o) => o,
-            Err(_) => continue,
-        };
-        let short_id = fields[1].to_string();
-        let author_name = fields[2].to_string();
-        let author_email = fields[3].to_string();
-        let committer_name = fields[4].to_string();
-        let committer_email = fields[5].to_string();
-        let timestamp: i64 = fields[6].parse().unwrap_or(0);
-        let parent_oids: Vec<git2::Oid> = fields[7]
-            .split_whitespace()
-            .filter_map(|s| git2::Oid::from_str(s).ok())
-            .collect();
-        let summary = fields[8].to_string();
-        let body = if fields.len() > 9 {
-            fields[9].trim()
-        } else {
-            ""
-        };
-        let message = if body.is_empty() {
-            summary.clone()
-        } else {
-            format!("{}\n\n{}", summary, clean_co_author_lines(body))
-        };
-
-        let time = Utc.timestamp_opt(timestamp, 0).single();
-        let refs = ref_map.remove(&oid).unwrap_or_default();
-
-        commits.push(CommitInfo {
-            oid,
-            short_id,
-            summary,
-            message,
-            author: Signature {
-                name: author_name,
-                email: author_email,
-            },
-            committer: Signature {
-                name: committer_name,
-                email: committer_email,
-            },
-            co_authors: Vec::new(),
-            time: time.unwrap_or_else(Utc::now),
-            parent_oids,
-            refs,
-            is_signed: false,
-        });
-    }
-
-    Ok((commits, has_more))
+    Ok((remaining, has_more))
 }
 
 #[cfg(test)]
@@ -1098,22 +1129,33 @@ mod load_more_tests {
     #[test]
     fn load_more_returns_next_page() {
         let (_dir, path, tip) = make_repo_with_commits(5);
-        // Load page 2 (skip first 3, take up to 2)
         let branch_tips = vec![(tip, false, "main".to_string())];
-        let (commits, has_more) =
-            load_more_commits_from_repo(&path, 3, 2, &branch_tips, &[], None).unwrap();
-        // 5 commits total, skip 3 → 2 remaining, no more after that
-        assert_eq!(commits.len(), 2);
-        assert!(!has_more);
+        // Page 1: first 3 commits.
+        let (page1, more1) =
+            load_more_commits_from_repo(&path, 0, None, 3, &branch_tips, &[], None).unwrap();
+        assert_eq!(page1.len(), 3);
+        assert!(more1);
+        // Page 2: anchored on the oldest loaded commit, take up to 2.
+        let cursor = page1.last().map(|c| c.oid);
+        let (page2, more2) =
+            load_more_commits_from_repo(&path, 3, cursor, 2, &branch_tips, &[], None).unwrap();
+        // 5 commits total, 3 already loaded → 2 remaining, no more after that.
+        assert_eq!(page2.len(), 2);
+        assert!(!more2);
+        // The page boundary is contiguous with no overlap or gap.
+        let oids: Vec<_> = page1.iter().chain(page2.iter()).map(|c| c.oid).collect();
+        let unique: std::collections::HashSet<_> = oids.iter().collect();
+        assert_eq!(oids.len(), unique.len(), "no commit appears twice");
+        assert_eq!(oids.len(), 5, "every commit is loaded exactly once");
     }
 
     #[test]
     fn load_more_detects_has_more() {
         let (_dir, path, tip) = make_repo_with_commits(5);
         let branch_tips = vec![(tip, false, "main".to_string())];
-        // skip 0, limit 3 → should have more
+        // First page, limit 3 → should have more.
         let (commits, has_more) =
-            load_more_commits_from_repo(&path, 0, 3, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(&path, 0, None, 3, &branch_tips, &[], None).unwrap();
         assert_eq!(commits.len(), 3);
         assert!(has_more);
     }
@@ -1122,11 +1164,60 @@ mod load_more_tests {
     fn load_more_empty_past_end() {
         let (_dir, path, tip) = make_repo_with_commits(3);
         let branch_tips = vec![(tip, false, "main".to_string())];
-        // skip past all commits
+        // Cursor at the oldest commit: nothing remains beyond it.
+        let (all, _) =
+            load_more_commits_from_repo(&path, 0, None, 3, &branch_tips, &[], None).unwrap();
+        let cursor = all.last().map(|c| c.oid);
         let (commits, has_more) =
-            load_more_commits_from_repo(&path, 10, 5, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(&path, 3, cursor, 5, &branch_tips, &[], None).unwrap();
         assert!(commits.is_empty());
         assert!(!has_more);
+    }
+
+    #[test]
+    fn load_more_survives_ref_added_between_pages() {
+        // Regression for BUG-40: a commit created between page loads must not
+        // shift the boundary and skip a commit. The stable cursor re-anchors on
+        // the OID, so even though `already_loaded` is now stale the page is
+        // still contiguous.
+        let (dir, path, tip) = make_repo_with_commits(5);
+        let mut branch_tips = vec![(tip, false, "main".to_string())];
+
+        let (page1, _) =
+            load_more_commits_from_repo(&path, 0, None, 3, &branch_tips, &[], None).unwrap();
+        let cursor = page1.last().map(|c| c.oid);
+
+        // A new commit lands on main between the two page loads.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree = repo
+            .find_tree(repo.index().unwrap().write_tree().unwrap())
+            .unwrap();
+        let new_tip = repo
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "commit 5",
+                &tree,
+                &[&repo.find_commit(tip).unwrap()],
+            )
+            .unwrap();
+        branch_tips[0] = (new_tip, false, "main".to_string());
+
+        let (page2, _) =
+            load_more_commits_from_repo(&path, 3, cursor, 5, &branch_tips, &[], None).unwrap();
+
+        let loaded: std::collections::HashSet<_> =
+            page1.iter().chain(page2.iter()).map(|c| c.oid).collect();
+        // The original 5 commits plus the cursor's successors are all present;
+        // crucially the commit immediately after the cursor is not skipped.
+        assert!(loaded.contains(&tip), "boundary commit must not be skipped");
+        assert_eq!(
+            page1.len() + page2.len(),
+            loaded.len(),
+            "no commit is loaded twice"
+        );
     }
 }
 

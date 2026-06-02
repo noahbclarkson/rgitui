@@ -20,6 +20,11 @@ use rgitui_ui::{
 
 use crate::markdown_view::render_markdown;
 
+/// Maximum height of the changed-files list. Beyond this the list virtualizes and
+/// scrolls internally (only the visible window is built); shorter lists size to
+/// their content so the panel scrolls as one region.
+const FILE_LIST_MAX_HEIGHT: f32 = 600.0;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum FileViewMode {
     #[default]
@@ -136,11 +141,14 @@ fn file_change_color(kind: FileChangeKind) -> Color {
 
 struct CachedFileDiffTree {
     /// Rows for flat view: one per file, in diff order (the search-relevance
-    /// ordering is applied later by `filtered_file_indices`).
-    flat_rows: Vec<CachedFlatRow>,
+    /// ordering is applied later by `filtered_files`). Held behind an `Arc` so
+    /// the virtualized list closure can take a cheap `'static` handle and clone
+    /// only the rows in the visible window.
+    flat_rows: Arc<Vec<CachedFlatRow>>,
     /// Rows for tree view: directory and file nodes flattened depth-first, with
-    /// single-child directory chains compacted (e.g. `crates/foo/src`).
-    tree_rows: Vec<CachedTreeRow>,
+    /// single-child directory chains compacted (e.g. `crates/foo/src`). Shared
+    /// via `Arc` for the same reason as `flat_rows`.
+    tree_rows: Arc<Vec<CachedTreeRow>>,
 }
 
 #[derive(Clone)]
@@ -366,8 +374,41 @@ fn build_cached_file_tree(files: &[FileDiff]) -> CachedFileDiffTree {
     flatten_tree(&root, "", 0, files, &flat_rows, &mut tree_rows);
 
     CachedFileDiffTree {
-        flat_rows,
-        tree_rows,
+        flat_rows: Arc::new(flat_rows),
+        tree_rows: Arc::new(tree_rows),
+    }
+}
+
+/// Result of applying the file-search filter to a commit's changed files.
+///
+/// The no-query case is represented without allocating a per-frame mapping: it is
+/// the identity over `0..count` in diff order. Only an active query materialises a
+/// relevance-ordered list of matching file indices.
+enum FilteredFiles {
+    /// No active query — all `count` files, in diff order.
+    All { count: usize },
+    /// Search results: matching file indices ordered by relevance (best first).
+    Matched(Vec<usize>),
+}
+
+impl FilteredFiles {
+    fn len(&self) -> usize {
+        match self {
+            Self::All { count } => *count,
+            Self::Matched(indices) => indices.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The set of matching file indices, used to filter the tree view.
+    fn matched_set(&self) -> HashSet<usize> {
+        match self {
+            Self::All { count } => (0..*count).collect(),
+            Self::Matched(indices) => indices.iter().copied().collect(),
+        }
     }
 }
 
@@ -651,16 +692,22 @@ impl DetailPanel {
         cx.notify();
     }
 
-    /// Returns file indices matching the search query sorted by relevance (fuzzy_score),
-    /// or all files in order if no query is set.
-    /// Returns (score, index) pairs sorted by score descending (higher = better match first).
-    fn filtered_file_indices(&self) -> Vec<(usize, usize)> {
+    /// File indices to display, after applying the search filter.
+    ///
+    /// With no active query this is the identity over all files (in diff order)
+    /// and allocates nothing. With a query, matching files are scored with
+    /// `fuzzy_score` and returned ordered by relevance (best match first).
+    fn filtered_files(&self) -> FilteredFiles {
         let query = match &self.file_search_query {
             Some(q) if !q.is_empty() => q,
-            _ => return (0..self.file_count()).map(|i| (usize::MAX, i)).collect(),
+            _ => {
+                return FilteredFiles::All {
+                    count: self.file_count(),
+                }
+            }
         };
         let Some(diff) = &self.commit_diff else {
-            return vec![];
+            return FilteredFiles::Matched(Vec::new());
         };
         let mut scored: Vec<(usize, usize)> = diff
             .files
@@ -674,7 +721,7 @@ impl DetailPanel {
             .collect();
         // Sort by score descending — higher score = better (earlier char match)
         scored.sort_by(|a, b| b.0.cmp(&a.0));
-        scored
+        FilteredFiles::Matched(scored.into_iter().map(|(_, i)| i).collect())
     }
 
     fn render_section_header(&self, label: &str) -> impl IntoElement {
@@ -799,7 +846,7 @@ impl DetailPanel {
     fn render_flat_file_list_filtered(
         &self,
         cached: &CachedFileDiffTree,
-        filtered_indices: &[(usize, usize)],
+        filtered: &FilteredFiles,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors().clone();
@@ -810,11 +857,16 @@ impl DetailPanel {
             .spacing(26.0);
         let selected_file_index = self.selected_file_index;
         let weak = cx.weak_entity();
-        let rows: Vec<_> = filtered_indices
-            .iter()
-            .filter_map(|&(_, fi)| cached.flat_rows.get(fi).cloned())
-            .collect();
-        let row_count = rows.len();
+        let row_count = filtered.len();
+        // Cheap `'static` handles for the virtualized closure: the shared row
+        // store and, when searching, the display->file-index mapping (`None`
+        // means identity, i.e. unfiltered diff order). Only the visible window is
+        // cloned, inside the closure.
+        let flat_rows = cached.flat_rows.clone();
+        let display_order: Option<Arc<Vec<usize>>> = match filtered {
+            FilteredFiles::All { .. } => None,
+            FilteredFiles::Matched(indices) => Some(Arc::new(indices.clone())),
+        };
 
         let ghost_element_selected = colors.ghost_element_selected;
         let text_accent = colors.text_accent;
@@ -827,7 +879,11 @@ impl DetailPanel {
             move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
                 range
                     .map(|ix| {
-                        let row = &rows[ix];
+                        let file_index = match &display_order {
+                            Some(order) => order[ix],
+                            None => ix,
+                        };
+                        let row = &flat_rows[file_index];
                         let actual_file_index = row.file_index;
                         let selected = selected_file_index == Some(actual_file_index);
                         let weak = weak.clone();
@@ -906,18 +962,20 @@ impl DetailPanel {
         )
         .flex_shrink_0()
         .pb_2()
-        .h(px(row_count as f32 * row_h + 8.0))
-        .with_sizing_behavior(ListSizingBehavior::Auto)
+        .max_h(px(FILE_LIST_MAX_HEIGHT))
+        .with_sizing_behavior(ListSizingBehavior::Infer)
         .into_any_element()
     }
 
     /// Renders the directory tree: collapsible directory nodes and file leaves
-    /// (basename only), indented by depth. `rows` is the already-computed visible
-    /// set (collapse-filtered when browsing, match-filtered when searching), in
-    /// display order.
+    /// (basename only), indented by depth. `tree_rows` is the full row store and
+    /// `visible` the indices into it to display (collapse-filtered when browsing,
+    /// match-filtered when searching), in display order. Both are passed by shared
+    /// handle so the virtualized closure clones only the visible window.
     fn render_tree_file_list(
         &self,
-        rows: Vec<CachedTreeRow>,
+        tree_rows: &Arc<Vec<CachedTreeRow>>,
+        visible: Vec<usize>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors().clone();
@@ -929,7 +987,8 @@ impl DetailPanel {
         let selected_file_index = self.selected_file_index;
         let collapsed = self.collapsed_dirs.clone();
         let weak = cx.weak_entity();
-        let row_count = rows.len();
+        let row_count = visible.len();
+        let tree_rows = tree_rows.clone();
 
         let ghost_element_selected = colors.ghost_element_selected;
         let text_accent = colors.text_accent;
@@ -942,7 +1001,7 @@ impl DetailPanel {
             move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
                 range
                     .map(|ix| {
-                        let row = &rows[ix];
+                        let row = &tree_rows[visible[ix]];
                         // 12px base + 14px per depth level. Directory rows lead with
                         // a chevron; file rows lead with a chevron-width spacer so
                         // their icon aligns under the folder icon rather than just
@@ -1069,8 +1128,8 @@ impl DetailPanel {
         )
         .flex_shrink_0()
         .pb_2()
-        .h(px(row_count as f32 * row_h + 8.0))
-        .with_sizing_behavior(ListSizingBehavior::Auto)
+        .max_h(px(FILE_LIST_MAX_HEIGHT))
+        .with_sizing_behavior(ListSizingBehavior::Infer)
         .into_any_element()
     }
 }
@@ -1606,6 +1665,9 @@ impl Render for DetailPanel {
                             cx.write_to_clipboard(ClipboardItem::new_string(desc_for_copy.clone()));
                             this.mark_copied("description", cx);
                         }))
+                        // TODO(audit): PERF-17 cache parsed description blocks keyed on the
+                        // commit message — requires markdown_view to expose MarkdownBlock and a
+                        // parse/render-from-blocks API, which lives in another file.
                         .child(render_markdown(&description, window, cx))
                         .when(desc_copied, |el| {
                             el.child(
@@ -1623,12 +1685,12 @@ impl Render for DetailPanel {
         // -- Changed Files Section --
         if let (Some(diff), Some(cached)) = (&self.commit_diff, &self.cached_file_tree) {
             let total_file_count = diff.files.len();
-            let filtered_indices = self.filtered_file_indices();
+            let filtered = self.filtered_files();
             let is_searching = is_file_searching(self.file_search_active, &self.file_search_query);
             let query_str = self.file_search_query.clone().unwrap_or_default();
 
             let file_count_text: SharedString = if is_searching && !query_str.is_empty() {
-                let shown = filtered_indices.len();
+                let shown = filtered.len();
                 let total = total_file_count;
                 format!(
                     "{} / {} file{} changed",
@@ -1750,7 +1812,7 @@ impl Render for DetailPanel {
             }
 
             // Show "no results" when search has no matches
-            if is_searching && !query_str.is_empty() && filtered_indices.is_empty() {
+            if is_searching && !query_str.is_empty() && filtered.is_empty() {
                 content = content.child(
                     div()
                         .h_flex()
@@ -1767,28 +1829,23 @@ impl Render for DetailPanel {
             }
 
             // Render file list with search filter applied
-            if !filtered_indices.is_empty() {
+            if !filtered.is_empty() {
                 let searching = is_searching && !query_str.is_empty();
                 let file_list: gpui::AnyElement = match self.file_view_mode {
                     FileViewMode::Flat => {
-                        self.render_flat_file_list_filtered(cached, &filtered_indices, cx)
+                        self.render_flat_file_list_filtered(cached, &filtered, cx)
                     }
                     FileViewMode::Tree => {
                         // While searching, show a match-filtered tree (matching files
                         // plus their ancestor directories, fully expanded); otherwise
                         // apply the collapsed-directory state.
                         let visible = if searching {
-                            let matches: HashSet<usize> =
-                                filtered_indices.iter().map(|&(_, fi)| fi).collect();
+                            let matches = filtered.matched_set();
                             searched_tree_row_indices(&cached.tree_rows, &matches)
                         } else {
                             visible_tree_row_indices(&cached.tree_rows, &self.collapsed_dirs)
                         };
-                        let rows: Vec<CachedTreeRow> = visible
-                            .into_iter()
-                            .map(|i| cached.tree_rows[i].clone())
-                            .collect();
-                        self.render_tree_file_list(rows, cx)
+                        self.render_tree_file_list(&cached.tree_rows, visible, cx)
                     }
                 };
                 content = content.child(file_list);
@@ -2320,27 +2377,25 @@ mod tests {
         ));
     }
 
-    // --- filtered_file_indices tests ---
+    // --- filtered_files tests ---
 
     // Tests for fuzzy file search sort-by-relevance (PR #28).
-    // filtered_file_indices uses CommandPalette::fuzzy_score which is the
+    // The query path of `filtered_files` uses CommandPalette::fuzzy_score, the
     // same scoring used by the command palette.
 
     #[test]
-    fn test_filtered_file_indices_no_query_returns_all_in_order() {
-        // Manually test the scoring path: with no query the fallback returns
-        // (MAX, index) pairs so sorted order = file order.
-        let scored: Vec<(usize, usize)> = (0..3).map(|i| (usize::MAX, i)).collect();
+    fn test_filtered_files_relevance_sort_is_descending() {
+        // The query path scores matches then sorts by score descending so the
+        // best (highest-scoring) match comes first.
+        let scored: Vec<(usize, usize)> = vec![(3, 0), (10, 1), (7, 2)];
         let mut sorted = scored.clone();
         sorted.sort_by(|a, b| b.0.cmp(&a.0));
-        assert_eq!(
-            sorted,
-            vec![(usize::MAX, 0), (usize::MAX, 1), (usize::MAX, 2)]
-        );
+        let order: Vec<usize> = sorted.into_iter().map(|(_, i)| i).collect();
+        assert_eq!(order, vec![1, 2, 0]);
     }
 
     #[test]
-    fn test_filtered_file_indices_relevance_order() {
+    fn test_filtered_files_relevance_order() {
         use crate::command_palette::CommandPalette;
         // "sh" matches "Show" (pos 0) higher than "Fish" (pos 1)
         let score_show = CommandPalette::fuzzy_score("sh", "Show").unwrap();

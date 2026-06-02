@@ -23,6 +23,11 @@ pub struct TagDialog {
     target_sha_short: String,
     error_message: Option<String>,
     visible: bool,
+    /// Set when the dialog is shown so the next render focuses the tag-name
+    /// field. Lets us focus from call sites that have no `Window` (commit
+    /// context menu, command palette) without leaving the user to click in
+    /// first.
+    pending_focus: bool,
     focus_handle: FocusHandle,
 }
 
@@ -59,6 +64,7 @@ impl TagDialog {
             target_sha_short: String::new(),
             error_message: None,
             visible: false,
+            pending_focus: false,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -66,6 +72,7 @@ impl TagDialog {
     /// Show the dialog for creating a tag at the given commit.
     pub fn show_visible(&mut self, target_oid: git2::Oid, cx: &mut Context<Self>) {
         self.visible = true;
+        self.pending_focus = true;
         self.editor.update(cx, |e, cx| e.clear(cx));
         self.error_message = None;
         self.target_sha_short = target_oid.to_string()[..7].to_string();
@@ -157,9 +164,14 @@ impl TagDialog {
 }
 
 impl Render for TagDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("tag-dialog").into_any_element();
+        }
+
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.editor.update(cx, |e, cx| e.focus(window, cx));
         }
 
         let colors = cx.colors();

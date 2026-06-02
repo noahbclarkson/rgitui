@@ -105,16 +105,14 @@ fn parse_grep_output(raw: &str) -> Vec<SearchResult> {
                 // treat '/' as the content start and break.
                 let is_url_pattern = after_starts_with_slash
                     && colon_pos >= 2
-                    && (line.chars().nth(colon_pos - 1) == Some('/')
-                        || line
-                            .chars()
-                            .nth(colon_pos - 1)
-                            .map(|c| c.is_ascii_digit())
+                    && (bytes.get(colon_pos - 1) == Some(&b'/')
+                        || bytes
+                            .get(colon_pos - 1)
+                            .map(u8::is_ascii_digit)
                             .unwrap_or(false)
-                        || line
-                            .chars()
-                            .nth(colon_pos - 2)
-                            .map(|c| c.is_ascii_alphabetic())
+                        || bytes
+                            .get(colon_pos - 2)
+                            .map(u8::is_ascii_alphabetic)
                             .unwrap_or(false));
 
                 if is_url_pattern {

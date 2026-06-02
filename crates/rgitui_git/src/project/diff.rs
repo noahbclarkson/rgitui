@@ -70,7 +70,7 @@ pub(crate) fn generate_hunk_patch_for_repo(
     let mut file_header_written = false;
 
     diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-        let Some(hunk) = hunk else {
+        let Some(_) = hunk else {
             if !file_header_written {
                 let content = String::from_utf8_lossy(line.content());
                 match line.origin() {
@@ -87,15 +87,11 @@ pub(crate) fn generate_hunk_patch_for_repo(
             }
             return true;
         };
-        let header = String::from_utf8_lossy(hunk.header()).to_string();
 
-        let is_new_hunk = if current_hunk_idx < 0 {
-            true
-        } else {
-            current_hunk_idx >= 0 && !patch_text.contains(&header)
-        };
-
-        if is_new_hunk || current_hunk_idx < 0 {
+        // Each hunk emits exactly one hunk-header line (origin 'H') before its
+        // content lines, so advancing the counter on 'H' tracks hunk boundaries
+        // structurally — no substring scan of the accumulating patch text.
+        if line.origin() == 'H' {
             current_hunk_idx += 1;
         }
 
@@ -124,6 +120,10 @@ pub(crate) fn generate_hunk_patch_for_repo(
                     patch_text.push(' ');
                     patch_text.push_str(&content);
                 }
+                // EOFNL markers ('=' context, '>' added, '<' deleted) carry the
+                // "\ No newline at end of file" text in their content; emit it
+                // verbatim with no sign prefix, matching git's own patch output.
+                '=' | '>' | '<' => patch_text.push_str(&content),
                 _ => {}
             }
         }
@@ -142,13 +142,38 @@ pub(crate) fn generate_hunk_patch_for_repo(
     Ok(patch_text)
 }
 
+/// Map a diff line's origin to the sign it should carry in the generated patch.
+///
+/// Staging (`staged == false`, an index→workdir diff applied to the index) preserves
+/// signs: a `+` workdir addition must stay `+` to add the line to the index.
+/// Unstaging (`staged == true`, a HEAD→index diff applied to the index) negates them:
+/// a `+` index addition becomes `-` so applying the patch removes it from the index.
+/// Context lines keep their space; non-content origins return `None`.
+fn emitted_sign(origin: char, staged: bool) -> Option<char> {
+    match origin {
+        ' ' => Some(' '),
+        '+' => Some(if staged { '-' } else { '+' }),
+        '-' => Some(if staged { '+' } else { '-' }),
+        _ => None,
+    }
+}
+
 /// Generate a patch containing only the specified line ranges from a file's diff.
 ///
-/// `line_pairs` is `&[(Option<usize>, Option<usize>)]` — (old_lineno, new_lineno) from the diff viewer.
-/// For staging: lines are included if `new_lineno` is `Some` and falls in a range.
-/// For unstaging: same lines are included but signs are negated in the output patch.
+/// `line_pairs` is `&[(Option<usize>, Option<usize>)]` — `(old_lineno, new_lineno)`
+/// from the diff viewer, matching the line numbering of the underlying git2 diff.
+/// The viewer emits an addition as `(None, Some(n))` and a deletion as `(Some(n), None)`.
 ///
-/// `staged`: if true, diff is HEAD→index (staged diff); if false, diff is index→workdir.
+/// `staged`:
+/// - `false` → diff is index→workdir; the patch stages the selected lines into the
+///   index, so signs are preserved (a `+` workdir addition stays `+`).
+/// - `true` → diff is HEAD→index; the patch unstages the selected lines from the
+///   index, so signs are negated (a `+` index addition becomes `-` to remove it).
+///
+/// Additions are matched by their `new_lineno` against the new-side targets, and
+/// deletions by their `old_lineno` against the old-side targets. The two sides are
+/// kept separate so an addition and a deletion that happen to share a line number
+/// are not confused for one another.
 pub(crate) fn generate_line_patch_for_repo(
     repo: &Repository,
     file_path: &Path,
@@ -168,18 +193,11 @@ pub(crate) fn generate_line_patch_for_repo(
         repo.diff_index_to_workdir(None, Some(&mut diff_opts))?
     };
 
-    // Build a set of target line numbers for efficient lookup.
-    // For unstaging (staged=true): additions in HEAD→index diff use old_lineno (index position)
-    // For staging (staged=false): additions in index→workdir diff use new_lineno (workdir position)
-    let targets: std::collections::HashSet<usize> = if staged {
-        line_pairs.iter().filter_map(|(old, _)| *old).collect()
-    } else {
-        line_pairs.iter().filter_map(|(_old, new)| *new).collect()
-    };
-
-    // Deletions in both diffs use old_lineno (index position in HEAD→index, workdir position
-    // in index→workdir). Always include old_lineno from line_pairs as deletion targets.
-    let target_deletions: std::collections::HashSet<usize> =
+    // Separate target sets per side. Additions carry their position in `new_lineno`,
+    // deletions in `old_lineno`, in both the HEAD→index and index→workdir diffs.
+    let new_targets: std::collections::HashSet<usize> =
+        line_pairs.iter().filter_map(|(_, new)| *new).collect();
+    let old_targets: std::collections::HashSet<usize> =
         line_pairs.iter().filter_map(|(old, _)| *old).collect();
 
     let mut patch_text = String::new();
@@ -216,100 +234,133 @@ pub(crate) fn generate_line_patch_for_repo(
             let num_lines = patch.num_lines_in_hunk(hunk_idx)?;
 
             // Collect indices of lines within this hunk that match our targets.
+            // Additions match on new_lineno, deletions on old_lineno; context and
+            // EOFNL markers are always carried so the partial hunk stays coherent.
             let mut matching_line_indices: Vec<usize> = Vec::new();
+            let mut has_change = false;
             for line_idx in 0..num_lines {
                 let line = patch.line_in_hunk(hunk_idx, line_idx)?;
-                let new_num = line.new_lineno();
-                let old_num = line.old_lineno();
                 let origin = line.origin();
 
-                // is_target: line is part of a selected addition (new_num in targets) or
-                // deletion (old_num in targets, since deletions have new_num=0 and old_num
-                // is the index/workdir position). Also include deletions from staged diff
-                // (old_num in target_deletions).
-                let is_target = new_num
-                    .map(|n| targets.contains(&(n as usize)))
-                    .unwrap_or(false)
-                    || old_num
-                        .map(|n| targets.contains(&(n as usize)))
-                        .unwrap_or(false)
-                    || old_num
-                        .map(|n| target_deletions.contains(&(n as usize)))
-                        .unwrap_or(false);
+                let is_target = match origin {
+                    '+' => line
+                        .new_lineno()
+                        .is_some_and(|n| new_targets.contains(&(n as usize))),
+                    '-' => line
+                        .old_lineno()
+                        .is_some_and(|n| old_targets.contains(&(n as usize))),
+                    _ => false,
+                };
 
-                // Also include context lines (non-+/-).
-                let is_context = matches!(origin, ' ' | 'F' | 'H' | '=' | '<' | '>');
+                // Context lines and the "no newline at end of file" markers
+                // ('=' context, '>' added, '<' deleted) are carried unconditionally.
+                let is_context = matches!(origin, ' ' | '=' | '<' | '>');
 
                 if is_target || is_context {
                     matching_line_indices.push(line_idx);
+                    has_change |= matches!(origin, '+' | '-');
                 }
             }
 
-            if matching_line_indices.is_empty() {
+            // A hunk made up of only context/marker lines contributes nothing — skip
+            // it so we never emit an empty change.
+            if !has_change {
                 continue;
             }
 
-            // Build partial hunk from matching lines.
-            // Compute hunk line range for the header.
-            let first_match = matching_line_indices[0];
-            let last_match = matching_line_indices[matching_line_indices.len() - 1];
+            // Count emitted pre-/post-image lines and derive the start positions.
+            //
+            // Counts reflect the *emitted* signs: when unstaging we negate, so an
+            // addition becomes a deletion (pre-image side) and vice versa. EOFNL
+            // markers annotate the preceding line and do not count toward either side.
+            //
+            // The output patch is applied to the index in both directions, but the
+            // diff's own old/new line numbers describe different sides per direction:
+            //   - staging   (index→workdir): pre-image = index   → old_lineno
+            //                                 post-image = workdir → new_lineno
+            //   - unstaging (HEAD→index):     pre-image = index   → new_lineno
+            //                                 post-image = HEAD    → old_lineno
+            // so the line number that anchors each side is selected accordingly.
+            let mut old_count: u32 = 0;
+            let mut new_count: u32 = 0;
+            let mut old_start: Option<u32> = None;
+            let mut new_start: Option<u32> = None;
 
-            // Get the old/new lineno of first and last matching lines to build header.
-            let first_line = patch.line_in_hunk(hunk_idx, first_match)?;
-            let last_line = patch.line_in_hunk(hunk_idx, last_match)?;
+            for &line_idx in &matching_line_indices {
+                let line = patch.line_in_hunk(hunk_idx, line_idx)?;
+                let (preimage, postimage) = if staged {
+                    (line.new_lineno(), line.old_lineno())
+                } else {
+                    (line.old_lineno(), line.new_lineno())
+                };
+                match emitted_sign(line.origin(), staged) {
+                    Some(' ') => {
+                        old_count += 1;
+                        new_count += 1;
+                        old_start = old_start.or(preimage);
+                        new_start = new_start.or(postimage);
+                    }
+                    Some('-') => {
+                        old_count += 1;
+                        old_start = old_start.or(preimage);
+                    }
+                    Some('+') => {
+                        new_count += 1;
+                        new_start = new_start.or(postimage);
+                    }
+                    _ => {}
+                }
+            }
 
-            let hunk_old_start = first_line.old_lineno().unwrap_or(0);
-            let hunk_old_count = last_line.old_lineno().unwrap_or(0) + 1 - hunk_old_start;
-            let hunk_new_start = first_line.new_lineno().unwrap_or(0);
-            let hunk_new_count = last_line.new_lineno().unwrap_or(0) + 1 - hunk_new_start;
+            // Fall back to the hunk's own boundaries when one side is empty (e.g. a
+            // pure-addition selection has no pre-image line to anchor old_start).
+            let (hunk_old_start, hunk_new_start) = if staged {
+                (
+                    old_start.unwrap_or_else(|| hunk.new_start()),
+                    new_start.unwrap_or_else(|| hunk.old_start()),
+                )
+            } else {
+                (
+                    old_start.unwrap_or_else(|| hunk.old_start()),
+                    new_start.unwrap_or_else(|| hunk.new_start()),
+                )
+            };
 
-            // Write file header (if first hunk for this file).
+            // Write file header (if first hunk for this file). The `diff --git`
+            // line is required for libgit2's `Diff::from_buffer` to recognize the
+            // file header; without it the first `@@` is rejected as a hunk header
+            // "outside patch".
             if patch_text.is_empty() {
+                patch_text.push_str(&format!(
+                    "diff --git a/{} b/{}\n",
+                    old_path.display(),
+                    new_path.display()
+                ));
                 patch_text.push_str(&format!("--- a/{}\n", old_path.display()));
                 patch_text.push_str(&format!("+++ b/{}\n", new_path.display()));
             }
 
-            // Write hunk header.
-            let hunk_header = String::from_utf8_lossy(hunk.header());
-            // Replace the hunk header's line counts with correct values.
+            // Write hunk header with counts derived from the emitted lines.
             patch_text.push_str(&format!(
                 "@@ -{},{} +{},{} @@\n",
-                hunk_old_start, hunk_old_count, hunk_new_start, hunk_new_count
+                hunk_old_start, old_count, hunk_new_start, new_count
             ));
 
-            // Write the matching lines.
+            // Write the matching lines, applying the sign transform per direction.
             for &line_idx in &matching_line_indices {
                 let line = patch.line_in_hunk(hunk_idx, line_idx)?;
                 let content = String::from_utf8_lossy(line.content());
-                let origin = line.origin();
-
-                match origin {
-                    '+' => {
-                        // For unstaging, negate additions (remove from index).
-                        if !staged {
-                            patch_text.push('-');
-                        } else {
-                            patch_text.push('+');
+                match line.origin() {
+                    '+' | '-' | ' ' => {
+                        if let Some(sign) = emitted_sign(line.origin(), staged) {
+                            patch_text.push(sign);
                         }
                         patch_text.push_str(&content);
                     }
-                    '-' => {
-                        // For unstaging, negate deletions (restore to index).
-                        if !staged {
-                            patch_text.push('+');
-                        } else {
-                            patch_text.push('-');
-                        }
-                        patch_text.push_str(&content);
-                    }
-                    ' ' => {
-                        patch_text.push(' ');
-                        patch_text.push_str(&content);
-                    }
-                    _ => {
-                        // File header, hunk header, etc.
-                        patch_text.push_str(&hunk_header);
-                    }
+                    // EOFNL markers carry the "\ No newline at end of file" text in
+                    // their content; emit it verbatim with no sign prefix.
+                    '=' | '>' | '<' => patch_text.push_str(&content),
+                    _ => {}
                 }
             }
         }
@@ -1058,7 +1109,6 @@ mod tests {
 ///
 /// Returns the ancestor (merge-base), ours, and theirs versions along with
 /// detected conflict regions.
-#[allow(dead_code)]
 pub fn compute_three_way_conflict_diff(
     repo_path: &Path,
     file_path: &Path,
@@ -1127,7 +1177,6 @@ pub fn compute_three_way_conflict_diff(
 }
 
 /// Compute conflict/non-conflict regions between ancestor/ours/theirs.
-#[allow(dead_code)]
 fn compute_conflict_regions(
     ancestor: &[String],
     ours: &[String],
@@ -1462,53 +1511,170 @@ mod diff_integration_tests {
         assert_eq!(result.total_deletions, 1);
     }
 
+    // ── emitted_sign ──────────────────────────────────────────────
+
+    #[test]
+    fn emitted_sign_staging_preserves_signs() {
+        // Staging (staged=false) applies an index→workdir patch to the index, so
+        // signs are preserved: a workdir addition stays '+', a deletion stays '-'.
+        assert_eq!(emitted_sign('+', false), Some('+'));
+        assert_eq!(emitted_sign('-', false), Some('-'));
+        assert_eq!(emitted_sign(' ', false), Some(' '));
+        assert_eq!(emitted_sign('=', false), None);
+    }
+
+    #[test]
+    fn emitted_sign_unstaging_negates_signs() {
+        // Unstaging (staged=true) applies a HEAD→index patch to the index, so signs
+        // are negated: an index addition becomes '-' (removed), a deletion '+'.
+        assert_eq!(emitted_sign('+', true), Some('-'));
+        assert_eq!(emitted_sign('-', true), Some('+'));
+        assert_eq!(emitted_sign(' ', true), Some(' '));
+        assert_eq!(emitted_sign('>', true), None);
+    }
+
     // ── generate_line_patch_for_repo tests ───────────────────────────────────
 
-    /// Verify that generate_line_patch_for_repo correctly includes the deletion
-    /// from the staged diff when unstaging (staged=true).
+    /// End-to-end check of the viewer→git contract for unstaging.
     ///
-    /// The staged diff for modifying "beta"→"beta_modified" has:
-    ///   Deletion: origin='-', old_lineno=2, new_lineno=0  ← targets = {2}
-    ///   Addition: origin='+', old_lineno=2, new_lineno=2
+    /// The diff viewer emits an addition as `(None, Some(new_lineno))`. For the
+    /// staged diff that turns "beta" into "beta_modified", the addition
+    /// "+beta_modified" has new_lineno=2, so the viewer sends `(None, Some(2))`.
+    /// Unstaging must negate that addition into a "-beta_modified" deletion so the
+    /// applied patch removes the line from the index.
     ///
-    /// For unstaking a modification, we target both entries via index position (old_lineno).
-    /// The bug: original targets used `new` from line_pairs, but `new` is always None for
-    /// deletions in the staged diff. Fix: targets uses `old` (index position) for staged=true.
+    /// This is the contract BUG-14 corrected: the previous code matched additions
+    /// against the `old` slot, which is always `None` for viewer-emitted additions,
+    /// silently producing a context-only no-op patch.
     #[test]
-    fn line_patch_staged_true_targets_deletion() {
+    fn line_patch_unstage_addition_negates_to_deletion() {
         let (_dir, path) = make_staged_change_repo();
         let repo = git2::Repository::open(&path).unwrap();
 
-        // line_pairs for a deletion in the staged diff: (old_lineno, new_lineno=None)
-        // old_lineno = 2 (index position of "beta")
+        // Viewer-produced pair for the "+beta_modified" addition (new_lineno=2).
+        let line_pairs = vec![(None, Some(2usize))];
+        let patch_text =
+            generate_line_patch_for_repo(&repo, Path::new("data.txt"), &line_pairs, true).unwrap();
+
+        assert!(
+            patch_text.contains("-beta_modified\n"),
+            "unstaging should negate the addition into '-beta_modified', got:\n{patch_text}"
+        );
+        assert!(
+            !patch_text.contains("+beta_modified\n"),
+            "the addition must not be emitted with its original '+' sign, got:\n{patch_text}"
+        );
+
+        // The patch is applied to the index, whose content is the pre-image. Only a
+        // correct old_start/new_start swap (BUG-13) yields a patch git will accept;
+        // a text-only check cannot catch an off-by-one in those positions.
+        let diff = git2::Diff::from_buffer(patch_text.as_bytes()).unwrap();
+        repo.apply(&diff, git2::ApplyLocation::Index, None).unwrap();
+    }
+
+    /// A deletion selected for unstaging (viewer pair `(Some(old_lineno), None)`)
+    /// must be negated into a restoring "+" line.
+    #[test]
+    fn line_patch_unstage_deletion_negates_to_addition() {
+        let (_dir, path) = make_staged_change_repo();
+        let repo = git2::Repository::open(&path).unwrap();
+
+        // "-beta" deletion in the staged diff has old_lineno=2.
         let line_pairs = vec![(Some(2usize), None)];
         let patch_text =
             generate_line_patch_for_repo(&repo, Path::new("data.txt"), &line_pairs, true).unwrap();
 
-        // The patch must contain the deletion entry for 'beta'.
         assert!(
-            patch_text.contains("-beta\n"),
-            "patch should contain '-beta' deletion, got:\n{patch_text}"
+            patch_text.contains("+beta\n"),
+            "unstaging should negate the deletion into '+beta', got:\n{patch_text}"
         );
     }
 
-    /// Verify that generate_line_patch_for_repo correctly includes the addition
-    /// from the staged diff when unstaging (staged=true).
+    /// Staging a workdir addition preserves its '+' sign so applying the patch adds
+    /// the line to the index. Build an unstaged-only addition and stage it.
     #[test]
-    fn line_patch_staged_true_targets_addition() {
-        let (_dir, path) = make_staged_change_repo();
-        let repo = git2::Repository::open(&path).unwrap();
+    fn line_patch_stage_addition_preserves_sign() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "T").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        drop(cfg);
+        let sig = git2::Signature::now("T", "t@t.com").unwrap();
 
-        // line_pairs for an addition in the staged diff: (old_lineno=index_pos, new_lineno=None)
-        // For "beta_modified" addition: old_lineno = 2 (index position)
-        let line_pairs = vec![(Some(2usize), None)];
+        let file = path.join("data.txt");
+        std::fs::write(&file, "alpha\ngamma\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("data.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        // Insert "beta" in the working tree only (index→workdir addition at new line 2).
+        std::fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
+
+        let line_pairs = vec![(None, Some(2usize))];
         let patch_text =
-            generate_line_patch_for_repo(&repo, Path::new("data.txt"), &line_pairs, true).unwrap();
+            generate_line_patch_for_repo(&repo, Path::new("data.txt"), &line_pairs, false).unwrap();
 
-        // The patch must contain the addition entry for 'beta_modified'.
         assert!(
-            patch_text.contains("+beta_modified\n"),
-            "patch should contain '+beta_modified' addition, got:\n{patch_text}"
+            patch_text.contains("+beta\n"),
+            "staging should preserve the '+beta' addition, got:\n{patch_text}"
         );
+
+        // The generated patch must apply cleanly to the index.
+        let diff = git2::Diff::from_buffer(patch_text.as_bytes()).unwrap();
+        repo.apply(&diff, git2::ApplyLocation::Index, None).unwrap();
+    }
+
+    /// Appending a line at the end of a long file makes the last matched line an
+    /// addition (old_lineno = None) inside a hunk that starts well past line 1.
+    /// The old `last_lineno + 1 - hunk_old_start` math underflowed u32 here
+    /// (BUG-13); counting emitted lines instead must produce an applicable patch.
+    #[test]
+    fn line_patch_stage_trailing_addition_no_underflow() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "T").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        drop(cfg);
+        let sig = git2::Signature::now("T", "t@t.com").unwrap();
+
+        let file = path.join("data.txt");
+        let base: String = (1..=20).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(&file, &base).unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("data.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        // Append a line at the end; its hunk starts past line 1 and ends on the
+        // addition itself (old_lineno = None for that line).
+        std::fs::write(&file, format!("{base}appended\n")).unwrap();
+
+        // The appended line sits at new line 21.
+        let line_pairs = vec![(None, Some(21usize))];
+        let patch_text =
+            generate_line_patch_for_repo(&repo, Path::new("data.txt"), &line_pairs, false).unwrap();
+
+        assert!(
+            patch_text.contains("+appended\n"),
+            "patch should contain the appended line, got:\n{patch_text}"
+        );
+        // Underflow would yield "@@ -N,4294967292 ... @@"; assert no such count.
+        assert!(
+            !patch_text.contains("4294967292"),
+            "hunk header must not carry an underflowed count, got:\n{patch_text}"
+        );
+        let diff = git2::Diff::from_buffer(patch_text.as_bytes()).unwrap();
+        repo.apply(&diff, git2::ApplyLocation::Index, None).unwrap();
     }
 }

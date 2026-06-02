@@ -133,6 +133,10 @@ impl Workspace {
 
         // When an overlay is active, only allow modal toggle shortcuts (below) and Escape (above).
         // Block all panel-specific shortcuts (j/k, Alt+1/2/3/4, Tab, resize, etc.)
+        // TODO(audit): QUAL-10 — this hand-rolled dispatcher (plus the ~30 per-view
+        // on_key_down string-matchers) should migrate to GPUI actions!/KeyBinding with a
+        // data-driven, user-rebindable keymap, letting the focus/key_context tree resolve
+        // overlay precedence instead of this manual `any_overlay_active` gate.
         let any_overlay_active = self.overlays.command_palette.read(cx).is_visible()
             || self.overlays.interactive_rebase.read(cx).is_visible()
             || self.overlays.theme_editor.read(cx).is_visible()
@@ -143,6 +147,7 @@ impl Workspace {
             || self.overlays.repo_opener.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()
             || self.dialogs.stash_branch_dialog.read(cx).is_visible()
+            || self.overlays.global_search.read(cx).is_visible()
             || self.overlays.shortcuts_help.read(cx).is_visible();
 
         // Ctrl+Shift+F to toggle global search
@@ -226,6 +231,7 @@ impl Workspace {
             self.overlays.command_palette.update(cx, |cp, cx| {
                 cp.toggle(window, cx);
             });
+            return;
         }
 
         // Ctrl+, to open settings
@@ -397,8 +403,8 @@ impl Workspace {
                     let msg = commit.message.clone();
                     cx.write_to_clipboard(ClipboardItem::new_string(msg.clone()));
                     let first_line = msg.lines().next().unwrap_or(&msg);
-                    let preview = if first_line.len() > 40 {
-                        format!("{}...", &first_line[..40])
+                    let preview = if first_line.chars().count() > 40 {
+                        format!("{}...", first_line.chars().take(40).collect::<String>())
                     } else {
                         first_line.to_string()
                     };
@@ -424,27 +430,27 @@ impl Workspace {
         if !any_overlay_active && modifiers.control && !modifiers.shift && !modifiers.alt {
             match key {
                 "[" | "bracketleft" => {
-                    self.layout.detail_panel_width =
-                        (self.layout.detail_panel_width - 20.0).max(180.0);
+                    self.layout.detail_panel_width = (self.layout.detail_panel_width - 20.0)
+                        .max(super::layout::MIN_DETAIL_PANEL_WIDTH);
                     self.schedule_layout_save(cx);
                     cx.notify();
                 }
                 "]" | "bracketright" => {
-                    self.layout.detail_panel_width =
-                        (self.layout.detail_panel_width + 20.0).min(720.0);
+                    self.layout.detail_panel_width = (self.layout.detail_panel_width + 20.0)
+                        .min(super::layout::MAX_DETAIL_PANEL_WIDTH);
                     self.schedule_layout_save(cx);
                     cx.notify();
                 }
                 // Ctrl+Up / Ctrl+Down to resize diff viewer height
                 "up" => {
-                    self.layout.diff_viewer_height =
-                        (self.layout.diff_viewer_height - 30.0).max(100.0);
+                    self.layout.diff_viewer_height = (self.layout.diff_viewer_height - 30.0)
+                        .max(super::layout::MIN_DIFF_VIEWER_HEIGHT);
                     self.schedule_layout_save(cx);
                     cx.notify();
                 }
                 "down" => {
-                    self.layout.diff_viewer_height =
-                        (self.layout.diff_viewer_height + 30.0).min(600.0);
+                    self.layout.diff_viewer_height = (self.layout.diff_viewer_height + 30.0)
+                        .min(super::layout::MAX_DIFF_VIEWER_HEIGHT);
                     self.schedule_layout_save(cx);
                     cx.notify();
                 }

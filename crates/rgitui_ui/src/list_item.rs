@@ -1,6 +1,5 @@
 use gpui::prelude::*;
 use gpui::{div, px, rems, AnyElement, App, ClickEvent, CursorStyle, ElementId, Window};
-use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, StyledExt};
 use smallvec::SmallVec;
 
@@ -32,6 +31,7 @@ pub struct ListItem {
     disabled: bool,
     selected: bool,
     spacing: ListItemSpacing,
+    density: f32,
     indent_level: usize,
     indent_step: f32,
     start_slot: Option<AnyElement>,
@@ -48,6 +48,7 @@ impl ListItem {
             disabled: false,
             selected: false,
             spacing: ListItemSpacing::Default,
+            density: 1.0,
             indent_level: 0,
             indent_step: 12.0,
             start_slot: None,
@@ -60,6 +61,13 @@ impl ListItem {
 
     pub fn spacing(mut self, spacing: ListItemSpacing) -> Self {
         self.spacing = spacing;
+        self
+    }
+
+    /// Scales the row height by a density multiplier (e.g. a compactness
+    /// setting resolved by the caller). Defaults to `1.0`.
+    pub fn density(mut self, density: f32) -> Self {
+        self.density = density;
         self
     }
 
@@ -110,9 +118,8 @@ impl ListItem {
 impl RenderOnce for ListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.colors();
-        let compactness = cx.global::<SettingsState>().settings().compactness;
         let base_height = self.spacing.height();
-        let height = rems(base_height.0 * compactness.multiplier());
+        let height = rems(base_height.0 * self.density);
         let indent_px = self.indent_level as f32 * self.indent_step;
 
         let bg = if self.selected {

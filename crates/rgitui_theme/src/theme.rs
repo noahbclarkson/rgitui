@@ -117,6 +117,11 @@ impl ActiveTheme for App {
 }
 
 /// Build all built-in themes.
+///
+/// This is the source of truth for the built-in themes loaded at runtime by
+/// [`init`]. They are defined in Rust so they are always available and cannot
+/// drift from on-disk assets. JSON is used at runtime only for user-defined
+/// themes loaded from the config directory and for exporting/importing themes.
 pub fn builtin_themes() -> Vec<Arc<Theme>> {
     vec![
         Arc::new(Theme {
@@ -165,6 +170,10 @@ pub fn builtin_themes() -> Vec<Arc<Theme>> {
 }
 
 /// Initialize the theme system. Must be called during app init.
+///
+/// Built-in themes come from [`builtin_themes`]; any user-defined JSON themes
+/// in the config directory are loaded on top, replacing a built-in only when
+/// their names match.
 pub fn init(cx: &mut App) {
     let mut available = builtin_themes();
 

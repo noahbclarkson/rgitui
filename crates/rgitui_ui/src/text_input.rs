@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, fill, px, size, App, Bounds, Context, EventEmitter, FocusHandle, Focusable,
+    canvas, div, fill, px, rems, size, App, Bounds, Context, EventEmitter, FocusHandle, Focusable,
     HighlightStyle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Render, SharedString, Size, StyledText, TextLayout, Window,
 };
@@ -15,6 +15,11 @@ pub enum TextInputEvent {
 
 impl EventEmitter<TextInputEvent> for TextInput {}
 
+// TODO(audit) QUAL-09: this hand-rolls a text editor over on_key_down/key_char
+// and implements no EntityInputHandler, so OS-level IME/dead-key/composition is
+// not wired up. Migrate to wrap GPUI's Editor (single-line mode) or implement
+// EntityInputHandler (replace_text_in_range / replace_and_mark_text_in_range /
+// marked_text_range) and register it via window.register_input_handler.
 pub struct TextInput {
     text: String,
     placeholder: SharedString,
@@ -25,6 +30,9 @@ pub struct TextInput {
     text_layout: TextLayout,
     multiline: bool,
     masked: bool,
+    font_size: Option<Pixels>,
+    disabled: bool,
+    read_only: bool,
 }
 
 impl TextInput {
@@ -39,6 +47,9 @@ impl TextInput {
             text_layout: TextLayout::default(),
             multiline: false,
             masked: false,
+            font_size: None,
+            disabled: false,
+            read_only: false,
         }
     }
 
@@ -72,7 +83,17 @@ impl TextInput {
         self.placeholder = placeholder.into();
     }
 
-    pub fn set_font_size(&mut self, _size: Pixels) {}
+    pub fn set_font_size(&mut self, size: Pixels) {
+        self.font_size = Some(size);
+    }
+
+    pub fn set_disabled(&mut self, disabled: bool) {
+        self.disabled = disabled;
+    }
+
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text.clear();
@@ -194,9 +215,13 @@ impl TextInput {
     }
 
     fn index_from_position(&self, position: gpui::Point<Pixels>) -> usize {
-        match self.text_layout.index_for_position(position) {
+        let mut idx = match self.text_layout.index_for_position(position) {
             Ok(i) | Err(i) => i.min(self.text.len()),
+        };
+        while idx > 0 && !self.text.is_char_boundary(idx) {
+            idx -= 1;
         }
+        idx
     }
 
     fn handle_mouse_down(
@@ -205,6 +230,9 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         self.focus_handle.focus(window, cx);
         let idx = self.index_from_position(event.position);
 
@@ -264,13 +292,17 @@ impl TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
+
         let key = event.keystroke.key.as_str();
         let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
         let shift = event.keystroke.modifiers.shift;
 
         match key {
             "enter" => {
-                if self.multiline && !ctrl {
+                if self.multiline && !ctrl && !self.read_only {
                     self.delete_selection();
                     self.text.insert(self.cursor, '\n');
                     self.cursor += 1;
@@ -282,11 +314,11 @@ impl TextInput {
                 return;
             }
             "escape" => return,
-            "tab" if !self.multiline => {
-                cx.emit(TextInputEvent::Submit);
-                return;
-            }
+            "tab" => return,
             "backspace" => {
+                if self.read_only {
+                    return;
+                }
                 if self.delete_selection() {
                     cx.emit(TextInputEvent::Changed(self.text.clone()));
                     cx.notify();
@@ -310,6 +342,9 @@ impl TextInput {
                 return;
             }
             "delete" => {
+                if self.read_only {
+                    return;
+                }
                 if self.delete_selection() {
                     cx.emit(TextInputEvent::Changed(self.text.clone()));
                     cx.notify();
@@ -390,13 +425,16 @@ impl TextInput {
                     if let Some(s) = self.selected_text() {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(s.to_string()));
                     }
-                    if self.delete_selection() {
+                    if !self.read_only && self.delete_selection() {
                         cx.emit(TextInputEvent::Changed(self.text.clone()));
                         cx.notify();
                     }
                     return;
                 }
                 "v" => {
+                    if self.read_only {
+                        return;
+                    }
                     if let Some(clip) = cx.read_from_clipboard() {
                         if let Some(paste) = clip.text() {
                             self.delete_selection();
@@ -415,6 +453,10 @@ impl TextInput {
                 }
                 _ => {}
             }
+        }
+
+        if self.read_only {
+            return;
         }
 
         if let Some(kc) = &event.keystroke.key_char {
@@ -450,17 +492,27 @@ impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
         let is_focused = self.focus_handle.is_focused(window);
+        // TODO(audit) QUAL-18: clearing the selection on blur from inside the
+        // paint pass couples rendering to focus transitions. Move this to a
+        // focus-change handler once the project adopts a focus-out element API.
         if !is_focused && self.selection.is_some() {
             self.selection = None;
             self.dragging = false;
         }
-        let border_color = if is_focused {
+        let inactive = self.disabled || self.read_only;
+        let border_color = if is_focused && !self.disabled {
             colors.border_focused
         } else {
             colors.border
         };
         let hover_border = colors.border_focused;
-        let bg = colors.editor_background;
+        let bg = if inactive {
+            colors.element_disabled
+        } else if is_focused {
+            colors.ghost_element_selected
+        } else {
+            colors.editor_background
+        };
         let cursor_color = colors.text_accent;
         let selection_hl = HighlightStyle {
             color: Some(colors.text),
@@ -474,7 +526,9 @@ impl Render for TextInput {
         let is_empty = self.text.is_empty();
         let cursor_idx = self.cursor;
 
-        let text_color_val = if is_empty {
+        let text_color_val = if inactive {
+            colors.text_disabled
+        } else if is_empty {
             Color::Placeholder.color(cx)
         } else {
             colors.text
@@ -482,7 +536,10 @@ impl Render for TextInput {
 
         let mut text_style = window.text_style();
         text_style.color = text_color_val;
-        let font_size_px = text_style.font_size.to_pixels(window.rem_size());
+        let font_size_px = self
+            .font_size
+            .unwrap_or_else(|| rems(0.875).to_pixels(window.rem_size()));
+        text_style.font_size = font_size_px.into();
         let target_line_height = font_size_px + px(6.0);
         text_style.line_height =
             gpui::DefiniteLength::Absolute(gpui::AbsoluteLength::Pixels(target_line_height));
@@ -499,7 +556,7 @@ impl Render for TextInput {
         let display_text: SharedString = if is_empty {
             self.placeholder.clone()
         } else if self.masked {
-            "*".repeat(self.text.len()).into()
+            "*".repeat(self.text.chars().count()).into()
         } else {
             self.text.clone().into()
         };
@@ -560,12 +617,13 @@ impl Render for TextInput {
             .border_1()
             .border_color(border_color)
             .bg(bg)
-            .when(!is_focused, move |el| {
+            .when(!is_focused && !inactive, move |el| {
                 el.hover(move |s| s.border_color(hover_border))
             })
-            .cursor_text()
+            .when(self.disabled, |el| el.cursor_not_allowed())
+            .when(!self.disabled, |el| el.cursor_text())
             .text_color(text_color_val)
-            .text_sm()
+            .text_size(font_size_px)
             .line_height(target_line_height)
             .when(self.multiline, |el| el.flex().flex_col())
             .overflow_hidden();

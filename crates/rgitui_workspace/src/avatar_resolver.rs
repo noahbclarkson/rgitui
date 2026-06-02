@@ -11,10 +11,22 @@ use rgitui_ui::AvatarCache;
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long the persistence collector waits for additional resolved entries
+/// before flushing the accumulated batch to disk. Coalescing the writes of a
+/// single resolution wave into one flush avoids rewriting the cache file once
+/// per entry.
+const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
+
 /// Resolve avatar URLs for a batch of (name, email) pairs.
 ///
 /// Spawns background tasks that try multiple sources and updates the
 /// global `AvatarCache`. Views re-render automatically via `cx.refresh()`.
+///
+/// Resolved entries are funnelled through a single channel to one collector
+/// task, which debounces and persists the batch on the background executor.
+/// This avoids spawning a raw OS thread per entry and serialises disk writes
+/// into a single writer, eliminating the lost-update race that occurred when
+/// many threads rewrote the cache file concurrently.
 pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
     if !cx.has_global::<AvatarCache>() {
         cx.set_global(AvatarCache::new());
@@ -43,8 +55,14 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
 
     let http = cx.http_client();
 
+    // Single sender shared by every per-author task; a lone collector task
+    // owns the receiver and drives all disk persistence.
+    let (persist_tx, persist_rx) = smol::channel::unbounded::<(String, String)>();
+    spawn_persist_collector(persist_rx, cx);
+
     for (name, email) in to_fetch {
         let http = http.clone();
+        let persist_tx = persist_tx.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
             let result = resolve_single(&name, &email, &http).await;
             let resolved = result.is_some();
@@ -55,20 +73,20 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
                         Some(url) => {
                             log::info!("avatar resolved: email={} url={}", email, url);
                             cache.set_resolved(email.clone(), url.clone());
-                            // Persist to disk in the background (blocking I/O, fire-and-forget)
-                            let email_clone = email.clone();
-                            let url_clone = url.clone();
-                            std::thread::spawn(move || {
-                                AvatarCache::save_entry_to_disk(&email_clone, &url_clone);
-                            });
                         }
                         None => {
                             log::debug!("avatar not found: email={}", email);
-                            cache.set_not_found(email);
+                            cache.set_not_found(email.clone());
                         }
                     }
                 }
             });
+            // Queue successful resolutions for persistence after the in-memory
+            // cache update so a crash mid-resolution never writes an entry the
+            // cache itself dropped. Errors mean the collector already exited.
+            if let Some(url) = result {
+                let _ = persist_tx.send((email, url)).await;
+            }
             // Only refresh when an avatar was actually resolved — NotFound doesn't
             // change what's displayed (initials fallback remains unchanged).
             if resolved {
@@ -77,6 +95,41 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
         })
         .detach();
     }
+}
+
+/// Drain resolved `(email, url)` pairs from `rx`, debounce briefly to coalesce
+/// a resolution wave, then persist the accumulated batch on the background
+/// executor. The task exits once every sender is dropped and the channel is
+/// drained.
+fn spawn_persist_collector(rx: smol::channel::Receiver<(String, String)>, cx: &mut App) {
+    let background = cx.background_executor().clone();
+    background
+        .clone()
+        .spawn(async move {
+            while let Ok(first) = rx.recv().await {
+                let mut batch = vec![first];
+
+                // Coalesce everything that arrives within the debounce window
+                // into the same flush.
+                loop {
+                    let timer = background.timer(PERSIST_DEBOUNCE);
+                    match select(Box::pin(rx.recv()), Box::pin(timer)).await {
+                        Either::Left((Ok(entry), _)) => batch.push(entry),
+                        // Sender dropped, or the debounce window elapsed: flush.
+                        Either::Left((Err(_), _)) | Either::Right(_) => break,
+                    }
+                }
+
+                // TODO(audit): PERF-14 collapse this per-entry read-modify-rewrite
+                // into one whole-map flush once `AvatarCache` (in rgitui_ui) exposes a
+                // batched `save_all_to_disk` / resolved-entry iterator; this file
+                // cannot add that method.
+                for (email, url) in &batch {
+                    AvatarCache::save_entry_to_disk(email, url);
+                }
+            }
+        })
+        .detach();
 }
 
 type CheckFuture = Pin<Box<dyn futures::Future<Output = Option<String>> + Send>>;

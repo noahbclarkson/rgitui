@@ -93,6 +93,11 @@ impl StashSaveDialog {
 
     fn try_create(&mut self, cx: &mut Context<Self>) {
         let message_text = self.editor.read(cx).text();
+        if let Some(error) = Self::validate_message(message_text) {
+            self.error_message = Some(error);
+            cx.notify();
+            return;
+        }
         let message = if message_text.trim().is_empty() {
             None
         } else {
@@ -270,6 +275,7 @@ impl Render for StashSaveDialog {
                             Button::new("stash-save-confirm", "Create Stash")
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Tinted(TintColor::Accent))
+                                .disabled(self.error_message.is_some())
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.try_create(cx);
                                 })),

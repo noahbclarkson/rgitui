@@ -8,7 +8,7 @@ use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, FocusHandle, Render, SharedString,
     UniformListScrollHandle, WeakEntity, Window,
 };
-use rgitui_git::{GitProject, StashEntry};
+use rgitui_git::{GitProject, GitProjectEvent, StashEntry};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
@@ -31,8 +31,26 @@ impl StashesPanel {
         project: WeakEntity<GitProject>,
         workspace: WeakEntity<Workspace>,
     ) -> Self {
+        let stashes = project
+            .upgrade()
+            .map(|proj| proj.read(cx).stashes().to_vec())
+            .unwrap_or_default();
+
+        if let Some(proj) = project.upgrade() {
+            cx.subscribe(&proj, |this, project, event: &GitProjectEvent, cx| {
+                if matches!(
+                    event,
+                    GitProjectEvent::StatusChanged | GitProjectEvent::RefsChanged
+                ) {
+                    this.stashes = project.read(cx).stashes().to_vec();
+                    cx.notify();
+                }
+            })
+            .detach();
+        }
+
         Self {
-            stashes: Vec::new(),
+            stashes,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             project,
@@ -102,9 +120,6 @@ impl StashesPanel {
 
 impl Render for StashesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Refresh on every render to keep stash list in sync
-        self.refresh(cx);
-
         let colors = cx.colors().clone();
         let panel_bg = colors.panel_background;
         let stashes = self.stashes.clone();

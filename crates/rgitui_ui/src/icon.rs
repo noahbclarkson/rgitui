@@ -2,8 +2,7 @@ use gpui::prelude::*;
 use gpui::{rems, svg, App, Rems, Window};
 use rgitui_theme::Color;
 
-/// Icon names mapping to SVG file paths.
-/// We use simple text-based icons (rendered as SVG) where possible.
+/// Icon names mapping to SVG assets loaded by path from the `assets/icons/` directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IconName {
     // Git
@@ -82,11 +81,9 @@ pub enum IconName {
 }
 
 impl IconName {
-    /// SVG path for this icon.
-    /// In production we'd load from assets/icons/. For now, we use inline SVGs.
+    /// SVG asset path for this icon, relative to the `assets/icons/` directory.
     pub fn path(&self) -> &'static str {
         match self {
-            // We'll use placeholder paths — real SVGs will be added to assets/icons/
             IconName::GitBranch => "icons/git-branch.svg",
             IconName::GitCommit => "icons/git-commit.svg",
             IconName::GitMerge => "icons/git-merge.svg",

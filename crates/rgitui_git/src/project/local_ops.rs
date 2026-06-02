@@ -11,6 +11,22 @@ use super::auth::inject_https_credentials;
 use super::refresh::gather_refresh_data;
 use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent, RefreshData};
 
+// TODO(audit): deferred audit items for this module (tracked, not yet applied):
+//  - PERF-03 / QUAL-04: pure index/working-tree mutations (stage/unstage/discard,
+//    and the hunk/line ops in diff.rs) still run the full `gather_refresh_data`.
+//    The fix is to use `gather_refresh_data_lightweight_cached(.., &self
+//    .worktree_status_cache)` and ALSO call `this.refresh_ahead_behind(cx)` in each
+//    op's success arm (mirroring `refresh()`), otherwise ahead/behind resets to 0.
+//    This is a coordinated change across ~9 call sites in two files; deferred to
+//    avoid a half-applied regression.
+//  - QUAL-02: the ~39 copy-pasted begin/spawn/apply/complete blocks should collapse
+//    into one generic job-dispatch helper (cf. Zed `git_store::send_job`).
+//  - QUAL-05: cache an `Arc<Mutex<git2::Repository>>` instead of `Repository::open`
+//    per call — conflicts with the deliberate per-thread opens in refresh's
+//    thread::scope, so needs a design pass.
+//  - BUG-41: `discard_changes_at` directory handling — verifier judged the current
+//    code correct (untracked dirs take the remove_dir_all branch); left unchanged.
+
 impl GitProject {
     /// Stage specific files.
     pub fn stage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
@@ -377,6 +393,47 @@ impl GitProject {
                     let tree = repo.find_tree(tree_oid)?;
 
                     let auth = current_git_auth_runtime();
+
+                    // Amending must never silently destroy an in-progress rebase
+                    // (the working tree would be reset to ORIG_HEAD and all rebase
+                    // progress/conflict resolution lost). Refuse instead.
+                    if amend
+                        && matches!(
+                            repo.state(),
+                            git2::RepositoryState::Rebase
+                                | git2::RepositoryState::RebaseInteractive
+                                | git2::RepositoryState::RebaseMerge
+                        )
+                    {
+                        anyhow::bail!(
+                            "Cannot amend during a rebase. Continue or abort the rebase first."
+                        );
+                    }
+
+                    // A plain commit made while a merge is in progress must finalize
+                    // it as a real merge commit (HEAD + MERGE_HEAD parents) and clear
+                    // the merge state; otherwise the second parent is dropped and the
+                    // repository stays stuck in the 'Merging' state.
+                    let merge_parent_oids: Vec<git2::Oid> = if !amend
+                        && (repo.state() == git2::RepositoryState::Merge
+                            || repo.path().join("MERGE_HEAD").exists())
+                    {
+                        let merge_head_path = repo.path().join("MERGE_HEAD");
+                        let mut oids = Vec::new();
+                        if let Ok(contents) = std::fs::read_to_string(&merge_head_path) {
+                            for line in contents.lines() {
+                                let line = line.trim();
+                                if !line.is_empty() {
+                                    oids.push(git2::Oid::from_str(line)?);
+                                }
+                            }
+                        }
+                        oids
+                    } else {
+                        Vec::new()
+                    };
+                    let finalizing_merge = !merge_parent_oids.is_empty();
+
                     let oid = if amend {
                         if auth.sign_commits {
                             let gpg_key = auth.gpg_key_id.as_deref().ok_or_else(|| {
@@ -385,14 +442,6 @@ impl GitProject {
                                 )
                             })?;
 
-                            if repo.state() == git2::RepositoryState::Rebase
-                                || repo.state() == git2::RepositoryState::RebaseInteractive
-                                || repo.state() == git2::RepositoryState::RebaseMerge
-                            {
-                                if let Ok(mut rebase) = repo.open_rebase(None) {
-                                    let _ = rebase.abort();
-                                }
-                            }
                             let head = repo.head()?.peel_to_commit()?;
                             let parents: Vec<git2::Commit> = head.parents().collect();
                             let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
@@ -420,14 +469,6 @@ impl GitProject {
                             }
                             commit_oid
                         } else {
-                            if repo.state() == git2::RepositoryState::Rebase
-                                || repo.state() == git2::RepositoryState::RebaseInteractive
-                                || repo.state() == git2::RepositoryState::RebaseMerge
-                            {
-                                if let Ok(mut rebase) = repo.open_rebase(None) {
-                                    let _ = rebase.abort();
-                                }
-                            }
                             let head = repo.head()?.peel_to_commit()?;
                             head.amend(
                                 Some("HEAD"),
@@ -439,11 +480,14 @@ impl GitProject {
                             )?
                         }
                     } else {
-                        let parents: Vec<git2::Commit> = if let Ok(head) = repo.head() {
+                        let mut parents: Vec<git2::Commit> = if let Ok(head) = repo.head() {
                             vec![head.peel_to_commit()?]
                         } else {
                             vec![]
                         };
+                        for oid in &merge_parent_oids {
+                            parents.push(repo.find_commit(*oid)?);
+                        }
                         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
                         if auth.sign_commits {
                             let gpg_key = auth.gpg_key_id.as_deref().ok_or_else(|| {
@@ -480,6 +524,12 @@ impl GitProject {
                             )?
                         }
                     };
+
+                    // Clear MERGE_HEAD/MERGE_MSG so the repository leaves the
+                    // 'Merging' state once the merge commit has been created.
+                    if finalizing_merge {
+                        repo.cleanup_state()?;
+                    }
 
                     let data = gather_refresh_data(&refresh_repo_path, commit_limit)?;
                     Ok((oid, data))
@@ -1206,24 +1256,40 @@ impl GitProject {
             cx,
         );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<RefreshData> = cx
+            let result: anyhow::Result<(RefreshData, String)> = cx
                 .background_executor()
                 .spawn(async move {
                     let mut repo = Repository::open(&repo_path)?;
-                    repo.stash_pop(index, None)?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    // A conflicting pop leaves conflict markers and unmerged index
+                    // entries rather than truly failing; surface that (and still
+                    // refresh) instead of a hard failure that hides the new state.
+                    let message = match repo.stash_pop(index, None) {
+                        Ok(()) => format!("Popped stash #{}", index),
+                        Err(e) => {
+                            if repo.index().map(|i| i.has_conflicts()).unwrap_or(false) {
+                                format!(
+                                    "CONFLICT: stash #{} applied with conflicts; resolve them, then drop the stash.",
+                                    index
+                                )
+                            } else {
+                                return Err(e.into());
+                            }
+                        }
+                    };
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
+                    Ok((data, message))
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok(data) => {
+                        Ok((data, message)) => {
                             this.apply_refresh_data(data);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Popped stash #{}", index),
+                                message,
                                 (None, None, branch_name.clone()),
                                 cx,
                             );
@@ -1261,24 +1327,40 @@ impl GitProject {
             cx,
         );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<RefreshData> = cx
+            let result: anyhow::Result<(RefreshData, String)> = cx
                 .background_executor()
                 .spawn(async move {
                     let mut repo = Repository::open(&repo_path)?;
-                    repo.stash_apply(index, None)?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    // A conflicting apply leaves conflict markers and unmerged index
+                    // entries rather than truly failing; surface that (and still
+                    // refresh) instead of a hard failure that hides the new state.
+                    let message = match repo.stash_apply(index, None) {
+                        Ok(()) => format!("Applied stash #{}", index),
+                        Err(e) => {
+                            if repo.index().map(|i| i.has_conflicts()).unwrap_or(false) {
+                                format!(
+                                    "CONFLICT: stash #{} applied with conflicts; resolve them before continuing.",
+                                    index
+                                )
+                            } else {
+                                return Err(e.into());
+                            }
+                        }
+                    };
+                    let data = gather_refresh_data(&repo_path, commit_limit)?;
+                    Ok((data, message))
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok(data) => {
+                        Ok((data, message)) => {
                             this.apply_refresh_data(data);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Applied stash #{}", index),
+                                message,
                                 (
                                     Some("The stash entry was kept.".into()),
                                     None,
@@ -1403,16 +1485,27 @@ impl GitProject {
                         anyhow::anyhow!("Stash index {} out of range", stash_index)
                     })?;
 
-                    // Create a new branch at the stash's commit.
-                    // We must drop `commit` before calling `stash_apply` since the
-                    // former borrows `repo` immutably and the latter needs a mutable borrow.
-                    {
-                        let commit = repo.find_commit(stash_oid)?;
-                        repo.branch(&branch_name_owned, &commit, false)?;
-                    }
+                    // `git stash branch`: create the branch at the commit HEAD was
+                    // on when the stash was made (the stash WIP commit's first
+                    // parent), check it out, apply the stash onto it, then drop the
+                    // stash. The immutable borrows from find_commit/parent end with
+                    // the block, so the mutable set_head/checkout/apply/drop follow.
+                    let refname = {
+                        let stash_wip = repo.find_commit(stash_oid)?;
+                        let base = stash_wip
+                            .parent(0)
+                            .context("stash entry has no base commit")?;
+                        repo.branch(&branch_name_owned, &base, false)?;
+                        format!("refs/heads/{}", branch_name_owned)
+                    };
+                    repo.set_head(&refname)?;
+                    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().safe()))?;
 
-                    // Apply the stash to the new branch.
+                    // Apply onto the new branch, then drop the stash on success. A
+                    // conflicting apply errors here and intentionally keeps the
+                    // stash entry so the user can retry.
                     repo.stash_apply(stash_index, None)?;
+                    repo.stash_drop(stash_index)?;
 
                     gather_refresh_data(&repo_path, commit_limit)
                 })
@@ -2156,9 +2249,11 @@ impl GitProject {
                 .spawn(async move {
                     let repo = Repository::open(&repo_path)?;
 
-                    let state = repo.state();
-                    if state == git2::RepositoryState::Clean {
-                        anyhow::bail!("Repository is not in a merge state");
+                    // Only finalize an actual merge. Other paused operations
+                    // (cherry-pick/revert/rebase/bisect) have no MERGE_HEAD and must
+                    // not be miscommitted here as an ordinary single-parent commit.
+                    if !repo.path().join("MERGE_HEAD").exists() {
+                        anyhow::bail!("Repository is not in a merge state (no MERGE_HEAD to continue).");
                     }
 
                     let mut index = repo.index()?;
@@ -2168,8 +2263,9 @@ impl GitProject {
                         );
                     }
 
-                    index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
-                    index.write()?;
+                    // Commit the index exactly as the user staged it (like
+                    // `git merge --continue`); do NOT sweep untracked or unstaged
+                    // working-tree changes into the merge commit.
                     let tree_oid = index.write_tree()?;
                     let tree = repo.find_tree(tree_oid)?;
 
@@ -3633,13 +3729,18 @@ mod tests {
             found
         };
 
-        let commit = repo.find_commit(stash_oid).unwrap();
-        repo.branch("stash-branch", &commit, false).unwrap();
+        // `git stash branch` creates the branch at the stash's BASE commit
+        // (the stash WIP commit's first parent), not at the WIP commit itself.
+        let stash_wip = repo.find_commit(stash_oid).unwrap();
+        let base = stash_wip.parent(0).unwrap();
+        let base_oid = base.id();
+        repo.branch("stash-branch", &base, false).unwrap();
 
         let branch = repo
             .find_branch("stash-branch", git2::BranchType::Local)
             .unwrap();
-        assert_eq!(branch.get().target().unwrap(), stash_oid);
+        assert_eq!(branch.get().target().unwrap(), base_oid);
+        assert_ne!(base_oid, stash_oid);
     }
 
     // -------------------------------------------------------------------------

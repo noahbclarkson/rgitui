@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
-use std::sync::Arc;
 
 /// A bounded Least-Recently-Used cache.
 ///
@@ -91,43 +90,6 @@ where
         self.order.push_back(key.clone());
         self.map.insert(key, value);
     }
-
-    /// Returns the number of entries currently cached.
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// Returns `true` if the cache holds no entries.
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-
-    /// Returns the configured capacity.
-    #[allow(dead_code)]
-    pub fn capacity(&self) -> usize {
-        self.cap
-    }
-}
-
-impl<K, V> LruCache<K, Arc<V>>
-where
-    K: Hash + Eq + Clone,
-{
-    /// Variant of `get` that returns an `Arc<V>` directly (no clone needed).
-    #[allow(dead_code)]
-    pub fn get_arc(&mut self, key: &K) -> Option<Arc<V>> {
-        if self.map.contains_key(key) {
-            if let Some(pos) = self.order.iter().position(|k| k == key) {
-                self.order.remove(pos);
-                self.order.push_back(key.clone());
-            }
-            self.map.get(key).cloned()
-        } else {
-            None
-        }
-    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -144,14 +106,6 @@ mod tests {
     }
 
     // ── Basic ops ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn new_cache_is_empty() {
-        let c: LruCache<i32, &str> = LruCache::new(10);
-        assert!(c.is_empty());
-        assert_eq!(c.len(), 0);
-        assert_eq!(c.capacity(), 10);
-    }
 
     #[test]
     fn insert_and_get() {
@@ -193,7 +147,6 @@ mod tests {
 
         assert_eq!(c.get(&1), Some("a-updated"));
         assert_eq!(c.get(&2), Some("b"));
-        assert_eq!(c.len(), 2);
     }
 
     #[test]
@@ -255,21 +208,23 @@ mod tests {
         c.insert(1, "a");
         c.insert(2, "b");
         c.insert(3, "c");
-        assert_eq!(c.len(), 3);
-        assert_eq!(c.capacity(), 3);
+        assert!(c.contains(&1));
+        assert!(c.contains(&2));
+        assert!(c.contains(&3));
 
-        // Adding one more evicts the LRU entry.
+        // Adding one more evicts the LRU entry (1, the oldest).
         c.insert(4, "d");
-        assert_eq!(c.len(), 3);
+        assert!(!c.contains(&1));
+        assert!(c.contains(&2));
+        assert!(c.contains(&3));
+        assert!(c.contains(&4));
     }
 
     #[test]
     fn single_insert_then_evict() {
         let mut c: LruCache<i32, &str> = LruCache::new(2);
         c.insert(1, "one");
-        assert_eq!(c.len(), 1);
         c.insert(2, "two");
-        assert_eq!(c.len(), 2);
         c.insert(3, "three");
         // 1 should be evicted (oldest).
         assert!(!c.contains(&1));
@@ -291,18 +246,6 @@ mod tests {
         // 1 was touched and is therefore NOT LRU — 2 should be evicted.
         assert!(!c.contains(&2));
         assert!(c.contains(&1));
-    }
-
-    #[test]
-    fn get_arc_returns_cloned_arc() {
-        let mut c: LruCache<i32, Arc<String>> = LruCache::new(2);
-        c.insert(1, Arc::new("hello".into()));
-
-        let first = c.get_arc(&1).unwrap();
-        let second = c.get_arc(&1).unwrap();
-
-        // Both should be the same Arc (no clone on get_arc).
-        assert!(std::ptr::eq(&*first, &*second));
     }
 
     #[test]

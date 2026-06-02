@@ -53,6 +53,10 @@ impl ContextMenuItem {
     }
 }
 
+// TODO(audit): UX-13 — add keyboard navigation + focus handling (FocusHandle,
+// Up/Down to move a highlighted index, Enter to activate, Esc to dismiss,
+// type-ahead, focus transfer on open). Deferred: large framework migration to a
+// stateful component; ref Zed crates/ui/src/components/context_menu.rs.
 #[derive(IntoElement)]
 pub struct ContextMenu {
     items: Vec<ContextMenuItem>,

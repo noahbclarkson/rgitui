@@ -116,7 +116,9 @@ enum SidebarItem {
     Stash(usize),        // index into stashes
     Worktree(usize),     // index into worktrees
     StagedFile(usize),   // index into staged files
+    StagedDir(String),   // collapsed_dirs key for a staged directory row
     UnstagedFile(usize), // index into unstaged files
+    UnstagedDir(String), // collapsed_dirs key for an unstaged directory row
 }
 
 /// State for the right-click stash context menu.
@@ -125,6 +127,25 @@ struct StashContextMenuState {
     stash_index: usize,
     /// Window-relative position where the menu should appear.
     position: Point<Pixels>,
+}
+
+/// Minimum width of the stash context menu, in pixels.
+const STASH_MENU_WIDTH: f32 = 180.0;
+/// Height of a single stash context-menu item row, in pixels.
+const STASH_MENU_ITEM_HEIGHT: f32 = 28.0;
+/// Vertical padding applied to the top and bottom of the stash context menu.
+const STASH_MENU_VERTICAL_PADDING: f32 = 3.0;
+/// Number of action rows in the stash context menu (Apply, Pop, Create branch, Drop).
+const STASH_MENU_ITEM_COUNT: f32 = 4.0;
+
+/// Total rendered size of the stash context menu. Derived from the item count and
+/// row height so the outside-click hit-test and the edge-clamping math stay in sync
+/// with the actual menu content.
+fn stash_menu_size() -> Size<Pixels> {
+    Size::new(
+        px(STASH_MENU_WIDTH),
+        px(STASH_MENU_ITEM_COUNT * STASH_MENU_ITEM_HEIGHT + 2.0 * STASH_MENU_VERTICAL_PADDING),
+    )
 }
 
 /// The left sidebar panel with branches, tags, stashes, and working tree status.
@@ -255,6 +276,7 @@ impl Sidebar {
             |this: &mut Self, _, event: &TextInputEvent, cx| {
                 if let TextInputEvent::Changed(text) = event {
                     this.branch_filter = text.to_string();
+                    this.rebuild_flattened_branches();
                     this.rebuild_nav_items();
                     cx.notify();
                 }
@@ -342,7 +364,7 @@ impl Sidebar {
 
         items.push(SidebarItem::SectionHeader(SidebarSection::LocalBranches));
         if is_expanded(SidebarSection::LocalBranches, &self.expanded_sections) {
-            for i in self.filtered_local_indices(self.current_user_email.as_deref()) {
+            for &i in &self.flattened_local_branches {
                 items.push(SidebarItem::LocalBranch(i));
             }
         }
@@ -384,15 +406,29 @@ impl Sidebar {
 
         items.push(SidebarItem::SectionHeader(SidebarSection::StagedChanges));
         if is_expanded(SidebarSection::StagedChanges, &self.expanded_sections) {
-            for i in 0..self.staged.len() {
-                items.push(SidebarItem::StagedFile(i));
+            for item in &self.flattened_staged {
+                match item {
+                    FlatFileItem::File { file_idx, .. } => {
+                        items.push(SidebarItem::StagedFile(*file_idx));
+                    }
+                    FlatFileItem::Dir { dir_key, .. } => {
+                        items.push(SidebarItem::StagedDir(dir_key.clone()));
+                    }
+                }
             }
         }
 
         items.push(SidebarItem::SectionHeader(SidebarSection::UnstagedChanges));
         if is_expanded(SidebarSection::UnstagedChanges, &self.expanded_sections) {
-            for i in 0..self.unstaged.len() {
-                items.push(SidebarItem::UnstagedFile(i));
+            for item in &self.flattened_unstaged {
+                match item {
+                    FlatFileItem::File { file_idx, .. } => {
+                        items.push(SidebarItem::UnstagedFile(*file_idx));
+                    }
+                    FlatFileItem::Dir { dir_key, .. } => {
+                        items.push(SidebarItem::UnstagedDir(dir_key.clone()));
+                    }
+                }
             }
         }
 
@@ -457,6 +493,9 @@ impl Sidebar {
                     cx.notify();
                 }
             }
+            SidebarItem::StagedDir(dir_key) | SidebarItem::UnstagedDir(dir_key) => {
+                cx.emit(SidebarEvent::ToggleDir(dir_key));
+            }
         }
     }
 
@@ -504,11 +543,19 @@ impl Sidebar {
                     self.branch_filter_editor.update(cx, |editor, cx| {
                         editor.clear(cx);
                     });
+                    self.rebuild_flattened_branches();
                     self.rebuild_nav_items();
                     cx.notify();
                     cx.stop_propagation();
                 }
             }
+            // TODO(audit): UX-05 — keyboard navigation does not scroll the selected
+            // row into view. Scroll-follow requires the QUAL-03 flat-list refactor
+            // (rows as direct children of one scroller) or bounded internally
+            // scrolling sections; it is not achievable while each section is a
+            // separate `Infer`-sized `uniform_list` under a single outer scroll,
+            // because those per-list scroll handles are no-ops and the outer
+            // `ScrollHandle` only tracks its direct children.
             "up" | "k" => {
                 let new_idx = match self.keyboard_index {
                     Some(i) if i > 0 => i - 1,
@@ -836,8 +883,9 @@ impl Sidebar {
             self.collapsed_dirs.insert(key);
         }
 
-        // Rebuild flattened lists to reflect the new collapse state.
-        // use take() to avoid &mut conflict with self.cached_* clone borrows.
+        // Rebuild flattened lists to reflect the new collapse state. The tree
+        // roots are cloned so the shared `flatten_tree` borrow does not conflict
+        // with the mutable borrows of the destination vectors.
         let staged_tree = self.cached_staged_tree.clone();
         let unstaged_tree = self.cached_unstaged_tree.clone();
         let collapsed_dirs = self.collapsed_dirs.clone();
@@ -859,9 +907,12 @@ impl Sidebar {
             &mut new_unstaged,
             &collapsed_dirs,
         );
-        // Swap using take to avoid &mut conflict
         self.flattened_staged = new_staged;
         self.flattened_unstaged = new_unstaged;
+
+        // Keyboard navigation items mirror the flattened file lists, so rebuild
+        // them to keep the cursor index aligned with the new collapse state.
+        self.rebuild_nav_items();
 
         cx.notify();
     }
@@ -1016,7 +1067,7 @@ impl Sidebar {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn file_tree_file_count(node: &FileTreeNode) -> usize {
         node.file_indices.len()
             + node
@@ -1028,6 +1079,10 @@ impl Sidebar {
 }
 
 impl Render for Sidebar {
+    // TODO(audit): QUAL-03 — this render method is ~2400 lines with several
+    // near-duplicate uniform_list blocks. Extract per-section row renderers and a
+    // shared section/list builder so render becomes a thin orchestrator (ref Zed's
+    // git_panel.rs render_* helpers). Deferred: large structural refactor.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let compactness = cx.global::<SettingsState>().settings().compactness;
@@ -1079,14 +1134,13 @@ impl Render for Sidebar {
                             .update(cx, |this: &mut Sidebar, cx| {
                                 let click_inside_menu =
                                     this.stash_context_menu.as_ref().is_some_and(|cm| {
-                                        let menu_w: Pixels = px(180.);
-                                        let menu_h: Pixels = px(140.);
+                                        let menu_size = stash_menu_size();
                                         let x = event.position.x;
                                         let y = event.position.y;
                                         x >= cm.position.x
-                                            && x < cm.position.x + menu_w
+                                            && x < cm.position.x + menu_size.width
                                             && y >= cm.position.y
-                                            && y < cm.position.y + menu_h
+                                            && y < cm.position.y + menu_size.height
                                     });
                                 if !click_inside_menu {
                                     this.dismiss_stash_context_menu(cx);
@@ -1156,12 +1210,10 @@ impl Render for Sidebar {
         // -- Local Branches --
         let local_branch_count = self.local_branches.len();
         let branch_filter = self.branch_filter.clone();
-        let filtered_count = if self.my_branches_active || !branch_filter.is_empty() {
-            self.filtered_local_indices(self.current_user_email.as_deref())
-                .len()
-        } else {
-            local_branch_count
-        };
+        // `flattened_local_branches` already holds the filtered indices (kept in
+        // sync with the filter text and "My Branches" toggle), so use its length
+        // directly rather than re-running the per-branch filter every frame.
+        let filtered_count = self.flattened_local_branches.len();
 
         let local_expanded = self.is_expanded(SidebarSection::LocalBranches);
         let icon = if local_expanded {
@@ -1284,9 +1336,7 @@ impl Render for Sidebar {
         }
 
         if local_expanded {
-            let visible_branch_indices =
-                self.filtered_local_indices(self.current_user_email.as_deref());
-            if visible_branch_indices.is_empty() {
+            if self.flattened_local_branches.is_empty() {
                 let empty_msg = if !branch_filter.is_empty() {
                     "No matching branches"
                 } else {
@@ -1308,6 +1358,7 @@ impl Render for Sidebar {
             }
 
             // Virtualized local branches list
+            let nav_base = nav_idx;
             nav_idx += self.flattened_local_branches.len();
             let flattened = self.flattened_local_branches.clone();
             let branches = self.local_branches.clone();
@@ -1322,7 +1373,7 @@ impl Render for Sidebar {
                     range.map(|i| {
                         let branch_idx = flattened[i];
                         let branch = &branches[branch_idx];
-                        let kb_active = keyboard_index == Some(i);
+                        let kb_active = keyboard_index == Some(nav_base + i);
                         let name: SharedString = branch.name.clone().into();
                         let is_head = branch.is_head;
 
@@ -1641,6 +1692,7 @@ impl Render for Sidebar {
                 );
             } else {
                 let flattened = self.flattened_remotes.clone();
+                let nav_base = nav_idx;
                 nav_idx += flattened.len();
                 let remotes_list = self.remotes.clone();
                 let colors = colors.clone();
@@ -1655,7 +1707,7 @@ impl Render for Sidebar {
                             range
                                 .map(|i| {
                                     let remote = &remotes_list[flattened[i]];
-                                    let kb_active = keyboard_index == Some(i);
+                                    let kb_active = keyboard_index == Some(nav_base + i);
                                     let remote_name: SharedString = remote.name.clone().into();
                                     let url_text = remote
                                         .url
@@ -1878,6 +1930,7 @@ impl Render for Sidebar {
         );
 
         if remote_expanded {
+            let nav_base = nav_idx;
             nav_idx += self.flattened_remote_branches.len();
             let flattened = self.flattened_remote_branches.clone();
             let remote_branches = self.remote_branches.clone();
@@ -1893,7 +1946,7 @@ impl Render for Sidebar {
                         .map(|i| {
                             let branch_idx = flattened[i];
                             let branch = &remote_branches[branch_idx];
-                            let kb_active = keyboard_index == Some(i);
+                            let kb_active = keyboard_index == Some(nav_base + i);
                             let name: SharedString = branch.name.clone().into();
                             let remote_branch_name = name.clone();
                             let w_item = w.clone();
@@ -2039,6 +2092,7 @@ impl Render for Sidebar {
                 );
             }
             // Virtualized tags list
+            let nav_base = nav_idx;
             nav_idx += self.flattened_tags.len();
             if self.flattened_tags.is_empty() {
                 // Empty state already rendered above
@@ -2060,7 +2114,7 @@ impl Render for Sidebar {
                                     .map(|i| {
                                         let tag_idx = flattened[i];
                                         let tag = &tags[tag_idx];
-                                        let kb_active = keyboard_index == Some(i);
+                                        let kb_active = keyboard_index == Some(nav_base + i);
                                         let is_selected =
                                             selected_tag.as_ref().is_some_and(|s| s == &tag.name);
                                         let name: SharedString = tag.name.clone().into();
@@ -2259,6 +2313,7 @@ impl Render for Sidebar {
                 );
             } else {
                 // Virtualized stash list
+                let nav_base = nav_idx;
                 nav_idx += self.stashes.len();
                 let stashes = self.stashes.clone();
                 let selected_stash = self.selected_stash;
@@ -2274,7 +2329,7 @@ impl Render for Sidebar {
                             range
                                 .map(|i| {
                                     let stash = &stashes[i];
-                                    let kb_active = keyboard_index == Some(i);
+                                    let kb_active = keyboard_index == Some(nav_base + i);
                                     let is_selected =
                                         selected_stash.as_ref().is_some_and(|s| *s == stash.index);
                                     let msg: SharedString = stash.message.clone().into();
@@ -2546,94 +2601,127 @@ impl Render for Sidebar {
                         ),
                 );
             }
-            for (i, worktree) in self.worktrees.iter().enumerate() {
-                let kb_active = keyboard_index == Some(nav_idx);
-                nav_idx += 1;
-                let is_selected = self.selected_worktree == Some(i);
-                let worktree_index = i;
-                let name: SharedString = worktree.name.clone().into();
-                let path: SharedString = worktree.path.display().to_string().into();
-                content = content.child(
-                    div()
-                        .id(ElementId::NamedInteger("worktree-item".into(), i as u64))
-                        .h_flex()
-                        .w_full()
-                        .h(px(item_h))
-                        .px_2()
-                        .pl(px(16.))
-                        .gap_1()
-                        .items_center()
-                        .overflow_hidden()
-                        .when(is_selected, |el| {
-                            el.bg(colors.ghost_element_selected)
-                                .border_l_2()
-                                .border_color(kb_accent)
-                        })
-                        .when(kb_active && !is_selected, |el| {
-                            el.bg(colors.ghost_element_hover)
-                                .border_l_2()
-                                .border_color(kb_accent)
-                        })
-                        .hover(|s| s.bg(colors.ghost_element_hover))
-                        .active(|s| s.bg(colors.ghost_element_active))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.selected_worktree = Some(worktree_index);
-                            cx.emit(SidebarEvent::WorktreeSelected(worktree_index));
-                        }))
-                        .child(
-                            rgitui_ui::Icon::new(IconName::GitBranch)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(if worktree.is_current {
-                                    Color::Info
-                                } else {
-                                    Color::Muted
-                                }),
-                        )
-                        .child(Label::new(name.clone()).size(LabelSize::XSmall).color(
-                            if worktree.is_current {
-                                Color::Info
-                            } else {
-                                Color::Default
-                            },
-                        ))
-                        .when(worktree.is_current, |el| {
-                            el.child(
-                                Label::new("(current)")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
-                            )
-                        })
-                        .when(worktree.is_locked, |el| {
-                            el.child(
-                                rgitui_ui::Icon::new(IconName::Lock)
-                                    .size(rgitui_ui::IconSize::XSmall)
-                                    .color(Color::Warning),
-                            )
-                        })
-                        .child(div().flex_1())
-                        .child(
-                            Label::new(path)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .truncate(),
-                        )
-                        .when(!worktree.is_current, |el| {
-                            el.child(
-                                IconButton::new(
-                                    ElementId::NamedInteger("remove-worktree".into(), i as u64),
-                                    IconName::Trash,
-                                )
-                                .size(ButtonSize::Compact)
-                                .color(Color::Deleted)
-                                .tooltip("Remove worktree")
-                                .on_click(cx.listener(
-                                    move |_this, _: &ClickEvent, _, cx| {
-                                        cx.emit(SidebarEvent::WorktreeRemove(worktree_index));
-                                    },
-                                )),
-                            )
-                        }),
-                );
+            if !self.worktrees.is_empty() {
+                let nav_base = nav_idx;
+                nav_idx += self.flattened_worktrees.len();
+                let flattened = self.flattened_worktrees.clone();
+                let worktrees = self.worktrees.clone();
+                let selected_worktree = self.selected_worktree;
+                let colors = colors.clone();
+                let w = Rc::new(sidebar_weak.clone());
+
+                let list = uniform_list(
+                    "worktrees-list",
+                    flattened.len(),
+                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                        let w = w.clone();
+                        range
+                            .map(|i| {
+                                let worktree_index = flattened[i];
+                                let worktree = &worktrees[worktree_index];
+                                let kb_active = keyboard_index == Some(nav_base + i);
+                                let is_selected = selected_worktree == Some(worktree_index);
+                                let name: SharedString = worktree.name.clone().into();
+                                let path: SharedString =
+                                    worktree.path.display().to_string().into();
+                                let w_sel = w.clone();
+                                let w_rm = w.clone();
+
+                                div()
+                                    .id(ElementId::NamedInteger(
+                                        "worktree-item".into(),
+                                        i as u64,
+                                    ))
+                                    .h_flex()
+                                    .w_full()
+                                    .h(px(item_h))
+                                    .px_2()
+                                    .pl(px(16.))
+                                    .gap_1()
+                                    .items_center()
+                                    .overflow_hidden()
+                                    .when(is_selected, |el| {
+                                        el.bg(colors.ghost_element_selected)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .when(kb_active && !is_selected, |el| {
+                                        el.bg(colors.ghost_element_hover)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .hover(|s| s.bg(colors.ghost_element_hover))
+                                    .active(|s| s.bg(colors.ghost_element_active))
+                                    .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                        let _ = w_sel.clone().update(cx, |this: &mut Sidebar, cx| {
+                                            this.selected_worktree = Some(worktree_index);
+                                            cx.emit(SidebarEvent::WorktreeSelected(worktree_index));
+                                        });
+                                    })
+                                    .child(
+                                        rgitui_ui::Icon::new(IconName::GitBranch)
+                                            .size(rgitui_ui::IconSize::XSmall)
+                                            .color(if worktree.is_current {
+                                                Color::Info
+                                            } else {
+                                                Color::Muted
+                                            }),
+                                    )
+                                    .child(Label::new(name.clone()).size(LabelSize::XSmall).color(
+                                        if worktree.is_current {
+                                            Color::Info
+                                        } else {
+                                            Color::Default
+                                        },
+                                    ))
+                                    .when(worktree.is_current, |el| {
+                                        el.child(
+                                            Label::new("(current)")
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Muted),
+                                        )
+                                    })
+                                    .when(worktree.is_locked, |el| {
+                                        el.child(
+                                            rgitui_ui::Icon::new(IconName::Lock)
+                                                .size(rgitui_ui::IconSize::XSmall)
+                                                .color(Color::Warning),
+                                        )
+                                    })
+                                    .child(div().flex_1())
+                                    .child(
+                                        Label::new(path)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .truncate(),
+                                    )
+                                    .when(!worktree.is_current, |el| {
+                                        el.child(
+                                            IconButton::new(
+                                                ElementId::NamedInteger(
+                                                    "remove-worktree".into(),
+                                                    i as u64,
+                                                ),
+                                                IconName::Trash,
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .color(Color::Deleted)
+                                            .tooltip("Remove worktree")
+                                            .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                let _ = w_rm.clone().update(cx, |_: &mut Sidebar, cx| {
+                                                    cx.emit(SidebarEvent::WorktreeRemove(
+                                                        worktree_index,
+                                                    ));
+                                                });
+                                            }),
+                                        )
+                                    })
+                            })
+                            .collect()
+                    },
+                )
+                .with_sizing_behavior(ListSizingBehavior::Infer);
+                content = content.child(list);
             }
         }
 
@@ -2777,9 +2865,11 @@ impl Render for Sidebar {
                         ),
                 );
             } else {
-                nav_idx += self.staged.len();
+                let nav_base = nav_idx;
+                nav_idx += self.flattened_staged.len();
                 let flattened = self.flattened_staged.clone();
                 let files = self.staged.clone();
+                let selected_file = self.selected_file.clone();
                 let w = Rc::new(sidebar_weak.clone());
                 let colors = colors.clone();
                 let list = uniform_list(
@@ -2789,6 +2879,7 @@ impl Render for Sidebar {
                         let w = w.clone();
                         range.map(|i| {
                             let item = &flattened[i];
+                            let kb_active = keyboard_index == Some(nav_base + i);
                             match item {
                                 FlatFileItem::File { file_idx, indent } => {
                                     let file = &files[*file_idx];
@@ -2804,6 +2895,9 @@ impl Render for Sidebar {
                                         file.path.display().to_string();
                                     let file_path_clone = file_path_for_emit.clone();
                                     let file_path_unstage = file_path_for_emit.clone();
+                                    let is_selected = selected_file.as_ref().is_some_and(
+                                        |(p, staged)| *staged && p == &file_path_for_emit,
+                                    );
                                     div()
                                         .id(ElementId::NamedInteger("staged-file".into(), i as u64))
                                         .group("sidebar-file-row")
@@ -2815,6 +2909,16 @@ impl Render for Sidebar {
                                         .pl(*indent)
                                         .gap_1()
                                         .items_center()
+                                        .when(is_selected, |el| {
+                                            el.bg(colors.ghost_element_selected)
+                                                .border_l_2()
+                                                .border_color(kb_accent)
+                                        })
+                                        .when(kb_active && !is_selected, |el| {
+                                            el.bg(colors.ghost_element_hover)
+                                                .border_l_2()
+                                                .border_color(kb_accent)
+                                        })
                                         .hover(|s| s.bg(colors.ghost_element_hover))
                                         .active(|s| s.bg(colors.ghost_element_selected))
                                         .cursor_pointer()
@@ -2895,6 +2999,11 @@ impl Render for Sidebar {
                                         .gap_1()
                                         .items_center()
                                         .overflow_hidden()
+                                        .when(kb_active, |el| {
+                                            el.bg(colors.ghost_element_hover)
+                                                .border_l_2()
+                                                .border_color(kb_accent)
+                                        })
                                         .hover(|s| s.bg(colors.ghost_element_hover))
                                         .active(|s| s.bg(colors.ghost_element_active))
                                         .cursor_pointer()
@@ -2922,6 +3031,11 @@ impl Render for Sidebar {
                         }).collect::<Vec<_>>()
                     },
                 )
+                // TODO(audit): PERF-04 — `Infer` under the outer scroll's
+                // MaxContent measure renders every file row instead of just the
+                // visible range. Virtualizing needs a bounded or flexing region
+                // (a nested scroll otherwise); this is coupled to the deferred
+                // QUAL-03 restructure into a single scroller.
                 .with_sizing_behavior(ListSizingBehavior::Infer);
                 content = content.child(list);
             }
@@ -2934,6 +3048,11 @@ impl Render for Sidebar {
         let unstaged_kind_counts = Self::file_kind_counts(&self.unstaged);
 
         let kb_active = keyboard_index == Some(nav_idx);
+        nav_idx += 1;
+        // Unstaged is the final navigable section, so `nav_idx` is not advanced
+        // past its rows; this base anchors the list rows in the shared flat
+        // keyboard-navigation index space.
+        let unstaged_nav_base = nav_idx;
 
         let unstaged_chevron = if unstaged_expanded {
             IconName::ChevronDown
@@ -3063,8 +3182,10 @@ impl Render for Sidebar {
                         ),
                 );
             } else {
+                let nav_base = unstaged_nav_base;
                 let flattened = self.flattened_unstaged.clone();
                 let files = self.unstaged.clone();
+                let selected_file = self.selected_file.clone();
                 let w = sidebar_weak.clone();
                 let colors = colors.clone();
                 let list = uniform_list(
@@ -3074,6 +3195,7 @@ impl Render for Sidebar {
                         let w = w.clone();
                         range.map(|i| {
                             let item = &flattened[i];
+                            let kb_active = keyboard_index == Some(nav_base + i);
                             match item {
                                 FlatFileItem::File { file_idx, indent } => {
                                     let file = &files[*file_idx];
@@ -3089,6 +3211,9 @@ impl Render for Sidebar {
                                         file.path.display().to_string();
                                     let file_path_clone = file_path_for_emit.clone();
                                     let file_path_stage = file_path_for_emit.clone();
+                                    let is_selected = selected_file.as_ref().is_some_and(
+                                        |(p, staged)| !*staged && p == &file_path_for_emit,
+                                    );
                                     div()
                                         .id(ElementId::NamedInteger("unstaged-file".into(), i as u64))
                                         .group("sidebar-file-row")
@@ -3100,6 +3225,16 @@ impl Render for Sidebar {
                                         .pl(*indent)
                                         .gap_1()
                                         .items_center()
+                                        .when(is_selected, |el| {
+                                            el.bg(colors.ghost_element_selected)
+                                                .border_l_2()
+                                                .border_color(kb_accent)
+                                        })
+                                        .when(kb_active && !is_selected, |el| {
+                                            el.bg(colors.ghost_element_hover)
+                                                .border_l_2()
+                                                .border_color(kb_accent)
+                                        })
                                         .hover(|s| s.bg(colors.ghost_element_hover))
                                         .active(|s| s.bg(colors.ghost_element_selected))
                                         .cursor_pointer()
@@ -3208,6 +3343,11 @@ impl Render for Sidebar {
                                         .gap_1()
                                         .items_center()
                                         .overflow_hidden()
+                                        .when(kb_active, |el| {
+                                            el.bg(colors.ghost_element_hover)
+                                                .border_l_2()
+                                                .border_color(kb_accent)
+                                        })
                                         .hover(|s| s.bg(colors.ghost_element_hover))
                                         .active(|s| s.bg(colors.ghost_element_active))
                                         .cursor_pointer()
@@ -3235,6 +3375,11 @@ impl Render for Sidebar {
                         }).collect::<Vec<_>>()
                     },
                 )
+                // TODO(audit): PERF-04 — `Infer` under the outer scroll's
+                // MaxContent measure renders every file row instead of just the
+                // visible range. Virtualizing needs a bounded or flexing region
+                // (a nested scroll otherwise); this is coupled to the deferred
+                // QUAL-03 restructure into a single scroller.
                 .with_sizing_behavior(ListSizingBehavior::Infer);
                 content = content.child(list);
             }
@@ -3259,12 +3404,11 @@ impl Render for Sidebar {
             let weak = cx.weak_entity();
 
             // Convert window-relative click position to container-relative coordinates.
-            let menu_w: Pixels = px(180.);
-            let menu_h: Pixels = px(140.);
+            let menu_size = stash_menu_size();
             let rel_x = pos.x - container_bounds.origin.x;
             let rel_y = pos.y - container_bounds.origin.y;
-            let max_x = container_bounds.size.width - menu_w;
-            let max_y = container_bounds.size.height - menu_h;
+            let max_x = container_bounds.size.width - menu_size.width;
+            let max_y = container_bounds.size.height - menu_size.height;
             let clamped_x = rel_x.max(px(0.)).min(max_x);
             let clamped_y = rel_y.max(px(0.)).min(max_y);
 
@@ -3274,8 +3418,8 @@ impl Render for Sidebar {
                 .left(clamped_x)
                 .top(clamped_y)
                 .v_flex()
-                .min_w(menu_w)
-                .py(px(3.))
+                .min_w(menu_size.width)
+                .py(px(STASH_MENU_VERTICAL_PADDING))
                 .bg(menu_bg)
                 .border_1()
                 .border_color(menu_border)
@@ -3305,7 +3449,7 @@ impl Render for Sidebar {
                         .id("stash-menu-apply")
                         .h_flex()
                         .w_full()
-                        .h(px(28.))
+                        .h(px(STASH_MENU_ITEM_HEIGHT))
                         .px(px(8.))
                         .gap(px(6.))
                         .items_center()
@@ -3348,7 +3492,7 @@ impl Render for Sidebar {
                         .id("stash-menu-pop")
                         .h_flex()
                         .w_full()
-                        .h(px(28.))
+                        .h(px(STASH_MENU_ITEM_HEIGHT))
                         .px(px(8.))
                         .gap(px(6.))
                         .items_center()
@@ -3391,7 +3535,7 @@ impl Render for Sidebar {
                         .id("stash-menu-create-branch")
                         .h_flex()
                         .w_full()
-                        .h(px(28.))
+                        .h(px(STASH_MENU_ITEM_HEIGHT))
                         .px(px(8.))
                         .gap(px(6.))
                         .items_center()
@@ -3434,7 +3578,7 @@ impl Render for Sidebar {
                         .id("stash-menu-drop")
                         .h_flex()
                         .w_full()
-                        .h(px(28.))
+                        .h(px(STASH_MENU_ITEM_HEIGHT))
                         .px(px(8.))
                         .gap(px(6.))
                         .items_center()

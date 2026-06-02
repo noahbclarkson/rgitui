@@ -43,15 +43,43 @@ impl GitProject {
                     let base_oid = {
                         let repo = Repository::open(&repo_path)?;
                         ensure_clean_worktree(&repo, "Interactive rebase")?;
-                        let last_entry = entries
-                            .last()
-                            .ok_or_else(|| anyhow::anyhow!("No rebase entries"))?;
-                        let last_commit =
-                            repo.find_commit(git2::Oid::from_str(&last_entry.oid)?)?;
-                        let base_commit = last_commit
-                            .parent(0)
-                            .with_context(|| format!("Commit {} has no parent", last_entry.oid))?;
-                        base_commit.id().to_string()
+
+                        // The plan must cover exactly HEAD's contiguous first-parent
+                        // range `base..HEAD`. Derive that range from HEAD itself
+                        // (NOT from the date-ordered `--all` commit list the plan was
+                        // built from) and verify the plan's commit set matches it, so
+                        // a stale or cross-branch plan can't drop, duplicate, or
+                        // replay commits from an unrelated branch and corrupt history.
+                        // Reordering within the range is allowed (only the set and the
+                        // base are validated).
+                        let head_commit = repo.head()?.peel_to_commit()?;
+                        let mut range: Vec<git2::Oid> = Vec::with_capacity(entries.len());
+                        let mut walk = head_commit;
+                        for _ in 0..entries.len() {
+                            range.push(walk.id());
+                            walk = walk
+                                .parent(0)
+                                .context("rebase range extends past the root commit")?;
+                        }
+                        // `walk` is now the first parent of the oldest in-range commit.
+                        let base = walk.id();
+
+                        let plan_set: std::collections::HashSet<git2::Oid> = entries
+                            .iter()
+                            .map(|e| git2::Oid::from_str(&e.oid))
+                            .collect::<std::result::Result<_, _>>()?;
+                        let range_set: std::collections::HashSet<git2::Oid> =
+                            range.iter().copied().collect();
+                        if plan_set != range_set {
+                            anyhow::bail!(
+                                "Interactive rebase plan does not match the current branch's \
+                                 history (the selected commits are not exactly the last {} \
+                                 first-parent commits of HEAD). Refresh and try again.",
+                                entries.len()
+                            );
+                        }
+
+                        base.to_string()
                     };
 
                     let mut todo_lines = Vec::new();

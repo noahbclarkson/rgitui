@@ -12,6 +12,20 @@ use rgitui_theme::ActiveTheme;
 const THICKNESS: Pixels = px(10.);
 const MIN_THUMB_LEN: Pixels = px(24.);
 
+/// Persisted thumb-drag state for a [`Scrollbar`] element.
+///
+/// Stored via [`Window::with_element_state`] so the grab offset survives the
+/// re-renders that can occur mid-drag. The inner [`Cell`] is shared (via
+/// [`Rc`]) with the mouse-event listeners registered each paint, which read and
+/// write the active drag's thumb-local offset.
+#[derive(Default)]
+struct ThumbDragState {
+    /// `Some(thumb_local)` while a drag is active, where `thumb_local` is the
+    /// distance between the grab point and the thumb's leading edge along the
+    /// scrollbar axis. `None` when no drag is in progress.
+    offset: Rc<Cell<Option<Pixels>>>,
+}
+
 /// Abstraction over scrollable containers so [`Scrollbar`] can drive either a
 /// flex container (`ScrollHandle`) or a virtualized list (`ListState`).
 ///
@@ -324,7 +338,7 @@ impl<H: ScrollableHandle> Element for Scrollbar<H> {
 
     fn paint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
@@ -350,7 +364,19 @@ impl<H: ScrollableHandle> Element for Scrollbar<H> {
         let thumb_color = if hovering { thumb_hover } else { thumb_bg };
         window.paint_quad(fill(state.thumb, thumb_color).corner_radii(gpui::Corners::all(px(3.))));
 
-        let drag_state: Rc<Cell<Option<Pixels>>> = Rc::new(Cell::new(None));
+        // Persist the thumb-local grab offset in GPUI element state so it survives
+        // re-renders that occur mid-drag (hover events, watcher polls, cursor
+        // blink). A per-paint cell would be reset to `None` by any such repaint —
+        // GPUI carries over `element_states` across frames but not mouse listeners,
+        // so the drag offset must live in element state to keep the thumb tracking.
+        let drag_state = id
+            .map(|id| {
+                window.with_element_state::<ThumbDragState, _>(id, |existing, _window| {
+                    let state = existing.unwrap_or_default();
+                    (state.offset.clone(), state)
+                })
+            })
+            .unwrap_or_default();
         let axis = self.axis;
         let handle = self.handle.clone();
         let thumb_bounds = state.thumb;

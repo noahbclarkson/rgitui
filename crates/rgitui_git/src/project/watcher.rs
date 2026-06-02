@@ -1,15 +1,32 @@
 use gpui::{AsyncApp, Context};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use super::refresh::{gather_refresh_data_lightweight_cached, WorktreeStatusCache};
 use super::{GitProject, GitProjectEvent};
 
-/// Compute the newest mtime across all critical `.git` sentinel files.
+/// Fold a file's length and mtime into `hasher`. Returns whether the file's
+/// metadata was readable (i.e. the file exists).
+fn mix_file_meta(hasher: &mut DefaultHasher, path: &Path) -> bool {
+    match path.metadata() {
+        Ok(meta) => {
+            meta.len().hash(hasher);
+            if let Ok(mtime) = meta.modified() {
+                mtime.hash(hasher);
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Compute a fingerprint over all critical `.git` sentinel files.
 ///
 /// This covers:
 /// - `.git/HEAD` — branch switches, detached HEAD
@@ -20,38 +37,62 @@ use super::{GitProject, GitProjectEvent};
 /// - `.git/refs/heads/` — local branch changes from external operations
 /// - `.git/refs/remotes/` — push/fetch ref updates
 /// - `.git/refs/tags/` — tag creation/deletion
-fn git_state_fingerprint(git_dir: &Path) -> Option<SystemTime> {
-    let mut newest: Option<SystemTime> = None;
-    let mut check = |path: &Path| {
-        if let Ok(mtime) = path.metadata().and_then(|m| m.modified()) {
-            newest = Some(newest.map_or(mtime, |n| n.max(mtime)));
-        }
-    };
+///
+/// The small sentinel files (HEAD, the current branch ref, packed-refs) are
+/// hashed by *content* in addition to size and mtime, so two distinct state
+/// transitions whose newest mtime collapses to the same coarse timestamp
+/// (FAT32 ~2s, some network/WSL/SMB mounts) are still distinguished. Ref files
+/// under `refs/` are hashed by size + mtime, which catches same-second updates
+/// whenever the new ref content differs in length (the common case).
+fn git_state_fingerprint(git_dir: &Path) -> Option<u64> {
+    let mut hasher = DefaultHasher::new();
+    let mut any = false;
 
-    // Sentinel files
-    check(&git_dir.join("HEAD"));
-    check(&git_dir.join("index"));
-    check(&git_dir.join("packed-refs"));
-    check(&git_dir.join("MERGE_HEAD"));
-    check(&git_dir.join("REBASE_HEAD"));
+    // Sentinel files hashed by content so same-mtime content changes are seen.
+    for name in ["HEAD", "index", "packed-refs", "MERGE_HEAD", "REBASE_HEAD"] {
+        let path = git_dir.join(name);
+        any |= mix_file_meta(&mut hasher, &path);
+        // `index` can be large; hash bytes only for the tiny sentinels.
+        if name != "index" {
+            if let Ok(content) = std::fs::read(&path) {
+                content.hash(&mut hasher);
+            }
+        }
+    }
 
     // Current branch ref file (e.g. refs/heads/main from "ref: refs/heads/main\n")
     if let Ok(head_content) = std::fs::read_to_string(git_dir.join("HEAD")) {
         if let Some(ref_rel) = head_content.strip_prefix("ref: ") {
-            check(&git_dir.join(ref_rel.trim()));
+            let ref_path = git_dir.join(ref_rel.trim());
+            any |= mix_file_meta(&mut hasher, &ref_path);
+            if let Ok(content) = std::fs::read(&ref_path) {
+                content.hash(&mut hasher);
+            }
         }
     }
 
-    // Scan refs directories (local branches, remotes, tags)
+    // Scan refs directories (local branches, remotes, tags). Each file's hash is
+    // XOR-accumulated so the directory order `read_dir` happens to return doesn't
+    // perturb the result; the combined accumulator is then mixed in once.
+    let mut refs_acc: u64 = 0;
     for subdir in &["refs/heads", "refs/remotes", "refs/tags"] {
-        scan_refs_mtimes(&git_dir.join(subdir), &mut newest);
+        scan_refs(&git_dir.join(subdir), &mut refs_acc);
     }
+    refs_acc.hash(&mut hasher);
 
-    newest
+    if any {
+        Some(hasher.finish())
+    } else {
+        None
+    }
 }
 
-/// Recursively scan a directory for the newest file mtime.
-fn scan_refs_mtimes(dir: &Path, newest: &mut Option<SystemTime>) {
+/// Recursively accumulate an order-independent fingerprint over every ref file
+/// under `dir` (its path, size and mtime). `read_dir` yields entries in a
+/// filesystem-dependent order, so each file's hash is XOR-folded into `acc` —
+/// that keeps the result stable across scans of an unchanged directory while
+/// still changing when any ref file is added, removed or modified.
+fn scan_refs(dir: &Path, acc: &mut u64) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -59,9 +100,15 @@ fn scan_refs_mtimes(dir: &Path, newest: &mut Option<SystemTime>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            scan_refs_mtimes(&path, newest);
-        } else if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
-            *newest = Some(newest.map_or(mtime, |n| n.max(mtime)));
+            scan_refs(&path, acc);
+        } else if let Ok(meta) = entry.metadata() {
+            let mut file_hasher = DefaultHasher::new();
+            path.hash(&mut file_hasher);
+            meta.len().hash(&mut file_hasher);
+            if let Ok(mtime) = meta.modified() {
+                mtime.hash(&mut file_hasher);
+            }
+            *acc ^= file_hasher.finish();
         }
     }
 }
@@ -87,20 +134,22 @@ fn worktree_git_dir(worktree_path: &Path) -> Option<PathBuf> {
 }
 
 /// Compute a combined fingerprint across the main repo's `.git` and every
-/// linked worktree's per-worktree git dir. Returns the newest mtime seen.
+/// linked worktree's per-worktree git dir. The per-dir fingerprints are XOR-ed
+/// so the result is independent of the (unordered) worktree-set iteration order
+/// while still changing whenever any watched git dir changes.
 fn combined_fingerprint(
     main_git_dir: &Path,
     extra_worktree_paths: &HashSet<PathBuf>,
-) -> Option<SystemTime> {
-    let mut newest = git_state_fingerprint(main_git_dir);
+) -> Option<u64> {
+    let mut combined = git_state_fingerprint(main_git_dir);
     for wt in extra_worktree_paths {
         if let Some(git_dir) = worktree_git_dir(wt) {
             if let Some(fp) = git_state_fingerprint(&git_dir) {
-                newest = Some(newest.map_or(fp, |n| n.max(fp)));
+                combined = Some(combined.map_or(fp, |c| c ^ fp));
             }
         }
     }
-    newest
+    combined
 }
 
 impl GitProject {
@@ -178,9 +227,10 @@ impl GitProject {
             }
         }
 
-        let last_fingerprint: Arc<Mutex<Option<SystemTime>>> = Arc::new(Mutex::new(
-            combined_fingerprint(&main_git_dir, &HashSet::new()),
-        ));
+        let last_fingerprint: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(combined_fingerprint(
+            &main_git_dir,
+            &HashSet::new(),
+        )));
         let watched_extras: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
 
         let watcher_commit_limit = self.commit_limit;
@@ -205,31 +255,40 @@ impl GitProject {
                     // Re-read the all-worktrees setting and current worktree
                     // list. Sync the notify watcher's watched paths and the
                     // fingerprint set to match. `None` signals the entity
-                    // has been dropped so we should end the watcher loop.
-                    let desired: Option<(HashSet<PathBuf>, usize)> = cx.update(|app| {
-                        let entity = weak.upgrade()?;
-                        let watch_all = app
-                            .try_global::<rgitui_settings::SettingsState>()
-                            .map(|s| s.settings().watch_all_worktrees)
-                            .unwrap_or(false);
-                        let proj = entity.read(app);
-                        // Refetch at least as many commits as are currently loaded
-                        // so a background refresh doesn't truncate commits the user
-                        // paged in via "load more" (the gather otherwise replaces
-                        // the whole list with just `commit_limit` commits).
-                        let effective_limit = proj.loaded_commit_count().max(watcher_commit_limit);
-                        let paths = if watch_all {
-                            proj.worktrees
-                                .iter()
-                                .filter(|w| !w.is_current)
-                                .map(|w| w.path.clone())
-                                .collect::<HashSet<PathBuf>>()
-                        } else {
-                            HashSet::new()
-                        };
-                        Some((paths, effective_limit))
-                    });
-                    let (desired, effective_limit) = match desired {
+                    // has been dropped so we should end the watcher loop. The
+                    // refresh generation captured here gates whether this tick's
+                    // (lightweight) result is allowed to land later (BUG-22).
+                    let snapshot: Option<(HashSet<PathBuf>, usize, Option<String>, u64)> = cx
+                        .update(|app| {
+                            let entity = weak.upgrade()?;
+                            let watch_all = app
+                                .try_global::<rgitui_settings::SettingsState>()
+                                .map(|s| s.settings().watch_all_worktrees)
+                                .unwrap_or(false);
+                            let proj = entity.read(app);
+                            // Refetch at least as many commits as are currently loaded
+                            // so a background refresh doesn't truncate commits the user
+                            // paged in via "load more" (the gather otherwise replaces
+                            // the whole list with just `commit_limit` commits).
+                            let effective_limit =
+                                proj.loaded_commit_count().max(watcher_commit_limit);
+                            let paths = if watch_all {
+                                proj.worktrees
+                                    .iter()
+                                    .filter(|w| !w.is_current)
+                                    .map(|w| w.path.clone())
+                                    .collect::<HashSet<PathBuf>>()
+                            } else {
+                                HashSet::new()
+                            };
+                            Some((
+                                paths,
+                                effective_limit,
+                                proj.commit_author_filter.clone(),
+                                proj.refresh_generation(),
+                            ))
+                        });
+                    let (desired, effective_limit, author_filter, generation) = match snapshot {
                         Some(d) => d,
                         None => break,
                     };
@@ -266,9 +325,17 @@ impl GitProject {
                     // Detect git internal state changes across main + watched
                     // worktrees (commits, pushes, branch ops, staging
                     // changes, etc.) that don't produce working-directory
-                    // events on the main repo.
+                    // events on the main repo. The fingerprint scan walks the
+                    // `refs/` directories and reads sentinel files, so it runs on
+                    // the background executor — never the UI thread (QUAL-01,
+                    // PERF-13).
+                    let fp_git_dir = main_git_dir.clone();
+                    let fp_extras = desired.clone();
+                    let current = cx
+                        .background_executor()
+                        .spawn(async move { combined_fingerprint(&fp_git_dir, &fp_extras) })
+                        .await;
                     let fingerprint_changed = {
-                        let current = combined_fingerprint(&main_git_dir, &desired);
                         let mut guard = last_fingerprint.lock().expect("fp mutex");
                         if current.is_some() && current != *guard {
                             *guard = current;
@@ -293,6 +360,10 @@ impl GitProject {
 
                         let path = repo_path.clone();
                         let cache = worktree_cache.clone();
+                        // Carry the active "My Commits" filter through the
+                        // lightweight gather so a watcher tick doesn't replace
+                        // the filtered list with the full unfiltered log (BUG-06).
+                        let watcher_author_filter = author_filter.clone();
                         let data = cx
                             .background_executor()
                             .spawn(async move {
@@ -300,6 +371,7 @@ impl GitProject {
                                     &path,
                                     effective_limit,
                                     &cache,
+                                    watcher_author_filter.as_deref(),
                                 )
                             })
                             .await;
@@ -314,14 +386,58 @@ impl GitProject {
 
                         let result = cx.update(|cx| {
                             weak.update(cx, |this, cx| {
+                                // Generation guard (BUG-22): if a full/operation
+                                // refresh applied while this lightweight gather
+                                // was in flight, its accurate state (correct
+                                // ahead/behind, filtered commits) must win. Drop
+                                // this stale lightweight result and re-arm `dirty`
+                                // so the next tick re-gathers against the current
+                                // generation — the fingerprint already advanced,
+                                // so without re-arming the change could otherwise
+                                // be missed until an unrelated event.
+                                if this.refresh_generation() != generation {
+                                    log::debug!(
+                                        "watcher: dropping stale lightweight refresh (gen {} != {})",
+                                        generation,
+                                        this.refresh_generation()
+                                    );
+                                    return false;
+                                }
+
+                                // Preserve per-branch ahead/behind (BUG-21): the
+                                // lightweight gather reports (0, 0) for every
+                                // branch, which would clobber values populated by
+                                // a prior fetch/pull/push. Re-overlay the existing
+                                // counts onto the freshly gathered branches.
+                                let preserved: std::collections::HashMap<String, (usize, usize)> =
+                                    this.branches
+                                        .iter()
+                                        .map(|b| (b.name.clone(), (b.ahead, b.behind)))
+                                        .collect();
+
                                 this.apply_refresh_data(data);
+
+                                for branch in this.branches.iter_mut() {
+                                    if let Some(&(ahead, behind)) = preserved.get(&branch.name) {
+                                        branch.ahead = ahead;
+                                        branch.behind = behind;
+                                    }
+                                }
+
                                 cx.emit(GitProjectEvent::StatusChanged);
                                 cx.notify();
+                                true
                             })
                         });
 
-                        if result.is_err() {
-                            break;
+                        match result {
+                            Ok(true) => {}
+                            // The lightweight result was dropped as stale; re-arm
+                            // so the next poll tick reapplies against the current
+                            // generation.
+                            Ok(false) => dirty.store(true, Ordering::Relaxed),
+                            // Entity released (or app shutting down): end the loop.
+                            Err(_) => break,
                         }
                     }
                 }

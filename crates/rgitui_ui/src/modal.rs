@@ -6,6 +6,23 @@ use std::time::Duration;
 
 use crate::{Divider, Label, LabelSize};
 
+/// A content-only modal layout: an absolutely-positioned backdrop centering a
+/// titled, scrollable card with an optional footer and an entrance animation.
+///
+/// `Modal` deliberately owns no interaction state. As a stateless
+/// [`RenderOnce`] element it provides the backdrop, elevation, centering and
+/// animation, but it does not trap focus, handle keyboard input, or dismiss
+/// itself — those require a stateful host that owns a focus handle and a
+/// dismiss/confirm callback. Callers that need a fully interactive dialog must
+/// supply that plumbing themselves.
+// TODO(audit): UX-14, QUAL-17 — consolidate dialog scaffolding here. Today the
+// 14 workspace dialogs (e.g. confirm_dialog.rs) each hand-roll an identical
+// backdrop + elevation + animation with inconsistent parameters
+// (a:0.4 / a:0.5 / hard-coded black) and Modal is exported but never used.
+// Plan: extend Modal with a focus-handle slot and a dismiss callback, add
+// `on_key_down` (Esc/Enter) and backdrop `on_click`-to-dismiss handling driven
+// by that callback, standardize on the theme-tinted backdrop below, then
+// migrate the dialogs onto it so this scaffolding lives in one place.
 #[derive(IntoElement)]
 pub struct Modal {
     title: Option<String>,
@@ -109,6 +126,11 @@ impl RenderOnce for Modal {
         }
 
         div()
+            .id("modal-backdrop")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
             .size_full()
             .flex()
             .items_center()

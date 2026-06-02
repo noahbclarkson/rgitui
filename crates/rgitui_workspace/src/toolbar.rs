@@ -4,7 +4,8 @@ use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Badge, Icon, IconName, IconSize, Indicator, Label, LabelSize, Tooltip, VerticalDivider,
+    Badge, Button, Icon, IconButton, IconName, IconSize, Indicator, Label, LabelSize, Tooltip,
+    VerticalDivider,
 };
 
 type TooltipFactory = Box<dyn Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView>;
@@ -138,6 +139,12 @@ impl Toolbar {
         }
     }
 
+    // TODO(audit) QUAL-11: the network-operation buttons (fetch/pull/push) stay
+    // hand-rolled because the shared `Button` cannot express their behavior: it has
+    // no child API for the inline ahead/behind `Badge`, and it forces a disabled
+    // icon color, so the non-interactive `Color::Accent` "loading" affordance is
+    // not reproducible. Consolidating them needs loading + child support on the
+    // shared `Button`, which lives in `rgitui_ui::button`.
     fn icon_button(
         &self,
         id: &'static str,
@@ -189,35 +196,6 @@ impl Toolbar {
             .tooltip(move |window, cx| tooltip_fn(window, cx))
             .child(Icon::new(icon).size(IconSize::Small).color(icon_color))
             .child(Label::new(label).size(LabelSize::XSmall).color(text_color))
-    }
-
-    fn icon_only_button(
-        &self,
-        id: &'static str,
-        icon: IconName,
-        tooltip_text: &'static str,
-        shortcut: Option<&'static str>,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let colors = cx.colors();
-        let hover_bg = colors.ghost_element_hover;
-        let active_bg = colors.ghost_element_active;
-
-        let tooltip_fn = Self::build_tooltip(tooltip_text, shortcut);
-
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(28.))
-            .h(px(26.))
-            .rounded(px(4.))
-            .hover(move |s| s.bg(hover_bg))
-            .active(move |s| s.bg(active_bg))
-            .cursor_pointer()
-            .tooltip(move |window, cx| tooltip_fn(window, cx))
-            .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
     }
 
     fn render_left_group(&mut self, cx: &mut Context<Self>) -> gpui::Div {
@@ -327,19 +305,12 @@ impl Toolbar {
             .child(VerticalDivider::new())
             // Branch operations group
             .child(
-                self.icon_button(
-                    "tb-branch",
-                    IconName::GitBranch,
-                    "Branch",
-                    ToolbarButtonState {
-                        disabled: false,
-                        loading: false,
-                        tooltip_text: "Create new branch",
-                        shortcut: Some("Ctrl+B"),
-                    },
-                    cx,
-                )
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch))),
+                Button::new("tb-branch", "Branch")
+                    .icon(IconName::GitBranch)
+                    .tooltip_fn(Tooltip::with_shortcut("Create new branch", "Ctrl+B"))
+                    .on_click(
+                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Branch)),
+                    ),
             )
             .child(VerticalDivider::new())
             // Stash operations group
@@ -349,58 +320,40 @@ impl Toolbar {
                     .items_center()
                     .gap(px(2.))
                     .child(
-                        self.icon_button(
-                            "tb-stash",
-                            IconName::Stash,
-                            "Stash",
-                            ToolbarButtonState {
-                                disabled: !self.has_changes,
-                                loading: false,
-                                tooltip_text: "Stash working changes",
-                                shortcut: Some("Ctrl+Z"),
-                            },
-                            cx,
-                        )
-                        .on_click(
-                            cx.listener(|_, _: &ClickEvent, _, cx| {
+                        Button::new("tb-stash", "Stash")
+                            .icon(IconName::Stash)
+                            .disabled(!self.has_changes)
+                            .tooltip_fn(Tooltip::with_shortcut("Stash working changes", "Ctrl+Z"))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                                 cx.emit(ToolbarEvent::StashSave)
-                            }),
-                        ),
+                            })),
                     )
                     .child(
-                        self.icon_button(
-                            "tb-pop",
-                            IconName::Undo,
-                            "Pop",
-                            ToolbarButtonState {
-                                disabled: !self.has_stashes,
-                                loading: false,
-                                tooltip_text: "Pop top stash entry",
-                                shortcut: Some("Ctrl+Shift+Z"),
-                            },
-                            cx,
-                        )
-                        .on_click(
-                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::StashPop)),
-                        ),
+                        Button::new("tb-pop", "Pop")
+                            .icon(IconName::Undo)
+                            .disabled(!self.has_stashes)
+                            .tooltip_fn(Tooltip::with_shortcut(
+                                "Pop top stash entry",
+                                "Ctrl+Shift+Z",
+                            ))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ToolbarEvent::StashPop)
+                            })),
                     ),
             )
             .child(VerticalDivider::new())
             // PR creation group
             .child(
-                self.icon_button(
-                    "tb-pr",
-                    IconName::GitPullRequest,
-                    "Create PR",
-                    ToolbarButtonState {
-                        disabled: !self.has_github_token,
-                        loading: false,
-                        tooltip_text: "Create GitHub pull request",
-                        shortcut: Some("Ctrl+G"),
-                    },
-                    cx,
-                )
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::CreatePr))),
+                Button::new("tb-pr", "Create PR")
+                    .icon(IconName::GitPullRequest)
+                    .disabled(!self.has_github_token)
+                    .tooltip_fn(Tooltip::with_shortcut(
+                        "Create GitHub pull request",
+                        "Ctrl+G",
+                    ))
+                    .on_click(
+                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::CreatePr)),
+                    ),
             )
     }
 
@@ -416,42 +369,28 @@ impl Toolbar {
                     .items_center()
                     .gap(px(2.))
                     .child(
-                        self.icon_only_button(
-                            "tb-explorer",
-                            IconName::Folder,
-                            "Open in file explorer",
-                            None,
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::OpenFileExplorer),
-                        )),
+                        IconButton::new("tb-explorer", IconName::Folder)
+                            .color(Color::Muted)
+                            .tooltip("Open in file explorer")
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ToolbarEvent::OpenFileExplorer)
+                            })),
                     )
                     .child(
-                        self.icon_only_button(
-                            "tb-terminal",
-                            IconName::Terminal,
-                            "Open terminal",
-                            None,
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::OpenTerminal),
-                        )),
+                        IconButton::new("tb-terminal", IconName::Terminal)
+                            .color(Color::Muted)
+                            .tooltip("Open terminal")
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ToolbarEvent::OpenTerminal)
+                            })),
                     )
                     .child(
-                        self.icon_only_button(
-                            "tb-editor",
-                            IconName::ExternalLink,
-                            "Open in editor",
-                            None,
-                            cx,
-                        )
-                        .on_click(
-                            cx.listener(|_, _: &ClickEvent, _, cx| {
+                        IconButton::new("tb-editor", IconName::ExternalLink)
+                            .color(Color::Muted)
+                            .tooltip("Open in editor")
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                                 cx.emit(ToolbarEvent::OpenEditor)
-                            }),
-                        ),
+                            })),
                     ),
             )
             .child(VerticalDivider::new())
@@ -462,40 +401,28 @@ impl Toolbar {
                     .items_center()
                     .gap(px(2.))
                     .child(
-                        self.icon_only_button(
-                            "tb-search",
-                            IconName::Search,
-                            "Search commits",
-                            Some("Ctrl+F"),
-                            cx,
-                        )
-                        .on_click(
-                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Search)),
-                        ),
+                        IconButton::new("tb-search", IconName::Search)
+                            .color(Color::Muted)
+                            .tooltip_fn(Tooltip::with_shortcut("Search commits", "Ctrl+F"))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ToolbarEvent::Search)
+                            })),
                     )
                     .child(
-                        self.icon_only_button(
-                            "tb-refresh",
-                            IconName::Refresh,
-                            "Refresh",
-                            Some("F5"),
-                            cx,
-                        )
-                        .on_click(
-                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Refresh)),
-                        ),
+                        IconButton::new("tb-refresh", IconName::Refresh)
+                            .color(Color::Muted)
+                            .tooltip_fn(Tooltip::with_shortcut("Refresh", "F5"))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ToolbarEvent::Refresh)
+                            })),
                     )
                     .child(
-                        self.icon_only_button(
-                            "tb-settings",
-                            IconName::Settings,
-                            "Settings",
-                            Some("Ctrl+,"),
-                            cx,
-                        )
-                        .on_click(
-                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::Settings)),
-                        ),
+                        IconButton::new("tb-settings", IconName::Settings)
+                            .color(Color::Muted)
+                            .tooltip_fn(Tooltip::with_shortcut("Settings", "Ctrl+,"))
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(ToolbarEvent::Settings)
+                            })),
                     ),
             )
     }

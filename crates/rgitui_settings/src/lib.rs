@@ -5,8 +5,9 @@ use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender};
 use std::sync::{Mutex, OnceLock, RwLock};
 use uuid::Uuid;
 
@@ -193,12 +194,15 @@ impl FromStr for Compactness {
 pub struct AppSettings {
     #[serde(default = "default_settings_version")]
     pub version: u32,
+    #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default)]
     pub ui_font: String,
+    #[serde(default)]
     pub ai: AiSettings,
     #[serde(default)]
     pub git: GitSettings,
+    #[serde(default)]
     pub recent_repos: Vec<PathBuf>,
     #[serde(default = "default_max_recent")]
     pub max_recent_repos: usize,
@@ -271,6 +275,10 @@ const CURRENT_SETTINGS_VERSION: u32 = 2;
 
 fn default_settings_version() -> u32 {
     CURRENT_SETTINGS_VERSION
+}
+
+fn default_theme() -> String {
+    "Catppuccin Mocha".into()
 }
 
 fn default_appearance_mode() -> AppearanceMode {
@@ -504,7 +512,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             version: default_settings_version(),
-            theme: "Catppuccin Mocha".into(),
+            theme: default_theme(),
             ui_font: String::new(),
             ai: AiSettings::default(),
             git: GitSettings::default(),
@@ -572,39 +580,42 @@ impl SettingsState {
         self.settings.settings_window_bounds = bounds;
     }
 
+    /// Persist the current settings to disk.
+    ///
+    /// The JSON is serialized synchronously on the calling thread so the write
+    /// reflects the state at the moment of the call, then handed to a single
+    /// dedicated writer thread. Because that thread drains its queue in
+    /// FIFO order, the on-disk file always reflects the most recent `save`,
+    /// eliminating the race where two concurrent writers could land in the
+    /// wrong order.
     pub fn save(&self) -> Result<()> {
         sync_auth_runtime(&self.settings);
         let json = serde_json::to_string_pretty(&self.settings)?;
-        let config_path = self.config_path.clone();
-        std::thread::spawn(move || {
-            // Serialize concurrent writes to prevent file corruption
-            static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-            let _guard = WRITE_LOCK
-                .get_or_init(|| Mutex::new(()))
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-
-            if let Some(parent) = config_path.parent() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    log::error!("Failed to create settings directory: {}", e);
-                    return;
-                }
-            }
-            // Atomic write: write to a temp file then rename
-            let tmp_path = config_path.with_extension("json.tmp");
-            if let Err(e) = std::fs::write(&tmp_path, &json) {
-                log::error!("Failed to write settings temp file: {}", e);
-                return;
-            }
-            if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
-                log::error!("Failed to rename settings file: {}", e);
-                // Fallback: try direct write
-                if let Err(e2) = std::fs::write(&config_path, &json) {
-                    log::error!("Fallback write also failed: {}", e2);
-                }
-                let _ = std::fs::remove_file(&tmp_path);
-            }
+        enqueue_write(WriteRequest {
+            config_path: self.config_path.clone(),
+            json,
+            ack: None,
         });
+        Ok(())
+    }
+
+    /// Persist the current settings to disk and block until the write has
+    /// completed (or failed). Use this on shutdown paths so the final state is
+    /// guaranteed to reach disk before the process exits, rather than racing a
+    /// detached writer thread that may be killed mid-write.
+    pub fn save_blocking(&self) -> Result<()> {
+        sync_auth_runtime(&self.settings);
+        let json = serde_json::to_string_pretty(&self.settings)?;
+        let (ack_tx, ack_rx) = sync_channel::<()>(1);
+        enqueue_write(WriteRequest {
+            config_path: self.config_path.clone(),
+            json,
+            ack: Some(ack_tx),
+        });
+        // The writer always sends the ack, even on write failure, so this only
+        // blocks until the queued write (and every write enqueued before it)
+        // has drained. A dropped sender (writer thread gone) also unblocks us.
+        let _ = ack_rx.recv();
         Ok(())
     }
 
@@ -657,7 +668,7 @@ impl SettingsState {
     /// Mark that the app is exiting cleanly (user-initiated close).
     pub fn mark_clean_exit(&mut self) {
         self.settings.clean_exit = true;
-        let _ = self.save();
+        let _ = self.save_blocking();
     }
 
     /// Mark that the app is starting up (clear the clean exit flag).
@@ -936,6 +947,74 @@ pub fn config_dir() -> PathBuf {
         .join("rgitui")
 }
 
+/// A single queued settings write. `json` is pre-serialized on the caller's
+/// thread so the snapshot reflects state at call time; `ack`, when present,
+/// is fired after the write attempt completes so a blocking caller can wait.
+struct WriteRequest {
+    config_path: PathBuf,
+    json: String,
+    ack: Option<SyncSender<()>>,
+}
+
+/// Sender for the dedicated settings writer thread. Wrapped in a `Mutex`
+/// because the `Sync`-ness of `Sender` is not guaranteed across toolchains and
+/// the sender is shared through a process-wide `OnceLock`.
+fn write_sender() -> &'static Mutex<Sender<WriteRequest>> {
+    static WRITE_SENDER: OnceLock<Mutex<Sender<WriteRequest>>> = OnceLock::new();
+    WRITE_SENDER.get_or_init(|| {
+        let (tx, rx) = channel::<WriteRequest>();
+        std::thread::Builder::new()
+            .name("rgitui-settings-writer".to_string())
+            .spawn(move || {
+                // A single writer drains the queue in FIFO order, so on-disk
+                // state always matches the order saves were requested.
+                while let Ok(request) = rx.recv() {
+                    write_settings_file(&request.config_path, &request.json);
+                    // Fire the ack on every path (including write failure) so a
+                    // `save_blocking` caller never deadlocks on a failed write.
+                    if let Some(ack) = request.ack {
+                        let _ = ack.send(());
+                    }
+                }
+            })
+            .expect("failed to spawn settings writer thread");
+        Mutex::new(tx)
+    })
+}
+
+fn enqueue_write(request: WriteRequest) {
+    let sender = write_sender()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if sender.send(request).is_err() {
+        log::error!("Settings writer thread is no longer running; write dropped");
+    }
+}
+
+/// Perform the actual atomic write of serialized settings JSON: write to a
+/// temp file then rename over the target, falling back to a direct write if the
+/// rename fails.
+fn write_settings_file(config_path: &Path, json: &str) {
+    if let Some(parent) = config_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::error!("Failed to create settings directory: {}", e);
+            return;
+        }
+    }
+    let tmp_path = config_path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp_path, json) {
+        log::error!("Failed to write settings temp file: {}", e);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, config_path) {
+        log::error!("Failed to rename settings file: {}", e);
+        if let Err(e2) = std::fs::write(config_path, json) {
+            log::error!("Fallback write also failed: {}", e2);
+        }
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+}
+
 /// Initialize settings. Must be called during app init.
 pub fn init(cx: &mut App) {
     let config_path = config_dir().join("settings.json");
@@ -945,7 +1024,31 @@ pub fn init(cx: &mut App) {
             Ok(json) => match serde_json::from_str::<AppSettings>(&json) {
                 Ok(settings) => settings,
                 Err(e) => {
-                    let msg = format!("Settings parse error (using defaults): {}", e);
+                    // Preserve the unparseable file so the user can recover any
+                    // hand-edited content instead of silently overwriting it with
+                    // defaults. The timestamp suffix avoids `:` because that is an
+                    // illegal filename character on Windows.
+                    let stamp = Utc::now().format("%Y%m%d%H%M%S");
+                    let backup_name = format!(
+                        "{}.corrupt-{}",
+                        config_path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "settings.json".to_string()),
+                        stamp
+                    );
+                    let backup_path = config_path.with_file_name(backup_name);
+                    let msg = match std::fs::rename(&config_path, &backup_path) {
+                        Ok(()) => format!(
+                            "Settings file could not be parsed and was preserved at {}. Defaults are in use: {}",
+                            backup_path.display(),
+                            e
+                        ),
+                        Err(rename_err) => format!(
+                            "Settings file could not be parsed (using defaults). Failed to back up the original ({}): {}",
+                            rename_err, e
+                        ),
+                    };
                     log::warn!("{}", msg);
                     load_warnings.push(msg);
                     AppSettings::default()
@@ -969,7 +1072,7 @@ pub fn init(cx: &mut App) {
     };
 
     // Run version-based migrations first
-    let version_migrated = state.migrate_settings();
+    state.migrate_settings();
 
     // Run legacy data migrations
     state.migrate_legacy_workspace_data();
@@ -982,12 +1085,7 @@ pub fn init(cx: &mut App) {
     // here keeps the runtime correct even if the save is skipped or fails.)
     sync_auth_runtime(state.settings());
 
-    // Save if any migration occurred
-    if version_migrated {
-        if let Err(error) = state.save() {
-            log::warn!("Failed to persist migrated settings: {}", error);
-        }
-    } else if let Err(error) = state.save() {
+    if let Err(error) = state.save() {
         log::warn!("Failed to persist migrated settings: {}", error);
     }
     cx.set_global(state);
