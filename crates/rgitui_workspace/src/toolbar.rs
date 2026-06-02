@@ -462,8 +462,41 @@ mod tests {
         let event = ToolbarEvent::Fetch;
         assert_eq!(format!("{:?}", event), "Fetch");
 
+        let event = ToolbarEvent::Pull;
+        assert_eq!(format!("{:?}", event), "Pull");
+
+        let event = ToolbarEvent::Push;
+        assert_eq!(format!("{:?}", event), "Push");
+
+        let event = ToolbarEvent::Branch;
+        assert_eq!(format!("{:?}", event), "Branch");
+
+        let event = ToolbarEvent::StashSave;
+        assert_eq!(format!("{:?}", event), "StashSave");
+
+        let event = ToolbarEvent::StashPop;
+        assert_eq!(format!("{:?}", event), "StashPop");
+
         let event = ToolbarEvent::CreatePr;
         assert_eq!(format!("{:?}", event), "CreatePr");
+
+        let event = ToolbarEvent::Refresh;
+        assert_eq!(format!("{:?}", event), "Refresh");
+
+        let event = ToolbarEvent::Settings;
+        assert_eq!(format!("{:?}", event), "Settings");
+
+        let event = ToolbarEvent::Search;
+        assert_eq!(format!("{:?}", event), "Search");
+
+        let event = ToolbarEvent::OpenFileExplorer;
+        assert_eq!(format!("{:?}", event), "OpenFileExplorer");
+
+        let event = ToolbarEvent::OpenTerminal;
+        assert_eq!(format!("{:?}", event), "OpenTerminal");
+
+        let event = ToolbarEvent::OpenEditor;
+        assert_eq!(format!("{:?}", event), "OpenEditor");
     }
 
     #[test]

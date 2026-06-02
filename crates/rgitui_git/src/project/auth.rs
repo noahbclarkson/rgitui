@@ -331,3 +331,221 @@ fn shell_escape(s: &str) -> String {
         s.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── is_ssh_auth_error ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_ssh_auth_error_detects_publickey() {
+        assert!(is_ssh_auth_error("Permission denied (publickey)"));
+        assert!(is_ssh_auth_error(
+            "Permission denied (publickey) for github.com"
+        ));
+    }
+
+    #[test]
+    fn is_ssh_auth_error_detects_host_key() {
+        assert!(is_ssh_auth_error("Host key verification failed"));
+        assert!(is_ssh_auth_error(
+            "Host key verification failed for github.com"
+        ));
+    }
+
+    #[test]
+    fn is_ssh_auth_error_detects_remote_read() {
+        assert!(is_ssh_auth_error("Could not read from remote repository"));
+    }
+
+    #[test]
+    fn is_ssh_auth_error_false_for_other_errors() {
+        assert!(!is_ssh_auth_error("object not found"));
+        assert!(!is_ssh_auth_error("Connection timed out"));
+        assert!(!is_ssh_auth_error("Permission denied (password)"));
+    }
+
+    // ─── host_matches ──────────────────────────────────────────────────────
+
+    #[test]
+    fn host_matches_exact() {
+        assert!(host_matches("github.com", "github.com"));
+        assert!(host_matches("gitlab.com", "gitlab.com"));
+    }
+
+    #[test]
+    fn host_matches_case_insensitive() {
+        assert!(host_matches("GitHub.COM", "github.com"));
+        assert!(host_matches("github.com", "GITHUB.COM"));
+    }
+
+    #[test]
+    fn host_matches_subdomain() {
+        // Provider is the bare domain, remote has a subdomain
+        assert!(host_matches("github.com", "github.com"));
+        assert!(host_matches("github.com", "foo.github.com"));
+        // Remote is the bare domain, provider has a subdomain
+        assert!(host_matches("foo.github.com", "github.com"));
+    }
+
+    #[test]
+    fn host_matches_no_match() {
+        assert!(!host_matches("github.com", "gitlab.com"));
+        assert!(!host_matches("github.com", "notgithub.com"));
+        assert!(!host_matches("githu.com", "github.com"));
+    }
+
+    #[test]
+    fn host_matches_trims_whitespace() {
+        assert!(host_matches(" github.com ", "github.com"));
+        assert!(host_matches("github.com", " github.com "));
+    }
+
+    // ─── extract_remote_name ─────────────────────────────────────────────────
+
+    #[test]
+    fn extract_remote_name_fetch() {
+        assert_eq!(
+            extract_remote_name(&["fetch", "origin"]),
+            Some("origin".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_remote_name_pull() {
+        assert_eq!(
+            extract_remote_name(&["pull", "upstream", "main"]),
+            Some("upstream".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_remote_name_push() {
+        assert_eq!(
+            extract_remote_name(&["push", "github"]),
+            Some("github".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_remote_name_skips_flags() {
+        assert_eq!(
+            extract_remote_name(&["push", "--force", "origin"]),
+            Some("origin".to_string())
+        );
+        assert_eq!(
+            extract_remote_name(&["fetch", "-v", "--thin", "origin"]),
+            Some("origin".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_remote_name_empty_args() {
+        assert_eq!(extract_remote_name(&[]), None);
+    }
+
+    #[test]
+    fn extract_remote_name_unknown_subcommand() {
+        assert_eq!(extract_remote_name(&["clone"]), None);
+        assert_eq!(extract_remote_name(&["remote", "add"]), None);
+    }
+
+    #[test]
+    fn extract_remote_name_only_flags() {
+        assert_eq!(extract_remote_name(&["fetch", "--all"]), None);
+    }
+
+    // ─── is_ssh_url ────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_ssh_url_git_at() {
+        assert!(is_ssh_url("git@github.com:user/repo.git"));
+        assert!(is_ssh_url("git@gitlab.com:foo/bar.git"));
+    }
+
+    #[test]
+    fn is_ssh_url_ssh_protocol() {
+        assert!(is_ssh_url("ssh://git@github.com/user/repo.git"));
+        assert!(is_ssh_url("ssh://user@github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn is_ssh_url_not_https() {
+        assert!(!is_ssh_url("https://github.com/user/repo.git"));
+        assert!(!is_ssh_url("http://github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn is_ssh_url_not_file() {
+        assert!(!is_ssh_url("file:///path/to/repo"));
+    }
+
+    // ─── ssh_to_https ──────────────────────────────────────────────────────
+
+    #[test]
+    fn ssh_to_https_git_at() {
+        assert_eq!(
+            ssh_to_https("git@github.com:user/repo.git"),
+            Some("https://github.com/user/repo.git".to_string())
+        );
+        assert_eq!(
+            ssh_to_https("git@gitlab.com:foo/bar.git"),
+            Some("https://gitlab.com/foo/bar.git".to_string())
+        );
+    }
+
+    #[test]
+    fn ssh_to_https_ssh_protocol() {
+        assert_eq!(
+            ssh_to_https("ssh://git@github.com/user/repo.git"),
+            Some("https://github.com/user/repo.git".to_string())
+        );
+        // ssh://user@host/path — user@ prefix is preserved as-is in the HTTPS URL
+        assert_eq!(
+            ssh_to_https("ssh://user@github.com/user/repo.git"),
+            Some("https://user@github.com/user/repo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn ssh_to_https_no_op_for_https() {
+        assert_eq!(ssh_to_https("https://github.com/user/repo.git"), None);
+        assert_eq!(ssh_to_https("http://github.com/user/repo.git"), None);
+    }
+
+    #[test]
+    fn ssh_to_https_no_op_for_scp_style_without_host() {
+        // "user@host:path" — the split_once on ':' won't find a valid host/path split
+        assert_eq!(ssh_to_https("git@github.comuser/repo.git"), None);
+    }
+
+    // ─── insteadof_pair ────────────────────────────────────────────────────
+
+    #[test]
+    fn insteadof_pair_git_at() {
+        assert_eq!(
+            insteadof_pair("git@github.com:user/repo.git"),
+            Some((
+                "git@github.com:".to_string(),
+                "https://github.com/".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn insteadof_pair_ssh_protocol() {
+        assert_eq!(
+            insteadof_pair("ssh://git@github.com/user/repo.git"),
+            Some((
+                "ssh://git@github.com/".to_string(),
+                "https://github.com/".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn insteadof_pair_no_op_for_https() {
+        assert_eq!(insteadof_pair("https://github.com/user/repo.git"), None);
+    }
+}
