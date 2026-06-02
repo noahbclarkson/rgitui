@@ -24,7 +24,7 @@ use crate::{
     WorktreeDialog, WorktreeDialogEvent,
 };
 
-use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, UndoEntry, Workspace};
+use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, Workspace};
 
 pub(super) fn build_worktree_graph_infos(
     worktrees: &[rgitui_git::WorktreeInfo],
@@ -522,11 +522,8 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                             if let Some(oid_hex) = tip_oid {
                                 this.push_undo(
-                                    UndoEntry {
-                                        label: format!("Deleted branch '{}'", name),
-                                        action: UndoAction::RecreateBranch { name, oid_hex },
-                                        created_at: Instant::now(),
-                                    },
+                                    format!("Deleted branch '{}'", name),
+                                    UndoAction::RecreateBranch { name, oid_hex },
                                     cx,
                                 );
                                 this.show_toast(
@@ -549,11 +546,8 @@ pub(super) fn subscribe_confirm_dialog(
                                     proj.stash_save(Some("rgitui-undo-discard"), cx).detach();
                                 });
                                 this.push_undo(
-                                    UndoEntry {
-                                        label: "Discarded all changes".into(),
-                                        action: UndoAction::PopStash(0),
-                                        created_at: Instant::now(),
-                                    },
+                                    "Discarded all changes",
+                                    UndoAction::PopStash(0),
                                     cx,
                                 );
                                 this.show_toast(
@@ -581,11 +575,8 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                             if let Some(oid_hex) = tag_oid {
                                 this.push_undo(
-                                    UndoEntry {
-                                        label: format!("Deleted tag '{}'", name),
-                                        action: UndoAction::RecreateTag { name, oid_hex },
-                                        created_at: Instant::now(),
-                                    },
+                                    format!("Deleted tag '{}'", name),
+                                    UndoAction::RecreateTag { name, oid_hex },
                                     cx,
                                 );
                                 this.show_toast(
@@ -611,14 +602,8 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                             if let Some(oid_hex) = previous_head_oid {
                                 this.push_undo(
-                                    UndoEntry {
-                                        label: format!(
-                                            "Reset to {}",
-                                            &target[..7.min(target.len())]
-                                        ),
-                                        action: UndoAction::ResetTo(oid_hex),
-                                        created_at: Instant::now(),
-                                    },
+                                    format!("Reset to {}", &target[..7.min(target.len())]),
+                                    UndoAction::ResetTo(oid_hex),
                                     cx,
                                 );
                                 this.show_toast(
@@ -1773,14 +1758,7 @@ pub(super) fn subscribe_graph(
                             "Cherry-pick {}",
                             &oid_hex[..7.min(oid_hex.len())]
                         );
-                        this.push_undo(
-                            UndoEntry {
-                                label,
-                                action: UndoAction::ResetTo(oid_hex),
-                                created_at: Instant::now(),
-                            },
-                            cx,
-                        );
+                        this.push_undo(label, UndoAction::ResetTo(oid_hex), cx);
                     }
                 }
                 GraphViewEvent::RevertCommit(oid) => {
@@ -1803,14 +1781,7 @@ pub(super) fn subscribe_graph(
 
                     if let Some(oid_hex) = previous_head_oid {
                         let label = format!("Revert {}", &oid_hex[..7.min(oid_hex.len())]);
-                        this.push_undo(
-                            UndoEntry {
-                                label,
-                                action: UndoAction::ResetTo(oid_hex),
-                                created_at: Instant::now(),
-                            },
-                            cx,
-                        );
+                        this.push_undo(label, UndoAction::ResetTo(oid_hex), cx);
                     }
                 }
                 GraphViewEvent::CreateBranchAtCommit(oid) => {
@@ -2110,14 +2081,7 @@ pub(super) fn subscribe_detail_panel(
 
                         if let Some(oid_hex) = previous_head_oid {
                             let label = format!("Cherry-pick {}", &oid_hex[..7.min(oid_hex.len())]);
-                            this.push_undo(
-                                UndoEntry {
-                                    label,
-                                    action: UndoAction::ResetTo(oid_hex),
-                                    created_at: Instant::now(),
-                                },
-                                cx,
-                            );
+                            this.push_undo(label, UndoAction::ResetTo(oid_hex), cx);
                         }
                     }
                 }
@@ -2280,11 +2244,8 @@ pub(super) fn subscribe_commit_panel(
                 if !is_amend {
                     if let Some(oid_hex) = previous_head_oid {
                         this.push_undo(
-                            UndoEntry {
-                                label: "Created commit".into(),
-                                action: UndoAction::SoftResetHead(oid_hex),
-                                created_at: Instant::now(),
-                            },
+                            "Created commit",
+                            UndoAction::SoftResetHead(oid_hex),
                             cx,
                         );
                     }

@@ -9,7 +9,7 @@ mod undo;
 mod update_checker;
 
 pub(crate) use state::*;
-pub(crate) use undo::{UndoAction, UndoEntry, UndoStack};
+pub(crate) use undo::{UndoAction, UndoStack};
 
 use std::path::PathBuf;
 use std::time::Instant;

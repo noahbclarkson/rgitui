@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 #[cfg(test)]
 use std::time::Duration;
 use std::time::Instant;
@@ -20,6 +21,13 @@ pub struct UndoEntry {
     pub label: String,
     pub action: UndoAction,
     pub created_at: Instant,
+    /// Repository the action was performed on (the active tab's repo at push
+    /// time). `execute_undo` routes the reversal back to the tab matching this
+    /// path so undo can never run against whichever tab happens to be active.
+    pub repo_path: PathBuf,
+    /// Effective worktree the action targeted (the inspected worktree, or the
+    /// repo path when none). Used to route staging undo to the right index.
+    pub worktree_path: PathBuf,
 }
 
 /// The specific reversal strategy for each operation type.
@@ -55,6 +63,8 @@ impl UndoEntry {
             created_at: Instant::now()
                 .checked_sub(Duration::from_secs(UNDO_EXPIRY_SECS + 2))
                 .unwrap_or(Instant::now()),
+            repo_path: PathBuf::new(),
+            worktree_path: PathBuf::new(),
         }
     }
 }
@@ -121,9 +131,28 @@ impl UndoStack {
 // ── Workspace glue ────────────────────────────────────────────────────────────
 
 impl Workspace {
-    /// Push an undo entry to the history, maintaining max size.
-    pub fn push_undo(&mut self, entry: UndoEntry, cx: &mut Context<Self>) {
-        self.undo_stack.push(entry);
+    /// Push an undo entry for an action performed on the active tab. The entry
+    /// is stamped with the active tab's repository and effective worktree so
+    /// `execute_undo` can route the reversal back to the originating repo rather
+    /// than whichever tab is active when undo is pressed.
+    pub fn push_undo(
+        &mut self,
+        label: impl Into<String>,
+        action: UndoAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        let repo_path = tab.project.read(cx).repo_path().to_path_buf();
+        let worktree_path = self.effective_worktree_path(cx);
+        self.undo_stack.push(UndoEntry {
+            label: label.into(),
+            action,
+            created_at: Instant::now(),
+            repo_path,
+            worktree_path,
+        });
         self.schedule_undo_expiry(cx);
         cx.notify();
     }
@@ -140,19 +169,32 @@ impl Workspace {
             return;
         };
 
-        // TODO(audit): BUG-04 — undo applies to the ACTIVE tab's repo, not the repo
-        // the action was performed on. With multiple tabs open, performing an op in
-        // tab A, switching to tab B, then pressing Undo runs against B's repository
-        // (e.g. recreating a branch or resetting B to a foreign OID — data loss).
-        // Fix: stamp each UndoEntry with the originating repo path at push time
-        // (the active tab's `project.repo_path()` — the action always originates in
-        // the active tab) across the 8 push sites in events.rs, then route here to the
-        // tab whose project matches that path (showing an error toast if it is no
-        // longer open) instead of unconditionally using `self.active_tab`.
-        let Some(tab) = self.tabs.get(self.active_tab) else {
+        // Route the reversal to the tab whose repository the action was performed
+        // on — NOT whichever tab is active now. Undoing against a different repo
+        // (recreating a branch, resetting to a foreign OID, (un)staging paths) is
+        // data loss. Repo paths are normalized at open time, so an exact match
+        // against the stamped path is reliable; if that tab has since been closed,
+        // refuse with a toast rather than touching the wrong repository.
+        let Some(tab_index) = self
+            .tabs
+            .iter()
+            .position(|t| t.project.read(cx).repo_path() == undo.repo_path)
+        else {
+            self.show_toast(
+                format!(
+                    "Can't undo \"{}\": its repository is no longer open",
+                    undo.label
+                ),
+                ToastKind::Error,
+                cx,
+            );
             return;
         };
-        let project = tab.project.clone();
+        // Surface the result in the tab it applies to.
+        self.active_tab = tab_index;
+        self.update_command_context(cx);
+        let project = self.tabs[tab_index].project.clone();
+        let worktree_path = undo.worktree_path.clone();
 
         let undo_label = undo.label;
         let remaining = self.undo_stack.count();
@@ -230,7 +272,7 @@ impl Workspace {
                 let paths: Vec<std::path::PathBuf> =
                     paths.iter().map(std::path::PathBuf::from).collect();
                 project.update(cx, |proj, cx| {
-                    proj.unstage_files(&paths, cx).detach();
+                    proj.unstage_files_at(&paths, &worktree_path, cx).detach();
                 });
                 self.show_toast(
                     format!("Undid: {undo_label}{suffix}"),
@@ -242,7 +284,7 @@ impl Workspace {
                 let paths: Vec<std::path::PathBuf> =
                     paths.iter().map(std::path::PathBuf::from).collect();
                 project.update(cx, |proj, cx| {
-                    proj.stage_files(&paths, cx).detach();
+                    proj.stage_files_at(&paths, &worktree_path, cx).detach();
                 });
                 self.show_toast(
                     format!("Undid: {undo_label}{suffix}"),
@@ -286,6 +328,8 @@ mod tests {
                 paths: vec!["a.rs".to_string()],
             },
             created_at: Instant::now(),
+            repo_path: PathBuf::new(),
+            worktree_path: PathBuf::new(),
         }
     }
 
@@ -456,6 +500,8 @@ mod tests {
                 label: format!("op-{i}"),
                 action,
                 created_at: Instant::now(),
+                repo_path: PathBuf::new(),
+                worktree_path: PathBuf::new(),
             });
         }
         assert_eq!(stack.count(), 7);
