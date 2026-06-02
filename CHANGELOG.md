@@ -1,13 +1,174 @@
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-02
+
+A large correctness, safety, and quality release. It closes a cluster of
+**data-loss bugs** in the merge / rebase / stash / undo paths, makes
+three-way conflict diffs and partial (hunk/line) staging actually work,
+adds keyboard accessibility and focus handling across the component library
+and every dialog, and removes the dominant per-operation and per-frame
+performance waste. Driven by a full engineering audit of the codebase.
+
+> **Upgrade note:** several fixes here change behaviour you may have been
+> working around — merge commits now keep both parents, undo no longer
+> applies to the wrong repository, and partial line-staging now actually
+> stages. If you scripted around any of these, re-check your flow.
+
+### Added
+
+- **Stash with a message.** The toolbar **Stash** button and `Ctrl+Z` now
+  open a dialog for an optional stash message instead of stashing
+  immediately; an empty message falls back to the default `WIP` stash. The
+  message field is focused on open and its length is validated by character
+  count (not bytes), so multibyte messages aren't mis-measured.
+- **Partial-staging mode indicator.** A **Partial** badge appears next to the
+  diff-mode toggle while line-selection staging mode is active (toggled with
+  `p`), and the `p` shortcut is now documented in the keyboard-shortcuts help
+  overlay.
+- **Linux window controls.** On Linux desktops using client-side decorations
+  (e.g. GNOME / Wayland) the custom title bar now draws its own
+  minimize / maximize / close controls; the close button calls
+  `remove_window()` (previously it dispatched an action that was never wired,
+  so it did nothing). macOS and Windows are unaffected.
+
 ### Fixed
 
-- **Issues/PRs showed "No GitHub remote configured" until Settings was opened.**
-  The panels were configured at tab-open time, before the repository's remotes
-  finished loading asynchronously, and were never reconfigured afterward. They
-  now reconfigure when a repository refresh delivers the remote, so the GitHub
-  owner/repo is picked up automatically. Panel configuration is idempotent and
-  clears the stale error once a valid remote is known.
+#### Data integrity (merge / rebase / stash / undo)
+
+- **Merge commits dropped their second parent.** Committing during a merge
+  wrote an ordinary single-parent commit and left the repository stuck in the
+  "Merging" state. It now finalizes a real two-parent merge commit from
+  `MERGE_HEAD` and clears the merge state.
+- **Amending during a rebase silently aborted the rebase.** It is now refused
+  with a clear error instead of throwing away the in-progress rebase.
+- **"Continue merge" swept untracked files into the commit.** It ran
+  `git add -A` semantics, pulling unrelated untracked/unstaged files into the
+  merge commit. It now only finalizes a genuine merge (requires `MERGE_HEAD`)
+  and no longer mass-stages.
+- **Interactive rebase could corrupt history.** A stale or cross-branch plan
+  could be replayed onto the wrong base. The plan is now validated against
+  HEAD's real first-parent range, with the base derived from it, and a
+  mismatching plan is refused rather than applied.
+- **"Stash → branch" branched at the wrong commit.** It created the branch at
+  the stash's WIP commit and never checked it out. It now creates the branch
+  at the stash's base commit, checks it out, applies the stash, and drops it.
+- **Conflicting `stash pop` / `stash apply` failed silently.** A conflict left
+  the tree changed but reported nothing. It now refreshes and surfaces the
+  conflict so you can resolve it.
+- **Undo could run against the wrong repository.** With multiple repository
+  tabs open, performing an action in tab A, switching to tab B, then pressing
+  Undo ran the reversal against B — recreating a branch or resetting B to a
+  commit from A. Undo now routes to the tab the action was performed on (and
+  switches to it); if that tab has been closed it refuses with a notice
+  instead of touching the wrong repository.
+- **Undo of a worktree commit reset the main repository.** Undoing a commit
+  made while inspecting a linked worktree soft-reset the main repo to an OID
+  taken from the main repo's log. It now soft-resets the worktree's own branch
+  using that worktree's real pre-commit HEAD.
+
+#### Diffs, conflicts, and partial staging
+
+- **Three-way conflict diffs never rendered.** Selecting a conflicted file
+  showed the empty "Select a file" placeholder instead of the conflict view.
+  Conflicts now render, and switching back to a normal file clears the stale
+  conflict rows.
+- **Partial line-staging never applied.** The patches generated for single-line
+  stage/unstage lacked a `diff --git` header, so libgit2 rejected every one of
+  them — the feature silently did nothing in shipped builds. Patches now carry
+  the header and apply correctly.
+- **Hunk/line staging ignored the inspected worktree.** Staging a hunk or line
+  from the diff viewer always targeted the main repository's index; while
+  inspecting a linked worktree it now stages into that worktree's index.
+- **Deletions could not be partially staged.** Deleted lines are now selectable
+  for partial stage/unstage, and end-of-file-newline markers are preserved in
+  the generated patches.
+- **Diff viewer robustness.** The highlighted row and scroll-to-line are
+  clamped against out-of-bounds positions; wrap-mode scroll position is
+  preserved across refreshes; split and three-way views wrap into columns
+  instead of clipping horizontally; and the viewer gains a focus ring,
+  shortcut hints, and explicit loading/error states.
+
+#### GitHub (Issues & PRs)
+
+- **Panels showed "No GitHub remote configured" until Settings was opened.**
+  They were configured at tab-open time, before the repository's remotes
+  finished loading asynchronously, and were never reconfigured. They now
+  reconfigure when a refresh delivers the remote, picking up the owner/repo
+  automatically; configuration is idempotent and clears the stale error once a
+  valid remote is known.
+- **Richer, more robust panels.** PR and Issue lists now render label colors
+  and markdown bodies/comments and support keyboard navigation; a failed
+  comment fetch is scoped to the detail view instead of replacing the whole
+  panel with an error; and a newly created PR appears immediately rather than
+  waiting on the 60-second cache.
+
+#### Accessibility, dialogs, and UI
+
+- **Keyboard and focus support across components.** Buttons, checkboxes, and
+  disclosures gain real disabled states, focus rings, and keyboard activation;
+  the text input gains disabled/read-only modes, a focus tint, a working
+  font-size setter, and multibyte-safe cursor handling, and **Tab** no longer
+  submits the field.
+- **Dialogs are keyboard-usable on open.** The branch, tag, rename, stash,
+  stash-branch, confirm, and clone dialogs focus their input on open; the
+  create-PR description field is multiline; and the theme editor is responsive,
+  Tab-traversable, and surfaces invalid-hex feedback.
+- **Clone dialog gives feedback.** Submitting a clone previously hid the dialog
+  immediately with no progress or result. It now stays open in a "Cloning…"
+  state, then closes on success (with the repository loaded) or shows the error
+  inline on failure so you can fix the URL/path and retry.
+- **Tabs and toasts.** A tab's close button no longer activates the tab it
+  closes and has a larger hit target; toast severity is no longer conveyed by
+  color alone (a severity label and accent bar are added) and toasts can be
+  dismissed.
+- **Settings window.** The Accounts & Credentials section fills the window and
+  resets its scroll position when switching sections; the feedback banner is
+  dismissible, auto-clearing, and moved out of the scroll area; a **Save**
+  button commits pending edits; the device-flow login can be cancelled and
+  honors expiry; and detected-tool lists scroll.
+- **Safer text handling.** Commit-message copy is now character-safe (it
+  previously sliced on a byte index and could panic on multibyte messages),
+  AI diff/context truncation is UTF-8-safe, and a corrupt settings file is
+  quarantined rather than crashing the app on load.
+- **Sidebar correctness.** Keyboard highlight maps to the correct
+  (virtualized) row, file sections get navigation entries, worktrees are
+  virtualized, and several panels no longer call `refresh()` from inside
+  `render()` (which caused a notify storm).
+
+### Changed
+
+- **Scrollbar drag no longer resets** mid-drag (the drag state is persisted
+  across re-renders).
+- **Layout.** Panel-resize bounds are now unified between dragging the handle
+  and keyboard resizing; the welcome screen scrolls; and the center pane keeps
+  a minimum width on narrow windows.
+- **Theming.** Placeholder text now meets WCAG-AAA contrast, and the dead
+  JSON theme loader was removed so themes have a single source of truth.
+
+### Performance
+
+- **Staging no longer triggers a full repository scan.** Stage, unstage,
+  discard, and hunk/line operations previously ran the full repo-wide refresh
+  — ahead/behind graph walks for every branch plus a fresh `git log` — even
+  though none of those can change from staging. They now use a lightweight,
+  per-worktree-cached refresh and recompute ahead/behind off the critical path.
+- **Less per-frame and per-operation waste.** Graph ancestry is memoized
+  (previously O(n²) per render); commit and prefix vectors are shared via
+  `Arc` instead of cloned; the detail and sidebar file lists are virtualized
+  and no longer clone every row each frame; the branch-filter recompute is
+  cached; an O(n²) hunk scan was removed; and the diff viewer only computes its
+  longest row when it actually needs it.
+- **A coherent refresh/watcher spine.** Commits are ordered topologically;
+  pagination is cursor-based so no commit is dropped when refs change between
+  pages; the "My Commits" author filter is preserved across watcher- and
+  operation-driven refreshes; the watcher no longer zeroes branch ahead/behind
+  on every event; a refresh-generation guard drops stale background refreshes;
+  and `.git` change detection is content-aware.
+
+### Internal
+
+- Expanded unit-test coverage for the authentication helpers and toolbar
+  events.
 
 ## [0.2.2] - 2026-05-25
 
@@ -464,7 +625,8 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/noahbclarkson/rgitui/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/noahbclarkson/rgitui/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/noahbclarkson/rgitui/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/noahbclarkson/rgitui/compare/v0.1.8...v0.2.0
