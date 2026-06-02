@@ -25,6 +25,12 @@ pub struct RepoCloneDialog {
     /// Lets us focus from call sites that have no `Window` without leaving the
     /// user to click in first.
     pending_focus: bool,
+    /// True between submitting a clone and its completion. Keeps the dialog open
+    /// in a loading state and guards against double-submits.
+    cloning: bool,
+    /// Set when the last clone attempt failed, so the user can fix the URL/path
+    /// and retry without re-entering everything.
+    error: Option<String>,
 }
 
 impl RepoCloneDialog {
@@ -65,6 +71,8 @@ impl RepoCloneDialog {
             path_editor,
             focus_handle: cx.focus_handle(),
             pending_focus: false,
+            cloning: false,
+            error: None,
         }
     }
 
@@ -75,6 +83,8 @@ impl RepoCloneDialog {
     pub fn show_visible(&mut self, default_path: Option<String>, cx: &mut Context<Self>) {
         self.visible = true;
         self.pending_focus = true;
+        self.cloning = false;
+        self.error = None;
         self.url_editor.update(cx, |e, cx| e.clear(cx));
 
         self.path_editor.update(cx, |e, cx| {
@@ -91,12 +101,19 @@ impl RepoCloneDialog {
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         if self.visible {
             self.visible = false;
+            // Dismissing while a clone is in flight stops us from reopening the
+            // dialog when that clone later reports back (the toast still informs).
+            self.cloning = false;
+            self.error = None;
             cx.emit(RepoCloneEvent::Dismissed);
             cx.notify();
         }
     }
 
     fn clone_repo(&mut self, cx: &mut Context<Self>) {
+        if self.cloning {
+            return;
+        }
         let url = self.url_editor.read(cx).text().trim().to_string();
         let path = self.path_editor.read(cx).text().trim().to_string();
 
@@ -104,18 +121,36 @@ impl RepoCloneDialog {
             return;
         }
 
-        // TODO(audit): UX-08 keep the dialog open in a loading state and report
-        // clone success/failure back here. The detached clone task lives in the
-        // workspace (workspace/events.rs subscribe_repo_clone_dialog ->
-        // Project::clone_repo), so wiring completion/error back to this dialog
-        // requires a result channel from those files, which are out of scope for
-        // this single-file change.
+        // Stay open in a loading state; the workspace runs the clone and calls
+        // `on_clone_finished` with the outcome.
         let path_buf = PathBuf::from(&path);
+        self.cloning = true;
+        self.error = None;
         cx.emit(RepoCloneEvent::CloneRepo {
             url,
             path: path_buf,
         });
-        self.visible = false;
+        cx.notify();
+    }
+
+    /// Report the outcome of the clone started by `clone_repo`. On success the
+    /// dialog closes (the cloned repo is now loaded); on failure it stays open
+    /// and shows the error so the user can fix the URL/path and retry.
+    pub fn on_clone_finished(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        if !self.cloning {
+            // Dismissed while in flight — the outcome was already surfaced via toast.
+            return;
+        }
+        self.cloning = false;
+        match result {
+            Ok(()) => {
+                self.visible = false;
+                self.error = None;
+            }
+            Err(message) => {
+                self.error = Some(message);
+            }
+        }
         cx.notify();
     }
 
@@ -281,6 +316,14 @@ impl Render for RepoCloneDialog {
             );
         }
 
+        if let Some(error) = &self.error {
+            modal = modal.child(
+                Label::new(error.clone())
+                    .size(LabelSize::Small)
+                    .color(Color::Error),
+            );
+        }
+
         modal = modal.child(
             div()
                 .pt_2()
@@ -297,10 +340,10 @@ impl Render for RepoCloneDialog {
                         })),
                 )
                 .child(
-                    Button::new("clone", "Clone")
+                    Button::new("clone", if self.cloning { "Cloning…" } else { "Clone" })
                         .style(ButtonStyle::Filled)
                         .color(Color::Accent)
-                        .disabled(!can_clone)
+                        .disabled(!can_clone || self.cloning)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.clone_repo(cx);
                         })),

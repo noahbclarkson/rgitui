@@ -2637,34 +2637,46 @@ impl GitProject {
                     gather_refresh_data(&path_inner, commit_limit)
                 })
                 .await;
-            cx.update(|cx| {
-                this.update(cx, |this, cx| match result {
-                    Ok(data) => {
-                        this.apply_refresh_data(data);
-                        this.complete_op(
-                            operation_id,
-                            GitOperationKind::Clone,
-                            format!("Cloned '{}'", url),
-                            (Some(format!("Opened: {}", path.display())), None, None),
-                            cx,
-                        );
-                        cx.emit(GitProjectEvent::StatusChanged);
-                        cx.notify();
-                    }
-                    Err(e) => {
-                        log::error!("clone_repo failed: {}", e);
-                        this.fail_op(
-                            operation_id,
-                            GitOperationKind::Clone,
-                            "Clone failed",
-                            e.to_string(),
-                            (None, None, false),
-                            cx,
-                        );
-                    }
-                })
-            })?;
-            Ok(())
+            // Propagate the actual clone outcome to the returned task (not just
+            // entity-aliveness) so the caller can report success/failure to the
+            // clone dialog while still showing the operation toast.
+            match result {
+                Ok(data) => {
+                    cx.update(|cx| {
+                        this.update(cx, |this, cx| {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::Clone,
+                                format!("Cloned '{}'", url),
+                                (Some(format!("Opened: {}", path.display())), None, None),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.notify();
+                        })
+                    })?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    log::error!("clone_repo failed: {}", message);
+                    let toast_message = message.clone();
+                    cx.update(|cx| {
+                        this.update(cx, |this, cx| {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::Clone,
+                                "Clone failed",
+                                toast_message,
+                                (None, None, false),
+                                cx,
+                            );
+                        })
+                    })?;
+                    Err(anyhow::anyhow!(message))
+                }
+            }
         })
     }
 

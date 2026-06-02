@@ -2190,7 +2190,8 @@ pub(super) fn subscribe_diff_viewer(
                     DiffViewerEvent::HunkUnstageRequested(hunk_idx) => {
                         let idx = *hunk_idx;
                         project.update(cx, |proj, cx| {
-                            proj.unstage_hunk_at(&path, idx, &worktree_path, cx).detach();
+                            proj.unstage_hunk_at(&path, idx, &worktree_path, cx)
+                                .detach();
                         });
                     }
                     DiffViewerEvent::LineStageRequested(line_pairs) => {
@@ -2245,11 +2246,7 @@ pub(super) fn subscribe_commit_panel(
                 });
                 if !is_amend {
                     if let Some(oid_hex) = previous_head_oid {
-                        this.push_undo(
-                            "Created commit",
-                            UndoAction::SoftResetHead(oid_hex),
-                            cx,
-                        );
+                        this.push_undo("Created commit", UndoAction::SoftResetHead(oid_hex), cx);
                     }
                 }
             }
@@ -2659,9 +2656,17 @@ pub(super) fn subscribe_repo_clone_dialog(
                         ToastKind::Info,
                         cx,
                     );
-                    project.update(cx, |proj, cx| {
-                        proj.clone_repo(&url, &path, cx).detach();
-                    });
+                    let dialog = this.dialogs.repo_clone_dialog.clone();
+                    let task = project.update(cx, |proj, cx| proj.clone_repo(&url, &path, cx));
+                    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                        let outcome = task.await;
+                        cx.update(|cx| {
+                            dialog.update(cx, |d, cx| {
+                                d.on_clone_finished(outcome.map_err(|e| e.to_string()), cx);
+                            });
+                        });
+                    })
+                    .detach();
                 }
             }
             RepoCloneEvent::Dismissed => {
