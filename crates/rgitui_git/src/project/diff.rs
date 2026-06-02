@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::types::*;
 
-use super::gather_refresh_data;
+use super::refresh::gather_refresh_data_lightweight_cached;
 use super::RefreshData;
 
 /// Compute line-level diff stats (additions/deletions) for a single file.
@@ -701,6 +701,8 @@ impl GitProject {
         let task_file_path = file_path.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -723,7 +725,12 @@ impl GitProject {
                         generate_hunk_patch_for_repo(&repo, &task_file_path, hunk_index, false)?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     repo.apply(&diff, git2::ApplyLocation::Index, None)?;
-                    gather_refresh_data(&refresh_repo_path, commit_limit)
+                    gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )
                 })
                 .await;
 
@@ -732,6 +739,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
@@ -786,6 +794,8 @@ impl GitProject {
         let task_file_path = file_path.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -809,7 +819,12 @@ impl GitProject {
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     let mut opts = git2::ApplyOptions::new();
                     repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut opts))?;
-                    gather_refresh_data(&refresh_repo_path, commit_limit)
+                    gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )
                 })
                 .await;
 
@@ -818,6 +833,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
@@ -874,6 +890,8 @@ impl GitProject {
         let task_file_path = file_path.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let line_count = line_pairs.len();
@@ -903,7 +921,12 @@ impl GitProject {
                     )?;
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     repo.apply(&diff, git2::ApplyLocation::Index, None)?;
-                    gather_refresh_data(&refresh_repo_path, commit_limit)
+                    gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )
                 })
                 .await;
 
@@ -912,6 +935,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
@@ -967,6 +991,8 @@ impl GitProject {
         let task_file_path = file_path.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let line_count = line_pairs.len();
@@ -998,7 +1024,12 @@ impl GitProject {
                     let diff = git2::Diff::from_buffer(patch_text.as_bytes())?;
                     let mut opts = git2::ApplyOptions::new();
                     repo.apply(&diff, git2::ApplyLocation::Index, Some(&mut opts))?;
-                    gather_refresh_data(&refresh_repo_path, commit_limit)
+                    gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )
                 })
                 .await;
 
@@ -1007,6 +1038,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,

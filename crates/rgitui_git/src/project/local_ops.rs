@@ -8,17 +8,10 @@ use rgitui_settings::current_git_auth_runtime;
 use crate::types::*;
 
 use super::auth::inject_https_credentials;
-use super::refresh::gather_refresh_data;
+use super::refresh::{gather_refresh_data, gather_refresh_data_lightweight_cached};
 use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent, RefreshData};
 
 // TODO(audit): deferred audit items for this module (tracked, not yet applied):
-//  - PERF-03 / QUAL-04: pure index/working-tree mutations (stage/unstage/discard,
-//    and the hunk/line ops in diff.rs) still run the full `gather_refresh_data`.
-//    The fix is to use `gather_refresh_data_lightweight_cached(.., &self
-//    .worktree_status_cache)` and ALSO call `this.refresh_ahead_behind(cx)` in each
-//    op's success arm (mirroring `refresh()`), otherwise ahead/behind resets to 0.
-//    This is a coordinated change across ~9 call sites in two files; deferred to
-//    avoid a half-applied regression.
 //  - QUAL-02: the ~39 copy-pasted begin/spawn/apply/complete blocks should collapse
 //    into one generic job-dispatch helper (cf. Zed `git_store::send_job`).
 //  - QUAL-05: cache an `Arc<Mutex<git2::Repository>>` instead of `Repository::open`
@@ -46,6 +39,8 @@ impl GitProject {
         let task_paths = paths.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -73,7 +68,12 @@ impl GitProject {
                         }
                     }
                     index.write()?;
-                    gather_refresh_data(&refresh_repo_path, commit_limit)
+                    gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )
                 })
                 .await;
 
@@ -82,6 +82,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
@@ -131,6 +132,8 @@ impl GitProject {
         let task_paths = paths.clone();
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -164,7 +167,12 @@ impl GitProject {
                         }
                         index.write()?;
                     }
-                    gather_refresh_data(&refresh_repo_path, commit_limit)
+                    gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )
                 })
                 .await;
 
@@ -173,6 +181,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
@@ -219,6 +228,8 @@ impl GitProject {
         log::info!("stage_all");
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -236,7 +247,12 @@ impl GitProject {
                     let mut index = repo.index()?;
                     index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
                     index.write()?;
-                    gather_refresh_data(&refresh_repo_path, commit_limit)
+                    gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )
                 })
                 .await;
 
@@ -245,6 +261,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Stage,
@@ -287,6 +304,8 @@ impl GitProject {
         log::info!("unstage_all");
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let operation_id = self.begin_operation(
@@ -305,7 +324,12 @@ impl GitProject {
                         let obj = head.peel(git2::ObjectType::Any)?;
                         repo.reset(&obj, git2::ResetType::Mixed, None)?;
                     }
-                    gather_refresh_data(&refresh_repo_path, commit_limit)
+                    gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )
                 })
                 .await;
 
@@ -314,6 +338,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
@@ -1578,6 +1603,8 @@ impl GitProject {
         );
         let worktree_path = worktree_path.to_path_buf();
         let refresh_repo_path = self.repo_path.clone();
+        let worktree_cache = self.worktree_status_cache.clone();
+        let author_filter = self.commit_author_filter.clone();
         let commit_limit = self.commit_limit;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = cx
@@ -1615,7 +1642,12 @@ impl GitProject {
                     if has_tracked {
                         repo.checkout_head(Some(&mut checkout_opts))?;
                     }
-                    let data = gather_refresh_data(&refresh_repo_path, commit_limit)?;
+                    let data = gather_refresh_data_lightweight_cached(
+                        &refresh_repo_path,
+                        commit_limit,
+                        &worktree_cache,
+                        author_filter.as_deref(),
+                    )?;
                     Ok::<_, anyhow::Error>(data)
                 })
                 .await;
@@ -1624,6 +1656,7 @@ impl GitProject {
                     match result {
                         Ok(data) => {
                             this.apply_refresh_data(data);
+                            this.refresh_ahead_behind(cx);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Discard,
