@@ -243,7 +243,7 @@ impl Workspace {
             UndoAction::SoftResetHead(oid_hex) => {
                 if let Ok(oid) = git2::Oid::from_str(&oid_hex) {
                     project.update(cx, |proj, cx| {
-                        proj.reset_soft(oid, cx).detach();
+                        proj.reset_soft_at(oid, &worktree_path, cx).detach();
                     });
                     self.show_toast(
                         format!("Undid: {undo_label}{suffix}"),

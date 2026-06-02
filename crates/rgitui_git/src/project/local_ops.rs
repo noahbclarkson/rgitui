@@ -1903,8 +1903,22 @@ impl GitProject {
 
     /// Soft-reset the current branch to a specific commit, preserving changes in the index.
     pub fn reset_soft(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.reset_soft_at(oid, &worktree_path, cx)
+    }
+
+    /// Soft-reset the given worktree's branch to `oid`, preserving changes in the
+    /// index. Used to undo a commit made while inspecting a linked worktree so the
+    /// reset targets that worktree's branch rather than the main repo's HEAD.
+    pub fn reset_soft_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         log::info!("reset_soft: oid={}", oid);
-        let repo_path = self.repo_path.clone();
+        let worktree_path = worktree_path.to_path_buf();
+        let refresh_repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
         let short_id = oid.to_string()[..7].to_string();
@@ -1919,10 +1933,10 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Soft, None)?;
-                    gather_refresh_data(&repo_path, commit_limit)
+                    gather_refresh_data(&refresh_repo_path, commit_limit)
                 })
                 .await;
 

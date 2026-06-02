@@ -2227,14 +2227,16 @@ pub(super) fn subscribe_commit_panel(
     cx.subscribe(commit_panel, {
         move |this, _cp, event: &CommitPanelEvent, cx| match event {
             CommitPanelEvent::CommitRequested { message, amend } => {
+                let worktree_path = this.effective_worktree_path(cx);
+                // Capture the pre-commit HEAD of the worktree the commit targets
+                // (not the main repo's log, which may be a different branch) so a
+                // later undo soft-resets the branch the commit was actually made on.
                 let previous_head_oid = project
                     .read(cx)
-                    .recent_commits()
-                    .first()
-                    .map(|c| c.oid.to_string());
+                    .head_oid_at(&worktree_path)
+                    .map(|o| o.to_string());
                 let msg = message.clone();
                 let is_amend = *amend;
-                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
                     proj.commit_at(&msg, is_amend, &worktree_path, cx).detach();
                 });

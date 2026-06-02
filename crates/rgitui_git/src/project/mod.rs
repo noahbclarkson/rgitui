@@ -421,6 +421,16 @@ impl GitProject {
         &self.repo_path
     }
 
+    /// Resolve the current HEAD commit OID of the given worktree (or the main
+    /// repo when `worktree_path` is the repo path). A cheap synchronous ref read
+    /// used to capture the pre-commit HEAD so a commit can be undone against the
+    /// branch it was actually made on, not the main repo's HEAD.
+    pub fn head_oid_at(&self, worktree_path: &Path) -> Option<git2::Oid> {
+        let repo = git2::Repository::open(worktree_path).ok()?;
+        let head = repo.head().ok()?;
+        head.target()
+    }
+
     pub fn repo_name(&self) -> &str {
         self.repo_path
             .file_name()
