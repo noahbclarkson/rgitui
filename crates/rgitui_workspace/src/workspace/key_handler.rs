@@ -31,6 +31,14 @@ impl Workspace {
         let key = keystroke.key.as_str();
         let modifiers = &keystroke.modifiers;
 
+        let mut custom_shortcuts: Option<
+            std::sync::Arc<rgitui_settings::shortcuts::CustomShortcuts>,
+        > = None;
+        if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>() {
+            let cloned = std::sync::Arc::new(state.settings().shortcuts.clone());
+            custom_shortcuts = Some(cloned);
+        }
+
         // Dismiss interactive rebase dialog on Escape
         if key == "escape" && self.overlays.interactive_rebase.read(cx).is_visible() {
             self.overlays.interactive_rebase.update(cx, |ir, cx| {
@@ -168,6 +176,84 @@ impl Workspace {
                 cx.notify();
             }
             return;
+        }
+
+        if !any_overlay_active {
+            if let Some(shortcuts) = custom_shortcuts {
+                for (command_id_str, cmd_id) in [
+                    ("fetch", CommandId::Fetch),
+                    ("pull", CommandId::Pull),
+                    ("push", CommandId::Push),
+                    ("push_all", CommandId::PushAll),
+                    ("pull_all", CommandId::PullAll),
+                    ("force_push", CommandId::ForcePush),
+                    ("commit", CommandId::Commit),
+                    ("stage_all", CommandId::StageAll),
+                    ("unstage_all", CommandId::UnstageAll),
+                    ("stash_save", CommandId::StashSave),
+                    ("stash_pop", CommandId::StashPop),
+                    ("stash_apply", CommandId::StashApply),
+                    ("stash_drop", CommandId::StashDrop),
+                    ("create_branch", CommandId::CreateBranch),
+                    ("delete_branch", CommandId::DeleteBranch),
+                    ("rename_branch", CommandId::RenameBranch),
+                    ("merge_branch", CommandId::MergeBranch),
+                    ("create_tag", CommandId::CreateTag),
+                    ("create_worktree", CommandId::CreateWorktree),
+                    ("create_pr", CommandId::CreatePr),
+                    ("cherry_pick", CommandId::CherryPick),
+                    ("revert_commit", CommandId::RevertCommit),
+                    ("interactive_rebase", CommandId::InteractiveRebase),
+                    ("discard_all", CommandId::DiscardAll),
+                    ("clean_untracked", CommandId::CleanUntracked),
+                    ("reset_hard", CommandId::ResetHard),
+                    ("abort_operation", CommandId::AbortOperation),
+                    ("continue_merge", CommandId::ContinueMerge),
+                    ("toggle_diff_mode", CommandId::ToggleDiffMode),
+                    ("search", CommandId::Search),
+                    ("ai_message", CommandId::AiMessage),
+                    ("refresh", CommandId::Refresh),
+                    ("settings", CommandId::Settings),
+                    ("open_repo", CommandId::OpenRepo),
+                    ("workspace_home", CommandId::WorkspaceHome),
+                    ("restore_last_workspace", CommandId::RestoreLastWorkspace),
+                    ("shortcuts", CommandId::Shortcuts),
+                    ("switch_branch", CommandId::SwitchBranch),
+                    ("blame", CommandId::Blame),
+                    ("undo", CommandId::Undo),
+                    ("file_history", CommandId::FileHistory),
+                    ("reflog", CommandId::Reflog),
+                    ("submodules", CommandId::Submodules),
+                    ("bisect", CommandId::Bisect),
+                    ("bisect_start", CommandId::BisectStart),
+                    ("bisect_good", CommandId::BisectGood),
+                    ("bisect_bad", CommandId::BisectBad),
+                    ("bisect_reset", CommandId::BisectReset),
+                    ("bisect_skip", CommandId::BisectSkip),
+                    ("global_search", CommandId::GlobalSearch),
+                    ("toggle_issues", CommandId::ToggleIssues),
+                    ("toggle_pull_requests", CommandId::TogglePullRequests),
+                    ("toggle_branch_health", CommandId::ToggleBranchHealth),
+                    ("toggle_stashes", CommandId::ToggleStashes),
+                    ("stash_branch", CommandId::StashBranch),
+                    ("open_theme_editor", CommandId::OpenThemeEditor),
+                ] {
+                    if let Some(parsed) = shortcuts.parsed_shortcut_for(command_id_str) {
+                        let ctrl_match = parsed.control == modifiers.control;
+                        let shift_match = parsed.shift == modifiers.shift;
+                        let alt_match = parsed.alt == modifiers.alt;
+                        let plat_match = parsed.platform == modifiers.platform;
+                        let key_match = parsed.key.eq_ignore_ascii_case(key);
+
+                        if ctrl_match && shift_match && alt_match && plat_match && key_match {
+                            // Custom overrides do not intercept specific modal view toggles yet,
+                            // they just directly execute_command.
+                            self.execute_command(cmd_id, cx);
+                            return;
+                        }
+                    }
+                }
+            }
         }
 
         // Ctrl+Shift+R to fetch
