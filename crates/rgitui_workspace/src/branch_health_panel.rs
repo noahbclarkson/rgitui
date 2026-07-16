@@ -460,6 +460,7 @@ mod tests {
             author_email: None,
             last_commit_time,
             is_merged_into_main,
+            is_merged_into_head: None,
         }
     }
 

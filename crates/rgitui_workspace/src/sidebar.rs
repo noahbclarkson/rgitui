@@ -167,6 +167,14 @@ pub struct Sidebar {
     /// Tracks which directory groups are collapsed in the file change sections.
     /// Key is "staged:<dir>" or "unstaged:<dir>".
     collapsed_dirs: HashSet<String>,
+    /// Change kinds hidden from the Staged section. Empty means "show all";
+    /// each kind in the set is filtered out of the list. Toggled by clicking the
+    /// header chips; ephemeral (per-session) state.
+    staged_hidden_kinds: HashSet<FileChangeKind>,
+    /// Change kinds hidden from the Unstaged section (e.g. clicking the `?` chip
+    /// hides untracked files). Empty means "show all". Ephemeral, toggled via
+    /// the header chips.
+    unstaged_hidden_kinds: HashSet<FileChangeKind>,
     /// Current repository name displayed in the sidebar header.
     repo_name: String,
     /// Focus handle for keyboard navigation.
@@ -297,6 +305,8 @@ impl Sidebar {
             selected_tag: None,
             selected_worktree: None,
             collapsed_dirs: HashSet::new(),
+            staged_hidden_kinds: HashSet::new(),
+            unstaged_hidden_kinds: HashSet::new(),
             repo_name: String::new(),
             focus_handle: cx.focus_handle(),
             keyboard_index: None,
@@ -809,34 +819,9 @@ impl Sidebar {
         if self.staged == staged && self.unstaged == unstaged {
             return;
         }
-        self.cached_staged_tree = Self::build_file_tree(&staged);
-        self.cached_unstaged_tree = Self::build_file_tree(&unstaged);
         self.staged = staged;
         self.unstaged = unstaged;
-
-        // Rebuild flattened lists for virtualized rendering.
-        // Clone tree roots to avoid chaining self borrows (E0502).
-        let staged_tree = self.cached_staged_tree.clone();
-        let unstaged_tree = self.cached_unstaged_tree.clone();
-        let collapsed_dirs = self.collapsed_dirs.clone();
-        self.flattened_staged.clear();
-        Self::flatten_tree(
-            &staged_tree,
-            "staged",
-            "",
-            0,
-            &mut self.flattened_staged,
-            &collapsed_dirs,
-        );
-        self.flattened_unstaged.clear();
-        Self::flatten_tree(
-            &unstaged_tree,
-            "unstaged",
-            "",
-            0,
-            &mut self.flattened_unstaged,
-            &collapsed_dirs,
-        );
+        self.rebuild_change_trees();
 
         // Rebuild flattened local branches for virtualized rendering.
         self.flattened_local_branches.clear();
@@ -883,37 +868,96 @@ impl Sidebar {
             self.collapsed_dirs.insert(key);
         }
 
-        // Rebuild flattened lists to reflect the new collapse state. The tree
-        // roots are cloned so the shared `flatten_tree` borrow does not conflict
-        // with the mutable borrows of the destination vectors.
-        let staged_tree = self.cached_staged_tree.clone();
-        let unstaged_tree = self.cached_unstaged_tree.clone();
-        let collapsed_dirs = self.collapsed_dirs.clone();
-        let mut new_staged = Vec::new();
-        let mut new_unstaged = Vec::new();
-        Self::flatten_tree(
-            &staged_tree,
-            "staged",
-            "",
-            0,
-            &mut new_staged,
-            &collapsed_dirs,
-        );
-        Self::flatten_tree(
-            &unstaged_tree,
-            "unstaged",
-            "",
-            0,
-            &mut new_unstaged,
-            &collapsed_dirs,
-        );
-        self.flattened_staged = new_staged;
-        self.flattened_unstaged = new_unstaged;
+        // Re-flatten to reflect the new collapse state. The cached trees are
+        // unchanged by a collapse toggle, so only the flattened lists rebuild.
+        self.reflatten_change_trees();
 
         // Keyboard navigation items mirror the flattened file lists, so rebuild
         // them to keep the cursor index aligned with the new collapse state.
         self.rebuild_nav_items();
 
+        cx.notify();
+    }
+
+    /// Rebuild the cached staged/unstaged file trees from the current file
+    /// lists (honoring the active per-section kind filters) and re-derive their
+    /// flattened representations. Call when the underlying file data or a kind
+    /// filter changes.
+    fn rebuild_change_trees(&mut self) {
+        self.prune_hidden_kinds();
+        self.cached_staged_tree = Self::build_file_tree(&self.staged, &self.staged_hidden_kinds);
+        self.cached_unstaged_tree =
+            Self::build_file_tree(&self.unstaged, &self.unstaged_hidden_kinds);
+        self.reflatten_change_trees();
+    }
+
+    /// Drop any hidden kind that no longer has a file in its section. Without
+    /// this, hiding a kind and then staging away its last file would leave the
+    /// kind pinned as hidden with no chip left to restore it — so if those files
+    /// reappear later they would stay invisible with no way to unhide them.
+    fn prune_hidden_kinds(&mut self) {
+        if !self.staged_hidden_kinds.is_empty() {
+            let present: HashSet<FileChangeKind> = self.staged.iter().map(|f| f.kind).collect();
+            self.staged_hidden_kinds
+                .retain(|kind| present.contains(kind));
+        }
+        if !self.unstaged_hidden_kinds.is_empty() {
+            let present: HashSet<FileChangeKind> = self.unstaged.iter().map(|f| f.kind).collect();
+            self.unstaged_hidden_kinds
+                .retain(|kind| present.contains(kind));
+        }
+    }
+
+    /// Re-derive the flattened staged/unstaged lists from the cached trees,
+    /// honoring the current directory collapse state. The cached trees are left
+    /// untouched, so this is the cheap path for collapse toggles.
+    fn reflatten_change_trees(&mut self) {
+        // Clone the tree roots so the shared `flatten_tree` borrow does not
+        // conflict with the mutable borrows of the destination vectors.
+        let staged_tree = self.cached_staged_tree.clone();
+        let unstaged_tree = self.cached_unstaged_tree.clone();
+        let collapsed_dirs = self.collapsed_dirs.clone();
+        self.flattened_staged.clear();
+        Self::flatten_tree(
+            &staged_tree,
+            "staged",
+            "",
+            0,
+            &mut self.flattened_staged,
+            &collapsed_dirs,
+        );
+        self.flattened_unstaged.clear();
+        Self::flatten_tree(
+            &unstaged_tree,
+            "unstaged",
+            "",
+            0,
+            &mut self.flattened_unstaged,
+            &collapsed_dirs,
+        );
+    }
+
+    /// Toggle the visibility of a change kind in the given changes section.
+    /// Every kind is shown by default; clicking its chip hides that kind, and
+    /// clicking again restores it. Hidden kinds combine, so e.g. hiding `?`
+    /// removes untracked files while leaving everything else visible. State is
+    /// per-session only.
+    fn toggle_kind_visibility(
+        &mut self,
+        section: SidebarSection,
+        kind: FileChangeKind,
+        cx: &mut Context<Self>,
+    ) {
+        let hidden = match section {
+            SidebarSection::StagedChanges => &mut self.staged_hidden_kinds,
+            SidebarSection::UnstagedChanges => &mut self.unstaged_hidden_kinds,
+            _ => return,
+        };
+        if !hidden.remove(&kind) {
+            hidden.insert(kind);
+        }
+        self.rebuild_change_trees();
+        self.rebuild_nav_items();
         cx.notify();
     }
 
@@ -928,6 +972,87 @@ impl Sidebar {
             FileChangeKind::Untracked => Color::Untracked,
             FileChangeKind::Conflicted => Color::Conflict,
         }
+    }
+
+    /// Color for a file row's name label. Untracked files recede while tracked
+    /// changes use the same high-contrast semantic color as their status icon.
+    fn file_name_color(kind: FileChangeKind) -> Color {
+        match kind {
+            FileChangeKind::Untracked => Color::Muted,
+            tracked => Self::file_change_color(tracked),
+        }
+    }
+
+    /// Human-readable name for a change kind, used in chip tooltips.
+    fn kind_display_name(kind: FileChangeKind) -> &'static str {
+        match kind {
+            FileChangeKind::Added => "Added",
+            FileChangeKind::Modified => "Modified",
+            FileChangeKind::Deleted => "Deleted",
+            FileChangeKind::Renamed => "Renamed",
+            FileChangeKind::Copied => "Copied",
+            FileChangeKind::TypeChange => "Type-changed",
+            FileChangeKind::Untracked => "Untracked",
+            FileChangeKind::Conflicted => "Conflicted",
+        }
+    }
+
+    /// Render one interactive change-kind chip for a changes section header.
+    /// The chip doubles as a count badge (`~7`, `?1`, …) and a visibility
+    /// toggle: every kind is shown by default, and clicking a chip hides that
+    /// kind from the list. Shown chips carry the kind's color and a neutral
+    /// outline; hidden chips are dimmed and struck through.
+    fn kind_chip(
+        &self,
+        section: SidebarSection,
+        kind: FileChangeKind,
+        count: usize,
+        hidden: bool,
+        colors: &rgitui_theme::ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let kind_color = Self::file_change_color(kind);
+        let text: SharedString = format!("{}{}", Self::file_change_symbol(kind), count).into();
+        let prefix = match section {
+            SidebarSection::StagedChanges => "staged",
+            _ => "unstaged",
+        };
+        let id = SharedString::from(format!("{}-kind-chip-{}", prefix, kind.short_code()));
+        let name = Self::kind_display_name(kind);
+        let tooltip: SharedString = if hidden {
+            format!("{} hidden — click to show", name).into()
+        } else {
+            format!("Hide {}", name).into()
+        };
+
+        div()
+            .id(id)
+            .h_flex()
+            .items_center()
+            .h(px(16.))
+            .px(px(5.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(colors.border_variant)
+            .when(hidden, |el| el.opacity(0.45))
+            .hover(|s| s.bg(colors.ghost_element_hover))
+            .cursor_pointer()
+            .tooltip(Tooltip::text(tooltip))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.toggle_kind_visibility(section, kind, cx);
+            }))
+            .child({
+                let mut label = Label::new(text).size(LabelSize::XSmall).color(if hidden {
+                    Color::Muted
+                } else {
+                    kind_color
+                });
+                if hidden {
+                    label = label.strikethrough();
+                }
+                label
+            })
     }
 
     fn file_change_symbol(kind: FileChangeKind) -> &'static str {
@@ -951,9 +1076,16 @@ impl Sidebar {
         counts
     }
 
-    fn build_file_tree(files: &[FileStatus]) -> FileTreeNode {
+    /// Build the directory tree for a set of file changes. Files whose kind is
+    /// in `hidden` are skipped; the original index into `files` is preserved for
+    /// every retained file, so downstream `file_idx` lookups into the unfiltered
+    /// `staged`/`unstaged` slices stay valid.
+    fn build_file_tree(files: &[FileStatus], hidden: &HashSet<FileChangeKind>) -> FileTreeNode {
         let mut root = FileTreeNode::default();
         for (idx, file) in files.iter().enumerate() {
+            if hidden.contains(&file.kind) {
+                continue;
+            }
             let mut node = &mut root;
             if let Some(parent) = file.path.parent() {
                 for component in parent.iter().filter_map(|part| part.to_str()) {
@@ -1483,6 +1615,20 @@ impl Render for Sidebar {
                                             .truncate(),
                                     ),
                                 );
+                        }
+
+                        if !is_head && branch.is_merged_into_head == Some(true) {
+                            item = item.child(
+                                div()
+                                    .id(SharedString::from(format!("merged-branch-{i}")))
+                                    .flex_shrink_0()
+                                    .tooltip(Tooltip::text("Merged into current branch"))
+                                    .child(
+                                        rgitui_ui::Icon::new(IconName::GitMerge)
+                                            .size(rgitui_ui::IconSize::XSmall)
+                                            .color(Color::Success),
+                                    ),
+                            );
                         }
 
                         if branch.ahead > 0 || branch.behind > 0 {
@@ -2792,15 +2938,19 @@ impl Render for Sidebar {
                 FileChangeKind::Untracked,
                 FileChangeKind::Conflicted,
             ];
-            let mut breakdown = div().h_flex().gap(px(3.));
+            let mut breakdown = div().h_flex().gap(px(4.));
             for kind in &kind_order {
                 if let Some(&count) = staged_kind_counts.get(kind) {
                     if count > 0 {
-                        let symbol = Self::file_change_symbol(*kind);
-                        let color = Self::file_change_color(*kind);
-                        let text: SharedString = format!("{}{}", symbol, count).into();
-                        breakdown =
-                            breakdown.child(Label::new(text).size(LabelSize::XSmall).color(color));
+                        breakdown = breakdown.child(
+                            Label::new(SharedString::from(format!(
+                                "{}{}",
+                                Self::file_change_symbol(*kind),
+                                count
+                            )))
+                            .size(LabelSize::XSmall)
+                            .color(Self::file_change_color(*kind)),
+                        );
                     }
                 }
             }
@@ -2944,7 +3094,7 @@ impl Render for Sidebar {
                                         .child(
                                             Label::new(file_name)
                                                 .size(LabelSize::XSmall)
-                                                .color(Color::Default)
+                                                .color(Sidebar::file_name_color(file.kind))
                                                 .truncate(),
                                         )
                                         .child(div().flex_1())
@@ -3109,15 +3259,31 @@ impl Render for Sidebar {
                 FileChangeKind::Untracked,
                 FileChangeKind::Conflicted,
             ];
-            let mut breakdown = div().h_flex().gap(px(3.));
+            let mut breakdown = div().h_flex().gap(px(4.));
             for kind in &kind_order {
                 if let Some(&count) = unstaged_kind_counts.get(kind) {
                     if count > 0 {
-                        let symbol = Self::file_change_symbol(*kind);
-                        let color = Self::file_change_color(*kind);
-                        let text: SharedString = format!("{}{}", symbol, count).into();
-                        breakdown =
-                            breakdown.child(Label::new(text).size(LabelSize::XSmall).color(color));
+                        if *kind == FileChangeKind::Untracked {
+                            let hidden = self.unstaged_hidden_kinds.contains(kind);
+                            breakdown = breakdown.child(self.kind_chip(
+                                SidebarSection::UnstagedChanges,
+                                *kind,
+                                count,
+                                hidden,
+                                &colors,
+                                cx,
+                            ));
+                        } else {
+                            breakdown = breakdown.child(
+                                Label::new(SharedString::from(format!(
+                                    "{}{}",
+                                    Self::file_change_symbol(*kind),
+                                    count
+                                )))
+                                .size(LabelSize::XSmall)
+                                .color(Self::file_change_color(*kind)),
+                            );
+                        }
                     }
                 }
             }
@@ -3258,7 +3424,7 @@ impl Render for Sidebar {
                                         .child(
                                             Label::new(file_name)
                                                 .size(LabelSize::XSmall)
-                                                .color(Color::Default)
+                                                .color(Sidebar::file_name_color(file.kind))
                                                 .truncate(),
                                         )
                                         .child(div().flex_1())
@@ -3709,7 +3875,7 @@ mod tests {
     #[test]
     fn test_build_file_tree_empty() {
         let files: Vec<FileStatus> = vec![];
-        let tree = Sidebar::build_file_tree(&files);
+        let tree = Sidebar::build_file_tree(&files, &HashSet::new());
         assert!(tree.file_indices.is_empty());
         assert!(tree.children.is_empty());
     }
@@ -3721,7 +3887,7 @@ mod tests {
             make_file("a.rs", FileChangeKind::Modified),
             make_file("b.rs", FileChangeKind::Added),
         ];
-        let tree = Sidebar::build_file_tree(&files);
+        let tree = Sidebar::build_file_tree(&files, &HashSet::new());
         // Root-level files are indexed at root with empty parent path
         assert_eq!(tree.file_indices.len(), 2);
     }
@@ -3734,7 +3900,7 @@ mod tests {
             make_file("src/foo/bar.rs", FileChangeKind::Deleted),
             make_file("tests/integration_test.rs", FileChangeKind::Added),
         ];
-        let tree = Sidebar::build_file_tree(&files);
+        let tree = Sidebar::build_file_tree(&files, &HashSet::new());
         assert!(tree.children.contains_key("src"));
         assert!(tree.children.contains_key("tests"));
         // src/foo/bar.rs: parent is src/foo, so "foo" is a child of "src" with bar.rs as a file
@@ -3753,7 +3919,7 @@ mod tests {
     #[test]
     fn test_build_file_tree_deep_nesting() {
         let files = vec![make_file("a/b/c/d/e.rs", FileChangeKind::Modified)];
-        let tree = Sidebar::build_file_tree(&files);
+        let tree = Sidebar::build_file_tree(&files, &HashSet::new());
         let node = tree
             .children
             .get("a")
@@ -3770,6 +3936,75 @@ mod tests {
         assert_eq!(node.file_indices.len(), 1);
     }
 
+    #[test]
+    fn test_build_file_tree_no_hidden_includes_all() {
+        let files = vec![
+            make_file("a.rs", FileChangeKind::Modified),
+            make_file("b.rs", FileChangeKind::Untracked),
+        ];
+        // An empty hidden set means "show all" — every file is retained.
+        let tree = Sidebar::build_file_tree(&files, &HashSet::new());
+        assert_eq!(tree.file_indices.len(), 2);
+    }
+
+    #[test]
+    fn test_build_file_tree_hidden_kind_is_excluded() {
+        // Hiding the untracked kind (clicking the `?` chip) removes untracked
+        // files and keeps everything else.
+        let files = vec![
+            make_file("a.rs", FileChangeKind::Modified),
+            make_file("b.rs", FileChangeKind::Untracked),
+            make_file("c.rs", FileChangeKind::Modified),
+        ];
+        let hidden = HashSet::from([FileChangeKind::Untracked]);
+        let tree = Sidebar::build_file_tree(&files, &hidden);
+        // The untracked file (original index 1) is dropped, and the retained
+        // files keep their original indices into the unfiltered slice.
+        assert_eq!(tree.file_indices, vec![0, 2]);
+        assert_eq!(Sidebar::file_tree_file_count(&tree), 2);
+    }
+
+    #[test]
+    fn test_build_file_tree_multiple_hidden_kinds_combine() {
+        // Hiding several kinds removes all of them, leaving the rest.
+        let files = vec![
+            make_file("a.rs", FileChangeKind::Added),
+            make_file("b.rs", FileChangeKind::Modified),
+            make_file("c.rs", FileChangeKind::Untracked),
+        ];
+        let hidden = HashSet::from([FileChangeKind::Added, FileChangeKind::Modified]);
+        let tree = Sidebar::build_file_tree(&files, &hidden);
+        assert_eq!(tree.file_indices, vec![2]);
+    }
+
+    // --- file_name_color tests ---
+
+    #[test]
+    fn test_file_name_color_untracked_is_dimmed() {
+        assert_eq!(
+            Sidebar::file_name_color(FileChangeKind::Untracked),
+            Color::Muted
+        );
+    }
+
+    #[test]
+    fn test_file_name_color_tracked_kinds_use_status_color() {
+        for kind in [
+            FileChangeKind::Added,
+            FileChangeKind::Modified,
+            FileChangeKind::Deleted,
+            FileChangeKind::Renamed,
+            FileChangeKind::Copied,
+            FileChangeKind::TypeChange,
+            FileChangeKind::Conflicted,
+        ] {
+            assert_eq!(
+                Sidebar::file_name_color(kind),
+                Sidebar::file_change_color(kind)
+            );
+        }
+    }
+
     // --- file_tree_file_count tests ---
 
     #[test]
@@ -3784,7 +4019,7 @@ mod tests {
             make_file("a.rs", FileChangeKind::Added),
             make_file("b.rs", FileChangeKind::Modified),
         ];
-        let tree = Sidebar::build_file_tree(&files);
+        let tree = Sidebar::build_file_tree(&files, &HashSet::new());
         assert_eq!(Sidebar::file_tree_file_count(&tree), 2);
     }
 
@@ -3795,7 +4030,7 @@ mod tests {
             make_file("src/lib.rs", FileChangeKind::Added),
             make_file("tests/test.rs", FileChangeKind::Modified),
         ];
-        let tree = Sidebar::build_file_tree(&files);
+        let tree = Sidebar::build_file_tree(&files, &HashSet::new());
         assert_eq!(Sidebar::file_tree_file_count(&tree), 3);
     }
 
@@ -3805,7 +4040,7 @@ mod tests {
             make_file("a/b/c.rs", FileChangeKind::Added),
             make_file("a/d.rs", FileChangeKind::Modified),
         ];
-        let tree = Sidebar::build_file_tree(&files);
+        let tree = Sidebar::build_file_tree(&files, &HashSet::new());
         // a/b/c.rs and a/d.rs = 2 files total
         assert_eq!(Sidebar::file_tree_file_count(&tree), 2);
     }
@@ -3834,6 +4069,7 @@ mod tests {
             author_email: None,
             last_commit_time: None,
             is_merged_into_main: None,
+            is_merged_into_head: None,
         }
     }
 

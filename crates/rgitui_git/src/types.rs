@@ -74,6 +74,8 @@ pub struct BranchInfo {
     /// Whether this branch is merged into the default branch (main/master).
     /// None = not yet computed, Some(false) = checked and not merged, Some(true) = merged.
     pub is_merged_into_main: Option<bool>,
+    /// Whether this local branch is merged into the currently checked-out branch.
+    pub is_merged_into_head: Option<bool>,
 }
 
 /// Information about a tag.

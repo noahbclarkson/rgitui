@@ -70,7 +70,7 @@ pub(crate) fn generate_hunk_patch_for_repo(
     let mut file_header_written = false;
 
     diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-        let Some(_) = hunk else {
+        let Some(hunk) = hunk else {
             if !file_header_written {
                 let content = String::from_utf8_lossy(line.content());
                 match line.origin() {
@@ -100,6 +100,11 @@ pub(crate) fn generate_hunk_patch_for_repo(
                 let old_path = delta.old_file().path().unwrap_or(Path::new(""));
                 let new_path = delta.new_file().path().unwrap_or(Path::new(""));
                 patch_text.clear();
+                patch_text.push_str(&format!(
+                    "diff --git a/{} b/{}\n",
+                    old_path.display(),
+                    new_path.display()
+                ));
                 patch_text.push_str(&format!("--- a/{}\n", old_path.display()));
                 patch_text.push_str(&format!("+++ b/{}\n", new_path.display()));
                 file_header_written = true;
@@ -107,17 +112,31 @@ pub(crate) fn generate_hunk_patch_for_repo(
 
             let content = String::from_utf8_lossy(line.content());
             match line.origin() {
-                'H' => patch_text.push_str(&content),
-                '+' => {
-                    patch_text.push('+');
-                    patch_text.push_str(&content);
+                'H' => {
+                    let (old_start, old_lines, new_start, new_lines) = if staged {
+                        (
+                            hunk.new_start(),
+                            hunk.new_lines(),
+                            hunk.old_start(),
+                            hunk.old_lines(),
+                        )
+                    } else {
+                        (
+                            hunk.old_start(),
+                            hunk.old_lines(),
+                            hunk.new_start(),
+                            hunk.new_lines(),
+                        )
+                    };
+                    patch_text.push_str(&format!(
+                        "@@ -{},{} +{},{} @@\n",
+                        old_start, old_lines, new_start, new_lines
+                    ));
                 }
-                '-' => {
-                    patch_text.push('-');
-                    patch_text.push_str(&content);
-                }
-                ' ' => {
-                    patch_text.push(' ');
+                '+' | '-' | ' ' => {
+                    if let Some(sign) = emitted_sign(line.origin(), staged) {
+                        patch_text.push(sign);
+                    }
                     patch_text.push_str(&content);
                 }
                 // EOFNL markers ('=' context, '>' added, '<' deleted) carry the
@@ -1630,6 +1649,42 @@ mod diff_integration_tests {
     /// This is the contract BUG-14 corrected: the previous code matched additions
     /// against the `old` slot, which is always `None` for viewer-emitted additions,
     /// silently producing a context-only no-op patch.
+    #[test]
+    fn hunk_patch_stages_and_parses_as_a_complete_patch() {
+        let (_dir, path) = make_staged_change_repo();
+        let repo = git2::Repository::open(&path).unwrap();
+
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let mut index = repo.index().unwrap();
+        index.read_tree(&head_tree).unwrap();
+        index.write().unwrap();
+
+        let patch_text =
+            generate_hunk_patch_for_repo(&repo, Path::new("data.txt"), 0, false).unwrap();
+        assert!(patch_text.starts_with("diff --git "));
+        let diff = git2::Diff::from_buffer(patch_text.as_bytes()).unwrap();
+        repo.apply(&diff, git2::ApplyLocation::Index, None).unwrap();
+    }
+
+    #[test]
+    fn hunk_patch_unstaging_reverses_the_change() {
+        let (_dir, path) = make_staged_change_repo();
+        let repo = git2::Repository::open(&path).unwrap();
+
+        let patch_text =
+            generate_hunk_patch_for_repo(&repo, Path::new("data.txt"), 0, true).unwrap();
+        assert!(patch_text.contains("-beta_modified\n"));
+        assert!(patch_text.contains("+beta\n"));
+        let diff = git2::Diff::from_buffer(patch_text.as_bytes()).unwrap();
+        repo.apply(&diff, git2::ApplyLocation::Index, None).unwrap();
+
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let staged = repo
+            .diff_tree_to_index(Some(&head_tree), None, None)
+            .unwrap();
+        assert_eq!(staged.deltas().len(), 0);
+    }
+
     #[test]
     fn line_patch_unstage_addition_negates_to_deletion() {
         let (_dir, path) = make_staged_change_repo();

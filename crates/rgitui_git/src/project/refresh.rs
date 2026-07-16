@@ -460,6 +460,7 @@ fn gather_refresh_data_internal(
         .ok()
         .and_then(|r| r.shorthand().map(String::from));
     let head_detached = repo.head_detached().unwrap_or(false);
+    let head_tip = repo.head().ok().and_then(|reference| reference.target());
     let repo_state = RepoState::from_git2(repo.state());
 
     // Current user email (for "My Branches" / "My Commits" filtering)
@@ -527,6 +528,7 @@ fn gather_refresh_data_internal(
                 author_email,
                 last_commit_time,
                 is_merged_into_main: None,
+                is_merged_into_head: None,
             });
         }
 
@@ -582,6 +584,18 @@ fn gather_refresh_data_internal(
                         .unwrap_or(false)
                 });
                 branch.is_merged_into_main = Some(is_merged);
+            }
+        }
+
+        // Match `git branch --merged`: compare each local tip with the
+        // currently checked-out commit, not only with main/master.
+        if let Some(head_tip_oid) = head_tip {
+            for branch in branches.iter_mut().filter(|branch| !branch.is_remote) {
+                branch.is_merged_into_head = Some(branch.tip_oid.is_some_and(|tip_oid| {
+                    repo.merge_base(tip_oid, head_tip_oid)
+                        .map(|merge_base| merge_base == tip_oid)
+                        .unwrap_or(false)
+                }));
             }
         }
     }
@@ -1415,5 +1429,32 @@ mod is_merged_tests {
             mb, d,
             "merge_base(branch=D, main=C) should NOT equal D when main advanced independently"
         );
+    }
+
+    #[test]
+    fn merged_status_is_computed_against_current_branch() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        configure_signature(&repo);
+
+        let a = commit(&repo, "refs/heads/main", "A", None);
+        let _feature_tip = commit(&repo, "refs/heads/feature", "B", Some(a));
+        let _diverged_tip = commit(&repo, "refs/heads/diverged", "D", Some(a));
+        repo.set_head("refs/heads/feature").unwrap();
+        drop(repo);
+
+        let data = gather_refresh_data_internal(dir.path(), false, 100, None, None).unwrap();
+        let main = data
+            .branches
+            .iter()
+            .find(|branch| branch.name == "main")
+            .unwrap();
+        let diverged = data
+            .branches
+            .iter()
+            .find(|branch| branch.name == "diverged")
+            .unwrap();
+        assert_eq!(main.is_merged_into_head, Some(true));
+        assert_eq!(diverged.is_merged_into_head, Some(false));
     }
 }

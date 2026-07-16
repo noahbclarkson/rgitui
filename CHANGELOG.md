@@ -1,5 +1,28 @@
 ## [Unreleased]
 
+### Added
+
+- **DeepSeek AI provider.** Settings now offers DeepSeek with the current
+  `deepseek-v4-flash` and `deepseek-v4-pro` models, including repository tool
+  calls through DeepSeek's OpenAI-compatible chat API.
+- **Merged-branch indicators.** Local branches already reachable from the
+  current branch now show a green merge icon, matching `git branch --merged`.
+- **Untracked-file filter.** The `?N` count in the Unstaged header is clickable,
+  making it easy to hide or restore a large untracked-file backdrop per session.
+
+### Changed
+
+- **Tracked changes use semantic filename colors** while untracked files are
+  dimmed, so active modifications stand out without widening the sidebar.
+
+### Fixed
+
+- Auth Preferences no longer collapses horizontally in the settings window.
+- Hunk staging now emits complete patches, and hunk unstaging correctly reverses
+  the selected change instead of applying the staged direction again.
+- Completing a clone opens and refreshes the cloned repository in its own tab;
+  it no longer replaces the graph data inside the previously active project tab.
+
 ## [0.3.0] - 2026-06-02
 
 A large correctness, safety, and quality release. It closes a cluster of

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use gpui::{Context, Entity, SharedString};
+use gpui::{AppContext, Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator};
 use rgitui_diff::{DiffViewer, DiffViewerEvent};
 use rgitui_git::{
@@ -2647,27 +2647,45 @@ pub(super) fn subscribe_repo_clone_dialog(
         repo_clone_dialog,
         |this, _cd, event: &RepoCloneEvent, cx| match event {
             RepoCloneEvent::CloneRepo { url, path } => {
-                if let Some(tab) = this.tabs.get(this.active_tab) {
-                    let project = tab.project.clone();
-                    let url = url.clone();
-                    let path = path.clone();
-                    this.show_toast(
-                        format!("Cloning '{}' to '{}'", url, path.display()),
-                        ToastKind::Info,
-                        cx,
-                    );
-                    let dialog = this.dialogs.repo_clone_dialog.clone();
-                    let task = project.update(cx, |proj, cx| proj.clone_repo(&url, &path, cx));
-                    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                        let outcome = task.await;
-                        cx.update(|cx| {
-                            dialog.update(cx, |d, cx| {
-                                d.on_clone_finished(outcome.map_err(|e| e.to_string()), cx);
-                            });
+                let url = url.clone();
+                let path = path.clone();
+                // The home screen also exposes Clone, so create a short-lived
+                // project entity when there is no active repository to own the
+                // operation. It is kept alive until the clone task completes.
+                let project = this
+                    .tabs
+                    .get(this.active_tab)
+                    .map(|tab| tab.project.clone())
+                    .unwrap_or_else(|| cx.new(|_| rgitui_git::GitProject::empty_at(path.clone())));
+                this.show_toast(
+                    format!("Cloning '{}' to '{}'", url, path.display()),
+                    ToastKind::Info,
+                    cx,
+                );
+                let dialog = this.dialogs.repo_clone_dialog.clone();
+                let task = project.update(cx, |proj, cx| proj.clone_repo(&url, &path, cx));
+                cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+                    let _project_keepalive = project;
+                    let outcome = match task.await {
+                        Ok(()) => cx
+                            .update(|cx| {
+                                this.update(cx, |this, cx| {
+                                    this.open_repo(path.clone(), cx)?;
+                                    this.refresh_all_tabs_prioritized(cx);
+                                    Ok::<(), anyhow::Error>(())
+                                })
+                            })
+                            .map_err(|error| anyhow::anyhow!(error.to_string()))
+                            .and_then(|result| result),
+                        Err(error) => Err(error),
+                    };
+                    cx.update(|cx| {
+                        dialog.update(cx, |d, cx| {
+                            d.on_clone_finished(outcome.map_err(|e| e.to_string()), cx);
                         });
-                    })
-                    .detach();
-                }
+                    });
+                })
+                .detach();
             }
             RepoCloneEvent::Dismissed => {
                 this.focus.pending_focus_restore = true;

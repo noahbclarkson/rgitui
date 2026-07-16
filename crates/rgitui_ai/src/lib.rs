@@ -240,6 +240,17 @@ impl AiGenerator {
                         generate_openai(&req).await
                     }
                 }
+                "deepseek" => {
+                    if use_tools {
+                        let mut tc = ToolContext {
+                            repo_path: &repo_path,
+                            on_status: &mut on_tool_call,
+                        };
+                        generate_deepseek_with_tools(&req, &mut tc).await
+                    } else {
+                        generate_deepseek(&req).await
+                    }
+                }
                 "anthropic" => {
                     if use_tools {
                         let mut tc = ToolContext {
@@ -351,10 +362,25 @@ async fn generate_gemini(req: &GenerateRequest<'_>) -> Result<String> {
 
 /// Generate a commit message using the OpenAI API.
 async fn generate_openai(req: &GenerateRequest<'_>) -> Result<String> {
-    let api_key = req
-        .api_key
-        .as_ref()
-        .context("OpenAI API key not configured. Set it in Settings > AI.")?;
+    generate_openai_compatible(req, "OpenAI", "https://api.openai.com/v1/chat/completions").await
+}
+
+/// Generate a commit message using DeepSeek's OpenAI-compatible API.
+async fn generate_deepseek(req: &GenerateRequest<'_>) -> Result<String> {
+    generate_openai_compatible(req, "DeepSeek", "https://api.deepseek.com/chat/completions").await
+}
+
+async fn generate_openai_compatible(
+    req: &GenerateRequest<'_>,
+    provider: &str,
+    endpoint: &str,
+) -> Result<String> {
+    let api_key = req.api_key.as_ref().with_context(|| {
+        format!(
+            "{} API key not configured. Set it in Settings > AI.",
+            provider
+        )
+    })?;
 
     let prompt = build_prompt(req.diff, req.summary, req.commit_style, req.project_context);
 
@@ -371,31 +397,31 @@ async fn generate_openai(req: &GenerateRequest<'_>) -> Result<String> {
     let body_bytes = serde_json::to_vec(&json_body)?;
     let request = Request::builder()
         .method(Method::POST)
-        .uri("https://api.openai.com/v1/chat/completions")
+        .uri(endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .body(AsyncBody::from(body_bytes))
-        .context("Failed to build OpenAI request")?;
+        .with_context(|| format!("Failed to build {} request", provider))?;
 
     let mut response = req
         .client
         .send(request)
         .await
-        .context("Failed to send request to OpenAI API")?;
+        .with_context(|| format!("Failed to send request to {} API", provider))?;
 
     let status = response.status();
     let body = read_response_body(&mut response).await?;
 
     if !status.is_success() {
         let text = String::from_utf8_lossy(&body);
-        anyhow::bail!("OpenAI API error ({}): {}", status, text);
+        anyhow::bail!("{} API error ({}): {}", provider, status, text);
     }
 
-    let json: serde_json::Value =
-        serde_json::from_slice(&body).context("Failed to parse OpenAI response")?;
+    let json: serde_json::Value = serde_json::from_slice(&body)
+        .with_context(|| format!("Failed to parse {} response", provider))?;
     let text = json["choices"][0]["message"]["content"]
         .as_str()
-        .context("No text in OpenAI response")?
+        .with_context(|| format!("No text in {} response", provider))?
         .trim()
         .to_string();
 
@@ -705,10 +731,40 @@ async fn generate_openai_with_tools(
     req: &GenerateRequest<'_>,
     tc: &mut ToolContext<'_>,
 ) -> Result<String> {
-    let api_key = req
-        .api_key
-        .as_ref()
-        .context("OpenAI API key not configured. Set it in Settings > AI.")?;
+    generate_openai_compatible_with_tools(
+        req,
+        tc,
+        "OpenAI",
+        "https://api.openai.com/v1/chat/completions",
+    )
+    .await
+}
+
+async fn generate_deepseek_with_tools(
+    req: &GenerateRequest<'_>,
+    tc: &mut ToolContext<'_>,
+) -> Result<String> {
+    generate_openai_compatible_with_tools(
+        req,
+        tc,
+        "DeepSeek",
+        "https://api.deepseek.com/chat/completions",
+    )
+    .await
+}
+
+async fn generate_openai_compatible_with_tools(
+    req: &GenerateRequest<'_>,
+    tc: &mut ToolContext<'_>,
+    provider: &str,
+    endpoint: &str,
+) -> Result<String> {
+    let api_key = req.api_key.as_ref().with_context(|| {
+        format!(
+            "{} API key not configured. Set it in Settings > AI.",
+            provider
+        )
+    })?;
 
     let system_prompt =
         build_tool_prompt(req.diff, req.summary, req.commit_style, req.project_context);
@@ -737,28 +793,28 @@ async fn generate_openai_with_tools(
         let body_bytes = serde_json::to_vec(&json_body)?;
         let request = Request::builder()
             .method(Method::POST)
-            .uri("https://api.openai.com/v1/chat/completions")
+            .uri(endpoint)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
             .body(AsyncBody::from(body_bytes))
-            .context("Failed to build OpenAI request")?;
+            .with_context(|| format!("Failed to build {} request", provider))?;
 
         let mut response = req
             .client
             .send(request)
             .await
-            .context("Failed to send request to OpenAI API")?;
+            .with_context(|| format!("Failed to send request to {} API", provider))?;
 
         let status = response.status();
         let body = read_response_body(&mut response).await?;
 
         if !status.is_success() {
             let text = String::from_utf8_lossy(&body);
-            anyhow::bail!("OpenAI API error ({}): {}", status, text);
+            anyhow::bail!("{} API error ({}): {}", provider, status, text);
         }
 
-        let json: serde_json::Value =
-            serde_json::from_slice(&body).context("Failed to parse OpenAI response")?;
+        let json: serde_json::Value = serde_json::from_slice(&body)
+            .with_context(|| format!("Failed to parse {} response", provider))?;
 
         let message = &json["choices"][0]["message"];
         let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("");
@@ -770,7 +826,7 @@ async fn generate_openai_with_tools(
             if let Some(content) = message["content"].as_str() {
                 return Ok(content.trim().to_string());
             }
-            anyhow::bail!("No text in OpenAI response");
+            anyhow::bail!("No text in {} response", provider);
         }
 
         if finish_reason == "tool_calls" {
@@ -809,7 +865,8 @@ async fn generate_openai_with_tools(
         }
 
         anyhow::bail!(
-            "Unexpected OpenAI response: finish_reason={}",
+            "Unexpected {} response: finish_reason={}",
+            provider,
             finish_reason
         );
     }

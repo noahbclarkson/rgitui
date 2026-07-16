@@ -1520,6 +1520,7 @@ impl SettingsView {
         div()
             .v_flex()
             .w_full()
+            .min_w_0()
             .gap(px(4.))
             .pb(px(12.))
             .child(
@@ -1546,6 +1547,8 @@ impl SettingsView {
         let colors = cx.colors().clone();
         div()
             .v_flex()
+            .w_full()
+            .min_w_0()
             .w_full()
             .p(px(16.))
             .gap(px(12.))
@@ -2157,7 +2160,7 @@ impl SettingsView {
             .child(Self::setting_label("Provider", "Choose your AI provider."))
             .child(self.pill_group(
                 "provider",
-                &["gemini", "openai", "anthropic"],
+                &["gemini", "openai", "anthropic", "deepseek"],
                 &self.ai_provider,
                 |this, value, cx| {
                     this.ai_provider = value;
@@ -2166,6 +2169,7 @@ impl SettingsView {
                         "gemini" => "gemini-3-flash-preview".into(),
                         "openai" => "gpt-5-mini".into(),
                         "anthropic" => "claude-sonnet-4-6".into(),
+                        "deepseek" => "deepseek-v4-flash".into(),
                         _ => "gemini-3-flash-preview".into(),
                     };
                     this.save_settings(cx);
@@ -2195,6 +2199,7 @@ impl SettingsView {
                 "claude-sonnet-4-5-20241022",
                 "claude-haiku-4-5",
             ],
+            "deepseek" => vec!["deepseek-v4-flash", "deepseek-v4-pro"],
             _ => vec!["gemini-2.5-flash"],
         };
         provider_card = provider_card
@@ -2253,7 +2258,7 @@ impl SettingsView {
     // ── Git section ──────────────────────────────────────────────────────
     fn render_git_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
-        let mut section = div().v_flex().w_full().flex_grow().gap(px(16.));
+        let mut section = div().v_flex().w_full().min_w_0().gap(px(16.));
         section = section.child(Self::section_header(
             IconName::GitBranch,
             "Accounts & Credentials",
@@ -3965,7 +3970,7 @@ impl SettingsView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut content_container = div().v_flex().w_full().gap(px(16.));
+        let mut content_container = div().v_flex().w_full().min_w_0().gap(px(16.));
 
         let content = match self.active_section {
             SettingsSection::Theme => self.render_theme_section(cx).into_any_element(),

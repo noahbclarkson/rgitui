@@ -2609,12 +2609,11 @@ impl GitProject {
             None,
             cx,
         );
-        let commit_limit = self.commit_limit;
         let auth = rgitui_settings::current_git_auth_runtime();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let url_inner = url.clone();
             let path_inner = path.clone();
-            let result: anyhow::Result<RefreshData> = cx
+            let result: anyhow::Result<()> = cx
                 .background_executor()
                 .spawn(async move {
                     if let Err(git2_err) = git2::Repository::clone(&url_inner, &path_inner) {
@@ -2634,26 +2633,23 @@ impl GitProject {
                             anyhow::bail!("git clone failed: {}", stderr);
                         }
                     }
-                    gather_refresh_data(&path_inner, commit_limit)
+                    Ok(())
                 })
                 .await;
             // Propagate the actual clone outcome to the returned task (not just
             // entity-aliveness) so the caller can report success/failure to the
             // clone dialog while still showing the operation toast.
             match result {
-                Ok(data) => {
+                Ok(()) => {
                     cx.update(|cx| {
                         this.update(cx, |this, cx| {
-                            this.apply_refresh_data(data);
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Clone,
                                 format!("Cloned '{}'", url),
-                                (Some(format!("Opened: {}", path.display())), None, None),
+                                (Some(format!("Created: {}", path.display())), None, None),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::StatusChanged);
-                            cx.notify();
                         })
                     })?;
                     Ok(())
@@ -3533,6 +3529,7 @@ pub fn branches_containing_commit(
                 author_email: None,
                 last_commit_time: None,
                 is_merged_into_main: None,
+                is_merged_into_head: None,
             });
             continue;
         }
@@ -3557,6 +3554,7 @@ pub fn branches_containing_commit(
                     author_email: None,
                     last_commit_time: None,
                     is_merged_into_main: None,
+                    is_merged_into_head: None,
                 });
             }
         }
