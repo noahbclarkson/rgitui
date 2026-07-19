@@ -40,7 +40,11 @@ fn run_git_command(
     remote_url: &Option<String>,
     force_https: bool,
 ) -> Result<Option<String>> {
-    let mut config_args: Vec<String> = Vec::new();
+    // Bound network inactivity for both HTTP and SSH transports. Git still owns
+    // the child process, but these limits prevent a dead peer from hanging an
+    // operation indefinitely when no explicit UI cancellation token exists.
+    let mut config_args: Vec<String> =
+        vec!["http.lowSpeedLimit=1".into(), "http.lowSpeedTime=30".into()];
     let mut cmd = super::git_command();
     cmd.current_dir(repo_path).env("GIT_TERMINAL_PROMPT", "0");
 
@@ -57,17 +61,7 @@ fn run_git_command(
         } else if !force_https {
             // Normal mode: use SSH key or HTTPS credentials as appropriate.
             if is_ssh_url(url) {
-                if let Some(ref ssh_key_path) = auth.ssh_key_path {
-                    if ssh_key_path.exists() {
-                        cmd.env(
-                            "GIT_SSH_COMMAND",
-                            format!(
-                                "ssh -i {} -o IdentitiesOnly=yes",
-                                shell_escape(ssh_key_path.to_string_lossy().as_ref())
-                            ),
-                        );
-                    }
-                }
+                cmd.env("GIT_SSH_COMMAND", ssh_command(auth.ssh_key_path.as_deref()));
             } else {
                 // HTTPS remote - inject credentials.
                 inject_https_credentials(&mut cmd, auth, url);
@@ -112,6 +106,18 @@ fn run_git_command(
             }
         );
     }
+}
+
+fn ssh_command(key_path: Option<&Path>) -> String {
+    let mut command =
+        String::from("ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2");
+    if let Some(key_path) = key_path.filter(|path| path.exists()) {
+        command.push_str(&format!(
+            " -i {} -o IdentitiesOnly=yes",
+            shell_escape(key_path.to_string_lossy().as_ref())
+        ));
+    }
+    command
 }
 
 /// Check if an error message indicates SSH authentication failure.
@@ -547,5 +553,13 @@ mod tests {
     #[test]
     fn insteadof_pair_no_op_for_https() {
         assert_eq!(insteadof_pair("https://github.com/user/repo.git"), None);
+    }
+
+    #[test]
+    fn ssh_transport_has_bounded_connect_and_idle_timeouts() {
+        let command = ssh_command(None);
+        assert!(command.contains("ConnectTimeout=15"));
+        assert!(command.contains("ServerAliveInterval=15"));
+        assert!(command.contains("ServerAliveCountMax=2"));
     }
 }

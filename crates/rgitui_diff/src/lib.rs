@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -248,27 +249,180 @@ enum SyntaxLineHighlighter {
     },
 }
 
-/// Cache key: (file_path, is_dark_theme, commit_id, hunk_count, additions, deletions).
-/// `commit_id` is empty for working-tree diffs (staged/unstaged).
-type DisplayCacheKey = (String, bool, String, usize, usize, usize);
+/// Cache key for pre-computed display rows. `commit_id` is empty for mutable
+/// working-tree diffs, so those entries also include staged/unstaged identity
+/// and a fingerprint of the full `FileDiff` content.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct DisplayCacheKey {
+    file_path: String,
+    is_dark: bool,
+    commit_id: String,
+    is_staged: bool,
+    content_fingerprint: u64,
+}
+
+impl DisplayCacheKey {
+    fn new(
+        file_path: String,
+        is_dark: bool,
+        commit_id: String,
+        is_staged: bool,
+        diff: &FileDiff,
+    ) -> Self {
+        Self {
+            file_path,
+            is_dark,
+            commit_id,
+            is_staged,
+            content_fingerprint: file_diff_fingerprint(diff),
+        }
+    }
+}
+
+/// Hash every field that affects rendered diff rows. The cache also stores and
+/// compares the source `FileDiff`, so a theoretical hash collision is a cache
+/// miss rather than stale rendered content.
+fn file_diff_fingerprint(diff: &FileDiff) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    diff.path.hash(&mut hasher);
+    diff.kind.hash(&mut hasher);
+    diff.additions.hash(&mut hasher);
+    diff.deletions.hash(&mut hasher);
+    diff.hunks.len().hash(&mut hasher);
+    for hunk in &diff.hunks {
+        hunk.old_start.hash(&mut hasher);
+        hunk.old_lines.hash(&mut hasher);
+        hunk.new_start.hash(&mut hasher);
+        hunk.new_lines.hash(&mut hasher);
+        hunk.header.hash(&mut hasher);
+        hunk.lines.len().hash(&mut hasher);
+        for line in &hunk.lines {
+            std::mem::discriminant(line).hash(&mut hasher);
+            match line {
+                DiffLine::Context(text) | DiffLine::Addition(text) | DiffLine::Deletion(text) => {
+                    text.hash(&mut hasher);
+                }
+            }
+        }
+    }
+    hasher.finish()
+}
 
 /// Pre-computed display rows cached to avoid redundant syntax highlighting.
-#[derive(Clone)]
 struct CachedDisplayRows {
     display_rows: Arc<Vec<DisplayRow>>,
     sbs_rows: Arc<Vec<SideBySideRow>>,
+    display_longest_row_ix: usize,
+    source_diff: Arc<FileDiff>,
+}
+
+struct CachedDisplayRowsHit {
+    display_rows: Arc<Vec<DisplayRow>>,
+    sbs_rows: Arc<Vec<SideBySideRow>>,
+    display_longest_row_ix: usize,
+}
+
+struct PreparedDisplayRows {
+    display_rows: Arc<Vec<DisplayRow>>,
+    sbs_rows: Arc<Vec<SideBySideRow>>,
+    display_longest_row_ix: usize,
+}
+
+const DISPLAY_CACHE_MAX_ENTRIES: usize = 50;
+/// Approximate memory bound expressed in prepared rows. It complements the
+/// entry cap so a handful of unusually large diffs cannot dominate the cache.
+const DISPLAY_CACHE_MAX_ROWS: usize = 200_000;
+
+#[derive(Default)]
+struct DisplayCache {
+    entries: HashMap<DisplayCacheKey, CachedDisplayRows>,
+    recency: VecDeque<DisplayCacheKey>,
+    total_rows: usize,
+}
+
+impl DisplayCache {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.recency.clear();
+        self.total_rows = 0;
+    }
+
+    fn get(&mut self, key: &DisplayCacheKey, diff: &FileDiff) -> Option<CachedDisplayRowsHit> {
+        let matches = self
+            .entries
+            .get(key)
+            .is_some_and(|cached| cached.source_diff.as_ref() == diff);
+        if !matches {
+            // Remove a theoretical fingerprint collision rather than allowing
+            // it to replace or return rows for different source content.
+            self.remove(key);
+            return None;
+        }
+
+        let cached = self.entries.get(key)?;
+        let result = CachedDisplayRowsHit {
+            display_rows: Arc::clone(&cached.display_rows),
+            sbs_rows: Arc::clone(&cached.sbs_rows),
+            display_longest_row_ix: cached.display_longest_row_ix,
+        };
+        self.touch(key);
+        Some(result)
+    }
+
+    fn insert(&mut self, key: DisplayCacheKey, value: CachedDisplayRows) {
+        let row_cost = Self::row_cost(&value);
+        self.remove(&key);
+
+        // An entry larger than the entire budget is still displayed by the
+        // viewer, but retaining it would immediately evict the useful cache.
+        if row_cost > DISPLAY_CACHE_MAX_ROWS {
+            return;
+        }
+
+        while self.entries.len() >= DISPLAY_CACHE_MAX_ENTRIES
+            || self.total_rows.saturating_add(row_cost) > DISPLAY_CACHE_MAX_ROWS
+        {
+            let Some(oldest) = self.recency.pop_front() else {
+                break;
+            };
+            if let Some(evicted) = self.entries.remove(&oldest) {
+                self.total_rows = self.total_rows.saturating_sub(Self::row_cost(&evicted));
+            }
+        }
+
+        self.total_rows += row_cost;
+        self.recency.push_back(key.clone());
+        self.entries.insert(key, value);
+    }
+
+    fn remove(&mut self, key: &DisplayCacheKey) {
+        if let Some(removed) = self.entries.remove(key) {
+            self.total_rows = self.total_rows.saturating_sub(Self::row_cost(&removed));
+        }
+        self.recency.retain(|existing| existing != key);
+    }
+
+    fn touch(&mut self, key: &DisplayCacheKey) {
+        self.recency.retain(|existing| existing != key);
+        self.recency.push_back(key.clone());
+    }
+
+    fn row_cost(value: &CachedDisplayRows) -> usize {
+        value.display_rows.len() + value.sbs_rows.len()
+    }
 }
 
 /// A diff viewer panel that displays file diffs with syntax coloring.
 pub struct DiffViewer {
-    diff: Option<FileDiff>,
+    diff: Option<Arc<FileDiff>>,
     display_mode: DiffDisplayMode,
     file_path: Option<String>,
     is_staged: bool,
     display_rows: Arc<Vec<DisplayRow>>,
     sbs_rows: Arc<Vec<SideBySideRow>>,
     three_way_rows: Arc<Vec<ThreeWayRow>>,
-    three_way_diff: Option<ThreeWayFileDiff>,
+    display_longest_row_ix: usize,
+    three_way_diff: Option<Arc<ThreeWayFileDiff>>,
     scroll_handle: UniformListScrollHandle,
     /// Variable-height virtualized list state used by wrap-mode rendering.
     /// `gpui::list` caches per-row measurements in a SumTree so only the
@@ -292,13 +446,15 @@ pub struct DiffViewer {
     /// Set when a diff fetch fails so the viewer can surface the error instead of
     /// silently falling back to the empty placeholder.
     error: Option<String>,
-    /// LRU cache for computed display rows, keyed by (path, is_dark, commit_id, hunks, additions, deletions).
-    display_cache: HashMap<DisplayCacheKey, CachedDisplayRows>,
-    /// Bumped on every call that changes what's displayed (`set_diff`,
-    /// `set_three_way_diff`, `clear`). A background refresh captures this before
-    /// computing and re-checks it before applying, so a stale recompute can't
-    /// clobber a newer user selection.
+    /// Bounded LRU cache for computed display rows.
+    display_cache: DisplayCache,
+    /// Bumped when the selected diff content changes. Workspace-level diff
+    /// refreshes use this to reject stale repository results.
     generation: u64,
+    /// Independently guards background row preparation. Theme changes and
+    /// loading/error states invalidate presentation work without pretending the
+    /// selected repository diff changed.
+    preparation_generation: u64,
 }
 
 /// Whether two file diffs would render identically. Used to skip a refresh that
@@ -310,6 +466,10 @@ fn file_diffs_render_equal(a: &FileDiff, b: &FileDiff) -> bool {
         && a.additions == b.additions
         && a.deletions == b.deletions
         && a.hunks == b.hunks
+}
+
+fn should_apply_prepared(current_generation: u64, prepared_generation: u64) -> bool {
+    current_generation == prepared_generation
 }
 
 impl EventEmitter<DiffViewerEvent> for DiffViewer {}
@@ -329,6 +489,7 @@ impl DiffViewer {
             display_rows: Arc::new(Vec::new()),
             sbs_rows: Arc::new(Vec::new()),
             three_way_rows: Arc::new(Vec::new()),
+            display_longest_row_ix: 0,
             three_way_diff: None,
             scroll_handle: UniformListScrollHandle::new(),
             wrap_list_state: ListState::new(0, ListAlignment::Top, px(200.)),
@@ -342,8 +503,9 @@ impl DiffViewer {
             pending_scroll_top: None,
             loading: false,
             error: None,
-            display_cache: HashMap::new(),
+            display_cache: DisplayCache::default(),
             generation: 0,
+            preparation_generation: 0,
         }
     }
 
@@ -357,6 +519,14 @@ impl DiffViewer {
         // Clear the display cache since the appearance changed.
         self.display_cache.clear();
         self.current_appearance = appearance;
+        // Three-way rows are plain text and theme-independent. In particular,
+        // do not invalidate an in-flight three-way preparation, which would
+        // otherwise leave its loading state waiting for a discarded result.
+        if self.three_way_diff.is_some() {
+            cx.notify();
+            return;
+        }
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
         let colors = cx.colors();
         let added_word_bg = HighlightStyle {
             background_color: Some(gpui::Hsla {
@@ -372,26 +542,78 @@ impl DiffViewer {
             }),
             ..Default::default()
         };
-        if let Some(ref diff) = self.diff {
-            if let Some(ref path) = self.file_path {
-                self.display_rows = Arc::new(Self::compute_display_rows(
-                    diff,
-                    path,
-                    appearance,
-                    added_word_bg,
-                    deleted_word_bg,
-                ));
-                self.sbs_rows = Arc::new(Self::compute_sbs_rows(
-                    diff,
-                    path,
-                    appearance,
-                    added_word_bg,
-                    deleted_word_bg,
-                ));
-            }
+        if let (Some(diff), Some(path)) = (self.diff.clone(), self.file_path.clone()) {
+            let cache_key = DisplayCacheKey::new(
+                path.clone(),
+                appearance == Appearance::Dark,
+                self.commit_id.clone(),
+                self.is_staged,
+                &diff,
+            );
+            self.spawn_display_preparation(
+                diff,
+                path,
+                cache_key,
+                appearance,
+                added_word_bg,
+                deleted_word_bg,
+                cx,
+            );
         }
-        self.sync_wrap_list_state();
         cx.notify();
+    }
+
+    fn spawn_display_preparation(
+        &mut self,
+        diff: Arc<FileDiff>,
+        path: String,
+        cache_key: DisplayCacheKey,
+        appearance: Appearance,
+        added_word_bg: HighlightStyle,
+        deleted_word_bg: HighlightStyle,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self.preparation_generation;
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let diff_for_prepare = Arc::clone(&diff);
+            let path_for_prepare = path.clone();
+            let prepared = cx
+                .background_executor()
+                .spawn(async move {
+                    Self::prepare_display_rows(
+                        &diff_for_prepare,
+                        &path_for_prepare,
+                        appearance,
+                        added_word_bg,
+                        deleted_word_bg,
+                    )
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                if !should_apply_prepared(this.preparation_generation, generation) {
+                    return;
+                }
+
+                this.display_cache.insert(
+                    cache_key,
+                    CachedDisplayRows {
+                        display_rows: Arc::clone(&prepared.display_rows),
+                        sbs_rows: Arc::clone(&prepared.sbs_rows),
+                        display_longest_row_ix: prepared.display_longest_row_ix,
+                        source_diff: Arc::clone(&diff),
+                    },
+                );
+                this.display_rows = prepared.display_rows;
+                this.sbs_rows = prepared.sbs_rows;
+                this.display_longest_row_ix = prepared.display_longest_row_ix;
+                this.loading = false;
+                this.sync_wrap_list_state();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -413,7 +635,7 @@ impl DiffViewer {
     ) {
         log::debug!("DiffViewer::set_diff: path={} staged={}", path, staged);
         self.generation = self.generation.wrapping_add(1);
-        self.loading = false;
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
         self.error = None;
         // Showing a standard diff supersedes any active conflict view. Clearing
         // the three-way state here (before the cache-hit early-return) prevents the
@@ -429,29 +651,26 @@ impl DiffViewer {
         let appearance = cx.theme().appearance;
         let is_dark = appearance == Appearance::Dark;
         let cid = commit_id.unwrap_or("").to_string();
-        let cache_key: DisplayCacheKey = (
-            path.clone(),
-            is_dark,
-            cid.clone(),
-            diff.hunks.len(),
-            diff.additions,
-            diff.deletions,
-        );
+        let diff = Arc::new(diff);
+        let cache_key = DisplayCacheKey::new(path.clone(), is_dark, cid.clone(), staged, &diff);
+
+        self.current_appearance = appearance;
+        self.diff = Some(Arc::clone(&diff));
+        self.file_path = Some(path.clone());
+        self.is_staged = staged;
+        self.commit_id = cid;
+        self.highlighted_row = None;
+        self.selected_lines = None;
+        self.partial_mode = false;
+        self.selection_anchor = None;
 
         // Check display rows cache
-        if let Some(cached) = self.display_cache.get(&cache_key) {
+        if let Some(cached) = self.display_cache.get(&cache_key, &diff) {
             log::debug!("DiffViewer: display_cache hit for path={}", path);
-            self.display_rows = cached.display_rows.clone();
-            self.sbs_rows = cached.sbs_rows.clone();
-            self.current_appearance = appearance;
-            self.diff = Some(diff);
-            self.file_path = Some(path);
-            self.is_staged = staged;
-            self.commit_id = cid;
-            self.highlighted_row = None;
-            self.selected_lines = None;
-            self.partial_mode = false;
-            self.selection_anchor = None;
+            self.display_rows = cached.display_rows;
+            self.sbs_rows = cached.sbs_rows;
+            self.display_longest_row_ix = cached.display_longest_row_ix;
+            self.loading = false;
             self.sync_wrap_list_state();
             cx.notify();
             return;
@@ -473,54 +692,27 @@ impl DiffViewer {
             }),
             ..Default::default()
         };
-        self.current_appearance = appearance;
-        self.display_rows = Arc::new(Self::compute_display_rows(
-            &diff,
-            &path,
-            appearance,
-            added_word_bg,
-            deleted_word_bg,
-        ));
-        self.sbs_rows = Arc::new(Self::compute_sbs_rows(
-            &diff,
-            &path,
-            appearance,
-            added_word_bg,
-            deleted_word_bg,
-        ));
-        log::debug!(
-            "DiffViewer: computed {} display_rows, {} sbs_rows",
-            self.display_rows.len(),
-            self.sbs_rows.len()
-        );
-
-        // Store in cache (cap at 50 entries)
-        if self.display_cache.len() >= 50 {
-            self.display_cache.clear();
-        }
-        self.display_cache.insert(
-            cache_key,
-            CachedDisplayRows {
-                display_rows: self.display_rows.clone(),
-                sbs_rows: self.sbs_rows.clone(),
-            },
-        );
-
-        self.diff = Some(diff);
-        self.file_path = Some(path);
-        self.is_staged = staged;
-        self.commit_id = cid;
-        self.highlighted_row = None;
-        self.selected_lines = None;
-        self.partial_mode = false;
-        self.selection_anchor = None;
+        self.loading = true;
+        self.display_rows = Arc::new(Vec::new());
+        self.sbs_rows = Arc::new(Vec::new());
+        self.display_longest_row_ix = 0;
         self.sync_wrap_list_state();
         cx.notify();
+        self.spawn_display_preparation(
+            diff,
+            path,
+            cache_key,
+            appearance,
+            added_word_bg,
+            deleted_word_bg,
+            cx,
+        );
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         log::debug!("DiffViewer::clear");
         self.generation = self.generation.wrapping_add(1);
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
         self.loading = false;
         self.error = None;
         self.diff = None;
@@ -530,6 +722,7 @@ impl DiffViewer {
         self.display_rows = Arc::new(Vec::new());
         self.sbs_rows = Arc::new(Vec::new());
         self.three_way_rows = Arc::new(Vec::new());
+        self.display_longest_row_ix = 0;
         self.three_way_diff = None;
         self.highlighted_row = None;
         self.selected_lines = None;
@@ -542,7 +735,9 @@ impl DiffViewer {
     /// Set a 3-way conflict diff to display.
     pub fn set_three_way_diff(&mut self, diff: ThreeWayFileDiff, cx: &mut Context<Self>) {
         self.generation = self.generation.wrapping_add(1);
-        self.loading = false;
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
+        let generation = self.preparation_generation;
+        self.loading = true;
         self.error = None;
         let appearance = cx.theme().appearance;
         self.current_appearance = appearance;
@@ -550,8 +745,9 @@ impl DiffViewer {
         self.file_path = Some(diff.path.display().to_string());
         self.is_staged = false;
         self.commit_id = String::new();
-        self.three_way_diff = Some(diff.clone());
-        self.three_way_rows = Arc::new(Self::compute_three_way_rows(&diff));
+        let diff = Arc::new(diff);
+        self.three_way_diff = Some(Arc::clone(&diff));
+        self.three_way_rows = Arc::new(Vec::new());
         // Switch to the three-way renderer. This must precede `sync_wrap_list_state`,
         // which sizes the wrap list off `row_count()` for the active `display_mode`.
         self.display_mode = DiffDisplayMode::ThreeWay;
@@ -561,11 +757,30 @@ impl DiffViewer {
         self.selection_anchor = None;
         self.sync_wrap_list_state();
         cx.notify();
+
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            let rows = cx
+                .background_executor()
+                .spawn(async move { Self::compute_three_way_rows(&diff) })
+                .await;
+            this.update(cx, |this, cx| {
+                if !should_apply_prepared(this.preparation_generation, generation) {
+                    return;
+                }
+                this.three_way_rows = Arc::new(rows);
+                this.loading = false;
+                this.sync_wrap_list_state();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Mark that a diff fetch is in progress so the viewer shows a loading
     /// spinner instead of stale content or the empty placeholder.
     pub fn set_loading(&mut self, cx: &mut Context<Self>) {
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
         self.loading = true;
         self.error = None;
         cx.notify();
@@ -574,6 +789,7 @@ impl DiffViewer {
     /// Surface a diff-fetch failure in the viewer instead of silently leaving
     /// the previous file's content (or the generic placeholder) on screen.
     pub fn set_error(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
         self.loading = false;
         self.error = Some(message.into());
         cx.notify();
@@ -1207,7 +1423,7 @@ impl DiffViewer {
     }
 
     pub fn diff(&self) -> Option<&FileDiff> {
-        self.diff.as_ref()
+        self.diff.as_deref()
     }
 
     pub fn file_path(&self) -> Option<&str> {
@@ -1224,9 +1440,8 @@ impl DiffViewer {
     }
 
     /// Monotonic counter bumped whenever the displayed content changes
-    /// (`set_diff`, `set_three_way_diff`, `clear`). A background refresh captures
-    /// this before computing and re-checks it before applying, so a stale
-    /// recompute can't clobber a newer user selection.
+    /// A workspace diff refresh captures this before computing and re-checks it
+    /// before applying, so stale repository results cannot clobber a newer diff.
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -1257,7 +1472,7 @@ impl DiffViewer {
         {
             return false;
         }
-        let Some(existing) = self.diff.as_ref() else {
+        let Some(existing) = self.diff.as_deref() else {
             return false;
         };
         file_diffs_render_equal(existing, diff)
@@ -1679,164 +1894,111 @@ impl DiffViewer {
         }
     }
 
-    fn compute_sbs_rows(
+    fn prepare_display_rows(
         diff: &FileDiff,
         path: &str,
         appearance: Appearance,
         added_word_bg: HighlightStyle,
         deleted_word_bg: HighlightStyle,
-    ) -> Vec<SideBySideRow> {
+    ) -> PreparedDisplayRows {
+        // Syntax highlighting and word-level LCS are computed once for the
+        // unified representation. Side-by-side rows reuse those StyledLines
+        // instead of running a second syntect/LCS pass over the same diff.
+        let display_rows = Arc::new(Self::compute_display_rows(
+            diff,
+            path,
+            appearance,
+            added_word_bg,
+            deleted_word_bg,
+        ));
+        let sbs_rows = Arc::new(Self::compute_sbs_rows(&display_rows));
+        let display_longest_row_ix =
+            Self::longest_row_ix(DiffDisplayMode::Unified, &display_rows, &[], &[]);
+
+        PreparedDisplayRows {
+            display_rows,
+            sbs_rows,
+            display_longest_row_ix,
+        }
+    }
+
+    fn compute_sbs_rows(display_rows: &[DisplayRow]) -> Vec<SideBySideRow> {
         let mut rows = Vec::new();
-        for (i, hunk) in diff.hunks.iter().enumerate() {
-            let header_str = hunk.header.trim().to_string();
-            rows.push(SideBySideRow::HunkHeader {
-                context_name: Self::extract_context_name(&header_str),
-                header: header_str,
-                hunk_index: i,
-            });
-            let mut old_line = hunk.old_start as usize;
-            let mut new_line = hunk.new_start as usize;
-            let mut highlighter = Self::syntax_line_highlighter(path, appearance);
+        let mut pending_dels: Vec<(usize, StyledLine)> = Vec::new();
+        let mut pending_adds: Vec<(usize, StyledLine)> = Vec::new();
 
-            // Track raw text alongside styled text so we can compute word diffs on flush.
-            let mut pending_dels: Vec<(usize, String, StyledLine)> = Vec::new();
-            let mut pending_adds: Vec<(usize, String, StyledLine)> = Vec::new();
+        let flush = |rows: &mut Vec<SideBySideRow>,
+                     dels: &mut Vec<(usize, StyledLine)>,
+                     adds: &mut Vec<(usize, StyledLine)>| {
+            let max_len = dels.len().max(adds.len());
+            for i in 0..max_len {
+                let (left_num, left_styled, left_kind) = dels.get(i).map_or_else(
+                    || (None, StyledLine::plain(""), SideBySideLineKind::Empty),
+                    |(num, styled)| (Some(*num), styled.clone(), SideBySideLineKind::Deletion),
+                );
+                let (right_num, right_styled, right_kind) = adds.get(i).map_or_else(
+                    || (None, StyledLine::plain(""), SideBySideLineKind::Empty),
+                    |(num, styled)| (Some(*num), styled.clone(), SideBySideLineKind::Addition),
+                );
+                rows.push(SideBySideRow::Pair {
+                    left_num,
+                    left_styled,
+                    left_kind,
+                    right_num,
+                    right_styled,
+                    right_kind,
+                });
+            }
+            dels.clear();
+            adds.clear();
+        };
 
-            let flush = |rows: &mut Vec<SideBySideRow>,
-                         dels: &mut Vec<(usize, String, StyledLine)>,
-                         adds: &mut Vec<(usize, String, StyledLine)>,
-                         added_word_bg: &HighlightStyle,
-                         deleted_word_bg: &HighlightStyle| {
-                let max_len = dels.len().max(adds.len());
-                // Word-diff pairs lines by index. When del/add counts differ
-                // (typical for a reformat like splitting a one-liner into a
-                // match block) that positional pairing lines up semantically
-                // unrelated rows, and the resulting highlight is dense
-                // token-coincidence noise instead of useful change markers.
-                // Skip word-diff in that case; the red/green row coloring on
-                // its own is clearer than a misleading in-line highlight.
-                let pair_word_diff = dels.len() == adds.len();
-                for j in 0..max_len {
-                    let (left_num, left_text, mut left_styled, left_kind) =
-                        if let Some((num, text, styled)) = dels.get(j) {
-                            (
-                                Some(*num),
-                                text.clone(),
-                                styled.clone(),
-                                SideBySideLineKind::Deletion,
-                            )
-                        } else {
-                            (
-                                None,
-                                String::new(),
-                                StyledLine::plain(""),
-                                SideBySideLineKind::Empty,
-                            )
-                        };
-                    let (right_num, right_text, mut right_styled, right_kind) =
-                        if let Some((num, text, styled)) = adds.get(j) {
-                            (
-                                Some(*num),
-                                text.clone(),
-                                styled.clone(),
-                                SideBySideLineKind::Addition,
-                            )
-                        } else {
-                            (
-                                None,
-                                String::new(),
-                                StyledLine::plain(""),
-                                SideBySideLineKind::Empty,
-                            )
-                        };
-
-                    if pair_word_diff && !left_text.is_empty() && !right_text.is_empty() {
-                        let (del_spans, add_spans) =
-                            Self::compute_word_diff(&left_text, &right_text);
-                        left_styled.apply_word_highlights(
-                            del_spans,
-                            Vec::new(),
-                            *deleted_word_bg,
-                            *added_word_bg,
-                        );
-                        right_styled.apply_word_highlights(
-                            Vec::new(),
-                            add_spans,
-                            *deleted_word_bg,
-                            *added_word_bg,
-                        );
-                    }
-
-                    rows.push(SideBySideRow::Pair {
-                        left_num,
-                        left_styled,
-                        left_kind,
-                        right_num,
-                        right_styled,
-                        right_kind,
+        for row in display_rows {
+            match row {
+                DisplayRow::HunkHeader {
+                    header,
+                    context_name,
+                    hunk_index,
+                } => {
+                    flush(&mut rows, &mut pending_dels, &mut pending_adds);
+                    rows.push(SideBySideRow::HunkHeader {
+                        header: header.clone(),
+                        context_name: context_name.clone(),
+                        hunk_index: *hunk_index,
                     });
                 }
-                dels.clear();
-                adds.clear();
-            };
-
-            for line in &hunk.lines {
-                match line {
-                    DiffLine::Context(text) => {
-                        flush(
-                            &mut rows,
-                            &mut pending_dels,
-                            &mut pending_adds,
-                            &added_word_bg,
-                            &deleted_word_bg,
-                        );
-                        let styled = Self::highlight_text(text, &mut highlighter);
-                        rows.push(SideBySideRow::Pair {
-                            left_num: Some(old_line),
-                            left_styled: styled.clone(),
-                            left_kind: SideBySideLineKind::Context,
-                            right_num: Some(new_line),
-                            right_styled: styled,
-                            right_kind: SideBySideLineKind::Context,
-                        });
-                        old_line += 1;
-                        new_line += 1;
-                    }
-                    DiffLine::Deletion(text) => {
-                        if !pending_adds.is_empty() && pending_dels.is_empty() {
-                            flush(
-                                &mut rows,
-                                &mut pending_dels,
-                                &mut pending_adds,
-                                &added_word_bg,
-                                &deleted_word_bg,
-                            );
-                        }
-                        pending_dels.push((
-                            old_line,
-                            text.clone(),
-                            Self::highlight_text(text, &mut highlighter),
-                        ));
-                        old_line += 1;
-                    }
-                    DiffLine::Addition(text) => {
-                        pending_adds.push((
-                            new_line,
-                            text.clone(),
-                            Self::highlight_text(text, &mut highlighter),
-                        ));
-                        new_line += 1;
-                    }
+                DisplayRow::Line {
+                    old_num,
+                    new_num,
+                    styled,
+                    kind: DisplayLineKind::Context,
+                } => {
+                    flush(&mut rows, &mut pending_dels, &mut pending_adds);
+                    rows.push(SideBySideRow::Pair {
+                        left_num: *old_num,
+                        left_styled: styled.clone(),
+                        left_kind: SideBySideLineKind::Context,
+                        right_num: *new_num,
+                        right_styled: styled.clone(),
+                        right_kind: SideBySideLineKind::Context,
+                    });
                 }
+                DisplayRow::Line {
+                    old_num: Some(old_num),
+                    styled,
+                    kind: DisplayLineKind::Deletion,
+                    ..
+                } => pending_dels.push((*old_num, styled.clone())),
+                DisplayRow::Line {
+                    new_num: Some(new_num),
+                    styled,
+                    kind: DisplayLineKind::Addition,
+                    ..
+                } => pending_adds.push((*new_num, styled.clone())),
+                DisplayRow::Line { .. } => {}
             }
-            flush(
-                &mut rows,
-                &mut pending_dels,
-                &mut pending_adds,
-                &added_word_bg,
-                &deleted_word_bg,
-            );
         }
+        flush(&mut rows, &mut pending_dels, &mut pending_adds);
         rows
     }
 
@@ -2411,6 +2573,7 @@ impl Render for DiffViewer {
             ..colors.text_accent
         };
         let selected_lines = self.selected_lines.clone();
+        let display_longest_row_ix = self.display_longest_row_ix;
 
         // Restore scroll position after a display mode switch. The deferred scroll is
         // applied by GPUI's layout pass before the list content is painted, so the
@@ -2433,10 +2596,6 @@ impl Render for DiffViewer {
             DiffDisplayMode::Unified => {
                 let view = view.clone();
                 let row_count = display_rows.len();
-                // Only the no-wrap unified list seeds its horizontal scroll range from
-                // the longest row, so the O(rows) scan is confined to that branch
-                // rather than running every frame in modes that discard it.
-                let longest_rows = display_rows.clone();
                 let build_unified = move |range: Range<usize>,
                                           window: &mut Window,
                                           _cx: &mut App|
@@ -2747,14 +2906,12 @@ impl Render for DiffViewer {
                         .child(list_body)
                         .into_any_element()
                 } else {
-                    let longest_row_ix =
-                        Self::longest_row_ix(DiffDisplayMode::Unified, &longest_rows, &[], &[]);
                     uniform_list("diff-lines", row_count, build_unified)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
                         .with_horizontal_sizing_behavior(
                             ListHorizontalSizingBehavior::Unconstrained,
                         )
-                        .with_width_from_item(Some(longest_row_ix))
+                        .with_width_from_item(Some(display_longest_row_ix))
                         .flex_grow()
                         .track_scroll(&self.scroll_handle)
                         .into_any_element()
@@ -3641,6 +3798,25 @@ mod tests {
         }
     }
 
+    fn test_cache_key(diff: &FileDiff, staged: bool) -> DisplayCacheKey {
+        DisplayCacheKey::new(
+            diff.path.display().to_string(),
+            true,
+            String::new(),
+            staged,
+            diff,
+        )
+    }
+
+    fn test_cached_rows(diff: &FileDiff) -> CachedDisplayRows {
+        CachedDisplayRows {
+            display_rows: Arc::new(Vec::new()),
+            sbs_rows: Arc::new(Vec::new()),
+            display_longest_row_ix: 0,
+            source_diff: Arc::new(diff.clone()),
+        }
+    }
+
     #[test]
     fn file_diffs_render_equal_treats_identical_diffs_as_equal() {
         let a = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
@@ -3659,6 +3835,126 @@ mod tests {
         assert_eq!(a.deletions, b.deletions);
         assert_eq!(a.hunks.len(), b.hunks.len());
         assert!(!file_diffs_render_equal(&a, &b));
+    }
+
+    #[test]
+    fn prepared_generation_guard_rejects_stale_results() {
+        assert!(should_apply_prepared(7, 7));
+        assert!(!should_apply_prepared(8, 7));
+        assert!(!should_apply_prepared(7, 8));
+    }
+
+    #[test]
+    fn side_by_side_rows_reuse_prepared_unified_text() {
+        let display_rows = vec![
+            DisplayRow::HunkHeader {
+                header: "@@ -1 +1 @@".into(),
+                context_name: "example".into(),
+                hunk_index: 0,
+            },
+            DisplayRow::Line {
+                old_num: Some(1),
+                new_num: None,
+                styled: StyledLine::plain("old value"),
+                kind: DisplayLineKind::Deletion,
+            },
+            DisplayRow::Line {
+                old_num: None,
+                new_num: Some(1),
+                styled: StyledLine::plain("new value"),
+                kind: DisplayLineKind::Addition,
+            },
+            DisplayRow::Line {
+                old_num: Some(2),
+                new_num: Some(2),
+                styled: StyledLine::plain("context"),
+                kind: DisplayLineKind::Context,
+            },
+        ];
+
+        let rows = DiffViewer::compute_sbs_rows(&display_rows);
+        assert_eq!(rows.len(), 3);
+        match &rows[1] {
+            SideBySideRow::Pair {
+                left_num,
+                left_styled,
+                right_num,
+                right_styled,
+                ..
+            } => {
+                assert_eq!(*left_num, Some(1));
+                assert_eq!(left_styled.text.as_ref(), "old value");
+                assert_eq!(*right_num, Some(1));
+                assert_eq!(right_styled.text.as_ref(), "new value");
+            }
+            SideBySideRow::HunkHeader { .. } => panic!("expected paired change row"),
+        }
+    }
+
+    #[test]
+    fn display_cache_distinguishes_staged_and_unstaged_diffs() {
+        let diff = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
+        let unstaged_key = test_cache_key(&diff, false);
+        let staged_key = test_cache_key(&diff, true);
+        assert_ne!(unstaged_key, staged_key);
+
+        let mut cache = DisplayCache::default();
+        cache.insert(unstaged_key, test_cached_rows(&diff));
+        assert!(cache.get(&staged_key, &diff).is_none());
+    }
+
+    #[test]
+    fn display_cache_distinguishes_same_count_changed_content() {
+        let before = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
+        let after = test_file_diff(vec![test_hunk(DiffLine::Addition("world".into()))], 1, 0);
+        assert_eq!(before.hunks.len(), after.hunks.len());
+        assert_eq!(before.additions, after.additions);
+        assert_eq!(before.deletions, after.deletions);
+
+        let before_key = test_cache_key(&before, false);
+        let after_key = test_cache_key(&after, false);
+        assert_ne!(before_key, after_key);
+
+        let mut cache = DisplayCache::default();
+        cache.insert(before_key, test_cached_rows(&before));
+        assert!(cache.get(&after_key, &after).is_none());
+    }
+
+    #[test]
+    fn display_cache_rejects_fingerprint_collision_with_different_source() {
+        let before = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
+        let after = test_file_diff(vec![test_hunk(DiffLine::Addition("world".into()))], 1, 0);
+        let key = test_cache_key(&before, false);
+        let mut cache = DisplayCache::default();
+        cache.insert(key.clone(), test_cached_rows(&before));
+
+        assert!(cache.get(&key, &after).is_none());
+        assert!(!cache.entries.contains_key(&key));
+    }
+
+    #[test]
+    fn display_cache_evicts_least_recently_used_entry() {
+        let diff = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
+        let mut cache = DisplayCache::default();
+        let mut keys = Vec::new();
+
+        for i in 0..DISPLAY_CACHE_MAX_ENTRIES {
+            let mut key = test_cache_key(&diff, false);
+            key.file_path = format!("file-{i}.txt");
+            cache.insert(key.clone(), test_cached_rows(&diff));
+            keys.push(key);
+        }
+
+        // Refresh the oldest entry, making the second entry the LRU victim.
+        assert!(cache.get(&keys[0], &diff).is_some());
+        let mut newest = test_cache_key(&diff, false);
+        newest.file_path = "newest.txt".into();
+        cache.insert(newest.clone(), test_cached_rows(&diff));
+
+        assert!(cache.entries.contains_key(&keys[0]));
+        assert!(!cache.entries.contains_key(&keys[1]));
+        assert!(cache.entries.contains_key(&newest));
+        assert_eq!(cache.entries.len(), DISPLAY_CACHE_MAX_ENTRIES);
     }
 
     #[test]

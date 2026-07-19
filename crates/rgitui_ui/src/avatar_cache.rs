@@ -1,8 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path;
+use std::sync::Mutex;
 
 use gpui::Global;
+
+static DISK_CACHE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Resolved avatar state for an email address.
 #[derive(Clone, Debug)]
@@ -75,11 +78,37 @@ impl AvatarCache {
         entries
     }
 
+    fn merge_entries(content: &str, new_entries: &[(String, String)]) -> String {
+        let mut entries = Self::parse_entries(content);
+        for (email, url) in new_entries {
+            entries.insert(email.clone(), url.clone());
+        }
+        let mut entries: Vec<_> = entries.into_iter().collect();
+        entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        entries
+            .into_iter()
+            .map(|(email, url)| format!("{email}={url}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Save a resolved email→url mapping to the disk cache.
     /// Reads the existing file, merges the new entry, writes to a temp file,
     /// then atomically renames it over the target — safe against concurrent calls.
     /// Silently does nothing if the file cannot be read or written.
     pub fn save_entry_to_disk(email: &str, url: &str) {
+        Self::save_entries_to_disk(&[(email.to_owned(), url.to_owned())]);
+    }
+
+    /// Persist a batch with one read/merge/atomic-write cycle. Writers are
+    /// serialized so overlapping resolution waves cannot lose entries.
+    pub fn save_entries_to_disk(new_entries: &[(String, String)]) {
+        if new_entries.is_empty() {
+            return;
+        }
+        let Ok(_write_guard) = DISK_CACHE_WRITE_LOCK.lock() else {
+            return;
+        };
         let path = Self::disk_cache_path();
         // Create parent dir if needed
         if let Some(parent) = path.parent() {
@@ -87,15 +116,7 @@ impl AvatarCache {
         }
         // Read existing entries (may be empty or absent)
         let existing_content = fs::read_to_string(&path).unwrap_or_default();
-        let mut entries = Self::parse_entries(&existing_content);
-        entries.insert(email.to_string(), url.to_string());
-
-        // Build new content
-        let content: String = entries
-            .iter()
-            .map(|(e, u)| format!("{e}={u}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let content = Self::merge_entries(&existing_content, new_entries);
 
         // Write to a unique temp file in the same directory, then rename
         // atomically. Each call gets its own temp file to avoid races when
@@ -318,6 +339,24 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(entries.len(), 1);
         assert!(entries.contains_key("valid@example.com"));
+    }
+
+    #[test]
+    fn test_merge_entries_batches_and_overwrites_deterministically() {
+        let merged = AvatarCache::merge_entries(
+            "bob@example.com=https://old.example/bob",
+            &[
+                ("alice@example.com".into(), "https://example/alice".into()),
+                ("bob@example.com".into(), "https://example/bob".into()),
+            ],
+        );
+        assert_eq!(
+            merged,
+            concat!(
+                "alice@example.com=https://example/alice\n",
+                "bob@example.com=https://example/bob"
+            )
+        );
     }
 
     // --- AvatarCache in-memory behaviour tests ---

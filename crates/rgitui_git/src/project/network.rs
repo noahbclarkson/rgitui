@@ -253,8 +253,7 @@ impl GitProject {
                                     cx,
                                 );
                             }
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             log::error!("Pull failed: {}", e);

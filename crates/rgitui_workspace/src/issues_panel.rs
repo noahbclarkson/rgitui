@@ -1,3 +1,4 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use gpui::prelude::*;
@@ -5,9 +6,11 @@ use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
     KeyDownEvent, Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
 };
-use http_client::HttpClient;
 
-use crate::github_api::{github_get_collection_body, GithubCollectionError};
+use crate::github_api::GithubCollectionError;
+use crate::github_data_service::{
+    GithubCollectionPayload, GithubDataKey, GithubDataService, GithubFetchPolicy,
+};
 use crate::markdown_view::render_markdown;
 use gpui::Entity;
 use rgitui_theme::{hex_to_hsla_strict, ActiveTheme, Color, StyledExt};
@@ -54,7 +57,7 @@ pub enum IssuesPanelEvent {
 
 impl EventEmitter<IssuesPanelEvent> for IssuesPanel {}
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IssueFilter {
     Open,
     Closed,
@@ -85,7 +88,54 @@ enum IssuesPanelView {
     Detail,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct GithubRequestIdentity {
+    owner: String,
+    repo: String,
+    auth_fingerprint: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum IssueListMode {
+    Filter(IssueFilter),
+    Search(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct IssueListRequestKey {
+    identity: GithubRequestIdentity,
+    mode: IssueListMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct IssueCommentsRequestKey {
+    identity: GithubRequestIdentity,
+    issue_number: u64,
+}
+
+fn issue_list_key_is_loaded(
+    loaded: Option<&IssueListRequestKey>,
+    current: Option<&IssueListRequestKey>,
+) -> bool {
+    loaded.is_some() && loaded == current
+}
+
+fn request_is_current<K: PartialEq>(active: Option<&(u64, K)>, generation: u64, key: &K) -> bool {
+    active.is_some_and(|(active_generation, active_key)| {
+        *active_generation == generation && active_key == key
+    })
+}
+
+fn filter_change_requires_fetch(
+    current_filter: &IssueFilter,
+    next_filter: &IssueFilter,
+    had_search: bool,
+) -> bool {
+    had_search || current_filter != next_filter
+}
+
 pub struct IssuesPanel {
+    github_data: Entity<GithubDataService>,
     issues: Arc<[Issue]>,
     selected_index: Option<usize>,
     is_loading: bool,
@@ -108,14 +158,20 @@ pub struct IssuesPanel {
     /// renders inside the detail view instead of leaking into the list view.
     comments_error: Option<String>,
     last_fetched: Option<std::time::Instant>,
+    loaded_list_key: Option<IssueListRequestKey>,
+    active_list_request: Option<(u64, IssueListRequestKey)>,
+    list_request_generation: u64,
+    active_comments_request: Option<(u64, IssueCommentsRequestKey)>,
+    comments_request_generation: u64,
     search_query: Option<String>,
     is_searching: bool,
     query_input: Entity<TextInput>,
 }
 
 impl IssuesPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(cx: &mut Context<Self>, github_data: Entity<GithubDataService>) -> Self {
         Self {
+            github_data,
             issues: Vec::new().into(),
             selected_index: None,
             is_loading: false,
@@ -133,6 +189,11 @@ impl IssuesPanel {
             comments_loading: false,
             comments_error: None,
             last_fetched: None,
+            loaded_list_key: None,
+            active_list_request: None,
+            list_request_generation: 0,
+            active_comments_request: None,
+            comments_request_generation: 0,
             search_query: None,
             is_searching: false,
             query_input: {
@@ -159,11 +220,69 @@ impl IssuesPanel {
     }
 
     pub fn has_issues_loaded(&self) -> bool {
-        !self.issues.is_empty()
+        let current = self.current_display_key();
+        issue_list_key_is_loaded(self.loaded_list_key.as_ref(), current.as_ref())
     }
 
     pub fn is_loading(&self) -> bool {
-        self.is_loading
+        self.active_list_request.is_some()
+    }
+
+    fn request_identity(&self) -> Option<GithubRequestIdentity> {
+        if self.github_owner.is_empty() || self.github_repo.is_empty() {
+            return None;
+        }
+        Some(GithubRequestIdentity {
+            owner: self.github_owner.clone(),
+            repo: self.github_repo.clone(),
+            auth_fingerprint: token_fingerprint(self.github_token.as_deref()),
+        })
+    }
+
+    fn current_display_key(&self) -> Option<IssueListRequestKey> {
+        let identity = self.request_identity()?;
+        let mode = self
+            .search_query
+            .as_ref()
+            .map(|query| IssueListMode::Search(query.clone()))
+            .unwrap_or_else(|| IssueListMode::Filter(self.filter.clone()));
+        Some(IssueListRequestKey { identity, mode })
+    }
+
+    fn invalidate_requests_and_data(&mut self, cx: &mut Context<Self>) {
+        self.list_request_generation = self.list_request_generation.wrapping_add(1);
+        self.comments_request_generation = self.comments_request_generation.wrapping_add(1);
+        self.active_list_request = None;
+        self.active_comments_request = None;
+        self.is_loading = false;
+        self.comments_loading = false;
+        self.issues = Vec::new().into();
+        self.loaded_list_key = None;
+        self.last_fetched = None;
+        self.selected_index = None;
+        self.selected_issue = None;
+        self.selected_comments.clear();
+        self.comments_error = None;
+        self.view_mode = IssuesPanelView::List;
+        self.search_query = None;
+        self.is_searching = false;
+        self.query_input.update(cx, |input, cx| input.clear(cx));
+    }
+
+    pub fn clear_configuration(&mut self, cx: &mut Context<Self>) {
+        if self.github_token.is_none()
+            && self.github_owner.is_empty()
+            && self.github_repo.is_empty()
+        {
+            return;
+        }
+        self.invalidate_requests_and_data(cx);
+        self.github_token = None;
+        self.github_owner.clear();
+        self.github_repo.clear();
+        self.error_message = None;
+        self.auth_required = false;
+        cx.notify();
     }
 
     pub fn configure(
@@ -179,6 +298,7 @@ impl IssuesPanel {
             return;
         }
         let now_configured = !owner.is_empty() && !repo.is_empty();
+        self.invalidate_requests_and_data(cx);
         self.github_token = token;
         self.github_owner = owner;
         self.github_repo = repo;
@@ -193,6 +313,22 @@ impl IssuesPanel {
     }
 
     pub fn fetch_issues(&mut self, cx: &mut Context<Self>) {
+        self.fetch_issues_with_policy(false, cx);
+    }
+
+    fn force_fetch_issues(&mut self, cx: &mut Context<Self>) {
+        self.fetch_issues_with_policy(true, cx);
+    }
+
+    fn retry_current_request(&mut self, cx: &mut Context<Self>) {
+        if let Some(query) = self.search_query.clone() {
+            self.do_search(query, cx);
+        } else {
+            self.force_fetch_issues(cx);
+        }
+    }
+
+    fn fetch_issues_with_policy(&mut self, force: bool, cx: &mut Context<Self>) {
         if self.github_owner.is_empty() || self.github_repo.is_empty() {
             self.error_message = Some("No GitHub remote configured".into());
             cx.notify();
@@ -203,9 +339,21 @@ impl IssuesPanel {
         // fetch unauthenticated when none is configured; auth failures are
         // reported through `auth_required` below.
         let token = self.github_token.clone().filter(|t| !t.is_empty());
+        let key = IssueListRequestKey {
+            identity: self.request_identity().expect("configured GitHub identity"),
+            mode: IssueListMode::Filter(self.filter.clone()),
+        };
+
+        if self
+            .active_list_request
+            .as_ref()
+            .is_some_and(|(_, active_key)| active_key == &key)
+        {
+            return;
+        }
 
         // Skip refetch if data was loaded recently (within 60 seconds).
-        if !self.issues.is_empty() {
+        if !force && self.loaded_list_key.as_ref() == Some(&key) {
             if let Some(last) = self.last_fetched {
                 if last.elapsed() < std::time::Duration::from_secs(60) {
                     log::debug!(
@@ -227,17 +375,54 @@ impl IssuesPanel {
         let state = self.filter.api_value().to_string();
         log::info!("fetch_issues: {}/{} filter={}", owner, repo, state);
         let http = cx.http_client();
+        let url = github_issues_url(&owner, &repo, &state);
+        let data_key = GithubDataKey::new(&owner, &repo, &url, token.as_deref());
+        let fetch_task = self.github_data.update(cx, |service, cx| {
+            service.fetch_collection(
+                data_key,
+                url,
+                token,
+                http,
+                if force {
+                    GithubFetchPolicy::Revalidate
+                } else {
+                    GithubFetchPolicy::UseFresh
+                },
+                cx,
+            )
+        });
+        self.list_request_generation = self.list_request_generation.wrapping_add(1);
+        let request_generation = self.list_request_generation;
+        self.active_list_request = Some((request_generation, key.clone()));
 
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            let result = fetch_github_issues(&http, token.as_deref(), &owner, &repo, &state).await;
+            let result = match fetch_task.await {
+                Ok(payload) => {
+                    log_payload_metadata("issues", &payload);
+                    let bodies = payload.bodies;
+                    cx.background_executor()
+                        .spawn(async move { parse_github_issues(&bodies) })
+                        .await
+                }
+                Err(error) => Err(error),
+            };
             cx.update(|cx| {
                 this.update(cx, |panel, cx| {
+                    if !request_is_current(
+                        panel.active_list_request.as_ref(),
+                        request_generation,
+                        &key,
+                    ) {
+                        return;
+                    }
                     panel.is_loading = false;
+                    panel.active_list_request = None;
                     match result {
                         Ok(issues) => {
                             panel.issues = issues.into();
                             panel.selected_index = None;
                             panel.last_fetched = Some(std::time::Instant::now());
+                            panel.loaded_list_key = Some(key);
                             log::info!("fetch_issues complete: {} issues", panel.issues.len());
                         }
                         Err(e) => {
@@ -271,14 +456,54 @@ impl IssuesPanel {
         let owner = self.github_owner.clone();
         let repo = self.github_repo.clone();
         let issue_number = issue.number;
+        let Some(identity) = self.request_identity() else {
+            return;
+        };
+        let request_key = IssueCommentsRequestKey {
+            identity,
+            issue_number,
+        };
+        if self
+            .active_comments_request
+            .as_ref()
+            .is_some_and(|(_, active_key)| active_key == &request_key)
+        {
+            return;
+        }
+        self.comments_request_generation = self.comments_request_generation.wrapping_add(1);
+        let request_generation = self.comments_request_generation;
+        self.active_comments_request = Some((request_generation, request_key.clone()));
         let http = cx.http_client();
+        let url = github_comments_url(&owner, &repo, issue_number);
+        let data_key = GithubDataKey::new(&owner, &repo, &url, token.as_deref());
+        let fetch_task = self.github_data.update(cx, |service, cx| {
+            service.fetch_collection(data_key, url, token, http, GithubFetchPolicy::UseFresh, cx)
+        });
         let issue_for_event = issue;
 
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            let result =
-                fetch_github_comments(&http, token.as_deref(), &owner, &repo, issue_number).await;
+            let result = match fetch_task.await {
+                Ok(payload) => {
+                    log_payload_metadata("issue comments", &payload);
+                    let bodies = payload.bodies;
+                    cx.background_executor()
+                        .spawn(async move { parse_github_comments(&bodies) })
+                        .await
+                }
+                Err(error) => Err(error.message),
+            };
             cx.update(|cx| {
                 this.update(cx, |panel, cx| {
+                    let is_current = request_is_current(
+                        panel.active_comments_request.as_ref(),
+                        request_generation,
+                        &request_key,
+                    ) && panel.selected_issue.as_ref().map(|issue| issue.number)
+                        == Some(issue_number);
+                    if !is_current {
+                        return;
+                    }
+                    panel.active_comments_request = None;
                     panel.comments_loading = false;
                     match result {
                         Ok(comments) => {
@@ -298,6 +523,9 @@ impl IssuesPanel {
     }
 
     fn go_back(&mut self, cx: &mut Context<Self>) {
+        self.comments_request_generation = self.comments_request_generation.wrapping_add(1);
+        self.active_comments_request = None;
+        self.comments_loading = false;
         self.view_mode = IssuesPanelView::List;
         self.selected_issue = None;
         self.selected_comments = Vec::new();
@@ -307,11 +535,14 @@ impl IssuesPanel {
 
     fn set_filter(&mut self, filter: IssueFilter, cx: &mut Context<Self>) {
         self.is_searching = false;
+        let had_search = self.search_query.is_some();
         self.search_query = None;
-        if self.filter != filter {
+        if had_search {
+            self.query_input.update(cx, |input, cx| input.clear(cx));
+        }
+        if filter_change_requires_fetch(&self.filter, &filter, had_search) {
             self.filter = filter;
-            self.last_fetched = None;
-            self.fetch_issues(cx);
+            self.force_fetch_issues(cx);
         }
     }
 
@@ -337,7 +568,7 @@ impl IssuesPanel {
         if query.is_empty() {
             self.is_searching = false;
             self.search_query = None;
-            cx.notify();
+            self.force_fetch_issues(cx);
             return;
         }
         self.search_query = Some(query.to_string());
@@ -352,6 +583,17 @@ impl IssuesPanel {
             return;
         }
         let token = self.github_token.clone().filter(|t| !t.is_empty());
+        let request_key = IssueListRequestKey {
+            identity: self.request_identity().expect("configured GitHub identity"),
+            mode: IssueListMode::Search(query.clone()),
+        };
+        if self
+            .active_list_request
+            .as_ref()
+            .is_some_and(|(_, active_key)| active_key == &request_key)
+        {
+            return;
+        }
         self.is_loading = true;
         self.error_message = None;
         self.auth_required = false;
@@ -359,18 +601,51 @@ impl IssuesPanel {
         let owner = self.github_owner.clone();
         let repo = self.github_repo.clone();
         let http = cx.http_client();
+        let url = github_issue_search_url(&owner, &repo, &query);
+        let data_key = GithubDataKey::new(&owner, &repo, &url, token.as_deref());
+        let fetch_task = self.github_data.update(cx, |service, cx| {
+            service.fetch_collection(
+                data_key,
+                url,
+                token,
+                http,
+                GithubFetchPolicy::Revalidate,
+                cx,
+            )
+        });
+        self.list_request_generation = self.list_request_generation.wrapping_add(1);
+        let request_generation = self.list_request_generation;
+        self.active_list_request = Some((request_generation, request_key.clone()));
         log::info!("search_issues: {}/{} query='{}'", owner, repo, query);
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            let result =
-                fetch_github_issue_search(&http, token.as_deref(), &owner, &repo, &query).await;
+            let result = match fetch_task.await {
+                Ok(payload) => {
+                    log_payload_metadata("issue search", &payload);
+                    let bodies = payload.bodies;
+                    cx.background_executor()
+                        .spawn(async move { parse_github_issue_search(&bodies) })
+                        .await
+                }
+                Err(error) => Err(error),
+            };
             cx.update(|cx| {
                 let _ = this.update(cx, |panel, cx| {
+                    let is_current = request_is_current(
+                        panel.active_list_request.as_ref(),
+                        request_generation,
+                        &request_key,
+                    );
+                    if !is_current {
+                        return;
+                    }
+                    panel.active_list_request = None;
                     panel.is_loading = false;
                     match result {
                         Ok(issues) => {
                             panel.issues = issues.into();
                             panel.selected_index = None;
                             panel.last_fetched = Some(std::time::Instant::now());
+                            panel.loaded_list_key = Some(request_key);
                             log::info!("search_issues complete: {} results", panel.issues.len());
                         }
                         Err(e) => {
@@ -592,8 +867,7 @@ impl IssuesPanel {
                         // the normal filtered list.
                         this.is_searching = false;
                         this.search_query = None;
-                        this.last_fetched = None;
-                        this.fetch_issues(cx);
+                        this.force_fetch_issues(cx);
                     })),
             )
             .into_any_element()
@@ -1000,7 +1274,7 @@ impl Render for IssuesPanel {
                                         .style(ButtonStyle::Filled)
                                         .color(Color::Accent)
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            this.fetch_issues(cx);
+                                            this.retry_current_request(cx);
                                         })),
                                 ),
                         ),
@@ -1172,238 +1446,233 @@ impl Render for IssuesPanel {
     }
 }
 
-async fn fetch_github_issues(
-    http: &Arc<dyn HttpClient>,
-    token: Option<&str>,
-    owner: &str,
-    repo: &str,
-    state: &str,
-) -> Result<Vec<Issue>, GithubCollectionError> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/issues?state={}&per_page=50&sort=updated",
+pub(crate) fn github_issues_url(owner: &str, repo: &str, state: &str) -> String {
+    format!(
+        "https://api.github.com/repos/{}/{}/issues?state={}&per_page=100&sort=updated",
         owner, repo, state
-    );
+    )
+}
 
-    let body = github_get_collection_body(http, &url, token, owner, repo).await?;
-
-    let json: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| GithubCollectionError::transport(e.to_string()))?;
-    let items = json
-        .as_array()
-        .ok_or_else(|| GithubCollectionError::transport("Expected JSON array".into()))?;
-
+fn parse_github_issues(bodies: &[String]) -> Result<Vec<Issue>, GithubCollectionError> {
     let mut issues = Vec::new();
-    for item in items {
-        if item.get("pull_request").is_some() {
-            continue;
-        }
+    for body in bodies {
+        let json: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| GithubCollectionError::transport(e.to_string()))?;
+        let items = json
+            .as_array()
+            .ok_or_else(|| GithubCollectionError::transport("Expected JSON array".into()))?;
 
-        let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
-        let title = item
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let body_text = item
-            .get("body")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let state_str = item.get("state").and_then(|v| v.as_str()).unwrap_or("open");
-        let state = if state_str == "closed" {
-            IssueState::Closed
-        } else {
-            IssueState::Open
-        };
-        let author = item
-            .get("user")
-            .and_then(|u| u.get("login"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let created_at = item
-            .get("created_at")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let comments_count = item.get("comments").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-
-        let mut labels = Vec::new();
-        if let Some(label_array) = item.get("labels").and_then(|v| v.as_array()) {
-            for label_item in label_array {
-                let name = label_item
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let color = label_item
-                    .get("color")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("cccccc")
-                    .to_string();
-                labels.push(IssueLabel { name, color });
+        for item in items {
+            if item.get("pull_request").is_some() {
+                continue;
             }
+
+            let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+            let title = item
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let body_text = item
+                .get("body")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let state_str = item.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+            let state = if state_str == "closed" {
+                IssueState::Closed
+            } else {
+                IssueState::Open
+            };
+            let author = item
+                .get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let created_at = item
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let comments_count = item.get("comments").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+            let mut labels = Vec::new();
+            if let Some(label_array) = item.get("labels").and_then(|v| v.as_array()) {
+                for label_item in label_array {
+                    let name = label_item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let color = label_item
+                        .get("color")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("cccccc")
+                        .to_string();
+                    labels.push(IssueLabel { name, color });
+                }
+            }
+
+            let created_display = format_github_date(&created_at);
+
+            issues.push(Issue {
+                number,
+                title,
+                body: body_text,
+                state,
+                author,
+                created_at: created_display,
+                labels,
+                comments_count,
+            });
         }
-
-        let created_display = format_github_date(&created_at);
-
-        issues.push(Issue {
-            number,
-            title,
-            body: body_text,
-            state,
-            author,
-            created_at: created_display,
-            labels,
-            comments_count,
-        });
     }
 
     Ok(issues)
 }
 
-async fn fetch_github_issue_search(
-    http: &Arc<dyn HttpClient>,
-    token: Option<&str>,
-    owner: &str,
-    repo: &str,
-    query: &str,
-) -> Result<Vec<Issue>, GithubCollectionError> {
-    let url = format!(
-        "https://api.github.com/search/issues?q={}+repo:{}/{}&per_page=50&sort=updated",
+fn github_issue_search_url(owner: &str, repo: &str, query: &str) -> String {
+    format!(
+        "https://api.github.com/search/issues?q={}+repo:{}/{}&per_page=100&sort=updated",
         urlencoding::encode(query),
         owner,
         repo
-    );
+    )
+}
 
-    let body = github_get_collection_body(http, &url, token, owner, repo).await?;
-
-    let json: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| GithubCollectionError::transport(e.to_string()))?;
-    let items = json
-        .get("items")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| {
-            GithubCollectionError::transport("Expected 'items' array in search response".into())
-        })?;
-
+fn parse_github_issue_search(bodies: &[String]) -> Result<Vec<Issue>, GithubCollectionError> {
     let mut issues = Vec::new();
-    for item in items {
-        // Filter out pull requests from issue search results
-        if item.get("pull_request").is_some() {
-            continue;
-        }
+    for body in bodies {
+        let json: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| GithubCollectionError::transport(e.to_string()))?;
+        let items = json
+            .get("items")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                GithubCollectionError::transport("Expected 'items' array in search response".into())
+            })?;
 
-        let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
-        let title = item
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let body_text = item
-            .get("body")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let state_str = item.get("state").and_then(|v| v.as_str()).unwrap_or("open");
-        let state = if state_str == "closed" {
-            IssueState::Closed
-        } else {
-            IssueState::Open
-        };
-        let author = item
-            .get("user")
-            .and_then(|u| u.get("login"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let created_at = item
-            .get("created_at")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let comments_count = item.get("comments").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-
-        let mut labels = Vec::new();
-        if let Some(label_array) = item.get("labels").and_then(|v| v.as_array()) {
-            for label_item in label_array {
-                let name = label_item
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let color = label_item
-                    .get("color")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("cccccc")
-                    .to_string();
-                labels.push(IssueLabel { name, color });
+        for item in items {
+            // Filter out pull requests from issue search results
+            if item.get("pull_request").is_some() {
+                continue;
             }
+
+            let number = item.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+            let title = item
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let body_text = item
+                .get("body")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let state_str = item.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+            let state = if state_str == "closed" {
+                IssueState::Closed
+            } else {
+                IssueState::Open
+            };
+            let author = item
+                .get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let created_at = item
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let comments_count = item.get("comments").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+            let mut labels = Vec::new();
+            if let Some(label_array) = item.get("labels").and_then(|v| v.as_array()) {
+                for label_item in label_array {
+                    let name = label_item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let color = label_item
+                        .get("color")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("cccccc")
+                        .to_string();
+                    labels.push(IssueLabel { name, color });
+                }
+            }
+
+            let created_display = format_github_date(&created_at);
+
+            issues.push(Issue {
+                number,
+                title,
+                body: body_text,
+                state,
+                author,
+                created_at: created_display,
+                labels,
+                comments_count,
+            });
         }
-
-        let created_display = format_github_date(&created_at);
-
-        issues.push(Issue {
-            number,
-            title,
-            body: body_text,
-            state,
-            author,
-            created_at: created_display,
-            labels,
-            comments_count,
-        });
     }
 
     Ok(issues)
 }
 
-async fn fetch_github_comments(
-    http: &Arc<dyn HttpClient>,
-    token: Option<&str>,
-    owner: &str,
-    repo: &str,
-    issue_number: u64,
-) -> Result<Vec<IssueComment>, String> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/issues/{}/comments?per_page=50",
+pub(crate) fn github_comments_url(owner: &str, repo: &str, issue_number: u64) -> String {
+    format!(
+        "https://api.github.com/repos/{}/{}/issues/{}/comments?per_page=100",
         owner, repo, issue_number
-    );
+    )
+}
 
-    let body = github_get_collection_body(http, &url, token, owner, repo)
-        .await
-        .map_err(|e| e.message)?;
-
-    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-    let items = json.as_array().ok_or("Expected JSON array")?;
-
+fn parse_github_comments(bodies: &[String]) -> Result<Vec<IssueComment>, String> {
     let mut comments = Vec::new();
-    for item in items {
-        let author = item
-            .get("user")
-            .and_then(|u| u.get("login"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let body_text = item
-            .get("body")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let created_at = item
-            .get("created_at")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+    for body in bodies {
+        let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let items = json.as_array().ok_or("Expected JSON array")?;
 
-        let created_display = format_github_date(&created_at);
+        for item in items {
+            let author = item
+                .get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let body_text = item
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let created_at = item
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
-        comments.push(IssueComment {
-            author,
-            body: body_text,
-            created_at: created_display,
-        });
+            let created_display = format_github_date(&created_at);
+
+            comments.push(IssueComment {
+                author,
+                body: body_text,
+                created_at: created_display,
+            });
+        }
     }
 
     Ok(comments)
+}
+
+fn log_payload_metadata(resource: &str, payload: &GithubCollectionPayload) {
+    log::debug!(
+        "GitHub {resource} response: cache={}, remaining={:?}, reset={:?}",
+        payload.from_cache,
+        payload.rate_limit.remaining,
+        payload.rate_limit.reset_epoch_seconds
+    );
 }
 
 /// Resolve a GitHub label's stored hex color into a renderable `Color`.
@@ -1420,6 +1689,14 @@ fn format_github_date(date_str: &str) -> String {
     } else {
         date_str.to_string()
     }
+}
+
+fn token_fingerprint(token: Option<&str>) -> Option<u64> {
+    token.filter(|token| !token.is_empty()).map(|token| {
+        let mut hasher = DefaultHasher::new();
+        token.hash(&mut hasher);
+        hasher.finish()
+    })
 }
 
 /// Parse GitHub owner/repo from a remote URL.
@@ -1469,6 +1746,104 @@ mod tests {
         assert_eq!(IssueFilter::Open.label(), "Open");
         assert_eq!(IssueFilter::Closed.label(), "Closed");
         assert_eq!(IssueFilter::All.label(), "All");
+    }
+
+    #[test]
+    fn request_keys_partition_repo_auth_and_mode() {
+        let identity = GithubRequestIdentity {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            auth_fingerprint: token_fingerprint(Some("token-a")),
+        };
+        let open = IssueListRequestKey {
+            identity: identity.clone(),
+            mode: IssueListMode::Filter(IssueFilter::Open),
+        };
+        let closed = IssueListRequestKey {
+            identity: identity.clone(),
+            mode: IssueListMode::Filter(IssueFilter::Closed),
+        };
+        let search = IssueListRequestKey {
+            identity: identity.clone(),
+            mode: IssueListMode::Search("crash".into()),
+        };
+        let other_auth = IssueListRequestKey {
+            identity: GithubRequestIdentity {
+                auth_fingerprint: token_fingerprint(Some("token-b")),
+                ..identity
+            },
+            mode: IssueListMode::Filter(IssueFilter::Open),
+        };
+
+        assert_ne!(open, closed);
+        assert_ne!(open, search);
+        assert_ne!(open, other_auth);
+    }
+
+    #[test]
+    fn token_fingerprint_treats_empty_as_unauthenticated() {
+        assert_eq!(token_fingerprint(None), None);
+        assert_eq!(token_fingerprint(Some("")), None);
+        assert_ne!(
+            token_fingerprint(Some("token-a")),
+            token_fingerprint(Some("token-b"))
+        );
+    }
+
+    #[test]
+    fn loaded_state_depends_on_request_key_not_row_count() {
+        let key = IssueListRequestKey {
+            identity: GithubRequestIdentity {
+                owner: "owner".into(),
+                repo: "empty-repo".into(),
+                auth_fingerprint: None,
+            },
+            mode: IssueListMode::Filter(IssueFilter::Open),
+        };
+
+        assert!(issue_list_key_is_loaded(Some(&key), Some(&key)));
+        assert!(!issue_list_key_is_loaded(None, Some(&key)));
+    }
+
+    #[test]
+    fn current_request_requires_matching_generation_and_key() {
+        let key = IssueListRequestKey {
+            identity: GithubRequestIdentity {
+                owner: "owner".into(),
+                repo: "repo".into(),
+                auth_fingerprint: None,
+            },
+            mode: IssueListMode::Filter(IssueFilter::Open),
+        };
+        let other_key = IssueListRequestKey {
+            mode: IssueListMode::Filter(IssueFilter::Closed),
+            ..key.clone()
+        };
+        let active = (7, key.clone());
+
+        assert!(request_is_current(Some(&active), 7, &key));
+        assert!(!request_is_current(Some(&active), 6, &key));
+        assert!(!request_is_current(Some(&active), 7, &other_key));
+        assert!(!request_is_current(None, 7, &key));
+    }
+
+    #[test]
+    fn selecting_active_filter_restores_normal_list_after_search() {
+        assert!(filter_change_requires_fetch(
+            &IssueFilter::Open,
+            &IssueFilter::Open,
+            true
+        ));
+        assert!(!filter_change_requires_fetch(
+            &IssueFilter::Open,
+            &IssueFilter::Open,
+            false
+        ));
+        assert!(filter_change_requires_fetch(
+            &IssueFilter::Open,
+            &IssueFilter::Closed,
+            false
+        ));
     }
 
     #[test]

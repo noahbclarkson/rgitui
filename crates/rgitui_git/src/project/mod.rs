@@ -3,6 +3,7 @@ mod bisect;
 mod blame;
 mod diff;
 mod file_history;
+mod history_cache;
 mod local_ops;
 mod network;
 mod rebase;
@@ -216,6 +217,9 @@ pub struct RefreshData {
 /// Events emitted by GitProject.
 #[derive(Debug, Clone)]
 pub enum GitProjectEvent {
+    /// A repository mutation changed one or more of HEAD, refs, or status.
+    /// Subscribers should refresh their repository-derived snapshots once.
+    RepositoryChanged,
     StatusChanged,
     HeadChanged,
     RefsChanged,
@@ -260,6 +264,11 @@ pub struct GitProject {
     /// to discard a stale lightweight refresh that would otherwise clobber a newer
     /// full/operation refresh that landed while the watcher's snapshot was in flight.
     refresh_generation: u64,
+    /// Identifies the currently valid commit query (refs/filter/pagination session).
+    /// Async commit results captured under an older generation must not be applied.
+    commit_query_generation: u64,
+    /// Suppresses duplicate pagination requests while one page is already in flight.
+    load_more_in_flight: bool,
 }
 
 impl EventEmitter<GitProjectEvent> for GitProject {}
@@ -290,6 +299,8 @@ impl GitProject {
             commit_limit: 1000,
             worktree_status_cache: Arc::new(Mutex::new(HashMap::new())),
             refresh_generation: 0,
+            commit_query_generation: 0,
+            load_more_in_flight: false,
         }
     }
 
@@ -320,10 +331,23 @@ impl GitProject {
             default_branch: None,
             current_user_email: None,
             commit_author_filter: None,
-            commit_limit,
+            commit_limit: refresh::normalize_commit_limit(commit_limit),
             worktree_status_cache: Arc::new(Mutex::new(HashMap::new())),
             refresh_generation: 0,
+            commit_query_generation: 0,
+            load_more_in_flight: false,
         };
+
+        if let Some(cached) = history_cache::load(&project.repo_path, project.commit_limit) {
+            project.recent_commits = Arc::new(cached.commits);
+            project.commit_offset = project.recent_commits.len();
+            project.has_more_commits = cached.has_more_commits;
+            project.default_branch = cached.default_branch;
+            log::debug!(
+                "hydrated {} commits from persistent history cache",
+                project.recent_commits.len()
+            );
+        }
 
         project.start_watcher(cx);
 
@@ -600,6 +624,8 @@ impl GitProject {
     pub fn set_commit_author_filter(&mut self, email: Option<String>) {
         if self.commit_author_filter != email {
             self.commit_author_filter = email;
+            self.commit_query_generation = self.commit_query_generation.wrapping_add(1);
+            self.load_more_in_flight = false;
             // Reset commit list so next load starts fresh with the filter applied.
             self.recent_commits = Arc::new(Vec::new());
             self.commit_offset = 0;
@@ -616,6 +642,11 @@ impl GitProject {
     /// existing list.  Emits `GitProjectEvent::StatusChanged` when done so the
     /// graph view re-renders.
     pub fn load_more_commits(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        if self.load_more_in_flight || !self.has_more_commits {
+            return cx.spawn(async move |_, _| Ok(()));
+        }
+        self.load_more_in_flight = true;
+        let query_generation = self.commit_query_generation;
         let repo_path = self.repo_path.clone();
         let already_loaded = self.commit_offset;
         // Stable pagination cursor: the OID of the last loaded commit. Re-anchoring
@@ -634,7 +665,7 @@ impl GitProject {
         let author_filter = self.commit_author_filter.clone();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let (new_commits, has_more) = cx
+            let result = cx
                 .background_executor()
                 .spawn(async move {
                     refresh::load_more_commits_from_repo(
@@ -647,10 +678,15 @@ impl GitProject {
                         author_filter.as_deref(),
                     )
                 })
-                .await?;
+                .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
+                    if this.commit_query_generation != query_generation {
+                        return Ok(());
+                    }
+                    this.load_more_in_flight = false;
+                    let (new_commits, has_more) = result?;
                     // Append the new commits, deduplicated by OID.
                     let existing_oids: std::collections::HashSet<git2::Oid> =
                         this.recent_commits.iter().map(|c| c.oid).collect();
@@ -677,6 +713,8 @@ impl GitProject {
     /// expensive graph walks don't block the first render.
     pub fn refresh_ahead_behind(&mut self, cx: &mut Context<Self>) {
         let repo_path = self.repo_path.clone();
+        let query_generation = self.commit_query_generation;
+        let refresh_generation = self.refresh_generation;
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let computed = cx
@@ -722,7 +760,13 @@ impl GitProject {
                         if let Ok((ahead, behind)) =
                             repo.graph_ahead_behind(local_target, upstream_target)
                         {
-                            results.push((branch_name, ahead, behind));
+                            results.push((
+                                branch_name,
+                                local_target,
+                                upstream_target,
+                                ahead,
+                                behind,
+                            ));
                         }
                     }
                     results
@@ -731,12 +775,19 @@ impl GitProject {
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    if computed.is_empty() {
+                    if computed.is_empty()
+                        || this.commit_query_generation != query_generation
+                        || this.refresh_generation != refresh_generation
+                    {
                         return;
                     }
                     // Update ahead/behind values in place
-                    for (name, ahead, behind) in computed {
-                        if let Some(branch) = this.branches.iter_mut().find(|b| b.name == name) {
+                    for (name, local_oid, _upstream_oid, ahead, behind) in computed {
+                        if let Some(branch) = this
+                            .branches
+                            .iter_mut()
+                            .find(|b| b.name == name && b.tip_oid == Some(local_oid))
+                        {
                             branch.ahead = ahead;
                             branch.behind = behind;
                         }
@@ -753,8 +804,32 @@ impl GitProject {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_repo_path;
+    use super::{normalize_repo_path, GitProject};
     use std::path::PathBuf;
+
+    fn has_adjacent_legacy_change_events(source: &str) -> bool {
+        let is_legacy = |line: &str| {
+            let line = line.trim();
+            line == "cx.emit(GitProjectEvent::StatusChanged);"
+                || line == "cx.emit(GitProjectEvent::HeadChanged);"
+                || line == "cx.emit(GitProjectEvent::RefsChanged);"
+        };
+        source
+            .lines()
+            .zip(source.lines().skip(1))
+            .any(|(left, right)| is_legacy(left) && is_legacy(right))
+    }
+
+    #[test]
+    fn aggregate_operations_do_not_emit_adjacent_legacy_change_events() {
+        for source in [
+            include_str!("local_ops.rs"),
+            include_str!("network.rs"),
+            include_str!("rebase.rs"),
+        ] {
+            assert!(!has_adjacent_legacy_change_events(source));
+        }
+    }
 
     #[test]
     fn normalize_non_unc_path_unchanged() {
@@ -766,6 +841,25 @@ mod tests {
     fn normalize_relative_path_unchanged() {
         let path = PathBuf::from("./my-repo");
         assert_eq!(normalize_repo_path(path.clone()), path);
+    }
+
+    #[test]
+    fn changing_commit_author_filter_invalidates_async_commit_queries() {
+        let mut project = GitProject::empty_at(PathBuf::from("repo"));
+        let initial = project.commit_query_generation;
+        project.load_more_in_flight = true;
+
+        project.set_commit_author_filter(Some("person+tag@example.com".to_string()));
+
+        assert_ne!(project.commit_query_generation, initial);
+        assert!(!project.load_more_in_flight);
+        assert!(project.recent_commits.is_empty());
+        assert_eq!(project.commit_offset, 0);
+        assert!(project.has_more_commits);
+
+        let unchanged = project.commit_query_generation;
+        project.set_commit_author_filter(Some("person+tag@example.com".to_string()));
+        assert_eq!(project.commit_query_generation, unchanged);
     }
 
     #[cfg(target_os = "windows")]

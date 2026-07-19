@@ -4,12 +4,14 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, uniform_list, App, Bounds, ClickEvent, Context, ElementId, Entity,
     EventEmitter, FocusHandle, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent,
-    MouseMoveEvent, Pixels, Point, Render, SharedString, Size, WeakEntity, Window,
+    MouseMoveEvent, Pixels, Point, Render, ScrollStrategy, SharedString, Size,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{
     BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
@@ -138,6 +140,15 @@ const STASH_MENU_VERTICAL_PADDING: f32 = 3.0;
 /// Number of action rows in the stash context menu (Apply, Pop, Create branch, Drop).
 const STASH_MENU_ITEM_COUNT: f32 = 4.0;
 
+/// Expanded sidebar sections remain content-sized up to this many rows. Larger
+/// sections get their own bounded scrolling viewport so `uniform_list` can
+/// render only the visible window instead of being measured at max-content.
+const SIDEBAR_LIST_MAX_VISIBLE_ROWS: usize = 12;
+
+fn bounded_sidebar_list_height(item_count: usize, row_height: f32) -> f32 {
+    item_count.min(SIDEBAR_LIST_MAX_VISIBLE_ROWS) as f32 * row_height
+}
+
 /// Total rendered size of the stash context menu. Derived from the item count and
 /// row height so the outside-click hit-test and the edge-clamping math stay in sync
 /// with the actual menu content.
@@ -221,6 +232,14 @@ pub struct Sidebar {
     stash_context_menu: Option<StashContextMenuState>,
     /// Cached bounds of the sidebar panel container (updated via on_allocate).
     container_bounds: Bounds<Pixels>,
+    local_branches_scroll: UniformListScrollHandle,
+    remotes_scroll: UniformListScrollHandle,
+    remote_branches_scroll: UniformListScrollHandle,
+    tags_scroll: UniformListScrollHandle,
+    stashes_scroll: UniformListScrollHandle,
+    worktrees_scroll: UniformListScrollHandle,
+    staged_scroll: UniformListScrollHandle,
+    unstaged_scroll: UniformListScrollHandle,
 }
 
 /// Pure filtering function: returns indices into `branches` whose names contain
@@ -330,6 +349,14 @@ impl Sidebar {
             current_user_email: None,
             stash_context_menu: None,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
+            local_branches_scroll: UniformListScrollHandle::new(),
+            remotes_scroll: UniformListScrollHandle::new(),
+            remote_branches_scroll: UniformListScrollHandle::new(),
+            tags_scroll: UniformListScrollHandle::new(),
+            stashes_scroll: UniformListScrollHandle::new(),
+            worktrees_scroll: UniformListScrollHandle::new(),
+            staged_scroll: UniformListScrollHandle::new(),
+            unstaged_scroll: UniformListScrollHandle::new(),
         }
     }
 
@@ -443,6 +470,44 @@ impl Sidebar {
         }
 
         self.cached_nav_items = items;
+    }
+
+    /// Keep keyboard movement useful now that large sections have independent
+    /// bounded list viewports. The outer sidebar still owns section-to-section
+    /// scrolling, while this brings an off-screen row within its section into view.
+    fn scroll_keyboard_row_into_view(&self) {
+        let Some(selected_index) = self.keyboard_index else {
+            return;
+        };
+        if selected_index >= self.cached_nav_items.len() {
+            return;
+        }
+        let Some((section, row_index)) = self.cached_nav_items[..=selected_index]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, item)| match item {
+                SidebarItem::SectionHeader(section) if index < selected_index => {
+                    Some((*section, selected_index - index - 1))
+                }
+                SidebarItem::SectionHeader(_) => None,
+                _ => None,
+            })
+        else {
+            return;
+        };
+
+        let handle = match section {
+            SidebarSection::LocalBranches => &self.local_branches_scroll,
+            SidebarSection::Remotes => &self.remotes_scroll,
+            SidebarSection::RemoteBranches => &self.remote_branches_scroll,
+            SidebarSection::Tags => &self.tags_scroll,
+            SidebarSection::Stashes => &self.stashes_scroll,
+            SidebarSection::Worktrees => &self.worktrees_scroll,
+            SidebarSection::StagedChanges => &self.staged_scroll,
+            SidebarSection::UnstagedChanges => &self.unstaged_scroll,
+        };
+        handle.scroll_to_item(row_index, ScrollStrategy::Nearest);
     }
 
     /// Activate the currently selected keyboard item (Enter key).
@@ -559,13 +624,9 @@ impl Sidebar {
                     cx.stop_propagation();
                 }
             }
-            // TODO(audit): UX-05 — keyboard navigation does not scroll the selected
-            // row into view. Scroll-follow requires the QUAL-03 flat-list refactor
-            // (rows as direct children of one scroller) or bounded internally
-            // scrolling sections; it is not achievable while each section is a
-            // separate `Infer`-sized `uniform_list` under a single outer scroll,
-            // because those per-list scroll handles are no-ops and the outer
-            // `ScrollHandle` only tracks its direct children.
+            // Bounded section lists follow keyboard selection through
+            // their own scroll handles; the outer sidebar still owns movement
+            // between section viewports.
             "up" | "k" => {
                 let new_idx = match self.keyboard_index {
                     Some(i) if i > 0 => i - 1,
@@ -573,6 +634,7 @@ impl Sidebar {
                     None => 0,
                 };
                 self.keyboard_index = Some(new_idx);
+                self.scroll_keyboard_row_into_view();
                 cx.notify();
             }
             "down" | "j" => {
@@ -582,6 +644,7 @@ impl Sidebar {
                     None => 0,
                 };
                 self.keyboard_index = Some(new_idx);
+                self.scroll_keyboard_row_into_view();
                 cx.notify();
             }
             "enter" | " " => {
@@ -589,10 +652,12 @@ impl Sidebar {
             }
             "home" => {
                 self.keyboard_index = Some(0);
+                self.scroll_keyboard_row_into_view();
                 cx.notify();
             }
             "end" => {
                 self.keyboard_index = Some(self.cached_nav_items.len().saturating_sub(1));
+                self.scroll_keyboard_row_into_view();
                 cx.notify();
             }
             "s" => {
@@ -884,11 +949,22 @@ impl Sidebar {
     /// flattened representations. Call when the underlying file data or a kind
     /// filter changes.
     fn rebuild_change_trees(&mut self) {
+        let started = Instant::now();
         self.prune_hidden_kinds();
         self.cached_staged_tree = Self::build_file_tree(&self.staged, &self.staged_hidden_kinds);
         self.cached_unstaged_tree =
             Self::build_file_tree(&self.unstaged, &self.unstaged_hidden_kinds);
         self.reflatten_change_trees();
+        let elapsed = started.elapsed();
+        if elapsed >= Duration::from_millis(8) {
+            log::debug!(
+                "Sidebar change-tree preparation took {:?} ({} staged, {} unstaged, {} visible rows)",
+                elapsed,
+                self.staged.len(),
+                self.unstaged.len(),
+                self.flattened_staged.len() + self.flattened_unstaged.len()
+            );
+        }
     }
 
     /// Drop any hidden kind that no longer has a file in its section. Without
@@ -912,28 +988,23 @@ impl Sidebar {
     /// honoring the current directory collapse state. The cached trees are left
     /// untouched, so this is the cheap path for collapse toggles.
     fn reflatten_change_trees(&mut self) {
-        // Clone the tree roots so the shared `flatten_tree` borrow does not
-        // conflict with the mutable borrows of the destination vectors.
-        let staged_tree = self.cached_staged_tree.clone();
-        let unstaged_tree = self.cached_unstaged_tree.clone();
-        let collapsed_dirs = self.collapsed_dirs.clone();
         self.flattened_staged.clear();
         Self::flatten_tree(
-            &staged_tree,
+            &self.cached_staged_tree,
             "staged",
             "",
             0,
             &mut self.flattened_staged,
-            &collapsed_dirs,
+            &self.collapsed_dirs,
         );
         self.flattened_unstaged.clear();
         Self::flatten_tree(
-            &unstaged_tree,
+            &self.cached_unstaged_tree,
             "unstaged",
             "",
             0,
             &mut self.flattened_unstaged,
-            &collapsed_dirs,
+            &self.collapsed_dirs,
         );
     }
 
@@ -1493,6 +1564,7 @@ impl Render for Sidebar {
             let nav_base = nav_idx;
             nav_idx += self.flattened_local_branches.len();
             let flattened = self.flattened_local_branches.clone();
+            let list_height = bounded_sidebar_list_height(flattened.len(), item_h);
             let branches = self.local_branches.clone();
             let w = Rc::new(sidebar_weak.clone());
             let colors = colors.clone();
@@ -1753,7 +1825,9 @@ impl Render for Sidebar {
                     }).collect()
                 },
             )
-            .with_sizing_behavior(ListSizingBehavior::Infer);
+            .h(px(list_height))
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .track_scroll(&self.local_branches_scroll);
             content = content.child(list);
         }
 
@@ -1838,6 +1912,7 @@ impl Render for Sidebar {
                 );
             } else {
                 let flattened = self.flattened_remotes.clone();
+                let list_height = bounded_sidebar_list_height(flattened.len(), item_h);
                 let nav_base = nav_idx;
                 nav_idx += flattened.len();
                 let remotes_list = self.remotes.clone();
@@ -2009,7 +2084,9 @@ impl Render for Sidebar {
                                 .collect()
                         },
                     )
-                    .with_sizing_behavior(ListSizingBehavior::Infer),
+                    .h(px(list_height))
+                    .with_sizing_behavior(ListSizingBehavior::Auto)
+                    .track_scroll(&self.remotes_scroll),
                 );
             }
         }
@@ -2079,6 +2156,7 @@ impl Render for Sidebar {
             let nav_base = nav_idx;
             nav_idx += self.flattened_remote_branches.len();
             let flattened = self.flattened_remote_branches.clone();
+            let list_height = bounded_sidebar_list_height(flattened.len(), item_h);
             let remote_branches = self.remote_branches.clone();
             let w = Rc::new(sidebar_weak.clone());
             let colors = colors.clone();
@@ -2153,7 +2231,9 @@ impl Render for Sidebar {
                         .collect()
                 },
             )
-            .with_sizing_behavior(ListSizingBehavior::Infer);
+            .h(px(list_height))
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .track_scroll(&self.remote_branches_scroll);
             content = content.child(list);
         }
 
@@ -2244,6 +2324,7 @@ impl Render for Sidebar {
                 // Empty state already rendered above
             } else {
                 let flattened = self.flattened_tags.clone();
+                let list_height = bounded_sidebar_list_height(flattened.len(), item_h);
                 let tags = self.tags.clone();
                 let selected_tag = self.selected_tag.clone();
                 let colors = colors.clone();
@@ -2373,7 +2454,9 @@ impl Render for Sidebar {
                                     .collect()
                             },
                         )
-                        .with_sizing_behavior(ListSizingBehavior::Infer),
+                        .h(px(list_height))
+                        .with_sizing_behavior(ListSizingBehavior::Auto)
+                        .track_scroll(&self.tags_scroll),
                     );
             }
         }
@@ -2462,6 +2545,7 @@ impl Render for Sidebar {
                 let nav_base = nav_idx;
                 nav_idx += self.stashes.len();
                 let stashes = self.stashes.clone();
+                let list_height = bounded_sidebar_list_height(stashes.len(), item_h);
                 let selected_stash = self.selected_stash;
                 let colors = colors.clone();
                 let w = sidebar_weak.clone();
@@ -2644,7 +2728,9 @@ impl Render for Sidebar {
                                 .collect()
                         },
                     )
-                    .with_sizing_behavior(ListSizingBehavior::Infer),
+                    .h(px(list_height))
+                    .with_sizing_behavior(ListSizingBehavior::Auto)
+                    .track_scroll(&self.stashes_scroll),
                 );
             }
         }
@@ -2751,6 +2837,7 @@ impl Render for Sidebar {
                 let nav_base = nav_idx;
                 nav_idx += self.flattened_worktrees.len();
                 let flattened = self.flattened_worktrees.clone();
+                let list_height = bounded_sidebar_list_height(flattened.len(), item_h);
                 let worktrees = self.worktrees.clone();
                 let selected_worktree = self.selected_worktree;
                 let colors = colors.clone();
@@ -2866,7 +2953,9 @@ impl Render for Sidebar {
                             .collect()
                     },
                 )
-                .with_sizing_behavior(ListSizingBehavior::Infer);
+                .h(px(list_height))
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .track_scroll(&self.worktrees_scroll);
                 content = content.child(list);
             }
         }
@@ -3018,6 +3107,7 @@ impl Render for Sidebar {
                 let nav_base = nav_idx;
                 nav_idx += self.flattened_staged.len();
                 let flattened = self.flattened_staged.clone();
+                let list_height = bounded_sidebar_list_height(flattened.len(), item_h);
                 let files = self.staged.clone();
                 let selected_file = self.selected_file.clone();
                 let w = Rc::new(sidebar_weak.clone());
@@ -3181,12 +3271,9 @@ impl Render for Sidebar {
                         }).collect::<Vec<_>>()
                     },
                 )
-                // TODO(audit): PERF-04 — `Infer` under the outer scroll's
-                // MaxContent measure renders every file row instead of just the
-                // visible range. Virtualizing needs a bounded or flexing region
-                // (a nested scroll otherwise); this is coupled to the deferred
-                // QUAL-03 restructure into a single scroller.
-                .with_sizing_behavior(ListSizingBehavior::Infer);
+                .h(px(list_height))
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .track_scroll(&self.staged_scroll);
                 content = content.child(list);
             }
         }
@@ -3350,6 +3437,7 @@ impl Render for Sidebar {
             } else {
                 let nav_base = unstaged_nav_base;
                 let flattened = self.flattened_unstaged.clone();
+                let list_height = bounded_sidebar_list_height(flattened.len(), item_h);
                 let files = self.unstaged.clone();
                 let selected_file = self.selected_file.clone();
                 let w = sidebar_weak.clone();
@@ -3541,12 +3629,9 @@ impl Render for Sidebar {
                         }).collect::<Vec<_>>()
                     },
                 )
-                // TODO(audit): PERF-04 — `Infer` under the outer scroll's
-                // MaxContent measure renders every file row instead of just the
-                // visible range. Virtualizing needs a bounded or flexing region
-                // (a nested scroll otherwise); this is coupled to the deferred
-                // QUAL-03 restructure into a single scroller.
-                .with_sizing_behavior(ListSizingBehavior::Infer);
+                .h(px(list_height))
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .track_scroll(&self.unstaged_scroll);
                 content = content.child(list);
             }
         }
@@ -3792,6 +3877,19 @@ mod tests {
     use super::*;
     use rgitui_git::{BranchInfo, FileChangeKind, FileStatus};
     use std::path::PathBuf;
+
+    #[test]
+    fn bounded_list_height_sizes_short_lists_to_content() {
+        assert_eq!(bounded_sidebar_list_height(3, 24.0), 72.0);
+    }
+
+    #[test]
+    fn bounded_list_height_caps_large_lists() {
+        assert_eq!(
+            bounded_sidebar_list_height(SIDEBAR_LIST_MAX_VISIBLE_ROWS + 50, 24.0),
+            SIDEBAR_LIST_MAX_VISIBLE_ROWS as f32 * 24.0
+        );
+    }
 
     // --- file_change_symbol tests ---
 

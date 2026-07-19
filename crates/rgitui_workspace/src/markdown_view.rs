@@ -1,4 +1,7 @@
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
+use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
@@ -61,6 +64,57 @@ struct ListState {
     items: Vec<Vec<MarkdownBlock>>,
     current_item_blocks: Vec<MarkdownBlock>,
     current_item_spans: Vec<InlineSpan>,
+}
+
+const MARKDOWN_CACHE_MAX_ENTRIES: usize = 128;
+const MARKDOWN_CACHE_MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Default)]
+struct MarkdownCache {
+    entries: HashMap<String, Arc<Vec<MarkdownBlock>>>,
+    recency: VecDeque<String>,
+    source_bytes: usize,
+}
+
+impl MarkdownCache {
+    fn get_or_parse(&mut self, text: &str) -> Arc<Vec<MarkdownBlock>> {
+        if let Some(blocks) = self.entries.get(text).cloned() {
+            self.touch(text);
+            return blocks;
+        }
+
+        let blocks = Arc::new(parse_markdown(text));
+        if text.len() > MARKDOWN_CACHE_MAX_SOURCE_BYTES {
+            return blocks;
+        }
+        while self.entries.len() >= MARKDOWN_CACHE_MAX_ENTRIES
+            || self.source_bytes.saturating_add(text.len()) > MARKDOWN_CACHE_MAX_SOURCE_BYTES
+        {
+            let Some(oldest) = self.recency.pop_front() else {
+                break;
+            };
+            if self.entries.remove(&oldest).is_some() {
+                self.source_bytes = self.source_bytes.saturating_sub(oldest.len());
+            }
+        }
+        self.source_bytes += text.len();
+        self.recency.push_back(text.to_owned());
+        self.entries.insert(text.to_owned(), Arc::clone(&blocks));
+        blocks
+    }
+
+    fn touch(&mut self, text: &str) {
+        self.recency.retain(|existing| existing != text);
+        self.recency.push_back(text.to_owned());
+    }
+}
+
+thread_local! {
+    static MARKDOWN_CACHE: RefCell<MarkdownCache> = RefCell::new(MarkdownCache::default());
+}
+
+fn cached_markdown(text: &str) -> Arc<Vec<MarkdownBlock>> {
+    MARKDOWN_CACHE.with(|cache| cache.borrow_mut().get_or_parse(text))
 }
 
 fn parse_markdown(text: &str) -> Vec<MarkdownBlock> {
@@ -458,12 +512,12 @@ pub fn render_markdown(text: &str, window: &Window, cx: &gpui::App) -> gpui::Any
     if text.is_empty() {
         return div().into_any_element();
     }
-    let blocks = parse_markdown(text);
+    let blocks = cached_markdown(text);
     if blocks.is_empty() {
         return div().into_any_element();
     }
     let mut container = div().v_flex().gap(px(6.));
-    for block in &blocks {
+    for block in blocks.iter() {
         container = container.child(render_block(block, window, cx));
     }
     container.into_any_element()
@@ -472,6 +526,25 @@ pub fn render_markdown(text: &str, window: &Window, cx: &gpui::App) -> gpui::Any
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_cache_reuses_parsed_blocks() {
+        let mut cache = MarkdownCache::default();
+        let first = cache.get_or_parse("**cached** body");
+        let second = cache.get_or_parse("**cached** body");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
+    fn markdown_cache_is_bounded_by_entry_count() {
+        let mut cache = MarkdownCache::default();
+        for index in 0..=MARKDOWN_CACHE_MAX_ENTRIES {
+            cache.get_or_parse(&format!("body {index}"));
+        }
+        assert_eq!(cache.entries.len(), MARKDOWN_CACHE_MAX_ENTRIES);
+        assert!(!cache.entries.contains_key("body 0"));
+    }
 
     // --- parse_markdown tests ---
 

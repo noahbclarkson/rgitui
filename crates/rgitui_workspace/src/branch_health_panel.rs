@@ -5,6 +5,8 @@
 //! - **Stale**: branches with no new commits in 30+ days
 //! - **Diverged**: branches ahead AND behind their upstream
 
+use std::sync::Arc;
+
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, FocusHandle, Render, SharedString,
@@ -41,6 +43,8 @@ impl BranchHealthFilter {
 pub struct BranchHealthPanel {
     filter: BranchHealthFilter,
     branches: Vec<BranchInfo>,
+    filtered_branches: Arc<Vec<BranchInfo>>,
+    stats: (usize, usize, usize, usize),
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     project: WeakEntity<GitProject>,
@@ -57,21 +61,36 @@ impl BranchHealthPanel {
             cx.subscribe(&proj, |this, project, event: &GitProjectEvent, cx| {
                 if matches!(
                     event,
-                    GitProjectEvent::StatusChanged
+                    GitProjectEvent::RepositoryChanged
+                        | GitProjectEvent::StatusChanged
                         | GitProjectEvent::HeadChanged
                         | GitProjectEvent::RefsChanged
                         | GitProjectEvent::AheadBehindRefreshed
                 ) {
-                    this.branches = project.read(cx).branches().to_vec();
-                    cx.notify();
+                    let branches = project.read(cx).branches().to_vec();
+                    if branches != this.branches {
+                        this.branches = branches;
+                        this.rebuild_view_data();
+                        cx.notify();
+                    }
                 }
             })
             .detach();
         }
 
+        let stats = compute_branch_stats(&branches);
+        let filtered_branches = Arc::new(
+            filter_branches(&branches, &BranchHealthFilter::All)
+                .into_iter()
+                .cloned()
+                .collect(),
+        );
+
         Self {
             filter: BranchHealthFilter::All,
             branches,
+            filtered_branches,
+            stats,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             project,
@@ -84,20 +103,30 @@ impl BranchHealthPanel {
             return;
         };
         let project = proj.read(cx);
-        self.branches = project.branches().to_vec();
-        cx.notify();
+        let branches = project.branches().to_vec();
+        if branches != self.branches {
+            self.branches = branches;
+            self.rebuild_view_data();
+            cx.notify();
+        }
     }
 
-    fn filtered_branches(&self) -> Vec<&BranchInfo> {
-        filter_branches(&self.branches, &self.filter)
-    }
-
-    fn stats(&self) -> (usize, usize, usize, usize) {
-        compute_branch_stats(&self.branches)
+    fn rebuild_view_data(&mut self) {
+        self.stats = compute_branch_stats(&self.branches);
+        self.filtered_branches = Arc::new(
+            filter_branches(&self.branches, &self.filter)
+                .into_iter()
+                .cloned()
+                .collect(),
+        );
     }
 
     fn set_filter(&mut self, filter: BranchHealthFilter, cx: &mut Context<Self>) {
+        if self.filter == filter {
+            return;
+        }
         self.filter = filter;
+        self.rebuild_view_data();
         cx.notify();
     }
 }
@@ -107,8 +136,8 @@ impl Render for BranchHealthPanel {
         let colors = cx.colors().clone();
         let panel_bg = colors.panel_background;
 
-        let (total, unmerged, stale, diverged) = self.stats();
-        let filtered: Vec<BranchInfo> = self.filtered_branches().into_iter().cloned().collect();
+        let (total, unmerged, stale, diverged) = self.stats;
+        let filtered = self.filtered_branches.clone();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -277,7 +306,7 @@ impl Render for BranchHealthPanel {
                 )
                 .flex_1()
                 .size_full()
-                .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+                .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
                 .track_scroll(&self.scroll_handle),
             )
             .into_any_element()

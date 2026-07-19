@@ -3,6 +3,8 @@
 //! Mirrors the design language of `branch_health_panel.rs` and `prs_panel.rs`.
 //! Stash operations delegate to `GitProject` stash methods.
 
+use std::sync::Arc;
+
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, FocusHandle, Render, SharedString,
@@ -18,7 +20,7 @@ use crate::workspace::Workspace;
 
 /// The main stashes panel.
 pub struct StashesPanel {
-    stashes: Vec<StashEntry>,
+    stashes: Arc<Vec<StashEntry>>,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     project: WeakEntity<GitProject>,
@@ -40,17 +42,22 @@ impl StashesPanel {
             cx.subscribe(&proj, |this, project, event: &GitProjectEvent, cx| {
                 if matches!(
                     event,
-                    GitProjectEvent::StatusChanged | GitProjectEvent::RefsChanged
+                    GitProjectEvent::RepositoryChanged
+                        | GitProjectEvent::StatusChanged
+                        | GitProjectEvent::RefsChanged
                 ) {
-                    this.stashes = project.read(cx).stashes().to_vec();
-                    cx.notify();
+                    let stashes = project.read(cx).stashes().to_vec();
+                    if stashes.as_slice() != this.stashes.as_slice() {
+                        this.stashes = Arc::new(stashes);
+                        cx.notify();
+                    }
                 }
             })
             .detach();
         }
 
         Self {
-            stashes,
+            stashes: Arc::new(stashes),
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             project,
@@ -64,8 +71,11 @@ impl StashesPanel {
             return;
         };
         let project = proj.read(cx);
-        self.stashes = project.stashes().to_vec();
-        cx.notify();
+        let stashes = project.stashes().to_vec();
+        if stashes.as_slice() != self.stashes.as_slice() {
+            self.stashes = Arc::new(stashes);
+            cx.notify();
+        }
     }
 
     fn apply_stash(&self, index: usize, cx: &mut Context<Self>) {
@@ -137,7 +147,7 @@ impl Render for StashesPanel {
                 if empty {
                     self.render_empty_state(cx)
                 } else {
-                    self.render_stash_list(&stashes, cx)
+                    self.render_stash_list(stashes, cx)
                 }
             })
             .into_any_element()
@@ -222,7 +232,7 @@ impl StashesPanel {
 
     fn render_stash_list(
         &self,
-        stashes: &[StashEntry],
+        stashes: Arc<Vec<StashEntry>>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors();
@@ -230,7 +240,6 @@ impl StashesPanel {
         let stash_bg = colors.panel_background;
         let hover_bg = colors.ghost_element_hover;
         let active_bg = colors.ghost_element_active;
-        let stashes: Vec<StashEntry> = stashes.to_vec();
         let item_h = px(52.);
         let weak = cx.weak_entity();
 
@@ -384,7 +393,7 @@ impl StashesPanel {
         )
         .flex_1()
         .size_full()
-        .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+        .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
         .track_scroll(&self.scroll_handle)
         .into_any_element()
     }

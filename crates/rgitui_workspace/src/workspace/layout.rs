@@ -170,7 +170,8 @@ impl Render for Workspace {
             || active_tab.blame_view.read(cx).is_focused(window)
             || active_tab.file_history_view.read(cx).is_focused(window)
             || active_tab.reflog_view.read(cx).is_focused(window)
-            || active_tab.submodule_view.read(cx).is_focused(window);
+            || active_tab.submodule_view.read(cx).is_focused(window)
+            || active_tab.global_search_view.read(cx).is_focused(window);
         let focus_accent = colors.border_focused;
         let bottom_panel_mode = active_tab.bottom_panel_mode;
 
@@ -893,6 +894,10 @@ impl Render for Workspace {
                                     .when(bottom_panel_mode == BottomPanelMode::Submodules, |el| {
                                         el.child(active_tab.submodule_view.clone())
                                     })
+                                    .when(
+                                        bottom_panel_mode == BottomPanelMode::GlobalSearch,
+                                        |el| el.child(active_tab.global_search_view.clone()),
+                                    )
                                     .when(bottom_panel_mode == BottomPanelMode::Bisect, |el| {
                                         el.child(active_tab.bisect_view.clone())
                                     })

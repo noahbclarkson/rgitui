@@ -79,6 +79,7 @@ impl Workspace {
         });
 
         let caches = super::ViewCaches::new();
+        let diff_prefetch = super::events::DiffPrefetchScheduler::new(caches.diff.clone());
 
         // Set up subscriptions for child component events
         super::events::subscribe_project(
@@ -91,6 +92,7 @@ impl Workspace {
                 detail_panel: &detail_panel,
                 toolbar: &toolbar,
                 diff_cache: caches.diff.clone(),
+                diff_prefetch: diff_prefetch.clone(),
             },
         );
         super::events::subscribe_sidebar(cx, &project, &sidebar, &diff_viewer, &detail_panel);
@@ -101,6 +103,7 @@ impl Workspace {
             &diff_viewer,
             &detail_panel,
             caches.diff.clone(),
+            diff_prefetch,
         );
         super::events::subscribe_detail_panel(cx, &project, &diff_viewer, &detail_panel);
         super::events::subscribe_diff_viewer(cx, &project, &diff_viewer);
@@ -186,9 +189,15 @@ impl Workspace {
             proj.refresh_ahead_behind(cx);
         });
 
-        let issues_panel = cx.new(crate::IssuesPanel::new);
+        let github_data = self.github_data.clone();
+        let issues_panel = cx.new({
+            let github_data = github_data.clone();
+            move |cx| crate::IssuesPanel::new(cx, github_data)
+        });
         let workspace_weak = cx.entity().downgrade();
-        let prs_panel = cx.new(|cx| crate::PrsPanel::new(cx, workspace_weak.clone()));
+        let prs_workspace = workspace_weak.clone();
+        let prs_panel =
+            cx.new(move |cx| crate::PrsPanel::new(cx, prs_workspace, github_data.clone()));
         let project_weak = project.downgrade();
         let branch_health_panel =
             cx.new(|cx| crate::BranchHealthPanel::new(cx, project_weak.clone()));
@@ -196,7 +205,7 @@ impl Workspace {
             cx.new(|cx| crate::StashesPanel::new(cx, project_weak, workspace_weak.clone()));
 
         // Configure issues and PRs panels with GitHub remote info and token.
-        Self::configure_github_panels(&project, &issues_panel, &prs_panel, cx);
+        self.configure_github_panels(&project, &issues_panel, &prs_panel, cx);
 
         let name = project.read(cx).repo_name().to_string();
         self.tabs.push(ProjectTab {

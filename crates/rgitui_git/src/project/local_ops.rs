@@ -576,8 +576,7 @@ impl GitProject {
                             (Some(commit_summary.clone()), None, branch_name.clone()),
                             cx,
                         );
-                        cx.emit(GitProjectEvent::HeadChanged);
-                        cx.emit(GitProjectEvent::StatusChanged);
+                        cx.emit(GitProjectEvent::RepositoryChanged);
                         cx.notify();
                         Ok(oid)
                     }
@@ -722,9 +721,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                             cx.notify();
                         }
                         Err(e) => {
@@ -789,9 +786,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                             cx.notify();
                         }
                         Err(e) => {
@@ -859,9 +854,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                             cx.notify();
                         }
                         Err(e) => {
@@ -1067,8 +1060,7 @@ impl GitProject {
                                 (None, None, Some(new_name.clone())),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -1817,8 +1809,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::StatusChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                             cx.notify();
                         }
                         Err(e) => {
@@ -1879,9 +1870,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::StatusChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                             cx.notify();
                         }
                         Err(e) => {
@@ -1956,9 +1945,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::StatusChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                             cx.notify();
                         }
                         Err(e) => {
@@ -2019,9 +2006,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::StatusChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::RefsChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                             cx.notify();
                         }
                         Err(e) => {
@@ -2255,8 +2240,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -2362,8 +2346,7 @@ impl GitProject {
                                 (Some(summary), None, branch_name.clone()),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -2506,9 +2489,7 @@ impl GitProject {
                                     cx,
                                 );
                             }
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -2820,8 +2801,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Ok((None, data)) => {
                             this.apply_refresh_data(data);
@@ -2836,8 +2816,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -2928,8 +2907,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Ok((None, data)) => {
                             this.apply_refresh_data(data);
@@ -2944,8 +2922,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -3044,8 +3021,7 @@ impl GitProject {
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Ok((Some(msg), data)) => {
                             this.apply_refresh_data(data);
@@ -3056,8 +3032,7 @@ impl GitProject {
                                 (Some(msg), None, branch_name.clone()),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Ok((None, data)) => {
                             this.apply_refresh_data(data);
@@ -3072,8 +3047,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -3141,8 +3115,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -3218,8 +3191,7 @@ impl GitProject {
                                 (None, None, this.head_branch.clone()),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -3284,8 +3256,7 @@ impl GitProject {
                                 (None, None, this.head_branch.clone()),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(
@@ -3425,8 +3396,7 @@ impl GitProject {
                                 ),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::StatusChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                             cx.notify();
                         }
                         Err(e) => {

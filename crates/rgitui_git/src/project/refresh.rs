@@ -14,6 +14,12 @@ use super::GitProject;
 use super::GitProjectEvent;
 use super::RefreshData;
 
+pub(super) const MAX_COMMIT_LIMIT: usize = 100_000;
+
+pub(super) fn normalize_commit_limit(limit: usize) -> usize {
+    limit.clamp(1, MAX_COMMIT_LIMIT)
+}
+
 /// Per-worktree status cache: maps the worktree path to a (fingerprint, status) pair.
 /// The fingerprint is derived from `repo.statuses()` output so it reflects both index
 /// and working-tree changes, not just `.git` sentinel file mtimes.
@@ -266,6 +272,12 @@ fn status_fingerprint(repo_path: &Path, statuses: &git2::Statuses<'_>) -> u64 {
                     mtime.hash(&mut hasher);
                 }
             }
+            // Size and mtime can remain unchanged on coarse timestamp file systems
+            // while an already-modified file's contents change. Hashing its bytes
+            // keeps cached line statistics correct in that case.
+            if let Ok(contents) = std::fs::read(repo_path.join(path)) {
+                contents.hash(&mut hasher);
+            }
         }
     }
     hasher.finish()
@@ -450,6 +462,7 @@ fn gather_refresh_data_internal(
     worktree_cache: Option<&Mutex<WorktreeStatusCache>>,
     author_filter: Option<&str>,
 ) -> Result<RefreshData> {
+    let commit_limit = normalize_commit_limit(commit_limit);
     let refresh_timer = std::time::Instant::now();
     let repo = Repository::open(repo_path)
         .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
@@ -605,9 +618,14 @@ fn gather_refresh_data_internal(
     if let Err(e) = repo.tag_foreach(|oid, name_bytes| {
         if let Ok(name) = std::str::from_utf8(name_bytes) {
             let name = name.strip_prefix("refs/tags/").unwrap_or(name).to_string();
+            let peeled_oid = repo
+                .find_object(oid, None)
+                .and_then(|object| object.peel_to_commit())
+                .map(|commit| commit.id())
+                .unwrap_or(oid);
             tags.push(TagInfo {
                 name,
-                oid,
+                oid: peeled_oid,
                 message: None,
             });
         }
@@ -722,7 +740,9 @@ fn gather_refresh_data_internal(
         let mut log_cmd = git_command();
         log_cmd.current_dir(repo_path).args([
             "log",
-            "--all",
+            "--branches",
+            "--remotes",
+            "--tags",
             "--topo-order",
             &format!("--format={}", commit_log_format()),
         ]);
@@ -730,9 +750,13 @@ fn gather_refresh_data_internal(
         // refreshes; without it the filtered list would be replaced by the full
         // unfiltered log.
         if let Some(author) = author_filter {
+            log_cmd.arg("--fixed-strings");
             log_cmd.arg(format!("--author={}", author));
         }
-        log_cmd.arg(format!("-{}", limit + 1));
+        if head_detached {
+            log_cmd.arg("HEAD");
+        }
+        log_cmd.arg(format!("-{}", limit.saturating_add(1)));
         let output = log_cmd.output().with_context(|| "Failed to run git log")?;
 
         if !output.status.success() {
@@ -777,7 +801,15 @@ fn gather_refresh_data_internal(
         recent_commits,
         has_more_commits,
         worktrees,
-        default_branch: None,
+        default_branch: repo
+            .find_reference("refs/remotes/origin/HEAD")
+            .ok()
+            .and_then(|reference| reference.symbolic_target().map(str::to_owned))
+            .and_then(|target| {
+                target
+                    .strip_prefix("refs/remotes/origin/")
+                    .map(str::to_owned)
+            }),
         current_user_email,
     })
 }
@@ -803,6 +835,9 @@ impl GitProject {
     /// UI appears populated during the splash animation, then the remainder
     /// loads in the background.
     pub fn refresh(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        self.commit_query_generation = self.commit_query_generation.wrapping_add(1);
+        self.load_more_in_flight = false;
+        let query_generation = self.commit_query_generation;
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let first_batch = FIRST_BATCH_SIZE.min(commit_limit);
@@ -815,16 +850,34 @@ impl GitProject {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             // Phase 1: lightweight refresh (skip ahead/behind) with a small commit batch
             let repo_path_p1 = repo_path.clone();
+            let cache_path_p1 = repo_path.clone();
             let author_filter_p1 = author_filter.clone();
             let data = cx
                 .background_executor()
                 .spawn(async move {
-                    gather_refresh_data_lightweight_cached(
+                    let cache_fingerprint = if author_filter_p1.is_none() {
+                        super::history_cache::ref_fingerprint(&cache_path_p1).ok()
+                    } else {
+                        None
+                    };
+                    let data = gather_refresh_data_lightweight_cached(
                         &repo_path_p1,
                         first_batch,
                         &cache,
                         author_filter_p1.as_deref(),
-                    )
+                    )?;
+                    if let Some(cache_fingerprint) = cache_fingerprint {
+                        if let Err(error) = super::history_cache::store(
+                            &cache_path_p1,
+                            cache_fingerprint,
+                            &data.recent_commits,
+                            data.has_more_commits,
+                            data.default_branch.as_deref(),
+                        ) {
+                            log::debug!("history cache write skipped: {}", error);
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(data)
                 })
                 .await?;
 
@@ -839,6 +892,9 @@ impl GitProject {
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
+                    if this.commit_query_generation != query_generation {
+                        return Ok::<(), anyhow::Error>(());
+                    }
                     this.apply_refresh_data(data);
                     log::info!(
                         "refresh phase 1 applied in {:?}: {} commits",
@@ -886,6 +942,9 @@ impl GitProject {
 
                 cx.update(|cx| {
                     this.update(cx, |this, cx| {
+                        if this.commit_query_generation != query_generation {
+                            return Ok(());
+                        }
                         let existing_oids: std::collections::HashSet<git2::Oid> =
                             this.recent_commits.iter().map(|c| c.oid).collect();
                         // The background task handed us a fresh Arc, so it is
@@ -938,10 +997,14 @@ pub(super) fn load_more_commits_from_repo(
 ) -> Result<(Vec<CommitInfo>, bool)> {
     // Build ref-label map from the caller-supplied tips.
     let mut ref_map = std::collections::HashMap::<git2::Oid, Vec<RefLabel>>::new();
+    let mut detached_head = None;
     if let Ok(repo) = Repository::open(repo_path) {
         if let Ok(head) = repo.head() {
             if let Some(oid) = head.target() {
                 ref_map.entry(oid).or_default().push(RefLabel::Head);
+                if repo.head_detached().unwrap_or(false) {
+                    detached_head = Some(oid);
+                }
             }
         }
     }
@@ -969,12 +1032,18 @@ pub(super) fn load_more_commits_from_repo(
     let mut cmd = git_command();
     cmd.current_dir(repo_path).args([
         "log",
-        "--all",
+        "--branches",
+        "--remotes",
+        "--tags",
         "--topo-order",
         &format!("--format={}", format),
     ]);
     if let Some(author) = author_filter {
+        cmd.arg("--fixed-strings");
         cmd.arg(format!("--author={}", author));
+    }
+    if let Some(head_oid) = detached_head {
+        cmd.arg(head_oid.to_string());
     }
     cmd.arg(format!("-{}", window));
     let output = cmd.output().with_context(|| "Failed to run git log")?;
@@ -1232,6 +1301,92 @@ mod load_more_tests {
             loaded.len(),
             "no commit is loaded twice"
         );
+    }
+
+    #[test]
+    fn refresh_peels_annotated_tags_and_reads_remote_head() {
+        let (_dir, path, tip) = make_repo_with_commits(1);
+        let repo = git2::Repository::open(&path).unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let target = repo.find_object(tip, None).unwrap();
+        repo.tag("v1", &target, &sig, "release", false).unwrap();
+        repo.reference("refs/remotes/origin/main", tip, true, "test")
+            .unwrap();
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+            true,
+            "test",
+        )
+        .unwrap();
+        drop(target);
+        drop(repo);
+
+        let data = gather_refresh_data_internal(&path, false, 10, None, None).unwrap();
+        assert_eq!(data.default_branch.as_deref(), Some("main"));
+        assert!(data
+            .tags
+            .iter()
+            .any(|tag| tag.name == "v1" && tag.oid == tip));
+        let commit = data
+            .recent_commits
+            .iter()
+            .find(|commit| commit.oid == tip)
+            .unwrap();
+        assert!(commit
+            .refs
+            .iter()
+            .any(|label| matches!(label, RefLabel::Tag(name) if name == "v1")));
+    }
+
+    #[test]
+    fn refresh_excludes_commits_reachable_only_from_stash_ref() {
+        let (_dir, path, _tip) = make_repo_with_commits(1);
+        let repo = git2::Repository::open(&path).unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_oid = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let stash_only = repo
+            .commit(None, &sig, &sig, "stash only", &tree, &[])
+            .unwrap();
+        repo.reference("refs/stash", stash_only, true, "test")
+            .unwrap();
+        drop(tree);
+        drop(repo);
+
+        let data = gather_refresh_data_internal(&path, false, 10, None, None).unwrap();
+        assert!(!data
+            .recent_commits
+            .iter()
+            .any(|commit| commit.oid == stash_only));
+    }
+
+    #[test]
+    fn author_filter_treats_regex_characters_literally() {
+        let (_dir, path, tip) = make_repo_with_commits(1);
+        let repo = git2::Repository::open(&path).unwrap();
+        let sig = git2::Signature::now("Special", "person+tag@example.com").unwrap();
+        let tree = repo.find_commit(tip).unwrap().tree().unwrap();
+        let parent = repo.find_commit(tip).unwrap();
+        let special = repo
+            .commit(Some("HEAD"), &sig, &sig, "special", &tree, &[&parent])
+            .unwrap();
+        drop(parent);
+        drop(tree);
+        drop(repo);
+
+        let data =
+            gather_refresh_data_internal(&path, false, 10, None, Some("person+tag@example.com"))
+                .unwrap();
+        assert_eq!(data.recent_commits.len(), 1);
+        assert_eq!(data.recent_commits[0].oid, special);
+    }
+
+    #[test]
+    fn commit_limit_is_clamped_to_safe_bounds() {
+        assert_eq!(normalize_commit_limit(0), 1);
+        assert_eq!(normalize_commit_limit(42), 42);
+        assert_eq!(normalize_commit_limit(usize::MAX), MAX_COMMIT_LIMIT);
     }
 }
 

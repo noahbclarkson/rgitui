@@ -1,7 +1,26 @@
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-19
+
+This patch release makes large repositories and GitHub-backed workflows feel
+substantially more immediate. Commit history can now hydrate from a validated
+on-disk cache, Issues and Pull Requests are prefetched through a shared bounded
+cache, and the graph, diff, sidebar, detail, markdown, avatar, and search paths
+avoid their largest redundant computations and renders. It also fixes stale
+async results and several repository-edge cases uncovered by the performance
+audit.
+
 ### Added
 
+- **Persistent commit-history cache.** Recent commit metadata and graph inputs
+  are stored atomically using the repository's common Git directory as its
+  identity. Exact HEAD/ref fingerprints, a schema version, corruption fallback,
+  and generation pruning ensure stale history is never shown as current.
+- **Instant GitHub panel warm-up.** Open Issues and Pull Requests begin loading
+  as soon as a repository's GitHub remote is known, so the panels are normally
+  ready before they are opened. Requests share a memory-only cache with
+  singleflight deduplication, ETag revalidation, pagination, and rate-limit
+  reset reporting.
 - **DeepSeek AI provider.** Settings now offers DeepSeek with the current
   `deepseek-v4-flash` and `deepseek-v4-pro` models, including repository tool
   calls through DeepSeek's OpenAI-compatible chat API.
@@ -12,16 +31,76 @@
 
 ### Changed
 
+- **Repository refreshes are coherent and worktree-aware.** Related watcher
+  signals are consolidated into one repository-change event, linked worktrees
+  watch both their worktree and common Git directories, and ref fingerprints
+  include loose-ref contents rather than timestamps alone.
+- **History edge cases are handled consistently.** Annotated tags are peeled,
+  detached HEADs remain usable, `origin/HEAD` is preferred when selecting the
+  default branch, author filtering is preserved, and duplicate load-more
+  requests are suppressed.
+- **Network operations fail sooner when a connection stalls** through bounded
+  HTTP low-speed and SSH idle timeouts.
+- **Global search materializes results in bounded pages.** The first 250 rows
+  render immediately and additional pages are expanded on demand, avoiding a
+  frame spike for broad `git grep` queries.
 - **Tracked changes use semantic filename colors** while untracked files are
   dimmed, so active modifications stand out without widening the sidebar.
 
 ### Fixed
 
+- **Stale background work could overwrite newer UI state.** Commit refresh,
+  filtering, pagination, ahead/behind calculation, graph computation, diff
+  preparation, GitHub requests, and global search now carry request identity or
+  generation guards and discard obsolete completions.
+- **Diff display cache collisions and cross-mode reuse.** Cache keys now include
+  staged state and a full source fingerprint, validate collisions, retain the
+  most complete unified representation, and evict by true LRU order under both
+  entry and rendered-row budgets.
+- **GitHub panels could show data from the wrong repository or authentication
+  context.** Repository, resource/filter/search/comment, and auth identity are
+  part of cache and request keys; private payloads and credentials are never
+  persisted.
+- **Global search could open an invisible panel, route through duplicate
+  shortcuts, retain stale results, or paint a blank result area.** The panel is
+  now owned per repository tab, renders populated rows reliably, scrolls, and
+  restores the Diff panel when dismissed.
+- **Graph and detail updates could become internally inconsistent.** Commit and
+  graph-row snapshots are applied atomically, selection is resolved at apply
+  time, and in-flight computations are deduplicated.
 - Auth Preferences no longer collapses horizontally in the settings window.
 - Hunk staging now emits complete patches, and hunk unstaging correctly reverses
   the selected change instead of applying the staged direction again.
 - Completing a clone opens and refreshes the cloned repository in its own tab;
   it no longer replaces the graph data inside the previously active project tab.
+
+### Performance
+
+- **Commit graph startup avoids a fresh history walk when possible.** A valid
+  cache is hydrated synchronously for immediate display while writes and cache
+  maintenance stay off the UI thread.
+- **Diff preparation is shared and bounded.** Syntax highlighting, word diff,
+  longest-row calculation, LCS alignment, and three-way preparation run in the
+  background and reuse `Arc` snapshots. Speculative neighbouring-commit diffs
+  are singleflight with a four-task concurrency cap and bounded batches.
+- **Large lists build only their visible rows.** Graph, Issues, Pull Requests,
+  sidebar sections, and changed-file trees use bounded virtual scrolling;
+  flattened branch/file/tree data is rebuilt only when its source changes.
+- **Per-frame cloning and reparsing are reduced.** Graph search is
+  allocation-light, commit and diff snapshots are shared, branch health and
+  stash presentation are cached, markdown ASTs use a bounded cache, and avatar
+  writes/UI refreshes are coalesced.
+- **GitHub data is bounded in memory.** The shared service uses a 60-second TTL,
+  128-entry LRU, and 16 MiB raw-payload budget, including successful empty
+  responses so repeatedly opening an empty panel remains instant.
+
+### Internal
+
+- Added repository-specific contributor guidance in `CLAUDE.md` covering the
+  GPUI entity model, background-work rules, crate boundaries, and CI commands.
+- Expanded regression coverage for cache invalidation/corruption, stale async
+  generations, worktrees and refs, GitHub pagination/cache identity, diff-cache
+  collisions and LRU eviction, search paging, and graph computation.
 
 ## [0.3.0] - 2026-06-02
 
@@ -648,7 +727,8 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/noahbclarkson/rgitui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/noahbclarkson/rgitui/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/noahbclarkson/rgitui/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/noahbclarkson/rgitui/compare/v0.2.0...v0.2.1

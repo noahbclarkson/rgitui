@@ -24,6 +24,11 @@ use crate::markdown_view::render_markdown;
 /// scrolls internally (only the visible window is built); shorter lists size to
 /// their content so the panel scrolls as one region.
 const FILE_LIST_MAX_HEIGHT: f32 = 600.0;
+const FILE_LIST_BOTTOM_PADDING: f32 = 8.0;
+
+fn bounded_file_list_height(row_count: usize, row_height: f32) -> f32 {
+    (row_count as f32 * row_height + FILE_LIST_BOTTOM_PADDING).min(FILE_LIST_MAX_HEIGHT)
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum FileViewMode {
@@ -416,6 +421,9 @@ pub struct DetailPanel {
     commit: Option<CommitInfo>,
     commit_diff: Option<Arc<CommitDiff>>,
     cached_file_tree: Option<CachedFileDiffTree>,
+    /// Collapse-filtered tree indices for the common no-search render path.
+    /// Recomputed only when the commit or collapse state changes.
+    visible_tree_rows: Arc<Vec<usize>>,
     selected_file_index: Option<usize>,
     focus_handle: FocusHandle,
     copied_field: Option<(&'static str, Instant)>,
@@ -436,6 +444,7 @@ impl DetailPanel {
             commit: None,
             commit_diff: None,
             cached_file_tree: None,
+            visible_tree_rows: Arc::new(Vec::new()),
             selected_file_index: None,
             focus_handle: cx.focus_handle(),
             copied_field: None,
@@ -633,7 +642,17 @@ impl DetailPanel {
         if !self.collapsed_dirs.remove(&key) {
             self.collapsed_dirs.insert(key);
         }
+        self.rebuild_visible_tree_rows();
         cx.notify();
+    }
+
+    fn rebuild_visible_tree_rows(&mut self) {
+        self.visible_tree_rows = Arc::new(
+            self.cached_file_tree
+                .as_ref()
+                .map(|cached| visible_tree_row_indices(&cached.tree_rows, &self.collapsed_dirs))
+                .unwrap_or_default(),
+        );
     }
 
     fn emit_file_selected(&self, cx: &mut Context<Self>) {
@@ -648,18 +667,39 @@ impl DetailPanel {
     }
 
     pub fn set_commit(&mut self, commit: CommitInfo, diff: CommitDiff, cx: &mut Context<Self>) {
+        self.set_commit_arc(commit, Arc::new(diff), cx);
+    }
+
+    pub(crate) fn set_commit_arc(
+        &mut self,
+        commit: CommitInfo,
+        diff: Arc<CommitDiff>,
+        cx: &mut Context<Self>,
+    ) {
         log::debug!(
             "DetailPanel::set_commit: oid={} files={}",
             commit.short_id,
             diff.files.len()
         );
-        self.cached_file_tree = Some(build_cached_file_tree(&diff.files));
+        let tree_started = Instant::now();
+        let cached_file_tree = build_cached_file_tree(&diff.files);
+        let tree_elapsed = tree_started.elapsed();
+        if tree_elapsed >= Duration::from_millis(8) {
+            log::debug!(
+                "DetailPanel file-tree preparation took {:?} for {} files ({} tree rows)",
+                tree_elapsed,
+                diff.files.len(),
+                cached_file_tree.tree_rows.len()
+            );
+        }
+        self.cached_file_tree = Some(cached_file_tree);
         self.commit = Some(commit);
-        self.commit_diff = Some(Arc::new(diff));
+        self.commit_diff = Some(diff);
         self.selected_file_index = None;
         self.file_search_query = None;
         self.file_search_active = false;
         self.collapsed_dirs.clear();
+        self.rebuild_visible_tree_rows();
         self.description_expanded = false;
         self.contained_in.clear();
         self.contained_in_loading = false;
@@ -671,6 +711,7 @@ impl DetailPanel {
         self.commit = None;
         self.commit_diff = None;
         self.cached_file_tree = None;
+        self.visible_tree_rows = Arc::new(Vec::new());
         self.selected_file_index = None;
         self.file_search_query = None;
         self.file_search_active = false;
@@ -858,6 +899,7 @@ impl DetailPanel {
         let selected_file_index = self.selected_file_index;
         let weak = cx.weak_entity();
         let row_count = filtered.len();
+        let list_height = bounded_file_list_height(row_count, row_h);
         // Cheap `'static` handles for the virtualized closure: the shared row
         // store and, when searching, the display->file-index mapping (`None`
         // means identity, i.e. unfiltered diff order). Only the visible window is
@@ -962,8 +1004,8 @@ impl DetailPanel {
         )
         .flex_shrink_0()
         .pb_2()
-        .max_h(px(FILE_LIST_MAX_HEIGHT))
-        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .h(px(list_height))
+        .with_sizing_behavior(ListSizingBehavior::Auto)
         .into_any_element()
     }
 
@@ -975,7 +1017,7 @@ impl DetailPanel {
     fn render_tree_file_list(
         &self,
         tree_rows: &Arc<Vec<CachedTreeRow>>,
-        visible: Vec<usize>,
+        visible: Arc<Vec<usize>>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors().clone();
@@ -988,6 +1030,7 @@ impl DetailPanel {
         let collapsed = self.collapsed_dirs.clone();
         let weak = cx.weak_entity();
         let row_count = visible.len();
+        let list_height = bounded_file_list_height(row_count, row_h);
         let tree_rows = tree_rows.clone();
 
         let ghost_element_selected = colors.ghost_element_selected;
@@ -1128,8 +1171,8 @@ impl DetailPanel {
         )
         .flex_shrink_0()
         .pb_2()
-        .max_h(px(FILE_LIST_MAX_HEIGHT))
-        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .h(px(list_height))
+        .with_sizing_behavior(ListSizingBehavior::Auto)
         .into_any_element()
     }
 }
@@ -1841,9 +1884,9 @@ impl Render for DetailPanel {
                         // apply the collapsed-directory state.
                         let visible = if searching {
                             let matches = filtered.matched_set();
-                            searched_tree_row_indices(&cached.tree_rows, &matches)
+                            Arc::new(searched_tree_row_indices(&cached.tree_rows, &matches))
                         } else {
-                            visible_tree_row_indices(&cached.tree_rows, &self.collapsed_dirs)
+                            self.visible_tree_rows.clone()
                         };
                         self.render_tree_file_list(&cached.tree_rows, visible, cx)
                     }
@@ -1861,6 +1904,16 @@ impl Render for DetailPanel {
 mod tests {
     use super::*;
     use crate::time::format_relative_time_full;
+
+    #[test]
+    fn bounded_file_list_height_sizes_short_lists_to_content() {
+        assert_eq!(bounded_file_list_height(3, 26.0), 86.0);
+    }
+
+    #[test]
+    fn bounded_file_list_height_caps_large_lists() {
+        assert_eq!(bounded_file_list_height(100, 26.0), FILE_LIST_MAX_HEIGHT);
+    }
 
     // --- format_relative_time tests ---
 

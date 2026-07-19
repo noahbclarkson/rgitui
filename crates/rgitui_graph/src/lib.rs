@@ -196,6 +196,26 @@ struct ContextMenuState {
     position: Point<Pixels>,
 }
 
+const DRAG_THRESHOLD: Pixels = px(6.);
+
+fn drag_threshold_exceeded(start: Point<Pixels>, current: Point<Pixels>) -> bool {
+    (current.x - start.x).abs() >= DRAG_THRESHOLD || (current.y - start.y).abs() >= DRAG_THRESHOLD
+}
+
+/// Case-insensitive substring matching without allocating a lowercase copy for
+/// every commit field on the common ASCII path.
+fn contains_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
+    if lowercase_needle.is_ascii() {
+        let needle = lowercase_needle.as_bytes();
+        return needle.is_empty()
+            || haystack
+                .as_bytes()
+                .windows(needle.len())
+                .any(|candidate| candidate.eq_ignore_ascii_case(needle));
+    }
+    haystack.to_lowercase().contains(lowercase_needle)
+}
+
 /// The commit graph panel.
 pub struct GraphView {
     commits: Arc<Vec<CommitInfo>>,
@@ -208,7 +228,6 @@ pub struct GraphView {
     context_menu: Option<ContextMenuState>,
     show_search: bool,
     filter_matches: Vec<usize>,
-    filter_match_set: HashSet<usize>,
     filter_match_set_arc: Arc<HashSet<usize>>,
     current_match: usize,
     search_editor: Entity<rgitui_ui::TextInput>,
@@ -220,7 +239,7 @@ pub struct GraphView {
     /// Search query to re-run once more commits have been loaded.
     /// Used when a search returns no matches but more commits are available.
     pending_search_query: Option<SharedString>,
-    cached_graph_hash: u64,
+    cached_graph_hash: Option<u64>,
     /// Monotonic counter incremented on each background graph computation. The
     /// completion handler only applies results whose captured generation still
     /// matches, so a slow stale compute cannot clobber a newer one.
@@ -247,6 +266,10 @@ pub struct GraphView {
     container_bounds: Bounds<Pixels>,
     /// OID of the commit currently being dragged (for drag-to-rebase).
     dragging_oid: Option<git2::Oid>,
+    /// Cursor position where the drag gesture began.
+    drag_start_position: Option<Point<Pixels>>,
+    /// Whether the pointer has moved far enough to count as a drag gesture.
+    drag_moved: bool,
     /// Whether a drag-to-rebase was just completed (suppresses click-to-select).
     suppress_next_click: bool,
 }
@@ -285,7 +308,6 @@ impl GraphView {
             context_menu: None,
             show_search: false,
             filter_matches: Vec::new(),
-            filter_match_set: HashSet::new(),
             filter_match_set_arc: Arc::new(HashSet::new()),
             current_match: 0,
             search_editor,
@@ -293,7 +315,7 @@ impl GraphView {
             all_commits_loaded: false,
             pending_scroll_oid: None,
             pending_search_query: None,
-            cached_graph_hash: 0,
+            cached_graph_hash: None,
             compute_generation: 0,
             search_debounce_task: None,
             worktree_infos: Vec::new(),
@@ -312,6 +334,8 @@ impl GraphView {
             my_commits_active: false,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
             dragging_oid: None,
+            drag_start_position: None,
+            drag_moved: false,
             suppress_next_click: false,
         }
     }
@@ -336,7 +360,7 @@ impl GraphView {
         // Compute a simple hash to detect if commits actually changed
         let graph_style = cx.global::<SettingsState>().settings().graph_style;
         let new_hash = Self::compute_commits_hash(&commits, &graph_style);
-        if new_hash == self.cached_graph_hash && !self.commits.is_empty() {
+        if self.cached_graph_hash == Some(new_hash) {
             log::debug!(
                 "GraphView::set_commits: hash unchanged ({:#x}), skipping ({} commits)",
                 new_hash,
@@ -344,28 +368,19 @@ impl GraphView {
             );
             return;
         }
-        self.cached_graph_hash = new_hash;
+        self.cached_graph_hash = Some(new_hash);
         log::debug!(
             "GraphView::set_commits: hash changed -> {:#x}, spawning graph compute for {} commits",
             new_hash,
             commits.len()
         );
 
-        // Preserve selection by OID across refreshes
-        let prev_selected_oid = self.selected_oid;
-        let prev_selected_index = self.selected_index;
-
-        // Store commits immediately so other state (search, working tree row) stays in sync.
-        // The old graph_rows remain in place until the background computation finishes,
-        // so the UI renders the previous graph during computation rather than going blank.
-        self.commits = commits.clone();
-        self.recompute_worktree_positions();
-
         // Spawn graph computation on the background executor. Capture the current
         // generation so a stale compute that finishes after a newer one is dropped.
         self.compute_generation = self.compute_generation.wrapping_add(1);
         let generation = self.compute_generation;
-        let commits_for_bg = commits;
+        let commits_for_bg = commits.clone();
+        let commits_for_apply = commits;
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             let graph_rows = cx
                 .background_executor()
@@ -378,12 +393,22 @@ impl GraphView {
                 if this.compute_generation != generation {
                     return;
                 }
+
+                // Capture selection against the currently displayed snapshot. Commits and
+                // rows must be swapped together: pairing new commits with old rows can index
+                // the wrong commit while a background graph computation is in flight.
+                let prev_selected_oid = this.selected_oid;
+                let prev_selected_index = this.selected_index;
+                let prev_selected_worktree =
+                    prev_selected_index.is_some_and(|index| this.worktree_row_set.contains(&index));
+
                 this.global_max_lane = graph_rows
                     .iter()
                     .map(|r| r.lane_count)
                     .max()
                     .unwrap_or(1)
                     .max(1);
+                this.commits = commits_for_apply;
                 this.graph_rows = Arc::new(graph_rows);
                 log::debug!(
                     "GraphView: graph rows applied: {} rows, max_lane={}",
@@ -400,9 +425,7 @@ impl GraphView {
                         this.selected_index = None;
                         this.selected_oid = None;
                     }
-                } else if prev_selected_index
-                    .is_some_and(|index| this.worktree_row_set.contains(&index))
-                {
+                } else if prev_selected_worktree {
                     if prev_selected_index.is_some_and(|index| index >= this.total_list_items()) {
                         this.selected_index = None;
                     } else {
@@ -646,19 +669,40 @@ impl GraphView {
     // ── Drag-to-rebase ────────────────────────────────────────────────
 
     /// Begin dragging a commit (called on mousedown of the grip handle).
-    fn start_drag(&mut self, oid: git2::Oid, cx: &mut Context<Self>) {
+    fn start_drag(&mut self, oid: git2::Oid, position: Point<Pixels>, cx: &mut Context<Self>) {
         self.dragging_oid = Some(oid);
-        self.suppress_next_click = true;
+        self.drag_start_position = Some(position);
+        self.drag_moved = false;
+        self.suppress_next_click = false;
         cx.notify();
     }
 
-    /// Complete the drag and emit InteractiveRebase for the dragged commit.
-    fn end_drag(&mut self, cx: &mut Context<Self>) {
-        let Some(oid) = self.dragging_oid else {
+    /// Track whether the pointer has crossed the drag threshold. A plain click on
+    /// the grip must not open the interactive rebase dialog.
+    fn update_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(start) = self.drag_start_position else {
             return;
         };
-        self.dragging_oid = None;
-        cx.emit(GraphViewEvent::InteractiveRebase(oid));
+        if !self.drag_moved && drag_threshold_exceeded(start, position) {
+            self.drag_moved = true;
+            self.suppress_next_click = true;
+            cx.notify();
+        }
+    }
+
+    /// Complete a genuine drag and emit InteractiveRebase for the dragged commit.
+    fn end_drag(&mut self, cx: &mut Context<Self>) {
+        let oid = self.dragging_oid.take();
+        let should_rebase = self.drag_moved;
+        self.drag_start_position = None;
+        self.drag_moved = false;
+        if should_rebase {
+            if let Some(oid) = oid {
+                cx.emit(GraphViewEvent::InteractiveRebase(oid));
+            }
+        } else {
+            self.suppress_next_click = false;
+        }
         cx.notify();
     }
 
@@ -717,7 +761,6 @@ impl GraphView {
             self.search_editor
                 .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
             self.filter_matches.clear();
-            self.filter_match_set.clear();
             self.filter_match_set_arc = Arc::new(HashSet::new());
             self.current_match = 0;
         }
@@ -734,7 +777,6 @@ impl GraphView {
             self.search_editor
                 .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
             self.filter_matches.clear();
-            self.filter_match_set.clear();
             self.filter_match_set_arc = Arc::new(HashSet::new());
             self.current_match = 0;
         }
@@ -782,7 +824,6 @@ impl GraphView {
 
     fn update_search_filter(&mut self, cx: &mut Context<Self>) {
         self.filter_matches.clear();
-        self.filter_match_set.clear();
         self.current_match = 0;
 
         if self.search_editor.read(cx).is_empty() {
@@ -792,18 +833,19 @@ impl GraphView {
         }
 
         let query = self.search_editor.read(cx).text().to_lowercase();
+        let mut match_set = HashSet::new();
         for (i, commit) in self.commits.iter().enumerate() {
-            if commit.summary.to_lowercase().contains(&query)
-                || commit.message.to_lowercase().contains(&query)
-                || commit.author.name.to_lowercase().contains(&query)
-                || commit.author.email.to_lowercase().contains(&query)
-                || commit.short_id.to_lowercase().contains(&query)
+            if contains_case_insensitive(&commit.summary, &query)
+                || contains_case_insensitive(&commit.message, &query)
+                || contains_case_insensitive(&commit.author.name, &query)
+                || contains_case_insensitive(&commit.author.email, &query)
+                || contains_case_insensitive(&commit.short_id, &query)
             {
                 self.filter_matches.push(i);
-                self.filter_match_set.insert(i);
+                match_set.insert(i);
             }
         }
-        self.filter_match_set_arc = Arc::new(self.filter_match_set.clone());
+        self.filter_match_set_arc = Arc::new(match_set);
         log::debug!(
             "GraphView::search: query={:?} matches={}",
             query,
@@ -881,12 +923,13 @@ impl GraphView {
             if event.keystroke.key.as_str() == "escape" {
                 // Cancel any in-progress drag-to-rebase.
                 self.dragging_oid = None;
+                self.drag_start_position = None;
+                self.drag_moved = false;
                 self.suppress_next_click = false;
                 self.show_search = false;
                 self.search_editor
                     .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
                 self.filter_matches.clear();
-                self.filter_match_set.clear();
                 self.filter_match_set_arc = Arc::new(HashSet::new());
                 self.current_match = 0;
                 self.graph_focus.focus(window, cx);
@@ -1954,10 +1997,10 @@ impl Render for GraphView {
                                 .tooltip(grip_tooltip)
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                                    move |event: &MouseDownEvent, _: &mut Window, cx: &mut App| {
                                         entity_for_grip
                                             .update(cx, |this, cx| {
-                                                this.start_drag(oid_for_grip, cx);
+                                                this.start_drag(oid_for_grip, event.position, cx);
                                             })
                                             .ok();
                                     },
@@ -2146,15 +2189,16 @@ impl Render for GraphView {
                 cx.notify();
             }))
             // Drag-to-rebase: track mouse moves while a commit drag is in progress.
-            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, _cx| {
-                // Drag hover tracking would require scroll offset — skip for now.
-                // The drag still works: mousedown on grip → mouseup fires InteractiveRebase.
-                let _ = this;
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.dragging_oid.is_some() {
+                    this.update_drag(event.position, cx);
+                }
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
                     if this.dragging_oid.is_some() {
+                        this.update_drag(event.position, cx);
                         this.end_drag(cx);
                     }
                 }),
@@ -3520,6 +3564,43 @@ mod tests {
         for kind in &kinds {
             assert_eq!(result.get(kind), Some(&1));
         }
+    }
+
+    #[test]
+    fn drag_threshold_ignores_click_jitter() {
+        let start = Point::new(px(100.), px(100.));
+        assert!(!drag_threshold_exceeded(
+            start,
+            Point::new(px(105.), px(95.))
+        ));
+    }
+
+    #[test]
+    fn drag_threshold_accepts_horizontal_or_vertical_motion() {
+        let start = Point::new(px(100.), px(100.));
+        assert!(drag_threshold_exceeded(
+            start,
+            Point::new(px(106.), px(100.))
+        ));
+        assert!(drag_threshold_exceeded(
+            start,
+            Point::new(px(100.), px(94.))
+        ));
+    }
+
+    #[test]
+    fn case_insensitive_search_handles_ascii_without_field_copies() {
+        assert!(contains_case_insensitive(
+            "Fix GitHub CACHE",
+            "github cache"
+        ));
+        assert!(!contains_case_insensitive("Fix GitHub cache", "gitlab"));
+        assert!(contains_case_insensitive("anything", ""));
+    }
+
+    #[test]
+    fn case_insensitive_search_preserves_unicode_behavior() {
+        assert!(contains_case_insensitive("CAFÉ", "café"));
     }
 
     // --- format_relative_time ---

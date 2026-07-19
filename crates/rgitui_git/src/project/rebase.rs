@@ -200,9 +200,7 @@ impl GitProject {
                                     cx,
                                 );
                             }
-                            cx.emit(GitProjectEvent::RefsChanged);
-                            cx.emit(GitProjectEvent::HeadChanged);
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            cx.emit(GitProjectEvent::RepositoryChanged);
                         }
                         Err(e) => {
                             this.fail_op(

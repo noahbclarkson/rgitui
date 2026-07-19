@@ -353,9 +353,13 @@ impl Workspace {
             CommandId::GlobalSearch => {
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                     if tab.bottom_panel_mode == BottomPanelMode::GlobalSearch {
+                        tab.global_search_view
+                            .update(cx, |search, cx| search.hide(cx));
                         tab.bottom_panel_mode = BottomPanelMode::Diff;
                     } else {
                         tab.bottom_panel_mode = BottomPanelMode::GlobalSearch;
+                        tab.global_search_view
+                            .update(cx, |search, cx| search.show_without_focus(cx));
                     }
                     cx.notify();
                 }
@@ -446,7 +450,7 @@ impl Workspace {
                         active_tab.right_panel_mode = RightPanelMode::PullRequests;
                         let pp = active_tab.prs_panel.clone();
                         pp.update(cx, |panel, cx| {
-                            if !panel.has_prs_loaded() {
+                            if !panel.has_prs_loaded() && !panel.is_loading() {
                                 panel.fetch_prs(cx);
                             }
                         });

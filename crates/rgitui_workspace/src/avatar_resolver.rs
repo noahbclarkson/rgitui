@@ -65,7 +65,6 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
         let persist_tx = persist_tx.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
             let result = resolve_single(&name, &email, &http).await;
-            let resolved = result.is_some();
             cx.update(|cx: &mut App| {
                 if cx.has_global::<AvatarCache>() {
                     let cache = cx.global_mut::<AvatarCache>();
@@ -87,11 +86,6 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
             if let Some(url) = result {
                 let _ = persist_tx.send((email, url)).await;
             }
-            // Only refresh when an avatar was actually resolved — NotFound doesn't
-            // change what's displayed (initials fallback remains unchanged).
-            if resolved {
-                cx.refresh();
-            }
         })
         .detach();
     }
@@ -103,33 +97,30 @@ pub fn resolve_avatars(authors: Vec<(String, String)>, cx: &mut App) {
 /// drained.
 fn spawn_persist_collector(rx: smol::channel::Receiver<(String, String)>, cx: &mut App) {
     let background = cx.background_executor().clone();
-    background
-        .clone()
-        .spawn(async move {
-            while let Ok(first) = rx.recv().await {
-                let mut batch = vec![first];
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        while let Ok(first) = rx.recv().await {
+            let mut batch = vec![first];
 
-                // Coalesce everything that arrives within the debounce window
-                // into the same flush.
-                loop {
-                    let timer = background.timer(PERSIST_DEBOUNCE);
-                    match select(Box::pin(rx.recv()), Box::pin(timer)).await {
-                        Either::Left((Ok(entry), _)) => batch.push(entry),
-                        // Sender dropped, or the debounce window elapsed: flush.
-                        Either::Left((Err(_), _)) | Either::Right(_) => break,
-                    }
-                }
-
-                // TODO(audit): PERF-14 collapse this per-entry read-modify-rewrite
-                // into one whole-map flush once `AvatarCache` (in rgitui_ui) exposes a
-                // batched `save_all_to_disk` / resolved-entry iterator; this file
-                // cannot add that method.
-                for (email, url) in &batch {
-                    AvatarCache::save_entry_to_disk(email, url);
+            // Coalesce everything that arrives within the debounce window
+            // into the same flush.
+            loop {
+                let timer = background.timer(PERSIST_DEBOUNCE);
+                match select(Box::pin(rx.recv()), Box::pin(timer)).await {
+                    Either::Left((Ok(entry), _)) => batch.push(entry),
+                    // Sender dropped, or the debounce window elapsed: flush.
+                    Either::Left((Err(_), _)) | Either::Right(_) => break,
                 }
             }
-        })
-        .detach();
+
+            // Refresh once for the whole wave immediately; persistence proceeds
+            // independently on the background executor.
+            cx.refresh();
+            background
+                .spawn(async move { AvatarCache::save_entries_to_disk(&batch) })
+                .detach();
+        }
+    })
+    .detach();
 }
 
 type CheckFuture = Pin<Box<dyn futures::Future<Output = Option<String>> + Send>>;

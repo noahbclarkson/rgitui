@@ -1,7 +1,10 @@
+use std::collections::{HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use futures::StreamExt;
 use gpui::{AppContext, Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator};
 use rgitui_diff::{DiffViewer, DiffViewerEvent};
@@ -711,26 +714,34 @@ pub(super) fn subscribe_global_search(
     cx.subscribe(
         global_search,
         move |this, gs, event: &GlobalSearchViewEvent, cx| match event {
-            GlobalSearchViewEvent::SearchSubmit(query) => {
+            GlobalSearchViewEvent::SearchSubmit { query, generation } => {
                 let Some(project) = this.active_project().cloned() else {
                     return;
                 };
                 gs.update(cx, |g, cx| g.set_loading(true, cx));
                 let gs_clone = gs_for_async.clone();
+                let repo_path = project.read(cx).repo_path().to_path_buf();
+                let generation = *generation;
                 let task = project.update(cx, |proj, cx| proj.git_grep_async(query.clone(), cx));
-                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| match task.await {
-                    Ok(results) => {
-                        cx.update(|cx| {
-                            gs_clone.update(cx, |g, cx| g.set_results(results, cx));
+                cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+                    let result = task.await;
+                    this.update(cx, |workspace, cx| {
+                        let same_repo = workspace.active_project().is_some_and(|active| {
+                            active.read(cx).repo_path() == repo_path.as_path()
                         });
-                    }
-                    Err(e) => {
-                        cx.update(|cx| {
-                            gs_clone.update(cx, |g, cx| {
-                                g.set_error(format!("Search failed: {}", e), cx)
-                            });
-                        });
-                    }
+                        if !same_repo {
+                            return;
+                        }
+                        match result {
+                            Ok(results) => {
+                                gs_clone.update(cx, |g, cx| g.set_results(generation, results, cx))
+                            }
+                            Err(e) => gs_clone.update(cx, |g, cx| {
+                                g.set_error(generation, format!("Search failed: {}", e), cx)
+                            }),
+                        }
+                    })
+                    .ok();
                 })
                 .detach();
             }
@@ -792,6 +803,12 @@ pub(super) fn subscribe_global_search(
                 );
             }
             GlobalSearchViewEvent::Dismissed => {
+                gs.update(cx, |g, cx| g.hide(cx));
+                if let Some(tab) = this.tabs.get_mut(this.active_tab) {
+                    if tab.bottom_panel_mode == BottomPanelMode::GlobalSearch {
+                        tab.bottom_panel_mode = BottomPanelMode::Diff;
+                    }
+                }
                 this.focus.pending_focus_restore = true;
                 cx.notify();
             }
@@ -813,6 +830,7 @@ pub(super) struct ProjectSubscriptions<'a> {
     pub detail_panel: &'a Entity<DetailPanel>,
     pub toolbar: &'a Entity<Toolbar>,
     pub diff_cache: Arc<Mutex<CommitDiffCache>>,
+    pub diff_prefetch: DiffPrefetchScheduler,
 }
 
 pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscriptions) {
@@ -823,6 +841,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
     let diff_viewer = subs.diff_viewer.clone();
     let detail_panel_ref = subs.detail_panel.clone();
     let diff_cache = subs.diff_cache;
+    let diff_prefetch = subs.diff_prefetch;
     let has_prewarmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     cx.subscribe(project, {
@@ -839,7 +858,8 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     tb.set_ahead_behind(ahead, behind, cx);
                 });
             }
-            GitProjectEvent::StatusChanged
+            GitProjectEvent::RepositoryChanged
+            | GitProjectEvent::StatusChanged
             | GitProjectEvent::HeadChanged
             | GitProjectEvent::RefsChanged => {
                 let (commits, has_more, branches, tags, remotes, stashes, worktrees, authors) = {
@@ -893,7 +913,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     )
                 });
                 if let Some((proj, issues_panel, prs_panel)) = github_panels {
-                    Workspace::configure_github_panels(&proj, &issues_panel, &prs_panel, cx);
+                    this.configure_github_panels(&proj, &issues_panel, &prs_panel, cx);
                 }
 
                 // Scope the inspecting-worktree auto-exit to the tab whose project
@@ -1008,32 +1028,8 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     };
                     if !prewarm_oids.is_empty() {
                         let repo_path = proj.repo_path().to_path_buf();
-                        let prewarm_cache = diff_cache.clone();
                         log::debug!("diff_prewarm: starting for {} commits", prewarm_oids.len());
-                        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                            let tasks: Vec<_> = prewarm_oids
-                                .into_iter()
-                                .map(|oid| {
-                                    let repo_path = repo_path.clone();
-                                    cx.background_executor().spawn(async move {
-                                        let result =
-                                            rgitui_git::compute_commit_diff(&repo_path, oid);
-                                        (oid, result)
-                                    })
-                                })
-                                .collect();
-
-                            let results = futures::future::join_all(tasks).await;
-                            let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
-                            log::debug!("diff_prewarm: complete, {} results cached", ok_count);
-                            let mut cache = prewarm_cache.lock().unwrap();
-                            for (oid, result) in results {
-                                if let Ok(commit_diff) = result {
-                                    cache.insert(oid, Arc::new(commit_diff));
-                                }
-                            }
-                        })
-                        .detach();
+                        diff_prefetch.enqueue(repo_path, prewarm_oids, cx);
                     }
                 } // end prewarm gate
             }
@@ -1558,6 +1554,118 @@ pub(super) fn subscribe_sidebar(
 
 type CommitDiffCache = LruCache<git2::Oid, Arc<rgitui_git::CommitDiff>>;
 
+const DIFF_PREFETCH_CONCURRENCY: usize = 4;
+const DIFF_PREFETCH_BATCH_SIZE: usize = 32;
+
+#[derive(Default)]
+struct DiffPrefetchState {
+    pending: VecDeque<(PathBuf, git2::Oid)>,
+    scheduled: HashSet<git2::Oid>,
+    running: bool,
+}
+
+/// Per-project bounded, singleflight scheduler for speculative commit diffs.
+/// Interactive selections bypass this queue, while prewarm/neighbor work is
+/// deduplicated and limited to a small number of background computations.
+#[derive(Clone)]
+pub(super) struct DiffPrefetchScheduler {
+    cache: Arc<Mutex<CommitDiffCache>>,
+    state: Arc<Mutex<DiffPrefetchState>>,
+}
+
+impl DiffPrefetchScheduler {
+    pub(super) fn new(cache: Arc<Mutex<CommitDiffCache>>) -> Self {
+        Self {
+            cache,
+            state: Arc::new(Mutex::new(DiffPrefetchState::default())),
+        }
+    }
+
+    fn enqueue(&self, repo_path: PathBuf, oids: Vec<git2::Oid>, cx: &mut Context<Workspace>) {
+        let should_start = self.reserve(repo_path, oids);
+        if !should_start {
+            return;
+        }
+
+        let scheduler = self.clone();
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |_, _| loop {
+            let batch: Vec<_> = {
+                let mut state = scheduler.state.lock().unwrap();
+                let count = state.pending.len().min(DIFF_PREFETCH_BATCH_SIZE);
+                let batch: Vec<_> = state.pending.drain(..count).collect();
+                if batch.is_empty() {
+                    state.running = false;
+                    return;
+                }
+                batch
+            };
+
+            let results: Vec<_> = futures::stream::iter(batch)
+                .map(|(repo_path, oid)| {
+                    let background = background.clone();
+                    async move {
+                        let result = background
+                            .spawn(async move { rgitui_git::compute_commit_diff(&repo_path, oid) })
+                            .await;
+                        (oid, result)
+                    }
+                })
+                .buffer_unordered(DIFF_PREFETCH_CONCURRENCY)
+                .collect()
+                .await;
+
+            let mut ok_count = 0;
+            let mut completed = Vec::with_capacity(results.len());
+            {
+                let mut cache = scheduler.cache.lock().unwrap();
+                for (oid, result) in results {
+                    completed.push(oid);
+                    if let Ok(commit_diff) = result {
+                        ok_count += 1;
+                        cache.insert(oid, Arc::new(commit_diff));
+                    }
+                }
+            }
+            {
+                let mut state = scheduler.state.lock().unwrap();
+                for oid in completed {
+                    state.scheduled.remove(&oid);
+                }
+            }
+            log::debug!("diff_prefetch: cached {ok_count} speculative diffs");
+        })
+        .detach();
+    }
+
+    fn reserve(&self, repo_path: PathBuf, oids: Vec<git2::Oid>) -> bool {
+        let uncached: Vec<_> = {
+            let cached = self.cache.lock().unwrap();
+            oids.into_iter()
+                .filter(|oid| !cached.contains(oid))
+                .collect()
+        };
+        if uncached.is_empty() {
+            return false;
+        }
+
+        {
+            let mut state = self.state.lock().unwrap();
+            for oid in uncached {
+                if state.scheduled.insert(oid) {
+                    state.pending.push_back((repo_path.clone(), oid));
+                }
+            }
+            if state.running || state.pending.is_empty() {
+                false
+            } else {
+                state.running = true;
+                true
+            }
+        }
+    }
+}
+
 pub(super) fn subscribe_graph(
     cx: &mut Context<Workspace>,
     project: &Entity<GitProject>,
@@ -1565,6 +1673,7 @@ pub(super) fn subscribe_graph(
     diff_viewer: &Entity<DiffViewer>,
     detail_panel: &Entity<DetailPanel>,
     diff_cache: Arc<Mutex<CommitDiffCache>>,
+    diff_prefetch: DiffPrefetchScheduler,
 ) {
     let project = project.clone();
     let diff_viewer = diff_viewer.clone();
@@ -1636,7 +1745,7 @@ pub(super) fn subscribe_graph(
                                 }
                                 cx.update(|cx| {
                                     dp.update(cx, |dp, cx| {
-                                        dp.set_commit(info, (*cached).clone(), cx)
+                                        dp.set_commit_arc(info, cached, cx)
                                     });
                                 });
                             })
@@ -1669,8 +1778,11 @@ pub(super) fn subscribe_graph(
 
                             cx.update(|cx| match diff_result {
                                 Ok(commit_diff) => {
-                                    let diff_arc = Arc::new(commit_diff.clone());
-                                    cache.lock().unwrap().insert(commit_oid, diff_arc.clone());
+                                    let diff_arc = Arc::new(commit_diff);
+                                    cache
+                                        .lock()
+                                        .unwrap()
+                                        .insert(commit_oid, diff_arc.clone());
 
                                     if let Some(mut info) = commit_info {
                                         if let Ok((is_signed, co_authors)) = enrich_result {
@@ -1678,10 +1790,10 @@ pub(super) fn subscribe_graph(
                                             info.co_authors = co_authors;
                                         }
                                         dp.update(cx, |dp, cx| {
-                                            dp.set_commit(info, commit_diff.clone(), cx)
+                                            dp.set_commit_arc(info, diff_arc.clone(), cx)
                                         });
                                     }
-                                    if let Some(first_file) = commit_diff.files.first() {
+                                    if let Some(first_file) = diff_arc.files.first() {
                                         let path = first_file.path.display().to_string();
                                         dv.update(cx, |dv, cx| {
                                             dv.set_diff(first_file.clone(), path, false, Some(&oid_str), cx)
@@ -1700,39 +1812,7 @@ pub(super) fn subscribe_graph(
                     if !prefetch_oids.is_empty() {
                         log::debug!("diff_prefetch: starting for {} OIDs around {:.7}", prefetch_oids.len(), commit_oid);
                         let prefetch_repo_path = project.read(cx).repo_path().to_path_buf();
-                        let prefetch_cache = diff_cache.clone();
-                        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                            let oids_to_fetch: Vec<git2::Oid> = {
-                                let cached = prefetch_cache.lock().unwrap();
-                                prefetch_oids
-                                    .into_iter()
-                                    .filter(|oid| !cached.contains(oid))
-                                    .collect()
-                            };
-
-                            let tasks: Vec<_> = oids_to_fetch
-                                .into_iter()
-                                .map(|oid| {
-                                    let repo_path = prefetch_repo_path.clone();
-                                    cx.background_executor().spawn(async move {
-                                        let result =
-                                            rgitui_git::compute_commit_diff(&repo_path, oid);
-                                        (oid, result)
-                                    })
-                                })
-                                .collect();
-
-                            let results = futures::future::join_all(tasks).await;
-
-                            log::debug!("diff_prefetch: complete, {} results cached", results.iter().filter(|(_, r)| r.is_ok()).count());
-                            let mut cache = prefetch_cache.lock().unwrap();
-                            for (oid, result) in results {
-                                if let Ok(commit_diff) = result {
-                                    cache.insert(oid, Arc::new(commit_diff));
-                                }
-                            }
-                        })
-                        .detach();
+                        diff_prefetch.enqueue(prefetch_repo_path, prefetch_oids, cx);
                     }
                 }
                 GraphViewEvent::CherryPick(oid) => {
@@ -2698,7 +2778,26 @@ pub(super) fn subscribe_repo_clone_dialog(
 
 #[cfg(test)]
 mod tests {
-    use super::extract_stash_summary;
+    use super::{extract_stash_summary, DiffPrefetchScheduler};
+    use crate::cache::LruCache;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn diff_prefetch_reservation_is_singleflight() {
+        let cache = Arc::new(Mutex::new(LruCache::new(4)));
+        let scheduler = DiffPrefetchScheduler::new(cache);
+        let first = git2::Oid::from_bytes(&[1; 20]).unwrap();
+        let second = git2::Oid::from_bytes(&[2; 20]).unwrap();
+
+        assert!(scheduler.reserve(PathBuf::from("repo"), vec![first, first]));
+        assert!(!scheduler.reserve(PathBuf::from("repo"), vec![first, second]));
+
+        let state = scheduler.state.lock().unwrap();
+        assert!(state.running);
+        assert_eq!(state.pending.len(), 2);
+        assert_eq!(state.scheduled.len(), 2);
+    }
 
     #[test]
     fn test_extract_stash_summary_wip_with_subject() {

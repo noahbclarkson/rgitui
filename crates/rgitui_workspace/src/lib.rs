@@ -13,6 +13,7 @@ mod create_pr_dialog;
 mod detail_panel;
 mod file_history_view;
 mod github_api;
+mod github_data_service;
 mod github_device_flow;
 mod interactive_rebase;
 mod issues_panel;

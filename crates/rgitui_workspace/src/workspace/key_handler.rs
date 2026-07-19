@@ -158,11 +158,13 @@ impl Workspace {
         {
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                 if tab.bottom_panel_mode == BottomPanelMode::GlobalSearch {
+                    tab.global_search_view
+                        .update(cx, |search, cx| search.hide(cx));
                     tab.bottom_panel_mode = BottomPanelMode::Diff;
                 } else {
                     tab.bottom_panel_mode = BottomPanelMode::GlobalSearch;
-                    tab.global_search_view.update(cx, |sv, cx| {
-                        sv.focus(window, cx);
+                    tab.global_search_view.update(cx, |search, cx| {
+                        search.show(window, cx);
                     });
                 }
                 cx.notify();
@@ -213,15 +215,6 @@ impl Workspace {
             && key == "g"
         {
             self.execute_command(CommandId::AiMessage, cx);
-            return;
-        }
-
-        // Ctrl+Shift+F to open global content search
-        if (modifiers.control || modifiers.platform) && modifiers.shift && key == "f" {
-            self.save_focus(window, cx);
-            self.overlays.global_search.update(cx, |gs, cx| {
-                gs.show(window, cx);
-            });
             return;
         }
 

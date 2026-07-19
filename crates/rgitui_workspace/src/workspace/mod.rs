@@ -183,6 +183,7 @@ pub struct Workspace {
     pub(super) tabs: Vec<ProjectTab>,
     pub(super) active_tab: usize,
     pub(super) ai: Entity<AiGenerator>,
+    pub(super) github_data: Entity<crate::github_data_service::GithubDataService>,
     pub(super) layout: LayoutState,
     pub(super) dialogs: DialogState,
     pub(super) overlays: OverlayState,
@@ -236,6 +237,7 @@ impl Workspace {
         .detach();
 
         let ai = cx.new(|_cx| AiGenerator::new());
+        let github_data = cx.new(|_cx| crate::github_data_service::GithubDataService::new());
         let command_palette = cx.new(crate::CommandPalette::new);
         let interactive_rebase = cx.new(crate::InteractiveRebase::new);
         let global_search = cx.new(crate::GlobalSearchView::new);
@@ -289,6 +291,7 @@ impl Workspace {
             tabs: Vec::new(),
             active_tab: 0,
             ai,
+            github_data,
             layout: LayoutState {
                 sidebar_width,
                 detail_panel_width,
@@ -487,7 +490,7 @@ impl Workspace {
     /// `SettingsWindowAction::SettingsChanged`.
     pub(super) fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
         for tab in &self.tabs {
-            Self::configure_github_panels(&tab.project, &tab.issues_panel, &tab.prs_panel, cx);
+            self.configure_github_panels(&tab.project, &tab.issues_panel, &tab.prs_panel, cx);
         }
         cx.notify();
     }
@@ -497,6 +500,7 @@ impl Workspace {
     /// (`open_repo`) and `on_settings_changed` so both stay in sync and read the
     /// token from one place.
     pub(super) fn configure_github_panels(
+        &self,
         project: &Entity<GitProject>,
         issues_panel: &Entity<crate::IssuesPanel>,
         prs_panel: &Entity<crate::PrsPanel>,
@@ -511,8 +515,14 @@ impl Workspace {
                 .or_else(|| remotes.first())
                 .and_then(|r| r.url.clone())
         };
-        let Some(url) = remote_url else { return };
+        let Some(url) = remote_url else {
+            issues_panel.update(cx, |panel, cx| panel.clear_configuration(cx));
+            prs_panel.update(cx, |panel, cx| panel.clear_configuration(cx));
+            return;
+        };
         let Some((owner, repo)) = crate::issues_panel::parse_github_owner_repo(&url) else {
+            issues_panel.update(cx, |panel, cx| panel.clear_configuration(cx));
+            prs_panel.update(cx, |panel, cx| panel.clear_configuration(cx));
             return;
         };
         let token = rgitui_settings::current_auth_runtime()
@@ -523,9 +533,11 @@ impl Workspace {
             .and_then(|p| p.token.clone());
         issues_panel.update(cx, |ip, cx| {
             ip.configure(token.clone(), owner.clone(), repo.clone(), cx);
+            ip.fetch_issues(cx);
         });
         prs_panel.update(cx, |pp, cx| {
-            pp.configure(token, owner, repo, cx);
+            pp.configure(token.clone(), owner.clone(), repo.clone(), cx);
+            pp.fetch_prs(cx);
         });
     }
 

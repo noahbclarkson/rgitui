@@ -42,8 +42,8 @@ fn mix_file_meta(hasher: &mut DefaultHasher, path: &Path) -> bool {
 /// hashed by *content* in addition to size and mtime, so two distinct state
 /// transitions whose newest mtime collapses to the same coarse timestamp
 /// (FAT32 ~2s, some network/WSL/SMB mounts) are still distinguished. Ref files
-/// under `refs/` are hashed by size + mtime, which catches same-second updates
-/// whenever the new ref content differs in length (the common case).
+/// under `refs/` are hashed by content as well as metadata so fixed-width OID
+/// updates cannot be missed on coarse-timestamp file systems.
 fn git_state_fingerprint(git_dir: &Path) -> Option<u64> {
     let mut hasher = DefaultHasher::new();
     let mut any = false;
@@ -108,6 +108,9 @@ fn scan_refs(dir: &Path, acc: &mut u64) {
             if let Ok(mtime) = meta.modified() {
                 mtime.hash(&mut file_hasher);
             }
+            if let Ok(content) = std::fs::read(&path) {
+                content.hash(&mut file_hasher);
+            }
             *acc ^= file_hasher.finish();
         }
     }
@@ -138,10 +141,16 @@ fn worktree_git_dir(worktree_path: &Path) -> Option<PathBuf> {
 /// so the result is independent of the (unordered) worktree-set iteration order
 /// while still changing whenever any watched git dir changes.
 fn combined_fingerprint(
-    main_git_dir: &Path,
+    primary_git_dir: &Path,
+    common_git_dir: &Path,
     extra_worktree_paths: &HashSet<PathBuf>,
 ) -> Option<u64> {
-    let mut combined = git_state_fingerprint(main_git_dir);
+    let mut combined = git_state_fingerprint(primary_git_dir);
+    if common_git_dir != primary_git_dir {
+        if let Some(fp) = git_state_fingerprint(common_git_dir) {
+            combined = Some(combined.map_or(fp, |current| current ^ fp));
+        }
+    }
     for wt in extra_worktree_paths {
         if let Some(git_dir) = worktree_git_dir(wt) {
             if let Some(fp) = git_state_fingerprint(&git_dir) {
@@ -150,6 +159,11 @@ fn combined_fingerprint(
         }
     }
     combined
+}
+
+fn repository_git_dirs(repo_path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let repo = git2::Repository::open(repo_path).ok()?;
+    Some((repo.path().to_path_buf(), repo.commondir().to_path_buf()))
 }
 
 impl GitProject {
@@ -162,7 +176,10 @@ impl GitProject {
     /// removing worktrees takes effect without restarting the app.
     pub(super) fn start_watcher(&mut self, cx: &mut Context<Self>) {
         let repo_path = self.repo_path.clone();
-        let main_git_dir = repo_path.join(".git");
+        let (main_git_dir, common_git_dir) = repository_git_dirs(&repo_path).unwrap_or_else(|| {
+            let fallback = repo_path.join(".git");
+            (fallback.clone(), fallback)
+        });
         let dirty = Arc::new(AtomicBool::new(false));
         let worktree_cache: Arc<Mutex<WorktreeStatusCache>> = self.worktree_status_cache.clone();
 
@@ -229,6 +246,7 @@ impl GitProject {
 
         let last_fingerprint: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(combined_fingerprint(
             &main_git_dir,
+            &common_git_dir,
             &HashSet::new(),
         )));
         let watched_extras: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -241,6 +259,7 @@ impl GitProject {
             let dirty = dirty.clone();
             let repo_path = repo_path.clone();
             let main_git_dir = main_git_dir.clone();
+            let common_git_dir = common_git_dir.clone();
             let worktree_cache = worktree_cache.clone();
             async move |weak, cx: &mut AsyncApp| {
                 // Keep the watcher handle alive for the lifetime of this task.
@@ -330,10 +349,13 @@ impl GitProject {
                     // the background executor — never the UI thread (QUAL-01,
                     // PERF-13).
                     let fp_git_dir = main_git_dir.clone();
+                    let fp_common_git_dir = common_git_dir.clone();
                     let fp_extras = desired.clone();
                     let current = cx
                         .background_executor()
-                        .spawn(async move { combined_fingerprint(&fp_git_dir, &fp_extras) })
+                        .spawn(async move {
+                            combined_fingerprint(&fp_git_dir, &fp_common_git_dir, &fp_extras)
+                        })
                         .await;
                     let fingerprint_changed = {
                         let mut guard = last_fingerprint.lock().expect("fp mutex");
@@ -445,5 +467,45 @@ impl GitProject {
             }
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loose_ref_fingerprint_includes_oid_content() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let git_dir = temp.path();
+        std::fs::create_dir_all(git_dir.join("refs/heads")).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let reference = git_dir.join("refs/heads/main");
+        std::fs::write(&reference, format!("{}\n", "1".repeat(40))).unwrap();
+        let before = git_state_fingerprint(git_dir).unwrap();
+        std::fs::write(&reference, format!("{}\n", "2".repeat(40))).unwrap();
+        let after = git_state_fingerprint(git_dir).unwrap();
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn linked_worktree_uses_redirected_and_common_git_dirs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let main_path = temp.path().join("main");
+        let linked_path = temp.path().join("linked");
+        let repo = git2::Repository::init(&main_path).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_oid = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        repo.worktree("linked", &linked_path, None).unwrap();
+
+        let (git_dir, common_dir) = repository_git_dirs(&linked_path).unwrap();
+        assert_ne!(git_dir, linked_path.join(".git"));
+        assert_eq!(common_dir, repo.commondir());
+        assert!(git_state_fingerprint(&git_dir).is_some());
+        assert!(git_state_fingerprint(&common_dir).is_some());
     }
 }
