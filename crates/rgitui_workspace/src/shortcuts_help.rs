@@ -112,6 +112,11 @@ impl ShortcutsHelp {
                     ("h", "Toggle file history view for selected file"),
                     ("y", "Copy SHA of selected commit"),
                     ("Shift+C", "Copy commit message of selected commit"),
+                    (
+                        "Mouse drag / Shift+click",
+                        "Select lines in the diff viewer",
+                    ),
+                    ("Ctrl+C", "Copy selected diff lines"),
                     ("Esc", "Close the active overlay or modal"),
                 ],
             },
@@ -156,7 +161,7 @@ impl ShortcutsHelp {
         category: &ShortcutCategory,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let border_variant = colors.border_variant;
 
         let mut col = div().v_flex().w_full().gap(px(2.)).child(
@@ -196,7 +201,7 @@ impl ShortcutsHelp {
                     .gap(px(16.))
                     .hover(move |s| s.bg(hover_bg))
                     .child(
-                        div().flex_1().child(
+                        div().flex_1().min_w_0().child(
                             Label::new(*desc)
                                 .size(LabelSize::Small)
                                 .color(Color::Default),
@@ -205,6 +210,7 @@ impl ShortcutsHelp {
                     .child(
                         div()
                             .h_flex()
+                            .flex_shrink_0()
                             .h(px(24.))
                             .px(px(10.))
                             .gap_1()
@@ -228,7 +234,7 @@ impl ShortcutsHelp {
 }
 
 impl Render for ShortcutsHelp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("shortcuts-help").into_any_element();
         }
@@ -236,20 +242,56 @@ impl Render for ShortcutsHelp {
         let categories = Self::shortcut_categories();
         let total_shortcuts = Self::shortcut_count(&categories);
 
-        let left_categories = &categories[..2];
-        let right_categories = &categories[2..];
+        let colors = cx.colors().clone();
+        let viewport = window.viewport_size();
+        let viewport_width = f32::from(viewport.width);
+        let viewport_height = f32::from(viewport.height);
+        let modal_width = px((viewport_width - 32.0).clamp(300.0, 960.0));
+        let modal_height = px((viewport_height - 32.0).clamp(280.0, 720.0));
+        let use_two_columns = viewport_width >= 960.0;
 
-        let mut left_col = div().v_flex().flex_1().gap(px(16.));
-        for category in left_categories {
-            left_col = left_col.child(self.render_category(category, cx));
-        }
+        let body = if use_two_columns {
+            let mut left_col = div().v_flex().flex_1().min_w_0().gap(px(16.));
+            for category in &categories[..2] {
+                left_col = left_col.child(self.render_category(category, cx));
+            }
 
-        let mut right_col = div().v_flex().flex_1().gap(px(16.));
-        for category in right_categories {
-            right_col = right_col.child(self.render_category(category, cx));
-        }
+            let mut right_col = div().v_flex().flex_1().min_w_0().gap(px(16.));
+            for category in &categories[2..] {
+                right_col = right_col.child(self.render_category(category, cx));
+            }
 
-        let colors = cx.colors();
+            div()
+                .id("shortcuts-body")
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .p(px(16.))
+                .gap(px(24.))
+                .items_start()
+                .overflow_y_scroll()
+                .child(left_col)
+                .child(right_col)
+                .into_any_element()
+        } else {
+            let mut column = div().v_flex().w_full().gap(px(16.));
+            for category in &categories {
+                column = column.child(self.render_category(category, cx));
+            }
+
+            div()
+                .id("shortcuts-body")
+                .v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .p(px(16.))
+                .overflow_y_scroll()
+                .child(column)
+                .into_any_element()
+        };
 
         let backdrop = div()
             .id("shortcuts-help-backdrop")
@@ -276,8 +318,8 @@ impl Render for ShortcutsHelp {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
-            .w(px(760.))
-            .max_h(px(620.))
+            .w(modal_width)
+            .h(modal_height)
             .elevation_3(cx)
             .rounded(px(10.))
             .overflow_hidden()
@@ -300,6 +342,8 @@ impl Render for ShortcutsHelp {
                     .child(
                         div()
                             .h_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap(px(10.))
                             .items_center()
                             .child(
@@ -310,6 +354,7 @@ impl Render for ShortcutsHelp {
                             .child(
                                 div()
                                     .v_flex()
+                                    .min_w_0()
                                     .gap(px(2.))
                                     .child(
                                         Label::new("Keyboard Shortcuts")
@@ -322,6 +367,7 @@ impl Render for ShortcutsHelp {
                                             total_shortcuts
                                         ))
                                         .size(LabelSize::XSmall)
+                                        .truncate()
                                         .color(Color::Muted),
                                     ),
                             ),
@@ -370,17 +416,7 @@ impl Render for ShortcutsHelp {
                             ),
                     ),
             )
-            .child(
-                div()
-                    .id("shortcuts-body")
-                    .h_flex()
-                    .w_full()
-                    .p(px(16.))
-                    .gap(px(24.))
-                    .overflow_y_scroll()
-                    .child(left_col)
-                    .child(right_col),
-            )
+            .child(body)
             .child(
                 div()
                     .h_flex()
@@ -397,11 +433,13 @@ impl Render for ShortcutsHelp {
                             .size(LabelSize::XSmall)
                             .color(Color::Placeholder),
                     )
-                    .child(
-                        Label::new("More actions: Ctrl+Shift+P")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    ),
+                    .when(viewport_width >= 520.0, |footer| {
+                        footer.child(
+                            Label::new("More actions: Ctrl+Shift+P")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                    }),
             );
 
         backdrop.child(modal).into_any_element()

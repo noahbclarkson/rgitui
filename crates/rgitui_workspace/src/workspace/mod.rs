@@ -78,16 +78,58 @@ pub(super) enum RightPanelMode {
     Stashes,
 }
 
-/// A single open project tab.
-/// Shared LRU caches for blame and file history, populated in the background
-/// when a diff is opened so that switching to blame/history is near-instant.
+/// Identifies the exact diff selection whose auxiliary views are cached.
+///
+/// Working-tree content can change without its path changing, so the diff
+/// viewer generation is part of the key. The repository path also distinguishes
+/// the main checkout from an inspected worktree in the same project tab.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ViewCacheKey {
+    pub repo_path: PathBuf,
+    pub file_path: String,
+    pub commit_id: Option<String>,
+    pub diff_generation: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum ViewCacheEntry<T> {
+    Loading,
+    Ready(T),
+    Unavailable(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ViewAvailability {
+    Loading,
+    Available,
+    Unavailable,
+}
+
+impl<T> ViewCacheEntry<T> {
+    fn availability(&self) -> ViewAvailability {
+        match self {
+            Self::Loading => ViewAvailability::Loading,
+            Self::Ready(_) => ViewAvailability::Available,
+            Self::Unavailable(_) => ViewAvailability::Unavailable,
+        }
+    }
+}
+
+/// Shared single-flight caches for blame and file history. Entries are reserved
+/// as `Loading` before background work starts, which prevents a fast click from
+/// launching the same Git command a second time. Failed or empty results are
+/// retained as `Unavailable` so the matching tab can stay disabled.
 #[derive(Clone)]
 pub(super) struct ViewCaches {
     pub blame: std::sync::Arc<
-        std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::BlameLine>>>,
+        std::sync::Mutex<
+            crate::cache::LruCache<ViewCacheKey, ViewCacheEntry<Vec<rgitui_git::BlameLine>>>,
+        >,
     >,
     pub history: std::sync::Arc<
-        std::sync::Mutex<crate::cache::LruCache<String, Vec<rgitui_git::CommitInfo>>>,
+        std::sync::Mutex<
+            crate::cache::LruCache<ViewCacheKey, ViewCacheEntry<Vec<rgitui_git::CommitInfo>>>,
+        >,
     >,
     pub diff: std::sync::Arc<
         std::sync::Mutex<crate::cache::LruCache<git2::Oid, std::sync::Arc<rgitui_git::CommitDiff>>>,
@@ -97,10 +139,26 @@ pub(super) struct ViewCaches {
 impl ViewCaches {
     fn new() -> Self {
         Self {
-            blame: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(8))),
-            history: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(8))),
+            blame: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(24))),
+            history: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(24))),
             diff: std::sync::Arc::new(std::sync::Mutex::new(crate::cache::LruCache::new(200))),
         }
+    }
+
+    fn blame_availability(&self, key: &ViewCacheKey) -> ViewAvailability {
+        self.blame
+            .lock()
+            .ok()
+            .and_then(|cache| cache.peek(key).map(ViewCacheEntry::availability))
+            .unwrap_or(ViewAvailability::Loading)
+    }
+
+    fn history_availability(&self, key: &ViewCacheKey) -> ViewAvailability {
+        self.history
+            .lock()
+            .ok()
+            .and_then(|cache| cache.peek(key).map(ViewCacheEntry::availability))
+            .unwrap_or(ViewAvailability::Loading)
     }
 }
 
@@ -128,6 +186,28 @@ pub(super) struct ProjectTab {
     pub bottom_panel_mode: BottomPanelMode,
     pub caches: ViewCaches,
     pub inspecting_worktree: Option<InspectingWorktree>,
+}
+
+impl ProjectTab {
+    pub(super) fn effective_repo_path(&self, cx: &gpui::App) -> PathBuf {
+        self.inspecting_worktree
+            .as_ref()
+            .map(|worktree| worktree.path.clone())
+            .unwrap_or_else(|| self.project.read(cx).repo_path().to_path_buf())
+    }
+
+    pub(super) fn current_view_cache_key(&self, cx: &gpui::App) -> Option<ViewCacheKey> {
+        let diff_viewer = self.diff_viewer.read(cx);
+        let file_path = diff_viewer.file_path()?.to_string();
+        let commit_id =
+            (!diff_viewer.commit_id().is_empty()).then(|| diff_viewer.commit_id().to_string());
+        Some(ViewCacheKey {
+            repo_path: self.effective_repo_path(cx),
+            file_path,
+            commit_id,
+            diff_generation: diff_viewer.generation(),
+        })
+    }
 }
 
 #[derive(Clone, Debug)]

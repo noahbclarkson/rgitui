@@ -56,6 +56,11 @@ where
         self.map.contains_key(key)
     }
 
+    /// Inspect a cached value without changing its recency.
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
     /// Insert a key-value pair.
     ///
     /// If the key was already present, its value is updated and the entry
@@ -246,6 +251,20 @@ mod tests {
         // 1 was touched and is therefore NOT LRU — 2 should be evicted.
         assert!(!c.contains(&2));
         assert!(c.contains(&1));
+    }
+
+    #[test]
+    fn peek_returns_value_without_refreshing_lru_order() {
+        let mut c = cache_with_cap(2);
+        c.insert(1, "one");
+        c.insert(2, "two");
+
+        assert_eq!(c.peek(&1), Some(&"one"));
+        c.insert(3, "three");
+
+        assert!(!c.contains(&1), "peek must not make an entry most-recent");
+        assert!(c.contains(&2));
+        assert!(c.contains(&3));
     }
 
     #[test]

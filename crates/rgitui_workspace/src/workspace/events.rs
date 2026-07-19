@@ -27,7 +27,10 @@ use crate::{
     WorktreeDialog, WorktreeDialogEvent,
 };
 
-use super::{ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, Workspace};
+use super::{
+    ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, ViewCacheKey, ViewCaches,
+    Workspace,
+};
 
 pub(super) fn build_worktree_graph_infos(
     worktrees: &[rgitui_git::WorktreeInfo],
@@ -1169,16 +1172,6 @@ pub(super) fn subscribe_sidebar(
                 let dv = diff_viewer.clone();
                 let dp = detail_panel_ref.clone();
 
-                // Prefetch blame + history in background for instant switching.
-                if let Some(tab) = this.tabs.get(this.active_tab) {
-                    Workspace::prefetch_blame_and_history(
-                        repo_path.clone(),
-                        path.clone(),
-                        tab.caches.clone(),
-                        cx,
-                    );
-                }
-
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let result = cx
                         .background_executor()
@@ -2243,12 +2236,49 @@ pub(super) fn subscribe_diff_viewer(
     cx: &mut Context<Workspace>,
     project: &Entity<GitProject>,
     diff_viewer: &Entity<DiffViewer>,
+    caches: ViewCaches,
 ) {
     let project = project.clone();
     let diff_viewer_ref = diff_viewer.clone();
 
     cx.subscribe(diff_viewer, {
         move |this, _dv, event: &DiffViewerEvent, cx| {
+            if let DiffViewerEvent::DiffChanged {
+                path,
+                commit_id,
+                generation,
+            } = event
+            {
+                let owning_tab = this
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.diff_viewer == diff_viewer_ref);
+                let repo_path = if let Some(tab) = owning_tab {
+                    if matches!(
+                        tab.bottom_panel_mode,
+                        BottomPanelMode::Blame | BottomPanelMode::FileHistory
+                    ) {
+                        tab.bottom_panel_mode = BottomPanelMode::Diff;
+                    }
+                    tab.effective_repo_path(cx)
+                } else {
+                    project.read(cx).repo_path().to_path_buf()
+                };
+
+                Workspace::prefetch_blame_and_history(
+                    ViewCacheKey {
+                        repo_path,
+                        file_path: path.clone(),
+                        commit_id: commit_id.clone(),
+                        diff_generation: *generation,
+                    },
+                    caches.clone(),
+                    cx,
+                );
+                cx.notify();
+                return;
+            }
+
             let file_path = diff_viewer_ref
                 .read(cx)
                 .file_path()
@@ -2288,6 +2318,7 @@ pub(super) fn subscribe_diff_viewer(
                                 .detach();
                         });
                     }
+                    DiffViewerEvent::DiffChanged { .. } => {}
                 }
             }
         }

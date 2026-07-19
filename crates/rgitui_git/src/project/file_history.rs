@@ -20,17 +20,35 @@ pub fn compute_file_history(
     file_path: &Path,
     limit: usize,
 ) -> Result<Vec<CommitInfo>> {
+    compute_file_history_at(repo_path, file_path, limit, None)
+}
+
+/// Get commit history for a file, optionally stopping at a selected commit.
+///
+/// Supplying a start commit keeps history consistent with a commit diff instead
+/// of accidentally showing changes that happened later on the current branch.
+pub fn compute_file_history_at(
+    repo_path: &Path,
+    file_path: &Path,
+    limit: usize,
+    start_oid: Option<git2::Oid>,
+) -> Result<Vec<CommitInfo>> {
     let limit = limit.min(MAX_FILE_HISTORY);
     let file_str = file_path.to_string_lossy();
 
+    let mut args = vec![
+        "log".to_string(),
+        "--format=%H".to_string(),
+        format!("-{}", limit),
+    ];
+    if let Some(oid) = start_oid {
+        args.push(oid.to_string());
+    }
+    args.push("--".to_string());
+    args.push(file_str.into_owned());
+
     let output = super::git_command()
-        .args([
-            "log",
-            "--format=%H",
-            &format!("-{}", limit),
-            "--",
-            &file_str,
-        ])
+        .args(&args)
         .current_dir(repo_path)
         .output()?;
 
@@ -202,6 +220,20 @@ mod tests {
             "first entry should be the latest modification, got: {:?}",
             entries[0].summary
         );
+    }
+
+    #[test]
+    fn file_history_at_commit_excludes_later_changes() {
+        let (_dir, path) = make_multi_file_repo();
+        let repo = Repository::open(&path).unwrap();
+        let before_latest = repo.revparse_single("HEAD~1").unwrap().id();
+
+        let entries =
+            compute_file_history_at(&path, Path::new("tracked.txt"), 100, Some(before_latest))
+                .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].summary.contains("add tracked"));
     }
 
     #[test]

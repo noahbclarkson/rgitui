@@ -8,10 +8,11 @@ use similar::{capture_diff_slices, Algorithm};
 
 use gpui::prelude::*;
 use gpui::{
-    div, list, px, uniform_list, AnyElement, App, ClickEvent, ClipboardItem, Context, ElementId,
-    EventEmitter, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment,
-    ListHorizontalSizingBehavior, ListSizingBehavior, ListState, MouseButton, MouseDownEvent,
-    Render, ScrollStrategy, SharedString, StyledText, UniformListScrollHandle, WeakEntity, Window,
+    div, list, px, uniform_list, AnyElement, App, ClickEvent, ClipboardItem, Context, CursorStyle,
+    ElementId, EventEmitter, FocusHandle, FontStyle, FontWeight, HighlightStyle, KeyDownEvent,
+    ListAlignment, ListHorizontalSizingBehavior, ListSizingBehavior, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollStrategy, SharedString, StyledText,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{DiffLine, FileDiff, ThreeWayFileDiff};
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
@@ -29,6 +30,13 @@ pub type LineSelection = Vec<(Option<usize>, Option<usize>)>;
 
 #[derive(Debug, Clone)]
 pub enum DiffViewerEvent {
+    /// The displayed file changed. Workspace listeners use this to start
+    /// blame/history prefetching for every path into the diff viewer.
+    DiffChanged {
+        path: String,
+        commit_id: Option<String>,
+        generation: u64,
+    },
     HunkStageRequested(usize),
     HunkUnstageRequested(usize),
     /// Request to stage only the given lines within the current file's diff.
@@ -434,6 +442,7 @@ pub struct DiffViewer {
     /// When true, selection tracks individual lines for partial hunk staging.
     partial_mode: bool,
     selection_anchor: Option<usize>,
+    mouse_selecting: bool,
     /// The commit OID for the current diff (empty for working-tree diffs).
     commit_id: String,
     /// Tracks the current theme appearance to drive syntax highlighting.
@@ -498,6 +507,7 @@ impl DiffViewer {
             selected_lines: None,
             partial_mode: false,
             selection_anchor: None,
+            mouse_selecting: false,
             commit_id: String::new(),
             current_appearance: Appearance::Dark,
             pending_scroll_top: None,
@@ -663,6 +673,13 @@ impl DiffViewer {
         self.selected_lines = None;
         self.partial_mode = false;
         self.selection_anchor = None;
+        self.mouse_selecting = false;
+
+        cx.emit(DiffViewerEvent::DiffChanged {
+            path: path.clone(),
+            commit_id: (!self.commit_id.is_empty()).then(|| self.commit_id.clone()),
+            generation: self.generation,
+        });
 
         // Check display rows cache
         if let Some(cached) = self.display_cache.get(&cache_key, &diff) {
@@ -728,6 +745,7 @@ impl DiffViewer {
         self.selected_lines = None;
         self.partial_mode = false;
         self.selection_anchor = None;
+        self.mouse_selecting = false;
         self.sync_wrap_list_state();
         cx.notify();
     }
@@ -755,6 +773,12 @@ impl DiffViewer {
         self.selected_lines = None;
         self.partial_mode = false;
         self.selection_anchor = None;
+        self.mouse_selecting = false;
+        cx.emit(DiffViewerEvent::DiffChanged {
+            path: self.file_path.clone().unwrap_or_default(),
+            commit_id: None,
+            generation: self.generation,
+        });
         self.sync_wrap_list_state();
         cx.notify();
 
@@ -795,12 +819,14 @@ impl DiffViewer {
         cx.notify();
     }
 
+    fn range_from_anchor(anchor: usize, row_ix: usize) -> Range<usize> {
+        anchor.min(row_ix)..anchor.max(row_ix) + 1
+    }
+
     fn handle_line_click(&mut self, row_ix: usize, shift: bool, cx: &mut Context<Self>) {
         if shift {
             if let Some(anchor) = self.selection_anchor {
-                let start = anchor.min(row_ix);
-                let end = anchor.max(row_ix) + 1;
-                self.selected_lines = Some(start..end);
+                self.selected_lines = Some(Self::range_from_anchor(anchor, row_ix));
             } else {
                 self.selection_anchor = Some(row_ix);
                 self.selected_lines = Some(row_ix..row_ix + 1);
@@ -810,6 +836,36 @@ impl DiffViewer {
             self.selected_lines = Some(row_ix..row_ix + 1);
         }
         cx.notify();
+    }
+
+    fn begin_mouse_selection(&mut self, row_ix: usize, shift: bool, cx: &mut Context<Self>) {
+        self.mouse_selecting = true;
+        self.handle_line_click(row_ix, shift, cx);
+    }
+
+    fn extend_mouse_selection(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        if !self.mouse_selecting {
+            return;
+        }
+        let anchor = self.selection_anchor.unwrap_or(row_ix);
+        self.selection_anchor = Some(anchor);
+        let range = Self::range_from_anchor(anchor, row_ix);
+        if self.selected_lines.as_ref() != Some(&range) {
+            self.selected_lines = Some(range);
+            cx.notify();
+        }
+    }
+
+    fn end_mouse_selection(
+        &mut self,
+        _event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mouse_selecting {
+            self.mouse_selecting = false;
+            cx.notify();
+        }
     }
 
     fn copy_selected_lines(&self, cx: &mut Context<Self>) {
@@ -2621,6 +2677,7 @@ impl Render for DiffViewer {
                                     let idx = *hunk_index;
                                     let view_clone = view.clone();
                                     let view_hunk = view.clone();
+                                    let view_hunk_drag = view.clone();
                                     let is_hunk_selected = selected_lines
                                         .as_ref()
                                         .is_some_and(|r| r.contains(&i));
@@ -2646,6 +2703,7 @@ impl Render for DiffViewer {
                                         .border_t_1()
                                         .border_b_1()
                                         .border_color(border_variant)
+                                        .cursor(CursorStyle::IBeam)
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             move |event: &MouseDownEvent,
@@ -2654,9 +2712,22 @@ impl Render for DiffViewer {
                                                 let shift = event.modifiers.shift;
                                                 view_hunk
                                                     .update(cx, |this, cx| {
-                                                        this.handle_line_click(i, shift, cx);
+                                                        this.begin_mouse_selection(i, shift, cx);
                                                     })
                                                     .ok();
+                                            },
+                                        )
+                                        .on_mouse_move(
+                                            move |event: &MouseMoveEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                if event.dragging() {
+                                                    view_hunk_drag
+                                                        .update(cx, |this, cx| {
+                                                            this.extend_mouse_selection(i, cx);
+                                                        })
+                                                        .ok();
+                                                }
                                             },
                                         )
                                         .child(
@@ -2756,6 +2827,7 @@ impl Render for DiffViewer {
                                     };
 
                                     let view_line = view.clone();
+                                    let view_line_drag = view.clone();
                                     let mut row_div = div()
                                         .id(ElementId::NamedInteger(
                                             "diff-line".into(),
@@ -2763,6 +2835,7 @@ impl Render for DiffViewer {
                                         ))
                                         .bg(effective_bg)
                                         .hover(move |s| s.bg(row_hover_bg))
+                                        .cursor(CursorStyle::IBeam)
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             move |event: &MouseDownEvent,
@@ -2771,9 +2844,22 @@ impl Render for DiffViewer {
                                                 let shift = event.modifiers.shift;
                                                 view_line
                                                     .update(cx, |this, cx| {
-                                                        this.handle_line_click(i, shift, cx);
+                                                        this.begin_mouse_selection(i, shift, cx);
                                                     })
                                                     .ok();
+                                            },
+                                        )
+                                        .on_mouse_move(
+                                            move |event: &MouseMoveEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                if event.dragging() {
+                                                    view_line_drag
+                                                        .update(cx, |this, cx| {
+                                                            this.extend_mouse_selection(i, cx);
+                                                        })
+                                                        .ok();
+                                                }
                                             },
                                         );
                                     if wrap_enabled {
@@ -2945,6 +3031,7 @@ impl Render for DiffViewer {
                                     let idx = *hunk_index;
                                     let view_clone = view.clone();
                                     let view_sbs_hunk = view.clone();
+                                    let view_sbs_hunk_drag = view.clone();
                                     let is_sbs_hunk_selected = selected_lines
                                         .as_ref()
                                         .is_some_and(|r| r.contains(&i));
@@ -2970,6 +3057,7 @@ impl Render for DiffViewer {
                                         .border_t_1()
                                         .border_b_1()
                                         .border_color(border_variant)
+                                        .cursor(CursorStyle::IBeam)
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             move |event: &MouseDownEvent,
@@ -2978,9 +3066,22 @@ impl Render for DiffViewer {
                                                 let shift = event.modifiers.shift;
                                                 view_sbs_hunk
                                                     .update(cx, |this, cx| {
-                                                        this.handle_line_click(i, shift, cx);
+                                                        this.begin_mouse_selection(i, shift, cx);
                                                     })
                                                     .ok();
+                                            },
+                                        )
+                                        .on_mouse_move(
+                                            move |event: &MouseMoveEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                if event.dragging() {
+                                                    view_sbs_hunk_drag
+                                                        .update(cx, |this, cx| {
+                                                            this.extend_mouse_selection(i, cx);
+                                                        })
+                                                        .ok();
+                                                }
                                             },
                                         )
                                         .child(
@@ -3106,6 +3207,7 @@ impl Render for DiffViewer {
                                     };
 
                                     let view_sbs_line = view.clone();
+                                    let view_sbs_line_drag = view.clone();
                                     let mut row_div = div()
                                         .id(ElementId::NamedInteger(
                                             "sbs-line".into(),
@@ -3113,6 +3215,7 @@ impl Render for DiffViewer {
                                         ))
                                         .w_full()
                                         .hover(move |s| s.bg(row_hover_bg))
+                                        .cursor(CursorStyle::IBeam)
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             move |event: &MouseDownEvent,
@@ -3121,9 +3224,22 @@ impl Render for DiffViewer {
                                                 let shift = event.modifiers.shift;
                                                 view_sbs_line
                                                     .update(cx, |this, cx| {
-                                                        this.handle_line_click(i, shift, cx);
+                                                        this.begin_mouse_selection(i, shift, cx);
                                                     })
                                                     .ok();
+                                            },
+                                        )
+                                        .on_mouse_move(
+                                            move |event: &MouseMoveEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                if event.dragging() {
+                                                    view_sbs_line_drag
+                                                        .update(cx, |this, cx| {
+                                                            this.extend_mouse_selection(i, cx);
+                                                        })
+                                                        .ok();
+                                                }
                                             },
                                         );
                                     if wrap_enabled {
@@ -3308,6 +3424,7 @@ impl Render for DiffViewer {
                 }
             }
             DiffDisplayMode::ThreeWay => {
+                let view = view.clone();
                 let tw_rows = three_way_rows.clone();
                 let row_count = tw_rows.len();
                 let build_tw = move |range: Range<usize>,
@@ -3321,35 +3438,77 @@ impl Render for DiffViewer {
                                 ThreeWayRow::HunkHeader {
                                     header,
                                     context_name,
-                                } => div()
-                                    .id(ElementId::NamedInteger("tw-hunk-header".into(), i as u64))
-                                    .h_flex()
-                                    .h(px(hunk_header_height))
-                                    .w_full()
-                                    .px(px(8.))
-                                    .py(px(4.))
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .bg(element_bg)
-                                    .border_t_1()
-                                    .border_b_1()
-                                    .border_color(border_variant)
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_family("Lilex")
-                                            .text_color(text_muted)
-                                            .child(header.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_family("Lilex")
-                                            .text_color(text_muted)
-                                            .ml(px(8.))
-                                            .child(format!("[{}]", context_name)),
-                                    )
-                                    .into_any_element(),
+                                } => {
+                                    let is_selected = selected_lines
+                                        .as_ref()
+                                        .is_some_and(|range| range.contains(&i));
+                                    let header_bg = if is_selected {
+                                        selection_bg
+                                    } else {
+                                        element_bg
+                                    };
+                                    let view_hunk = view.clone();
+                                    let view_hunk_drag = view.clone();
+                                    div()
+                                        .id(ElementId::NamedInteger(
+                                            "tw-hunk-header".into(),
+                                            i as u64,
+                                        ))
+                                        .h_flex()
+                                        .h(px(hunk_header_height))
+                                        .w_full()
+                                        .px(px(8.))
+                                        .py(px(4.))
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .bg(header_bg)
+                                        .border_t_1()
+                                        .border_b_1()
+                                        .border_color(border_variant)
+                                        .cursor(CursorStyle::IBeam)
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            move |event: &MouseDownEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                let shift = event.modifiers.shift;
+                                                view_hunk
+                                                    .update(cx, |this, cx| {
+                                                        this.begin_mouse_selection(i, shift, cx);
+                                                    })
+                                                    .ok();
+                                            },
+                                        )
+                                        .on_mouse_move(
+                                            move |event: &MouseMoveEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                if event.dragging() {
+                                                    view_hunk_drag
+                                                        .update(cx, |this, cx| {
+                                                            this.extend_mouse_selection(i, cx);
+                                                        })
+                                                        .ok();
+                                                }
+                                            },
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_muted)
+                                                .child(header.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_family("Lilex")
+                                                .text_color(text_muted)
+                                                .ml(px(8.))
+                                                .child(format!("[{}]", context_name)),
+                                        )
+                                        .into_any_element()
+                                }
                                 ThreeWayRow::Triple {
                                     left_num,
                                     left_styled,
@@ -3370,9 +3529,22 @@ impl Render for DiffViewer {
                                                 _ => base,
                                             }
                                         };
-                                    let left_bg = conflict_bg(*left_kind, editor_bg);
-                                    let mid_bg = conflict_bg(*mid_kind, editor_bg);
-                                    let right_bg = conflict_bg(*right_kind, editor_bg);
+                                    let is_highlighted = highlighted_row == Some(i);
+                                    let is_selected = selected_lines
+                                        .as_ref()
+                                        .is_some_and(|range| range.contains(&i));
+                                    let row_bg = |base: gpui::Hsla| {
+                                        if is_selected {
+                                            selection_bg
+                                        } else if is_highlighted {
+                                            highlight_bg
+                                        } else {
+                                            base
+                                        }
+                                    };
+                                    let left_bg = row_bg(conflict_bg(*left_kind, editor_bg));
+                                    let mid_bg = row_bg(conflict_bg(*mid_kind, editor_bg));
+                                    let right_bg = row_bg(conflict_bg(*right_kind, editor_bg));
                                     let conflict_text_color = gpui::Hsla {
                                         h: 0.0,
                                         s: 0.8,
@@ -3394,15 +3566,44 @@ impl Render for DiffViewer {
                                     let right_num_str: SharedString =
                                         right_num.map(|n| n.to_string()).unwrap_or_default().into();
 
+                                    let view_row = view.clone();
+                                    let view_row_drag = view.clone();
                                     let mut row_div = div()
                                         .id(ElementId::NamedInteger("tw-row".into(), i as u64))
                                         .w_full()
                                         .flex()
+                                        .cursor(CursorStyle::IBeam)
                                         .border_b_1()
                                         .border_color(gpui::Hsla {
                                             a: 0.5,
                                             ..border_variant
-                                        });
+                                        })
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            move |event: &MouseDownEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                let shift = event.modifiers.shift;
+                                                view_row
+                                                    .update(cx, |this, cx| {
+                                                        this.begin_mouse_selection(i, shift, cx);
+                                                    })
+                                                    .ok();
+                                            },
+                                        )
+                                        .on_mouse_move(
+                                            move |event: &MouseMoveEvent,
+                                                  _window: &mut Window,
+                                                  cx: &mut App| {
+                                                if event.dragging() {
+                                                    view_row_drag
+                                                        .update(cx, |this, cx| {
+                                                            this.extend_mouse_selection(i, cx);
+                                                        })
+                                                        .ok();
+                                                }
+                                            },
+                                        );
                                     row_div = if wrap_enabled {
                                         row_div.flex_shrink_0().items_start().min_h(px(row_height))
                                     } else {
@@ -3578,6 +3779,8 @@ impl Render for DiffViewer {
             .id("diff-viewer")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::end_mouse_selection))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::end_mouse_selection))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.focus_handle.focus(window, cx);
                 cx.notify();
@@ -3775,6 +3978,16 @@ impl Render for DiffViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_selection_range_extends_forward_inclusively() {
+        assert_eq!(DiffViewer::range_from_anchor(2, 6), 2..7);
+    }
+
+    #[test]
+    fn mouse_selection_range_extends_backward_inclusively() {
+        assert_eq!(DiffViewer::range_from_anchor(6, 2), 2..7);
+    }
     use rgitui_git::{DiffHunk, FileChangeKind};
 
     fn test_hunk(line: DiffLine) -> DiffHunk {

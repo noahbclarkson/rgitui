@@ -7,14 +7,14 @@ use rgitui_git::GitOperationState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
-    Spinner, SpinnerSize, Tab, TabBar,
+    Spinner, SpinnerSize, Tab, TabBar, Tooltip,
 };
 
 use crate::{CommandId, StatusBar, TitleBar, ToastKind};
 
 use super::{
     BottomPanelMode, CommitInputResize, DetailPanelResize, DiffViewerResize, RightPanelMode,
-    SidebarResize, Workspace,
+    SidebarResize, ViewAvailability, Workspace,
 };
 
 /// Resize bounds for the right detail panel, shared by the drag handle and the
@@ -174,6 +174,16 @@ impl Render for Workspace {
             || active_tab.global_search_view.read(cx).is_focused(window);
         let focus_accent = colors.border_focused;
         let bottom_panel_mode = active_tab.bottom_panel_mode;
+        let current_view_key = active_tab.current_view_cache_key(cx);
+        let (history_availability, blame_availability) = current_view_key
+            .as_ref()
+            .map(|key| {
+                (
+                    active_tab.caches.history_availability(key),
+                    active_tab.caches.blame_availability(key),
+                )
+            })
+            .unwrap_or((ViewAvailability::Unavailable, ViewAvailability::Unavailable));
 
         // Find head branch info for ahead/behind
         let (ahead, behind) = project
@@ -753,7 +763,9 @@ impl Render for Workspace {
                                     |id: &'static str,
                                      label: &'static str,
                                      mode: BottomPanelMode,
-                                     current: BottomPanelMode| {
+                                     current: BottomPanelMode,
+                                     enabled: bool,
+                                     tooltip: &'static str| {
                                         let active = mode == current;
                                         let label: SharedString = label.into();
                                         div()
@@ -762,15 +774,48 @@ impl Render for Workspace {
                                             .px(px(10.))
                                             .flex()
                                             .items_center()
-                                            .cursor(CursorStyle::PointingHand)
+                                            .cursor(if enabled {
+                                                CursorStyle::PointingHand
+                                            } else {
+                                                CursorStyle::Arrow
+                                            })
                                             .rounded_t(px(4.))
                                             .text_xs()
+                                            .tooltip(Tooltip::text(tooltip))
+                                            .when(!enabled, |el| el.opacity(0.45))
                                             .when(active, |el| el.bg(tab_active_bg))
-                                            .when(!active, |el| el.hover(move |s| s.bg(tab_hover)))
+                                            .when(enabled && !active, |el| {
+                                                el.hover(move |s| s.bg(tab_hover))
+                                            })
                                             .child(Label::new(label).size(LabelSize::XSmall).color(
-                                                if active { Color::Default } else { Color::Muted },
+                                                if !enabled {
+                                                    Color::Disabled
+                                                } else if active {
+                                                    Color::Default
+                                                } else {
+                                                    Color::Muted
+                                                },
                                             ))
                                     };
+
+                                let history_enabled =
+                                    history_availability == ViewAvailability::Available;
+                                let history_tooltip = match history_availability {
+                                    ViewAvailability::Loading => "Preparing file history...",
+                                    ViewAvailability::Available => "Show file history (h)",
+                                    ViewAvailability::Unavailable => {
+                                        "No committed history is available for this file"
+                                    }
+                                };
+                                let blame_enabled =
+                                    blame_availability == ViewAvailability::Available;
+                                let blame_tooltip = match blame_availability {
+                                    ViewAvailability::Loading => "Preparing blame...",
+                                    ViewAvailability::Available => "Show blame (b)",
+                                    ViewAvailability::Unavailable => {
+                                        "Blame is unavailable for this file at the selected commit"
+                                    }
+                                };
 
                                 let ws = cx.entity().downgrade();
                                 let ws2 = cx.entity().downgrade();
@@ -792,6 +837,8 @@ impl Render for Workspace {
                                             "Diff",
                                             BottomPanelMode::Diff,
                                             bottom_panel_mode,
+                                            true,
+                                            "Show diff (d)",
                                         )
                                         .on_click(
                                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -814,28 +861,37 @@ impl Render for Workspace {
                                             "History",
                                             BottomPanelMode::FileHistory,
                                             bottom_panel_mode,
+                                            history_enabled,
+                                            history_tooltip,
                                         )
-                                        .on_click(
-                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                                ws2.update(cx, |this, cx| {
-                                                    if let Some(tab) =
-                                                        this.tabs.get_mut(this.active_tab)
-                                                    {
-                                                        if tab.bottom_panel_mode
-                                                            == BottomPanelMode::FileHistory
+                                        .when(
+                                            history_enabled,
+                                            |tab_element| {
+                                                tab_element.on_click(
+                                                move |_: &ClickEvent,
+                                                      _: &mut Window,
+                                                      cx: &mut App| {
+                                                    ws2.update(cx, |this, cx| {
+                                                        if let Some(tab) =
+                                                            this.tabs.get_mut(this.active_tab)
                                                         {
-                                                            tab.bottom_panel_mode =
-                                                                BottomPanelMode::Diff;
-                                                        } else {
-                                                            this.execute_command(
-                                                                crate::CommandId::FileHistory,
-                                                                cx,
-                                                            );
+                                                            if tab.bottom_panel_mode
+                                                                == BottomPanelMode::FileHistory
+                                                            {
+                                                                tab.bottom_panel_mode =
+                                                                    BottomPanelMode::Diff;
+                                                            } else {
+                                                                this.execute_command(
+                                                                    crate::CommandId::FileHistory,
+                                                                    cx,
+                                                                );
+                                                            }
                                                         }
-                                                    }
-                                                    cx.notify();
-                                                })
-                                                .ok();
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                },
+                                            )
                                             },
                                         ),
                                     )
@@ -845,28 +901,37 @@ impl Render for Workspace {
                                             "Blame",
                                             BottomPanelMode::Blame,
                                             bottom_panel_mode,
+                                            blame_enabled,
+                                            blame_tooltip,
                                         )
-                                        .on_click(
-                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                                ws3.update(cx, |this, cx| {
-                                                    if let Some(tab) =
-                                                        this.tabs.get_mut(this.active_tab)
-                                                    {
-                                                        if tab.bottom_panel_mode
-                                                            == BottomPanelMode::Blame
+                                        .when(
+                                            blame_enabled,
+                                            |tab_element| {
+                                                tab_element.on_click(
+                                                move |_: &ClickEvent,
+                                                      _: &mut Window,
+                                                      cx: &mut App| {
+                                                    ws3.update(cx, |this, cx| {
+                                                        if let Some(tab) =
+                                                            this.tabs.get_mut(this.active_tab)
                                                         {
-                                                            tab.bottom_panel_mode =
-                                                                BottomPanelMode::Diff;
-                                                        } else {
-                                                            this.execute_command(
-                                                                crate::CommandId::Blame,
-                                                                cx,
-                                                            );
+                                                            if tab.bottom_panel_mode
+                                                                == BottomPanelMode::Blame
+                                                            {
+                                                                tab.bottom_panel_mode =
+                                                                    BottomPanelMode::Diff;
+                                                            } else {
+                                                                this.execute_command(
+                                                                    crate::CommandId::Blame,
+                                                                    cx,
+                                                                );
+                                                            }
                                                         }
-                                                    }
-                                                    cx.notify();
-                                                })
-                                                .ok();
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                },
+                                            )
                                             },
                                         ),
                                     );

@@ -2,7 +2,10 @@ use gpui::Context;
 
 use crate::{CommandId, CommitPanelEvent, ConfirmAction, ToastKind};
 
-use super::{BottomPanelMode, ProjectTab, RightPanelMode, ViewCaches, Workspace};
+use super::{
+    BottomPanelMode, ProjectTab, RightPanelMode, ViewCacheEntry, ViewCacheKey, ViewCaches,
+    Workspace,
+};
 
 impl Workspace {
     pub(super) fn execute_command(&mut self, cmd: CommandId, cx: &mut Context<Self>) {
@@ -513,8 +516,7 @@ impl Workspace {
             }
         }
 
-        let file_path = tab.diff_viewer.read(cx).file_path().map(String::from);
-        let Some(file_path) = file_path else {
+        let Some(cache_key) = tab.current_view_cache_key(cx) else {
             self.show_toast(
                 "No file selected. Select a file first to view blame.",
                 ToastKind::Info,
@@ -525,8 +527,8 @@ impl Workspace {
 
         // Check cache first — instant switch if available.
         if let Ok(mut cache) = tab.caches.blame.lock() {
-            if let Some(lines) = cache.get(&file_path) {
-                let display_path = file_path.clone();
+            if let Some(ViewCacheEntry::Ready(lines)) = cache.get(&cache_key) {
+                let display_path = cache_key.file_path.clone();
                 tab.blame_view.update(cx, |bv, cx| {
                     bv.set_blame(lines, display_path, cx);
                 });
@@ -538,50 +540,32 @@ impl Workspace {
             }
         }
 
-        let project = tab.project.clone();
-        let blame_view = tab.blame_view.clone();
-        let caches = tab.caches.clone();
-        let path_for_blame = std::path::PathBuf::from(&file_path);
-        let display_path = file_path.clone();
-        let cache_key = file_path.clone();
-        let active_tab_index = self.active_tab;
-
-        let task = project.update(cx, |proj, cx| {
-            proj.blame_file_async(&path_for_blame, None, cx)
-        });
-
-        cx.spawn(
-            async move |this, cx: &mut gpui::AsyncApp| match task.await {
-                Ok(lines) => {
-                    if let Ok(mut cache) = caches.blame.lock() {
-                        cache.insert(cache_key, lines.clone());
-                    }
-                    cx.update(|cx| {
-                        blame_view.update(cx, |bv, cx| {
-                            bv.set_blame(lines, display_path, cx);
-                        });
-                        let _ = this.update(cx, |workspace, cx| {
-                            if let Some(active_tab) = workspace.tabs.get_mut(active_tab_index) {
-                                active_tab.bottom_panel_mode = BottomPanelMode::Blame;
-                            }
-                            cx.notify();
-                        });
-                    });
-                }
-                Err(e) => {
-                    cx.update(|cx| {
-                        let _ = this.update(cx, |workspace, cx| {
-                            workspace.show_toast(
-                                format!("Failed to compute blame: {}", e),
-                                ToastKind::Error,
-                                cx,
-                            );
-                        });
-                    });
-                }
-            },
-        )
-        .detach();
+        let entry = tab
+            .caches
+            .blame
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get(&cache_key));
+        match entry {
+            Some(ViewCacheEntry::Loading) => self.show_toast(
+                "Blame is still being prepared for this file.",
+                ToastKind::Info,
+                cx,
+            ),
+            Some(ViewCacheEntry::Unavailable(reason)) => {
+                log::debug!("Blame unavailable for {}: {}", cache_key.file_path, reason);
+                self.show_toast(
+                    "Blame is unavailable because this file has no version in the selected commit.",
+                    ToastKind::Info,
+                    cx,
+                );
+            }
+            Some(ViewCacheEntry::Ready(_)) => {}
+            None => {
+                Self::prefetch_blame_and_history(cache_key, tab.caches.clone(), cx);
+                self.show_toast("Preparing blame for this file...", ToastKind::Info, cx);
+            }
+        }
     }
 
     fn toggle_file_history_view(&mut self, tab: &ProjectTab, cx: &mut Context<Self>) {
@@ -593,8 +577,7 @@ impl Workspace {
             }
         }
 
-        let file_path = tab.diff_viewer.read(cx).file_path().map(String::from);
-        let Some(file_path) = file_path else {
+        let Some(cache_key) = tab.current_view_cache_key(cx) else {
             self.show_toast(
                 "No file selected. Select a file first to view history.",
                 ToastKind::Info,
@@ -605,8 +588,8 @@ impl Workspace {
 
         // Check cache first.
         if let Ok(mut cache) = tab.caches.history.lock() {
-            if let Some(commits) = cache.get(&file_path) {
-                let display_path = file_path.clone();
+            if let Some(ViewCacheEntry::Ready(commits)) = cache.get(&cache_key) {
+                let display_path = cache_key.file_path.clone();
                 tab.file_history_view.update(cx, |fv, cx| {
                     fv.set_history(commits, display_path, cx);
                 });
@@ -618,50 +601,34 @@ impl Workspace {
             }
         }
 
-        let project = tab.project.clone();
-        let file_history_view = tab.file_history_view.clone();
-        let caches = tab.caches.clone();
-        let path_for_history = std::path::PathBuf::from(&file_path);
-        let display_path = file_path.clone();
-        let cache_key = file_path.clone();
-        let active_tab_index = self.active_tab;
-
-        let task = project.update(cx, |proj, cx| {
-            proj.file_history_async(&path_for_history, 50, cx)
-        });
-
-        cx.spawn(
-            async move |this, cx: &mut gpui::AsyncApp| match task.await {
-                Ok(commits) => {
-                    if let Ok(mut cache) = caches.history.lock() {
-                        cache.insert(cache_key, commits.clone());
-                    }
-                    cx.update(|cx| {
-                        file_history_view.update(cx, |fv, cx| {
-                            fv.set_history(commits, display_path, cx);
-                        });
-                        let _ = this.update(cx, |workspace, cx| {
-                            if let Some(active_tab) = workspace.tabs.get_mut(active_tab_index) {
-                                active_tab.bottom_panel_mode = BottomPanelMode::FileHistory;
-                            }
-                            cx.notify();
-                        });
-                    });
-                }
-                Err(e) => {
-                    cx.update(|cx| {
-                        let _ = this.update(cx, |workspace, cx| {
-                            workspace.show_toast(
-                                format!("Failed to compute file history: {}", e),
-                                ToastKind::Error,
-                                cx,
-                            );
-                        });
-                    });
-                }
-            },
-        )
-        .detach();
+        let entry = tab
+            .caches
+            .history
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get(&cache_key));
+        match entry {
+            Some(ViewCacheEntry::Loading) => {
+                self.show_toast("File history is still being prepared.", ToastKind::Info, cx)
+            }
+            Some(ViewCacheEntry::Unavailable(reason)) => {
+                log::debug!(
+                    "History unavailable for {}: {}",
+                    cache_key.file_path,
+                    reason
+                );
+                self.show_toast(
+                    "No committed history is available for this file.",
+                    ToastKind::Info,
+                    cx,
+                );
+            }
+            Some(ViewCacheEntry::Ready(_)) => {}
+            None => {
+                Self::prefetch_blame_and_history(cache_key, tab.caches.clone(), cx);
+                self.show_toast("Preparing file history...", ToastKind::Info, cx);
+            }
+        }
     }
 
     fn toggle_reflog_view(&mut self, tab: &ProjectTab, cx: &mut Context<Self>) {
@@ -805,72 +772,113 @@ impl Workspace {
     /// Prefetch blame and file history for a file in the background.
     /// Called when a diff is opened so switching is near-instant.
     pub(super) fn prefetch_blame_and_history(
-        repo_path: std::path::PathBuf,
-        file_path: String,
+        cache_key: ViewCacheKey,
         caches: ViewCaches,
         cx: &mut Context<Self>,
     ) {
         let blame_cache = caches.blame.clone();
         let history_cache = caches.history.clone();
-        let file_key = file_path.clone();
-        let blame_path = std::path::PathBuf::from(&file_path);
+        let blame_path = std::path::PathBuf::from(&cache_key.file_path);
         let history_path = blame_path.clone();
-        let repo1 = repo_path.clone();
-        let repo2 = repo_path;
+        let repo1 = cache_key.repo_path.clone();
+        let repo2 = cache_key.repo_path.clone();
+        let commit_oid = cache_key
+            .commit_id
+            .as_deref()
+            .and_then(|oid| git2::Oid::from_str(oid).ok());
+        let invalid_commit = cache_key.commit_id.is_some() && commit_oid.is_none();
 
-        // Skip if both are already cached.
-        let blame_cached = blame_cache
+        // Reserve each missing entry before spawning. A click or a second
+        // DiffChanged event now observes Loading instead of starting duplicate
+        // Git commands.
+        let run_blame = blame_cache
             .lock()
-            .map(|c| c.contains(&file_key))
+            .map(|mut cache| {
+                if cache.contains(&cache_key) {
+                    false
+                } else {
+                    cache.insert(cache_key.clone(), ViewCacheEntry::Loading);
+                    true
+                }
+            })
             .unwrap_or(false);
-        let history_cached = history_cache
+        let run_history = history_cache
             .lock()
-            .map(|c| c.contains(&file_key))
+            .map(|mut cache| {
+                if cache.contains(&cache_key) {
+                    false
+                } else {
+                    cache.insert(cache_key.clone(), ViewCacheEntry::Loading);
+                    true
+                }
+            })
             .unwrap_or(false);
-        if blame_cached && history_cached {
+        if !run_blame && !run_history {
             return;
         }
 
         cx.spawn(
-            async move |_this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 // Run both in parallel on the background executor.
-                let blame_key = file_key.clone();
-                let history_key = file_key;
+                let blame_key = cache_key.clone();
+                let history_key = cache_key;
 
                 let blame_fut = cx.background_executor().spawn({
                     let cache = blame_cache.clone();
-                    let cached = blame_cached;
                     async move {
-                        if cached {
+                        if !run_blame {
                             return;
                         }
-                        if let Ok(lines) = rgitui_git::compute_blame(&repo1, &blame_path, None) {
-                            if let Ok(mut c) = cache.lock() {
-                                c.insert(blame_key, lines);
+                        let entry = if invalid_commit {
+                            ViewCacheEntry::Unavailable("Invalid commit identifier".to_string())
+                        } else {
+                            match rgitui_git::compute_blame(&repo1, &blame_path, commit_oid) {
+                                Ok(lines) if !lines.is_empty() => ViewCacheEntry::Ready(lines),
+                                Ok(_) => ViewCacheEntry::Unavailable(
+                                    "The file has no blameable lines".to_string(),
+                                ),
+                                Err(error) => ViewCacheEntry::Unavailable(error.to_string()),
                             }
+                        };
+                        if let Ok(mut cache) = cache.lock() {
+                            cache.insert(blame_key, entry);
                         }
                     }
                 });
 
                 let history_fut = cx.background_executor().spawn({
                     let cache = history_cache.clone();
-                    let cached = history_cached;
                     async move {
-                        if cached {
+                        if !run_history {
                             return;
                         }
-                        if let Ok(commits) =
-                            rgitui_git::compute_file_history(&repo2, &history_path, 50)
-                        {
-                            if let Ok(mut c) = cache.lock() {
-                                c.insert(history_key, commits);
+                        let entry = if invalid_commit {
+                            ViewCacheEntry::Unavailable("Invalid commit identifier".to_string())
+                        } else {
+                            match rgitui_git::compute_file_history_at(
+                                &repo2,
+                                &history_path,
+                                50,
+                                commit_oid,
+                            ) {
+                                Ok(commits) if !commits.is_empty() => {
+                                    ViewCacheEntry::Ready(commits)
+                                }
+                                Ok(_) => ViewCacheEntry::Unavailable(
+                                    "The file has no committed history".to_string(),
+                                ),
+                                Err(error) => ViewCacheEntry::Unavailable(error.to_string()),
                             }
+                        };
+                        if let Ok(mut cache) = cache.lock() {
+                            cache.insert(history_key, entry);
                         }
                     }
                 });
 
                 blame_fut.await;
                 history_fut.await;
+                this.update(cx, |_workspace, cx| cx.notify()).ok();
             },
         )
         .detach();

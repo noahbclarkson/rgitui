@@ -106,7 +106,7 @@ impl Workspace {
             diff_prefetch,
         );
         super::events::subscribe_detail_panel(cx, &project, &diff_viewer, &detail_panel);
-        super::events::subscribe_diff_viewer(cx, &project, &diff_viewer);
+        super::events::subscribe_diff_viewer(cx, &project, &diff_viewer, caches.clone());
         super::events::subscribe_commit_panel(cx, &project, &self.ai.clone(), &commit_panel);
         super::events::subscribe_toolbar(cx, &project, &toolbar);
         super::events::subscribe_blame_view(cx, &blame_view, &graph);

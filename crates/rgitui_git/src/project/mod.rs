@@ -65,7 +65,7 @@ pub use diff::{
     compute_commit_diff, compute_file_diff, compute_staged_diff_text, compute_stash_diff,
     compute_three_way_conflict_diff,
 };
-pub use file_history::compute_file_history;
+pub use file_history::{compute_file_history, compute_file_history_at};
 pub use local_ops::branches_containing_commit;
 pub use reflog::{compute_reflog, ReflogEntryInfo};
 pub use refresh::gather_refresh_data;
