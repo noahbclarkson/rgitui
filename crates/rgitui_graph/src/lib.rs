@@ -184,7 +184,11 @@ struct WorktreeRowPosition {
     worktree_idx: usize,
     list_index: usize,
     commit_index: Option<usize>,
+    /// Lane occupied by the virtual pending-changes node.
     node_lane: usize,
+    /// Lane occupied by the worktree's HEAD commit. `None` for unborn or
+    /// out-of-window worktrees that cannot be anchored to a visible commit.
+    parent_lane: Option<usize>,
     color_index: usize,
 }
 
@@ -214,6 +218,160 @@ fn contains_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
                 .any(|candidate| candidate.eq_ignore_ascii_case(needle));
     }
     haystack.to_lowercase().contains(lowercase_needle)
+}
+
+/// Lay out dirty worktree pseudo-nodes relative to the already-computed commit
+/// graph.
+///
+/// A worktree is a child of its HEAD commit, not an inline row in an existing
+/// child-to-parent path. It may reuse the HEAD lane only when the HEAD has no
+/// visible incoming child and no earlier worktree has claimed that lane. In
+/// every other case it gets the first lane beyond the commit graph and carries
+/// an explicit edge back to `parent_lane`.
+fn compute_worktree_row_positions(
+    commits: &[CommitInfo],
+    graph_rows: &[GraphRow],
+    worktree_infos: &[WorktreeGraphInfo],
+    graph_lane_count: usize,
+) -> Vec<WorktreeRowPosition> {
+    let visible_commit_count = commits.len().min(graph_rows.len());
+    let mut anchored = Vec::new();
+    let mut orphan_indices = Vec::new();
+
+    for (worktree_idx, info) in worktree_infos.iter().enumerate() {
+        let anchored_position = info.head_oid.and_then(|oid| {
+            let commit_index = commits.iter().position(|commit| commit.oid == oid)?;
+            let graph_row = graph_rows.get(commit_index)?;
+            Some((
+                commit_index,
+                WorktreeRowPosition {
+                    worktree_idx,
+                    list_index: 0,
+                    commit_index: Some(commit_index),
+                    node_lane: graph_row.node_lane,
+                    parent_lane: Some(graph_row.node_lane),
+                    color_index: graph_row.node_color,
+                },
+            ))
+        });
+
+        if let Some(position) = anchored_position {
+            anchored.push(position);
+        } else {
+            orphan_indices.push(worktree_idx);
+        }
+    }
+
+    // Placement follows commit order. When several worktrees share one HEAD,
+    // prefer the current worktree for the natural lane when that lane is free.
+    anchored.sort_by(|(commit_a, position_a), (commit_b, position_b)| {
+        let current_a = worktree_infos[position_a.worktree_idx].is_current;
+        let current_b = worktree_infos[position_b.worktree_idx].is_current;
+        commit_a
+            .cmp(commit_b)
+            .then_with(|| current_b.cmp(&current_a))
+    });
+
+    // `graph_lane_count` is a count, so it is also the first unused lane index.
+    let side_lane = graph_lane_count.max(1);
+    let mut claimed_head_lanes = HashSet::new();
+    for (commit_index, position) in &mut anchored {
+        let graph_row = &graph_rows[*commit_index];
+        let has_real_incoming = graph_row.has_incoming
+            || graph_row.edges.iter().any(|edge| {
+                edge.from_lane != graph_row.node_lane && edge.to_lane == graph_row.node_lane
+            });
+        let is_first_worktree_for_head = claimed_head_lanes.insert(*commit_index);
+
+        if has_real_incoming || !is_first_worktree_for_head {
+            position.node_lane = side_lane;
+            position.color_index = side_lane;
+        }
+    }
+
+    let mut positions = Vec::with_capacity(anchored.len() + orphan_indices.len());
+    let mut next_orphan_lane = side_lane;
+    for (list_index, worktree_idx) in orphan_indices.into_iter().enumerate() {
+        positions.push(WorktreeRowPosition {
+            worktree_idx,
+            list_index,
+            commit_index: None,
+            node_lane: next_orphan_lane,
+            parent_lane: None,
+            color_index: next_orphan_lane,
+        });
+        next_orphan_lane += 1;
+    }
+
+    // Place each virtual row immediately above its HEAD commit. Rows sharing a
+    // HEAD stack in input priority order, but remain sibling pseudo-nodes.
+    let mut virtual_rows_before = positions.len();
+    for (commit_index, mut position) in anchored {
+        debug_assert!(commit_index < visible_commit_count);
+        position.list_index = commit_index + virtual_rows_before;
+        positions.push(position);
+        virtual_rows_before += 1;
+    }
+
+    positions.sort_by_key(|position| position.list_index);
+    positions
+}
+
+/// Extend every real graph lane across a virtual worktree row. When the
+/// worktree uses a side lane, the HEAD lane itself must also pass through so
+/// the real child path is not consumed by the pseudo-node.
+fn worktree_pass_through_edges(
+    position: &WorktreeRowPosition,
+    graph_rows: &[GraphRow],
+) -> Vec<GraphEdge> {
+    let Some(graph_row) = position
+        .commit_index
+        .and_then(|commit_index| graph_rows.get(commit_index))
+    else {
+        return Vec::new();
+    };
+
+    let mut edges: Vec<GraphEdge> = graph_row
+        .edges
+        .iter()
+        .filter(|edge| {
+            let crosses_worktree =
+                edge.from_lane == edge.to_lane || edge.to_lane == graph_row.node_lane;
+            crosses_worktree
+                && edge.from_lane != graph_row.node_lane
+                && edge.from_lane != position.node_lane
+        })
+        .cloned()
+        .collect();
+
+    if position
+        .parent_lane
+        .is_some_and(|parent_lane| parent_lane != position.node_lane)
+        && !edges.iter().any(|edge| {
+            position.parent_lane == Some(edge.from_lane) && edge.from_lane == edge.to_lane
+        })
+    {
+        let parent_lane = position.parent_lane.unwrap_or(graph_row.node_lane);
+        edges.push(GraphEdge {
+            from_lane: parent_lane,
+            to_lane: parent_lane,
+            color_index: graph_row.node_color,
+            is_merge: false,
+        });
+    }
+
+    edges
+}
+
+fn worktree_targets_commit_immediately_above(
+    positions: &[WorktreeRowPosition],
+    list_index: usize,
+    commit_index: usize,
+) -> bool {
+    list_index > 0
+        && positions.iter().any(|position| {
+            position.list_index == list_index - 1 && position.commit_index == Some(commit_index)
+        })
 }
 
 /// The commit graph panel.
@@ -501,87 +659,18 @@ impl GraphView {
     }
 
     fn recompute_worktree_positions(&mut self) {
-        self.worktree_row_positions.clear();
+        self.worktree_row_positions = compute_worktree_row_positions(
+            &self.commits,
+            &self.graph_rows,
+            &self.worktree_infos,
+            self.global_max_lane,
+        );
         self.worktree_row_set.clear();
-
-        let visible_commit_count = self.commits.len().min(self.graph_rows.len());
-        let mut anchored = Vec::new();
-        let mut orphan_indices = Vec::new();
-
-        for (worktree_idx, info) in self.worktree_infos.iter().enumerate() {
-            let mut placed = false;
-            if let Some(oid) = info.head_oid {
-                if let Some(commit_index) = self.commits.iter().position(|c| c.oid == oid) {
-                    if let Some(graph_row) = self.graph_rows.get(commit_index) {
-                        anchored.push((
-                            commit_index,
-                            WorktreeRowPosition {
-                                worktree_idx,
-                                list_index: 0,
-                                commit_index: Some(commit_index),
-                                node_lane: graph_row.node_lane,
-                                color_index: graph_row.node_color,
-                            },
-                        ));
-                        placed = true;
-                    } else if commit_index < visible_commit_count {
-                        anchored.push((
-                            commit_index,
-                            WorktreeRowPosition {
-                                worktree_idx,
-                                list_index: 0,
-                                commit_index: Some(commit_index),
-                                node_lane: 0,
-                                color_index: 0,
-                            },
-                        ));
-                        placed = true;
-                    }
-                }
-            }
-            if !placed {
-                orphan_indices.push(worktree_idx);
-            }
-        }
-
-        // Each worktree's virtual row sits directly above its HEAD commit at
-        // a distinct list_index, so two anchored worktrees sharing a node_lane
-        // stack vertically rather than overlap — no collision reassignment is
-        // needed. Keeping natural lanes means the pending-changes node lines
-        // up with the branch color continuing up from its tip, which is the
-        // whole visual point.
-
-        let mut next_extra_lane = self.global_max_lane + 1;
-        for (list_index, worktree_idx) in orphan_indices.into_iter().enumerate() {
-            self.worktree_row_positions.push(WorktreeRowPosition {
-                worktree_idx,
-                list_index,
-                commit_index: None,
-                node_lane: next_extra_lane,
-                color_index: 0,
-            });
-            next_extra_lane += 1;
-        }
-
-        // Re-sort by commit_index ascending for list_index placement.
-        // (The earlier sort was by is_current-first for lane collision priority,
-        // but placement must follow commit order to avoid list_index collisions.)
-        anchored.sort_by_key(|(commit_index, _)| *commit_index);
-
-        // Place virtual rows immediately above their HEAD commit.
-        let mut virtual_rows_before = self.worktree_row_positions.len(); // orphans already placed
-        for (commit_index, mut position) in anchored {
-            position.list_index = commit_index + virtual_rows_before;
-            self.worktree_row_positions.push(position);
-            virtual_rows_before += 1;
-        }
-
-        self.worktree_row_positions
-            .sort_by_key(|position| position.list_index);
         for position in &self.worktree_row_positions {
             self.worktree_row_set.insert(position.list_index);
         }
 
+        let visible_commit_count = self.commits.len().min(self.graph_rows.len());
         let total_items = visible_commit_count + self.worktree_row_positions.len();
         let mut virtual_rows_prefix = vec![0; total_items];
         let mut virtual_count = 0;
@@ -1116,7 +1205,6 @@ impl Render for GraphView {
         let selected_index = self.selected_index;
         let worktree_infos = self.worktree_infos.clone();
         let worktree_row_positions = self.worktree_row_positions.clone();
-        let worktree_row_set = self.worktree_row_set.clone();
         let virtual_rows_prefix = self.virtual_rows_prefix.clone();
         let view: WeakEntity<GraphView> = cx.weak_entity();
 
@@ -1462,28 +1550,8 @@ impl Render for GraphView {
                             // (to_lane == HEAD's node_lane). In both cases the
                             // source lane is drawn full-height at the worktree row;
                             // any bend happens at the HEAD's row below.
-                            let wt_node_lane = position.node_lane;
-                            let (has_head_incoming, pass_through_edges) = position
-                                .commit_index
-                                .and_then(|ci| graph_rows.get(ci))
-                                .map(|gr| {
-                                    (
-                                        gr.has_incoming,
-                                        gr.edges
-                                            .iter()
-                                            .filter(|edge| {
-                                                let crosses_worktree = edge.from_lane
-                                                    == edge.to_lane
-                                                    || edge.to_lane == gr.node_lane;
-                                                crosses_worktree
-                                                    && edge.from_lane != gr.node_lane
-                                                    && edge.from_lane != wt_node_lane
-                                            })
-                                            .cloned()
-                                            .collect(),
-                                    )
-                                })
-                                .unwrap_or_else(|| (false, Vec::new()));
+                            let pass_through_edges =
+                                worktree_pass_through_edges(position, &graph_rows);
 
                             return render_working_tree_row(WorkingTreeRowParams {
                                 list_index: i,
@@ -1495,7 +1563,6 @@ impl Render for GraphView {
                                 branch_name: info.branch.clone(),
                                 is_current_worktree: info.is_current,
                                 is_orphan_worktree: is_orphan,
-                                has_head_incoming,
                                 pass_through_edges,
                                 row_height,
                                 lane_width,
@@ -1518,7 +1585,9 @@ impl Render for GraphView {
                                 show_graph_lanes,
                                 compact_mul,
                                 has_context_menu,
-                                head_node_lane: position.node_lane,
+                                graph_style,
+                                node_lane: position.node_lane,
+                                parent_lane: position.parent_lane,
                             });
                         }
 
@@ -1558,9 +1627,12 @@ impl Render for GraphView {
                         let node_x = node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
 
                         let node_color = rgitui_theme::lane_color(graph_row.node_color);
-                        let has_virtual_row_above =
-                            i > 0 && worktree_row_set.contains(&(i - 1));
-                        let has_incoming = graph_row.has_incoming || has_virtual_row_above;
+                        let has_virtual_parent_above = worktree_targets_commit_immediately_above(
+                            &worktree_row_positions,
+                            i,
+                            commit_idx,
+                        );
+                        let has_incoming = graph_row.has_incoming || has_virtual_parent_above;
 
                         // Author initials for avatar (extract small strings, not the whole CommitInfo)
                         let initials: SharedString = commit
@@ -1710,7 +1782,7 @@ impl Render for GraphView {
                                                 // When a worktree row sits immediately above this commit,
                                                 // start at the row top so the branch line doesn't paint
                                                 // over the worktree connector above it.
-                                                let approach_top = if has_virtual_row_above {
+                                                let approach_top = if has_virtual_parent_above {
                                                     origin.y
                                                 } else {
                                                     origin.y - px(4.0)
@@ -3042,7 +3114,6 @@ struct WorkingTreeRowParams {
     branch_name: Option<String>,
     is_current_worktree: bool,
     is_orphan_worktree: bool,
-    has_head_incoming: bool,
     pass_through_edges: Vec<GraphEdge>,
     row_height: f32,
     lane_width: f32,
@@ -3066,8 +3137,11 @@ struct WorkingTreeRowParams {
     show_graph_lanes: bool,
     compact_mul: f32,
     has_context_menu: bool,
-    /// The lane HEAD's commit sits on (so the working tree node connects to it).
-    head_node_lane: usize,
+    graph_style: GraphStyle,
+    /// Lane occupied by the pending-changes pseudo-node.
+    node_lane: usize,
+    /// Lane occupied by the visible HEAD commit this pseudo-node descends from.
+    parent_lane: Option<usize>,
 }
 
 /// Render the virtual "Working Tree" row that appears at the top of the graph.
@@ -3082,7 +3156,6 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         branch_name,
         is_current_worktree,
         is_orphan_worktree,
-        has_head_incoming,
         pass_through_edges,
         row_height,
         lane_width,
@@ -3105,7 +3178,9 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         show_graph_lanes,
         compact_mul,
         has_context_menu,
-        head_node_lane,
+        graph_style,
+        node_lane,
+        parent_lane,
     } = params;
     let bg = if selected {
         selected_bg
@@ -3156,7 +3231,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         .unwrap_or(0);
 
     let graph_width = graph_col_width;
-    let node_x = head_node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
+    let node_x = node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
     let display_branch = branch_name.filter(|branch| !branch.is_empty());
     let row_title = if is_orphan_worktree {
         display_branch
@@ -3235,15 +3310,6 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                 let cx_x = origin.x + node_x_px;
                                 let cy_y = origin.y + mid_y;
 
-                                if has_head_incoming {
-                                    let mut line_up = PathBuilder::stroke(px(2.0));
-                                    line_up.move_to(point(cx_x, origin.y - px(4.0)));
-                                    line_up.line_to(point(cx_x, cy_y));
-                                    if let Ok(built) = line_up.build() {
-                                        window.paint_path(built, node_color);
-                                    }
-                                }
-
                                 for edge in &pass_through_edges {
                                     let lane_x = px(edge.from_lane as f32 * lane_width
                                         + lane_width / 2.0
@@ -3259,12 +3325,61 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                                     }
                                 }
 
-                                // Vertical line from node center to bottom (connects to HEAD row below)
-                                let mut line_down = PathBuilder::stroke(px(2.0));
-                                line_down.move_to(point(cx_x, cy_y));
-                                line_down.line_to(point(cx_x, origin.y + h + px(4.0)));
-                                if let Ok(built) = line_down.build() {
-                                    window.paint_path(built, node_color);
+                                // A pending-changes node is a graph tip with one
+                                // explicit parent: the worktree's visible HEAD.
+                                // Orphan rows intentionally have no dangling edge.
+                                if let Some(parent_lane) = parent_lane {
+                                    let parent_x = origin.x
+                                        + px(parent_lane as f32 * lane_width
+                                            + lane_width / 2.0
+                                            + graph_padding_left);
+                                    let end_y = origin.y + h + px(4.0);
+                                    let mut path = PathBuilder::stroke(px(2.0));
+
+                                    if parent_x == cx_x {
+                                        path.move_to(point(cx_x, cy_y));
+                                        path.line_to(point(parent_x, end_y));
+                                    } else {
+                                        match graph_style {
+                                            GraphStyle::Curved => {
+                                                let available = end_y - cy_y;
+                                                let radius = available.min(px(16.0)).max(px(1.0));
+                                                let direction = if parent_x < cx_x {
+                                                    -1.0_f32
+                                                } else {
+                                                    1.0_f32
+                                                };
+                                                let horizontal_end = parent_x - radius * direction;
+
+                                                path.move_to(point(cx_x, cy_y));
+                                                path.line_to(point(horizontal_end, cy_y));
+                                                for &(sin_a, one_minus_cos) in quarter_arc_offsets()
+                                                {
+                                                    path.line_to(point(
+                                                        horizontal_end + radius * direction * sin_a,
+                                                        cy_y + radius * one_minus_cos,
+                                                    ));
+                                                }
+                                                path.line_to(point(parent_x, end_y));
+                                            }
+                                            GraphStyle::Rails => {
+                                                let middle_y = cy_y + (end_y - cy_y) / 2.0;
+                                                path.move_to(point(cx_x, cy_y));
+                                                path.line_to(point(cx_x, middle_y));
+                                                path.line_to(point(parent_x, middle_y));
+                                                path.line_to(point(parent_x, end_y));
+                                            }
+                                            GraphStyle::Angular => {
+                                                path.move_to(point(cx_x, cy_y));
+                                                path.line_to(point(parent_x, cy_y));
+                                                path.line_to(point(parent_x, end_y));
+                                            }
+                                        }
+                                    }
+
+                                    if let Ok(built) = path.build() {
+                                        window.paint_path(built, node_color);
+                                    }
                                 }
 
                                 // Background ring to occlude lines behind the dot
@@ -3499,8 +3614,57 @@ fn format_relative_time(
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
-    use rgitui_git::{FileChangeKind, FileStatus};
+    use rgitui_git::{CommitInfo, FileChangeKind, FileStatus, RefLabel, Signature};
     use std::path::PathBuf;
+
+    fn make_oid(byte: u8) -> git2::Oid {
+        let mut bytes = [0_u8; 20];
+        bytes[0] = byte;
+        git2::Oid::from_bytes(&bytes).unwrap()
+    }
+
+    fn make_commit(oid: u8, parents: &[u8], refs: Vec<RefLabel>) -> CommitInfo {
+        CommitInfo {
+            oid: make_oid(oid),
+            short_id: format!("{oid:07x}"),
+            summary: format!("Commit {oid}"),
+            message: format!("Commit {oid}"),
+            author: Signature {
+                name: "Test".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            committer: Signature {
+                name: "Test".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            co_authors: Vec::new(),
+            time: Utc::now(),
+            parent_oids: parents.iter().map(|parent| make_oid(*parent)).collect(),
+            refs,
+            is_signed: false,
+        }
+    }
+
+    fn dirty_worktree(
+        name: &str,
+        head_oid: Option<git2::Oid>,
+        is_current: bool,
+    ) -> WorktreeGraphInfo {
+        WorktreeGraphInfo {
+            name: name.to_string(),
+            is_current,
+            head_oid,
+            staged_count: 0,
+            unstaged_count: 1,
+            combined_breakdown: HashMap::new(),
+            worktree_path: PathBuf::from(name),
+            branch: Some(name.to_string()),
+        }
+    }
+
+    fn graph_lane_count(rows: &[GraphRow]) -> usize {
+        rows.iter().map(|row| row.lane_count).max().unwrap_or(1)
+    }
 
     fn make_file_status(kind: FileChangeKind) -> FileStatus {
         FileStatus {
@@ -3510,6 +3674,102 @@ mod tests {
             additions: 0,
             deletions: 0,
         }
+    }
+
+    #[test]
+    fn dirty_worktree_beside_real_child_uses_sibling_lane() {
+        // 3 -> 2 -> 1, with pending worktree changes also based on 1.
+        // The pseudo-node and commit 2 are siblings, so the pseudo-node must
+        // not be inserted inline on commit 2's incoming lane.
+        let commits = vec![
+            make_commit(3, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[1], Vec::new()),
+            make_commit(1, &[], Vec::new()),
+        ];
+        let graph_rows = compute_graph(&commits);
+        let worktrees = vec![dirty_worktree("lint-cleanup", Some(make_oid(1)), false)];
+        let positions = compute_worktree_row_positions(
+            &commits,
+            &graph_rows,
+            &worktrees,
+            graph_lane_count(&graph_rows),
+        );
+
+        let position = &positions[0];
+        assert_eq!(position.commit_index, Some(2));
+        assert_eq!(position.list_index, 2);
+        assert_eq!(position.parent_lane, Some(graph_rows[2].node_lane));
+        assert_ne!(position.node_lane, graph_rows[2].node_lane);
+
+        let pass_through = worktree_pass_through_edges(position, &graph_rows);
+        assert!(pass_through.iter().any(|edge| {
+            edge.from_lane == graph_rows[2].node_lane && edge.to_lane == graph_rows[2].node_lane
+        }));
+        assert!(worktree_targets_commit_immediately_above(&positions, 3, 2));
+    }
+
+    #[test]
+    fn dirty_worktree_at_branch_tip_reuses_tip_lane() {
+        let commits = vec![make_commit(1, &[], vec![RefLabel::Head])];
+        let graph_rows = compute_graph(&commits);
+        let worktrees = vec![dirty_worktree("feature", Some(make_oid(1)), true)];
+        let positions = compute_worktree_row_positions(
+            &commits,
+            &graph_rows,
+            &worktrees,
+            graph_lane_count(&graph_rows),
+        );
+
+        assert_eq!(positions[0].node_lane, graph_rows[0].node_lane);
+        assert_eq!(positions[0].parent_lane, Some(graph_rows[0].node_lane));
+        assert!(worktree_pass_through_edges(&positions[0], &graph_rows).is_empty());
+    }
+
+    #[test]
+    fn worktrees_sharing_a_head_are_siblings_not_a_chain() {
+        let commits = vec![make_commit(1, &[], vec![RefLabel::Head])];
+        let graph_rows = compute_graph(&commits);
+        let worktrees = vec![
+            dirty_worktree("linked", Some(make_oid(1)), false),
+            dirty_worktree("current", Some(make_oid(1)), true),
+        ];
+        let positions = compute_worktree_row_positions(
+            &commits,
+            &graph_rows,
+            &worktrees,
+            graph_lane_count(&graph_rows),
+        );
+
+        let linked = positions
+            .iter()
+            .find(|position| position.worktree_idx == 0)
+            .unwrap();
+        let current = positions
+            .iter()
+            .find(|position| position.worktree_idx == 1)
+            .unwrap();
+        assert_eq!(current.node_lane, graph_rows[0].node_lane);
+        assert_ne!(linked.node_lane, graph_rows[0].node_lane);
+        assert_eq!(current.parent_lane, linked.parent_lane);
+        assert!(worktree_targets_commit_immediately_above(&positions, 2, 0));
+    }
+
+    #[test]
+    fn unloaded_worktree_head_has_no_false_parent_edge() {
+        let commits = vec![make_commit(1, &[], vec![RefLabel::Head])];
+        let graph_rows = compute_graph(&commits);
+        let worktrees = vec![dirty_worktree("outside-window", Some(make_oid(9)), false)];
+        let positions = compute_worktree_row_positions(
+            &commits,
+            &graph_rows,
+            &worktrees,
+            graph_lane_count(&graph_rows),
+        );
+
+        assert_eq!(positions[0].commit_index, None);
+        assert_eq!(positions[0].parent_lane, None);
+        assert!(worktree_pass_through_edges(&positions[0], &graph_rows).is_empty());
+        assert!(!worktree_targets_commit_immediately_above(&positions, 1, 0));
     }
 
     // --- compute_breakdown ---
