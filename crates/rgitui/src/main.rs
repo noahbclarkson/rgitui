@@ -133,6 +133,7 @@ impl Render for AppRoot {
 #[folder = "../../assets"]
 #[include = "icons/**/*"]
 #[include = "fonts/**/*"]
+#[include = "locales/*.json"]
 struct Assets;
 
 impl AssetSource for Assets {
@@ -237,6 +238,15 @@ fn main() {
             });
         })
         .detach();
+
+        // Load translations. Runs after settings so the saved language applies
+        // to the first frame, and after the asset source is installed so the
+        // bundled locale files are readable.
+        let saved_language = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| s.settings().language.clone())
+            .unwrap_or_else(|| rgitui_i18n::SYSTEM_LANGUAGE.to_string());
+        rgitui_i18n::init(cx, &saved_language);
 
         // Apply saved theme from settings
         let saved_theme = cx

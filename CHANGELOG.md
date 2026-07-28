@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Added
+
+- **Language selection.** Settings → Appearance now has a language picker, and
+  new installs follow the operating system's language. Switching applies
+  immediately — no restart. Translations are JSON files under `assets/locales/`;
+  adding a language requires no Rust, and anything left untranslated falls back
+  to English. Simplified Chinese ships as the first translation. Only the
+  Appearance settings panel is translated so far; the rest of the interface is
+  still English-only and is being converted panel by panel.
+
 ## [0.3.2] - 2026-07-27
 
 A focused follow-up to 0.3.1. Blame and file history are prepared before you ask
