@@ -23,7 +23,7 @@ CI (`.github/workflows/ci.yml`) runs fmt-check, clippy `-D warnings`, and tests 
 
 ## Architecture
 
-Crate dependency direction: `rgitui` (binary) → `rgitui_workspace` → {`rgitui_git`, `rgitui_diff`, `rgitui_graph`, `rgitui_ai`, `rgitui_ui`} → {`rgitui_settings`, `rgitui_theme`}.
+Crate dependency direction: `rgitui` (binary) → `rgitui_workspace` → {`rgitui_git`, `rgitui_diff`, `rgitui_graph`, `rgitui_ai`, `rgitui_ui`} → {`rgitui_settings`, `rgitui_theme`, `rgitui_i18n`}.
 
 ### Boot (`crates/rgitui/src/main.rs`)
 
@@ -56,6 +56,7 @@ Example flow: `GraphView` emits `CommitSelected(oid)` → `subscribe_graph` spaw
 - `rgitui_ui`: flat re-exported component library (Button, Modal, TextInput, Toast, ContextMenu, ...). Layout uses `h_flex()`/`v_flex()` helpers. **Gotcha**: `h_flex()` is `flex_row().items_center()` (`rgitui_theme/src/theme.rs:287`) — the forced vertical centering is a recurring cause of broken scroll containers and misaligned children; use `div().flex().flex_row()` when you don't want centering.
 - `rgitui_theme`: `ThemeState` is a GPUI `Global`; access in render code via `cx.theme()`, `cx.colors()`, `cx.status()` (semantic tokens). Built-in themes are Rust-defined in `src/colors.rs`; user themes load from JSON.
 - `rgitui_settings`: `SettingsState` global; config at `dirs::config_dir()/rgitui/settings.json`, written by a dedicated writer thread (non-blocking `save()`). Secrets go through the OS keychain (`keyring` crate). Also stores workspace snapshots and the clean-exit flag.
+- `rgitui_i18n`: `t!("key")` / `tp!("key", count)` return a `SharedString`, so any `rgitui_ui` builder accepts them directly. English is the source of truth in `src/en.rs` (Rust, always present); translations are JSON under `assets/locales/`, embedded at build time, with user overrides from `dirs::config_dir()/rgitui/locales/`. The catalogue is a process-wide `RwLock`, **not** a GPUI global, so `t!` works off the UI thread — the cost is that GPUI cannot know a language change dirties the frame, so `set_language` must be followed by `cx.refresh_windows()`. Adding a UI string means adding a key to `en.rs` first; the crate's tests reject locale files with keys English does not define.
 - `rgitui_ai`: `AiGenerator` entity; provider dispatch by settings string (Gemini, OpenAI-compatible, DeepSeek, Anthropic) in `generate_commit_message_with_tools`, with optional agentic tool-calling defined in `tools.rs`.
 
 ### Conventions

@@ -10,6 +10,7 @@ members = [
     "crates/rgitui_diff",
     "crates/rgitui_ai",
     "crates/rgitui_settings",
+    "crates/rgitui_i18n",
 ]
 default-members = ["crates/rgitui"]
 
@@ -39,6 +40,7 @@ rgitui_graph = { path = "crates/rgitui_graph" }
 rgitui_diff = { path = "crates/rgitui_diff" }
 rgitui_ai = { path = "crates/rgitui_ai" }
 rgitui_settings = { path = "crates/rgitui_settings" }
+rgitui_i18n = { path = "crates/rgitui_i18n" }
 
 # Core
 anyhow = "1"
@@ -61,6 +63,9 @@ smol = "2"
 
 # FS watching
 notify = "8"
+
+# Localization
+sys-locale = "0.3.2"
 
 # Utils
 dirs = "6"

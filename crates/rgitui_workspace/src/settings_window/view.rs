@@ -18,6 +18,7 @@ use gpui::{
     div, point, px, AnyElement, ClickEvent, Context, ElementId, Entity, EventEmitter, FontWeight,
     ScrollHandle, SharedString, Task, Window,
 };
+use rgitui_i18n::{t, tp};
 use rgitui_settings::{
     config_dir, AiSettings, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
     GitProviderSettings, GraphStyle, SettingsState,
@@ -233,6 +234,11 @@ pub struct SettingsView {
     // Theme state
     selected_theme: String,
     available_themes: Vec<String>,
+
+    /// Stored language preference: `rgitui_i18n::SYSTEM_LANGUAGE` or a locale
+    /// id. Held separately from the resolved locale so "Match system language"
+    /// stays selected in the picker rather than the language it resolved to.
+    selected_language: String,
 
     // AI state
     ai_provider: String,
@@ -670,6 +676,7 @@ impl SettingsView {
             active_section: SettingsSection::Theme,
             selected_theme: settings.theme.clone(),
             available_themes,
+            selected_language: settings.language.clone(),
             ai_provider: settings.ai.provider.clone(),
             ai_model: settings.ai.model.clone(),
             ai_commit_style: settings.ai.commit_style.clone(),
@@ -726,6 +733,7 @@ impl SettingsView {
             cx.read_global::<SettingsState, _>(|state, _cx| {
                 let s = state.settings();
                 self.selected_theme = s.theme.clone();
+                self.selected_language = s.language.clone();
                 self.ai_provider = s.ai.provider.clone();
                 self.ai_model = s.ai.model.clone();
                 self.ai_commit_style = s.ai.commit_style.clone();
@@ -868,6 +876,28 @@ impl SettingsView {
         });
         cx.emit(SettingsViewEvent::ThemeChanged(theme_name.clone()));
         SettingsWindowActionGlobal::try_send(cx, SettingsWindowAction::ThemeChanged(theme_name));
+        cx.notify();
+    }
+
+    /// Switch the UI language. `selection` is `rgitui_i18n::SYSTEM_LANGUAGE` or
+    /// a locale id.
+    ///
+    /// The message catalogue is process-wide rather than a GPUI global, so
+    /// nothing invalidates the already-rendered frames on its own: every open
+    /// window is refreshed explicitly. That covers the workspace window too,
+    /// which is why this needs no cross-window action.
+    fn apply_language(&mut self, selection: String, cx: &mut Context<Self>) {
+        rgitui_i18n::set_language(&selection);
+
+        self.selected_language = selection.clone();
+        cx.update_global::<SettingsState, _>(|state, _cx| {
+            state.settings_mut().language = selection;
+            if let Err(e) = state.save() {
+                log::error!("Failed to save settings: {}", e);
+            }
+        });
+
+        cx.refresh_windows();
         cx.notify();
     }
 
@@ -1516,7 +1546,11 @@ impl SettingsView {
     }
 
     // ── Helper: section header with icon ────────────────────────────────
-    fn section_header(icon: IconName, title: &str, subtitle: &str) -> impl IntoElement {
+    fn section_header(
+        icon: IconName,
+        title: impl Into<SharedString>,
+        subtitle: impl Into<SharedString>,
+    ) -> impl IntoElement {
         div()
             .v_flex()
             .w_full()
@@ -1530,13 +1564,13 @@ impl SettingsView {
                     .items_center()
                     .child(Icon::new(icon).size(IconSize::Medium).color(Color::Accent))
                     .child(
-                        Label::new(SharedString::from(title.to_string()))
+                        Label::new(title)
                             .size(LabelSize::Large)
                             .weight(FontWeight::BOLD),
                     ),
             )
             .child(
-                Label::new(SharedString::from(subtitle.to_string()))
+                Label::new(subtitle)
                     .size(LabelSize::Small)
                     .color(Color::Muted),
             )
@@ -1564,17 +1598,20 @@ impl SettingsView {
     }
 
     // ── Helper: setting row label ───────────────────────────────────────
-    fn setting_label(title: &str, description: &str) -> impl IntoElement {
+    fn setting_label(
+        title: impl Into<SharedString>,
+        description: impl Into<SharedString>,
+    ) -> impl IntoElement {
         div()
             .v_flex()
             .gap(px(2.))
             .child(
-                Label::new(SharedString::from(title.to_string()))
+                Label::new(title)
                     .size(LabelSize::Small)
                     .weight(FontWeight::SEMIBOLD),
             )
             .child(
-                Label::new(SharedString::from(description.to_string()))
+                Label::new(description)
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             )
@@ -1712,11 +1749,34 @@ impl SettingsView {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
 
-        let sections: [(SettingsSection, IconName, &str); 4] = [
-            (SettingsSection::Theme, IconName::Eye, "Appearance"),
-            (SettingsSection::Ai, IconName::Sparkle, "AI"),
-            (SettingsSection::Auth, IconName::GitBranch, "Auth"),
-            (SettingsSection::General, IconName::Settings, "General"),
+        // The element id is derived from the section, not the label: a
+        // localized label would give the same nav item a different id per
+        // language and reset its interaction state on a language switch.
+        let sections: [(SettingsSection, IconName, &str, SharedString); 4] = [
+            (
+                SettingsSection::Theme,
+                IconName::Eye,
+                "appearance",
+                t!("settings.nav.appearance"),
+            ),
+            (
+                SettingsSection::Ai,
+                IconName::Sparkle,
+                "ai",
+                t!("settings.nav.ai"),
+            ),
+            (
+                SettingsSection::Auth,
+                IconName::GitBranch,
+                "auth",
+                t!("settings.nav.auth"),
+            ),
+            (
+                SettingsSection::General,
+                IconName::Settings,
+                "general",
+                t!("settings.nav.general"),
+            ),
         ];
 
         let mut sidebar = div()
@@ -1746,22 +1806,21 @@ impl SettingsView {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Preferences")
+                    Label::new(t!("settings.nav.preferences"))
                         .size(LabelSize::Small)
                         .weight(FontWeight::BOLD)
                         .color(Color::Muted),
                 ),
         );
 
-        for (section, icon, label) in sections {
+        for (section, icon, id, label_str) in sections {
             let is_active = section == self.active_section;
-            let label_str: SharedString = label.into();
 
             sidebar = sidebar.child(
                 div()
                     .id(ElementId::Name(SharedString::from(format!(
                         "settings-nav-{}",
-                        label
+                        id
                     ))))
                     .h_flex()
                     .w_full()
@@ -1821,24 +1880,24 @@ impl SettingsView {
 
         section = section.child(Self::section_header(
             IconName::Eye,
-            "Appearance",
-            "Customize the look and feel of the application.",
+            t!("settings.appearance.title"),
+            t!("settings.appearance.subtitle"),
         ));
 
         // Appearance Mode (Auto/Light/Dark)
         let mut app_card = Self::setting_card(cx);
         app_card = app_card.child(Self::setting_label(
-            "Appearance Mode",
-            "Choose whether to show light or dark themes, or auto-detect.",
+            t!("settings.appearance.mode.label"),
+            t!("settings.appearance.mode.description"),
         ));
 
         let appearance_mode = cx.global::<SettingsState>().settings().appearance_mode;
         let mut app_options = div().h_flex().w_full().gap(px(8.));
 
         for (mode, label) in [
-            (AppearanceMode::Auto, "Auto"),
-            (AppearanceMode::Light, "Light"),
-            (AppearanceMode::Dark, "Dark"),
+            (AppearanceMode::Auto, t!("settings.appearance.mode.auto")),
+            (AppearanceMode::Light, t!("settings.appearance.mode.light")),
+            (AppearanceMode::Dark, t!("settings.appearance.mode.dark")),
         ] {
             let is_selected = mode == appearance_mode;
             let colors_clone = colors.clone();
@@ -1875,8 +1934,8 @@ impl SettingsView {
         // Theme grid
         let mut card = Self::setting_card(cx);
         card = card.child(Self::setting_label(
-            "Color Theme",
-            "Select a theme to change all interface colors.",
+            t!("settings.appearance.theme.label"),
+            t!("settings.appearance.theme.description"),
         ));
 
         let mut theme_grid = div().v_flex().w_full().gap(px(6.));
@@ -1950,7 +2009,7 @@ impl SettingsView {
                                 .bg(colors.hint_background)
                                 .items_center()
                                 .child(
-                                    Label::new("Active")
+                                    Label::new(t!("settings.appearance.theme.active"))
                                         .size(LabelSize::XSmall)
                                         .color(Color::Accent)
                                         .weight(FontWeight::SEMIBOLD),
@@ -1977,35 +2036,150 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Custom Theme Editor")
+                                Label::new(t!("settings.appearance.theme_editor.label"))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new(
-                                    "Edit colors, create custom themes, and export as JSON.",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                                Label::new(t!("settings.appearance.theme_editor.description"))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
                             ),
                     )
                     .child(
-                        Button::new("open-theme-editor", "Edit Theme")
-                            .size(ButtonSize::Compact)
-                            .style(ButtonStyle::Subtle)
-                            .icon(IconName::Edit)
-                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        Button::new(
+                            "open-theme-editor",
+                            t!("settings.appearance.theme_editor.button"),
+                        )
+                        .size(ButtonSize::Compact)
+                        .style(ButtonStyle::Subtle)
+                        .icon(IconName::Edit)
+                        .on_click(cx.listener(
+                            |_, _: &ClickEvent, _, cx| {
                                 SettingsWindowActionGlobal::try_send(
                                     cx,
                                     SettingsWindowAction::OpenThemeEditor,
                                 );
-                            })),
+                            },
+                        )),
                     ),
             );
             card
         });
 
+        section = section.child(self.render_language_card(cx));
+
         section
+    }
+
+    /// Language picker. Lists "Match system language" plus every locale
+    /// `rgitui_i18n` found, labelled in its own language so a user who cannot
+    /// read the current UI language can still find theirs.
+    fn render_language_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut card = Self::setting_card(cx);
+        card = card.child(Self::setting_label(
+            t!("settings.language.label"),
+            t!("settings.language.description"),
+        ));
+
+        let system_detail = match rgitui_i18n::system_locale_id() {
+            Some(id) => t!("settings.language.system_detail", language = id),
+            None => t!("settings.language.system_unknown"),
+        };
+
+        let mut options = div().v_flex().w_full().gap(px(6.));
+        options = options.child(self.language_option(
+            0,
+            rgitui_i18n::SYSTEM_LANGUAGE,
+            t!("settings.language.system"),
+            system_detail,
+            cx,
+        ));
+
+        for (idx, locale) in rgitui_i18n::available_locales().iter().enumerate() {
+            let missing = rgitui_i18n::missing_count_of(&locale.id);
+            let detail = if missing == 0 {
+                t!("settings.language.complete")
+            } else {
+                tp!("settings.language.missing", missing, count = missing)
+            };
+
+            options = options.child(self.language_option(
+                idx as u64 + 1,
+                &locale.id,
+                SharedString::from(locale.native_name.clone()),
+                detail,
+                cx,
+            ));
+        }
+
+        card.child(options)
+    }
+
+    /// One row of the language picker.
+    fn language_option(
+        &self,
+        index: u64,
+        selection: &str,
+        title: SharedString,
+        detail: SharedString,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let colors = cx.colors();
+        let is_selected = self.selected_language == selection;
+        let selection = selection.to_string();
+
+        div()
+            .id(ElementId::NamedInteger("language-option".into(), index))
+            .h_flex()
+            .w_full()
+            .px(px(12.))
+            .py(px(8.))
+            .gap(px(10.))
+            .items_center()
+            .rounded(px(8.))
+            .cursor_pointer()
+            .when(is_selected, |el| {
+                el.bg(colors.ghost_element_selected)
+                    .border_1()
+                    .border_color(colors.border_focused)
+            })
+            .when(!is_selected, |el| {
+                el.border_1()
+                    .border_color(colors.border_variant)
+                    .hover(|s| s.bg(colors.ghost_element_hover))
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.apply_language(selection.clone(), cx);
+            }))
+            .child(
+                div()
+                    .v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(2.))
+                    .child(
+                        Label::new(title)
+                            .size(LabelSize::Small)
+                            .weight(if is_selected {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::NORMAL
+                            }),
+                    )
+                    .child(
+                        Label::new(detail)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            )
+            .when(is_selected, |el| {
+                el.child(
+                    Icon::new(IconName::Check)
+                        .size(IconSize::Small)
+                        .color(Color::Accent),
+                )
+            })
     }
 
     // ── AI section ──────────────────────────────────────────────────────

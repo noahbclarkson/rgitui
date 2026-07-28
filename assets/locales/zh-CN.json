@@ -1,0 +1,33 @@
+{
+  "id": "zh-CN",
+  "english_name": "Chinese (Simplified)",
+  "native_name": "简体中文",
+  "plural_rule": "other_only",
+  "messages": {
+    "settings.appearance.mode.auto": "自动",
+    "settings.appearance.mode.dark": "深色",
+    "settings.appearance.mode.description": "选择使用浅色或深色主题，或自动跟随系统。",
+    "settings.appearance.mode.label": "外观模式",
+    "settings.appearance.mode.light": "浅色",
+    "settings.appearance.subtitle": "自定义应用程序的外观和风格。",
+    "settings.appearance.theme.active": "使用中",
+    "settings.appearance.theme.description": "选择主题以更改界面的所有颜色。",
+    "settings.appearance.theme.label": "配色主题",
+    "settings.appearance.theme_editor.button": "编辑主题",
+    "settings.appearance.theme_editor.description": "编辑颜色、创建自定义主题并导出为 JSON。",
+    "settings.appearance.theme_editor.label": "自定义主题编辑器",
+    "settings.appearance.title": "外观",
+    "settings.language.complete": "已完整翻译",
+    "settings.language.description": "选择界面使用的语言。未翻译的文本将显示为英文。",
+    "settings.language.label": "语言",
+    "settings.language.missing.other": "{count} 条文本尚未翻译",
+    "settings.language.system": "跟随系统语言",
+    "settings.language.system_detail": "检测到：{language}",
+    "settings.language.system_unknown": "未检测到系统语言，将使用英文。",
+    "settings.nav.ai": "AI",
+    "settings.nav.appearance": "外观",
+    "settings.nav.auth": "认证",
+    "settings.nav.general": "通用",
+    "settings.nav.preferences": "偏好设置"
+  }
+}

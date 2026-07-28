@@ -196,6 +196,10 @@ pub struct AppSettings {
     pub version: u32,
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// UI language: `system` to follow the OS, or a locale id such as `zh-CN`.
+    /// Resolved against the available locales by `rgitui_i18n`.
+    #[serde(default = "default_language")]
+    pub language: String,
     #[serde(default)]
     pub ui_font: String,
     #[serde(default)]
@@ -279,6 +283,13 @@ fn default_settings_version() -> u32 {
 
 fn default_theme() -> String {
     "Catppuccin Mocha".into()
+}
+
+/// New installs follow the OS language; existing settings files without the
+/// field do too, so an upgrade picks up a translation automatically when one
+/// ships for the user's language.
+fn default_language() -> String {
+    "system".into()
 }
 
 fn default_appearance_mode() -> AppearanceMode {
@@ -513,6 +524,7 @@ impl Default for AppSettings {
         Self {
             version: default_settings_version(),
             theme: default_theme(),
+            language: default_language(),
             ui_font: String::new(),
             ai: AiSettings::default(),
             git: GitSettings::default(),
