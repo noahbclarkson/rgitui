@@ -115,6 +115,17 @@ rgitui is organized as a Cargo workspace with the following crates:
 | `rgitui_theme` | Theme system with semantic colors |
 | `rgitui_settings` | Settings persistence, keychain integration |
 | `rgitui_ai` | AI commit message generation |
+| `rgitui_i18n` | UI translations and language selection |
+
+## Translations
+
+Languages live in [`assets/locales/`](assets/locales/README.md) as one JSON file
+each. Adding one needs no Rust: copy an existing file, translate the values, and
+the language appears in **Settings → Appearance**. Partial translations are
+welcome — anything untranslated falls back to English.
+
+English itself is not a locale file; it is `crates/rgitui_i18n/src/en.rs`, and
+every translation is validated against it by `cargo test -p rgitui_i18n`.
 
 ## Reporting Bugs
 

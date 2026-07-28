@@ -5531,6 +5531,7 @@ dependencies = [
  "reqwest_client",
  "rgitui_ai",
  "rgitui_git",
+ "rgitui_i18n",
  "rgitui_perf",
  "rgitui_settings",
  "rgitui_test_support",
@@ -5614,6 +5615,19 @@ dependencies = [
  "rgitui_ui",
  "smallvec",
  "smol",
+]
+
+[[package]]
+name = "rgitui_i18n"
+version = "0.5.0"
+dependencies = [
+ "dirs",
+ "gpui",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sys-locale",
 ]
 
 [[package]]
@@ -5707,6 +5721,7 @@ dependencies = [
  "rgitui_diff",
  "rgitui_git",
  "rgitui_graph",
+ "rgitui_i18n",
  "rgitui_perf",
  "rgitui_settings",
  "rgitui_test_support",

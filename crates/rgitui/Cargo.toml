@@ -36,6 +36,7 @@ rgitui_ui.workspace = true
 rgitui_workspace.workspace = true
 rgitui_git.workspace = true
 rgitui_settings.workspace = true
+rgitui_i18n.workspace = true
 rgitui_ai.workspace = true
 rgitui_perf = { workspace = true, optional = true }
 anyhow.workspace = true
