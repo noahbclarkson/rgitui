@@ -947,6 +947,22 @@ pub fn config_dir() -> PathBuf {
         .join("rgitui")
 }
 
+/// File name of the settings file inside [`config_dir`].
+const SETTINGS_FILE_NAME: &str = "settings.json";
+
+/// File name of the user keymap inside [`config_dir`].
+const KEYMAP_FILE_NAME: &str = "keymap.json";
+
+/// Path of the settings file.
+pub fn settings_path() -> PathBuf {
+    config_dir().join(SETTINGS_FILE_NAME)
+}
+
+/// Path of the user keymap, alongside the settings file.
+pub fn keymap_path() -> PathBuf {
+    config_dir().join(KEYMAP_FILE_NAME)
+}
+
 /// A single queued settings write. `json` is pre-serialized on the caller's
 /// thread so the snapshot reflects state at call time; `ack`, when present,
 /// is fired after the write attempt completes so a blocking caller can wait.
@@ -1017,7 +1033,7 @@ fn write_settings_file(config_path: &Path, json: &str) {
 
 /// Initialize settings. Must be called during app init.
 pub fn init(cx: &mut App) {
-    let config_path = config_dir().join("settings.json");
+    let config_path = settings_path();
     let mut load_warnings = Vec::new();
     let settings = if config_path.exists() {
         match std::fs::read_to_string(&config_path) {

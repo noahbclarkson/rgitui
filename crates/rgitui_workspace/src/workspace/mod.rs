@@ -278,6 +278,9 @@ pub struct Workspace {
     pub(super) update_notification: Option<UpdateNotification>,
     pub(super) settings_window: Option<WindowHandle<crate::SettingsWindow>>,
     pub(super) _settings_window_closed_subscription: Option<gpui::Subscription>,
+    /// Keeps the [`crate::keymap::KeymapState`] observer alive so `keymap.json`
+    /// reload problems are toasted as they happen.
+    pub(super) _keymap_subscription: gpui::Subscription,
 }
 
 /// Smallest width the left sidebar may take, whether reached by dragging the
@@ -422,6 +425,10 @@ impl Workspace {
             update_notification: None,
             settings_window: None,
             _settings_window_closed_subscription: None,
+            // Fires on every keymap.json reload, including ones long after startup.
+            _keymap_subscription: cx.observe_global::<crate::keymap::KeymapState>(
+                |workspace, cx| workspace.show_keymap_problems(cx),
+            ),
         }
     }
 
@@ -635,6 +642,21 @@ impl Workspace {
                 ToastKind::Info,
                 cx,
             );
+        }
+    }
+
+    /// Surface anything wrong with the user's `keymap.json` as a toast.
+    ///
+    /// Drains the problems so each is shown once, whether it came from the
+    /// startup load or from a later reload triggered by saving the file.
+    pub fn show_keymap_problems(&mut self, cx: &mut Context<Self>) {
+        if cx.try_global::<crate::keymap::KeymapState>().is_none() {
+            return;
+        }
+        let problems =
+            cx.update_global::<crate::keymap::KeymapState, _>(|state, _| state.take_problems());
+        for problem in problems {
+            self.show_toast(problem, ToastKind::Error, cx);
         }
     }
 

@@ -75,6 +75,9 @@ impl AppRoot {
         if let Some(workspace) = &self.workspace {
             workspace.update(cx, |ws, cx| {
                 ws.show_crash_recovery_toast(cx);
+                // Startup keymap problems are reported here rather than during
+                // `keymap::init`, which runs before any window exists.
+                ws.show_keymap_problems(cx);
             });
         }
 
@@ -220,6 +223,10 @@ fn main() {
         // Initialize subsystems
         rgitui_theme::init(cx);
         rgitui_settings::init(cx);
+        // Applies the default keybindings plus the user's keymap.json, and
+        // watches that file so saving it reloads the keymap. Must come after
+        // settings init, which creates the config directory.
+        rgitui_workspace::keymap::init(cx);
 
         // Initialize empty avatar cache immediately, load disk data in background
         cx.set_global(rgitui_ui::AvatarCache::new());

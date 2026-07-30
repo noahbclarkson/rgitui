@@ -3868,7 +3868,7 @@ impl SettingsView {
         section = section.child(shortcuts_card);
         section = section.child(Self::section_divider(cx));
 
-        let config_path = config_dir().join("settings.json");
+        let config_path = rgitui_settings::settings_path();
         let config_path_display = config_path.display().to_string();
         let config_dir_path = config_dir();
         let mut config_card = Self::setting_card(cx);

@@ -49,6 +49,9 @@ log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Comment- and trailing-comma-tolerant JSON for hand-edited config (keymap.json).
+# Same crate Zed uses for its keymap and settings files.
+serde_json_lenient = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 smallvec = { version = "1", features = ["union"] }
