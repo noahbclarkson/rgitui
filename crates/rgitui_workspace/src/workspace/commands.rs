@@ -586,8 +586,11 @@ impl Workspace {
                 self.show_toast(msg, ToastKind::Info, cx);
             }
             CommandId::SwitchBranch => {
+                let hint = crate::keymap::shortcut(CommandId::FocusSidebar, cx)
+                    .map(|keystrokes| format!("Press {keystrokes} to "))
+                    .unwrap_or_else(|| "Use the sidebar to ".to_owned());
                 self.show_toast(
-                    "Press Ctrl+Shift+B or use Alt+1 to focus the sidebar for branch switching",
+                    format!("{hint}focus the sidebar for branch switching"),
                     ToastKind::Info,
                     cx,
                 );

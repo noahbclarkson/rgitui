@@ -685,13 +685,17 @@ impl Render for CommitPanel {
                                         .color(Color::Warning),
                                 )
                             })
-                            .when(can_commit, |el| {
-                                el.child(
-                                    Label::new("Ctrl+Enter")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                )
-                            })
+                            .when_some(
+                                crate::keymap::shortcut(crate::CommandId::Commit, cx)
+                                    .filter(|_| can_commit),
+                                |el, keystrokes| {
+                                    el.child(
+                                        Label::new(SharedString::from(keystrokes))
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    )
+                                },
+                            )
                             .child(
                                 Button::new("commit-btn", commit_label)
                                     .icon(IconName::GitCommit)

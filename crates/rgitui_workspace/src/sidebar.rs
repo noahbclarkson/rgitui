@@ -3679,7 +3679,7 @@ impl Render for Sidebar {
                                                         .text_color(Color::Deleted.color(cx))
                                                         .hover(|s| s.bg(colors.ghost_element_hover))
                                                         .cursor_pointer()
-                                                        .tooltip(Tooltip::text("Discard changes (Ctrl+Z)"))
+                                                        .tooltip(crate::keymap::command_tooltip("Discard changes", CommandId::DiscardRow))
                                                         .on_click({
                                                             let w_dis = w.clone();
                                                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {

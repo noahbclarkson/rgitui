@@ -5,6 +5,10 @@
 //!   gpui action structs and [`ALL_COMMANDS`].
 //! * [`conflict`] detects ambiguous bindings before gpui silently resolves them.
 //! * [`loader`] reads `keymap.json` and assembles the final binding list.
+//! * [`display`] renders a keystroke the way the user reads it.
+//! * [`summary`] records what the load produced — the effective binding of every
+//!   command, where it came from and what went wrong — and is what every
+//!   shortcut shown anywhere in the UI is read from.
 //! * [`generate`] renders the committed `docs/KEYBINDINGS.md` and
 //!   `docs/keymap.schema.json`.
 //!
@@ -16,17 +20,22 @@
 pub(crate) mod macros;
 
 pub mod conflict;
+pub mod display;
 pub mod generate;
 pub mod loader;
 pub mod registry;
+pub mod summary;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{App, Global};
 
+pub use display::{humanize_sequence, KeystrokeStyle};
 pub use loader::keymap_path;
 pub use registry::{actions, attach_actions, CommandId, CommandMeta, ALL_COMMANDS};
+pub use summary::{CommandBindings, CommandGroup, EffectiveBinding, KeymapSummary};
 
 /// Declares a view's key context and attaches the commands it handles.
 ///
@@ -73,6 +82,10 @@ pub struct KeymapState {
     pub binding_count: usize,
     /// Incremented on every load, so observers can tell reloads apart.
     pub generation: usize,
+    /// The bindings in force, labelled for display. Read at render time by every
+    /// surface that shows a shortcut; `Arc` because those reads happen while the
+    /// rest of the app state is already borrowed.
+    pub summary: Arc<KeymapSummary>,
 }
 
 impl Global for KeymapState {}
@@ -81,6 +94,40 @@ impl KeymapState {
     /// Takes the pending problems, leaving the state empty.
     pub fn take_problems(&mut self) -> Vec<String> {
         std::mem::take(&mut self.problems)
+    }
+}
+
+/// The bindings in force, for rendering a shortcut anywhere in the UI.
+///
+/// Falls back to the registry defaults when the keymap has not loaded yet, so a
+/// caller never has to decide what to show in that case.
+pub fn summary(cx: &App) -> Arc<KeymapSummary> {
+    cx.try_global::<KeymapState>()
+        .map(|state| state.summary.clone())
+        .unwrap_or_else(summary::fallback)
+}
+
+/// The humanised keystrokes for a command, or `None` when it is unbound.
+///
+/// The one accessor every shortcut hint in the UI goes through — see
+/// [`summary`] for why a literal would be a lie.
+pub fn shortcut(id: CommandId, cx: &App) -> Option<String> {
+    summary(cx).display(id)
+}
+
+/// A tooltip captioned `text` and annotated with the command's current keystroke.
+///
+/// The keystroke is looked up when the tooltip is built rather than when the
+/// button is, so it follows a `keymap.json` reload without the button having to
+/// re-render. An unbound command gets a plain tooltip instead of an empty chip.
+pub fn command_tooltip(
+    text: impl Into<gpui::SharedString>,
+    id: CommandId,
+) -> impl Fn(&mut gpui::Window, &mut App) -> gpui::AnyView {
+    let text = text.into();
+    move |window, cx| match shortcut(id, cx) {
+        Some(keystrokes) => rgitui_ui::Tooltip::with_shortcut(text.clone(), keystrokes)(window, cx),
+        None => rgitui_ui::Tooltip::text(text.clone())(window, cx),
     }
 }
 
@@ -115,6 +162,7 @@ pub fn reload(cx: &mut App) {
         problems: loaded.problems,
         binding_count,
         generation,
+        summary: Arc::new(loaded.summary),
     });
 }
 

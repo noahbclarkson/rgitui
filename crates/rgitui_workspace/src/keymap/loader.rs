@@ -44,7 +44,9 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use super::conflict::{self, BindingSource, BindingSpec, ConflictReport, NO_ACTION};
+use super::display::KeystrokeStyle;
 use super::registry::ALL_COMMANDS;
+use super::summary::KeymapSummary;
 
 /// A keystroke-to-action map that keeps the order the entries were written in.
 ///
@@ -108,6 +110,9 @@ pub struct LoadedKeymap {
     pub bindings: Vec<KeyBinding>,
     /// Problems the user should fix: parse errors, unknown actions, conflicts.
     pub problems: Vec<String>,
+    /// The same bindings, labelled for display. Everything the UI shows about a
+    /// shortcut is read from here, so no surface can drift from the keymap.
+    pub summary: KeymapSummary,
 }
 
 /// Path of the user keymap, alongside `settings.json` in rgitui's config dir.
@@ -312,8 +317,16 @@ pub fn load_from_content(content: &str, cx: &App) -> LoadedKeymap {
     });
     problems.extend(plan.problems);
 
+    // Derived from the specs that are about to be bound, so the labels the UI
+    // shows and the bindings gpui matches cannot disagree.
+    let summary = KeymapSummary::build(&specs, &plan.keep, &report, KeystrokeStyle::platform());
+
     let bindings = build_bindings(&pending, &plan.keep, &mut problems, cx);
-    LoadedKeymap { bindings, problems }
+    LoadedKeymap {
+        bindings,
+        problems,
+        summary,
+    }
 }
 
 /// Constructs the gpui bindings for the planned candidates.

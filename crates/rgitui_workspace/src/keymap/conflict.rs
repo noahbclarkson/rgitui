@@ -96,7 +96,8 @@ impl BindingSpec {
         }
     }
 
-    fn is_unbind(&self) -> bool {
+    /// Whether this entry removes a binding rather than adding one.
+    pub fn is_unbind(&self) -> bool {
         self.action == NO_ACTION
     }
 
@@ -154,7 +155,7 @@ impl ConflictReport {
 /// A keystroke reduced to the parts gpui matches on, so that different spellings
 /// of the same keystroke (`ctrl-s` and `secondary-s` off macOS) compare equal.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NormalizedKeystroke {
+pub struct NormalizedKeystroke {
     control: bool,
     alt: bool,
     shift: bool,
@@ -180,7 +181,7 @@ impl From<Keystroke> for NormalizedKeystroke {
 ///
 /// Returns `None` when any keystroke is unparseable — such entries are reported
 /// by the loader and excluded from conflict detection.
-fn normalize_sequence(keystrokes: &str) -> Option<Vec<NormalizedKeystroke>> {
+pub fn normalize_sequence(keystrokes: &str) -> Option<Vec<NormalizedKeystroke>> {
     let sequence: Vec<NormalizedKeystroke> = keystrokes
         .split_whitespace()
         .map(|source| Keystroke::parse(source).ok().map(NormalizedKeystroke::from))
@@ -195,7 +196,7 @@ fn normalize_sequence(keystrokes: &str) -> Option<Vec<NormalizedKeystroke>> {
 /// predicate that fails to parse is reported by the loader; here it is treated
 /// as overlapping nothing so a single bad predicate cannot suppress unrelated
 /// bindings.
-fn contexts_overlap(left: Option<&str>, right: Option<&str>) -> bool {
+pub fn contexts_overlap(left: Option<&str>, right: Option<&str>) -> bool {
     match (left, right) {
         (None, _) | (_, None) => true,
         (Some(left), Some(right)) => {

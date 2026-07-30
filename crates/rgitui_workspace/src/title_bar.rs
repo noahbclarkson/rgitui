@@ -5,6 +5,9 @@ use rgitui_ui::{
     Icon, IconName, IconSize, Label, LabelSize, Tooltip, WindowControl, WindowControlType,
 };
 
+use crate::keymap;
+use crate::CommandId;
+
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// The application title bar.
@@ -61,9 +64,23 @@ impl TitleBar {
             .bg(colors.border_variant)
     }
 
+    /// A `key — what it does` hint, with the keystroke read from the keymap.
+    ///
+    /// Returns nothing when the command is unbound, so removing a binding in
+    /// `keymap.json` removes the hint rather than leaving a lie in the title bar.
     fn render_keyboard_hint(
         colors: &rgitui_theme::ThemeColors,
-        key: &'static str,
+        command: CommandId,
+        label_text: &'static str,
+        cx: &App,
+    ) -> Option<gpui::Div> {
+        let key = keymap::shortcut(command, cx)?;
+        Some(Self::keyboard_hint(colors, key, label_text))
+    }
+
+    fn keyboard_hint(
+        colors: &rgitui_theme::ThemeColors,
+        key: String,
         label_text: &'static str,
     ) -> gpui::Div {
         div()
@@ -79,7 +96,7 @@ impl TitleBar {
                     .flex()
                     .items_center()
                     .child(
-                        Label::new(key)
+                        Label::new(SharedString::from(key))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .weight(gpui::FontWeight::MEDIUM),
@@ -260,12 +277,18 @@ impl RenderOnce for TitleBar {
                 .h_flex()
                 .gap(px(12.))
                 .items_center()
-                .child(Self::render_keyboard_hint(
+                .children(Self::render_keyboard_hint(
                     &colors,
-                    "Ctrl+Shift+P",
+                    CommandId::CommandPalette,
                     "Commands",
+                    cx,
                 ))
-                .child(Self::render_keyboard_hint(&colors, "?", "Help")),
+                .children(Self::render_keyboard_hint(
+                    &colors,
+                    CommandId::Shortcuts,
+                    "Help",
+                    cx,
+                )),
         )
     }
 }

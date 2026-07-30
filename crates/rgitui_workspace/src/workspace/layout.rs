@@ -55,6 +55,15 @@ const BASELINE_REM_SIZE: f32 = 16.0;
 const MIN_UI_FONT_SIZE: u32 = 8;
 const MAX_UI_FONT_SIZE: u32 = 24;
 
+/// The commands the home screen offers a keystroke for. Only the ids are listed:
+/// the label and the keystroke both come from the keymap.
+const WELCOME_SHORTCUTS: &[CommandId] = &[
+    CommandId::OpenRepo,
+    CommandId::WorkspaceHome,
+    CommandId::CommandPalette,
+    CommandId::Settings,
+];
+
 impl Workspace {
     /// Translate the configured base font size into a window rem size.
     ///
@@ -1718,10 +1727,11 @@ impl Workspace {
                 .mt(px(8.))
                 .w_full()
                 .items_center()
-                .child(self.shortcut_hint("Open Repository", "Ctrl+O", colors))
-                .child(self.shortcut_hint("Go Home", "Ctrl+H", colors))
-                .child(self.shortcut_hint("Command Palette", "Ctrl+Shift+P", colors))
-                .child(self.shortcut_hint("Settings", "Ctrl+,", colors)),
+                .children(
+                    WELCOME_SHORTCUTS
+                        .iter()
+                        .filter_map(|command| self.shortcut_hint(*command, colors, cx)),
+                ),
         );
 
         // Scrollable outer container with an inner wrapper that fills at least
@@ -1747,36 +1757,44 @@ impl Workspace {
             )
     }
 
+    /// One home-screen hint, or nothing when the command has no keystroke.
+    ///
+    /// The label is the command's description and the keystroke comes from the
+    /// keymap, so a rebind in `keymap.json` shows up here too.
     fn shortcut_hint(
         &self,
-        action: &str,
-        shortcut: &str,
+        command: CommandId,
         colors: &rgitui_theme::ThemeColors,
-    ) -> impl IntoElement {
-        div()
-            .h_flex()
-            .w(px(260.))
-            .justify_between()
-            .items_center()
-            .child(
-                Label::new(SharedString::from(action.to_string()))
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted),
-            )
-            .child(
-                div()
-                    .h_flex()
-                    .h(px(22.))
-                    .px(px(8.))
-                    .rounded(px(4.))
-                    .bg(colors.element_background)
-                    .items_center()
-                    .child(
-                        Label::new(SharedString::from(shortcut.to_string()))
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    ),
-            )
+        cx: &gpui::App,
+    ) -> Option<impl IntoElement> {
+        let shortcut = crate::keymap::shortcut(command, cx)?;
+        let action = command.description();
+        Some(
+            div()
+                .h_flex()
+                .w(px(260.))
+                .justify_between()
+                .items_center()
+                .child(
+                    Label::new(SharedString::from(action.to_string()))
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .h(px(22.))
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .bg(colors.element_background)
+                        .items_center()
+                        .child(
+                            Label::new(SharedString::from(shortcut))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
+                ),
+        )
     }
 
     /// Schedule a debounced layout save (avoids writing to disk on every resize pixel).
