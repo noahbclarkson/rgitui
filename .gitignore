@@ -15,6 +15,10 @@ ROADMAP.md
 # Claude Code memory (session-specific)
 memory/
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+
 # Editor/IDE
 .idea/
 .vscode/
