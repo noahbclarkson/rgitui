@@ -3875,6 +3875,7 @@ impl SettingsView {
         for id in QUICK_REFERENCE_COMMANDS {
             shortcuts_list = shortcuts_list.child(self.render_shortcut_row(*id, cx));
         }
+        shortcuts_list = shortcuts_list.child(Self::keymap_file_row(cx));
         shortcuts_card = shortcuts_card.child(shortcuts_list);
         section = section.child(shortcuts_card);
         section = section.child(Self::section_divider(cx));
@@ -3987,6 +3988,48 @@ impl SettingsView {
                             .size(LabelSize::XSmall)
                             .color(color)
                             .weight(FontWeight::SEMIBOLD),
+                    ),
+            )
+    }
+
+    /// The `keymap.json` path plus a button that opens it, creating the file with
+    /// a commented starter when it does not exist yet.
+    fn keymap_file_row(cx: &Context<Self>) -> impl IntoElement {
+        let path = crate::keymap::keymap_path();
+        let path_display = path.display().to_string();
+        let editor_command = cx
+            .try_global::<SettingsState>()
+            .map(|state| state.settings().editor_command.clone())
+            .unwrap_or_default();
+
+        div()
+            .h_flex()
+            .w_full()
+            .items_center()
+            .gap(px(8.))
+            .pt(px(8.))
+            .child(
+                div().flex_1().min_w_0().child(
+                    Label::new(SharedString::from(path_display))
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                ),
+            )
+            .child(
+                Button::new("open-keymap-file", "Edit keymap.json")
+                    .style(ButtonStyle::Subtle)
+                    .size(ButtonSize::Compact)
+                    .icon(IconName::Settings)
+                    .on_click(
+                        move |_: &ClickEvent, _, _cx| match crate::keymap::ensure_keymap_file() {
+                            Ok(path) => {
+                                crate::workspace::open_editor(&path, &editor_command);
+                            }
+                            Err(error) => log::error!(
+                                "keymap: could not create {}: {error}",
+                                crate::keymap::keymap_path().display()
+                            ),
+                        },
                     ),
             )
     }

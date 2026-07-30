@@ -210,6 +210,8 @@ commands! {
         ShrinkDiffViewer "secondary-up" [hidden];
         /// Heighten the diff viewer.
         GrowDiffViewer "secondary-down" [hidden];
+        /// Open keymap.json in your editor to rebind shortcuts.
+        OpenKeymap unbound;
     }
 
     // Bound once and handled by whichever element owns the selection or the

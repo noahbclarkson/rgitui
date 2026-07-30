@@ -252,6 +252,9 @@ impl Workspace {
                     sh.toggle_visible(cx);
                 });
             }
+            CommandId::OpenKeymap => {
+                self.open_keymap_file(cx);
+            }
             CommandId::WorkspaceHome => {
                 self.go_home(cx);
             }
@@ -757,6 +760,7 @@ impl Workspace {
             | CommandId::CreateBranch
             | CommandId::OpenRepo
             | CommandId::Shortcuts
+            | CommandId::OpenKeymap
             | CommandId::WorkspaceHome
             | CommandId::RestoreLastWorkspace
             | CommandId::Undo

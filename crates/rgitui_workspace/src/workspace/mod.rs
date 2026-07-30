@@ -8,6 +8,7 @@ mod tabs;
 mod undo;
 mod update_checker;
 
+pub(crate) use layout::open_editor;
 pub(crate) use state::*;
 pub(crate) use undo::{UndoAction, UndoStack};
 
@@ -658,6 +659,40 @@ impl Workspace {
         for problem in problems {
             self.show_toast(problem, ToastKind::Error, cx);
         }
+    }
+
+    /// Open `keymap.json` in the user's editor, creating it first if it does not
+    /// exist yet.
+    ///
+    /// The file is created with a commented starter (see
+    /// [`crate::keymap::keymap_stub`]) rather than left absent, so the editor
+    /// opens on something that explains the format instead of an empty buffer.
+    /// The editor is the one configured in settings, falling back to the same
+    /// detection the rest of the app uses; if none can be launched the path is
+    /// toasted so it can still be found by hand.
+    pub(crate) fn open_keymap_file(&mut self, cx: &mut Context<Self>) {
+        let path = match crate::keymap::ensure_keymap_file() {
+            Ok(path) => path,
+            Err(error) => {
+                self.show_toast(
+                    format!(
+                        "Could not create {}: {error}. Create it by hand to customise \
+                         keybindings.",
+                        crate::keymap::keymap_path().display()
+                    ),
+                    ToastKind::Error,
+                    cx,
+                );
+                return;
+            }
+        };
+
+        let editor_command = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|settings| settings.settings().editor_command.clone())
+            .unwrap_or_default();
+        layout::open_editor(&path, &editor_command);
+        self.show_toast(format!("Opening {}", path.display()), ToastKind::Info, cx);
     }
 
     /// Mark a clean exit when the user explicitly closes or goes home.

@@ -33,7 +33,7 @@ use std::time::Duration;
 use gpui::{App, Global};
 
 pub use display::{humanize_sequence, KeystrokeStyle};
-pub use loader::keymap_path;
+pub use loader::{ensure_keymap_file, keymap_path, keymap_stub};
 pub use registry::{actions, attach_actions, CommandId, CommandMeta, ALL_COMMANDS};
 pub use summary::{CommandBindings, CommandGroup, EffectiveBinding, KeymapSummary};
 

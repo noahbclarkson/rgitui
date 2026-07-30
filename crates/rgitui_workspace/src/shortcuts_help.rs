@@ -14,7 +14,9 @@ use gpui::{
     Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{
+    Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
+};
 
 use crate::keymap::{self, CommandBindings, CommandGroup, KeymapSummary};
 use crate::CommandId;
@@ -22,6 +24,8 @@ use crate::CommandId;
 #[derive(Debug, Clone)]
 pub enum ShortcutsHelpEvent {
     Dismissed,
+    /// The user asked to edit `keymap.json`; the workspace opens it.
+    OpenKeymapFile,
 }
 
 /// Badge text marking a binding that came from the user's `keymap.json`.
@@ -245,6 +249,7 @@ impl Render for ShortcutsHelp {
         let groups = summary.groups();
         let subtitle = Self::subtitle(&summary);
         let palette_hint = keymap::shortcut(CommandId::CommandPalette, cx);
+        let keymap_file = keymap::keymap_path().display().to_string();
 
         let colors = cx.colors().clone();
         let viewport = window.viewport_size();
@@ -390,6 +395,17 @@ impl Render for ShortcutsHelp {
                             ),
                     )
                     .child(
+                        Button::new("shortcuts-open-keymap", "Edit keymap.json")
+                            .style(ButtonStyle::Subtle)
+                            .size(ButtonSize::Compact)
+                            .icon(IconName::Settings)
+                            .tooltip(SharedString::from(keymap_file))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                cx.emit(ShortcutsHelpEvent::OpenKeymapFile);
+                                this.dismiss(cx);
+                            })),
+                    )
+                    .child(
                         div()
                             .id("shortcuts-close-btn")
                             .flex()
@@ -422,7 +438,11 @@ impl Render for ShortcutsHelp {
                         .py(px(10.))
                         .child(
                             Label::new(SharedString::from(format!(
-                                "Every shortcut below is shown as your keymap.json leaves \n                                     it. Plain-letter shortcuts only act on the panel that has \n                                     focus — that is what each group's key context means. \n                                     Commands marked {} have no keystroke and are reached from \n                                     the command palette{}.",
+                                "Every shortcut below is rebindable, and each is shown as your \
+                                     keymap.json leaves it. Plain-letter shortcuts only act on the \
+                                     panel that has focus — that is what each group's key context \
+                                     means. Commands marked {} have no keystroke and are reached \
+                                     from the command palette{}.",
                                 keymap::display::UNBOUND,
                                 palette_hint
                                     .as_deref()
@@ -487,6 +507,7 @@ mod tests {
     fn test_shortcuts_help_event_match() {
         match ShortcutsHelpEvent::Dismissed {
             ShortcutsHelpEvent::Dismissed => {}
+            ShortcutsHelpEvent::OpenKeymapFile => unreachable!(),
         }
     }
 

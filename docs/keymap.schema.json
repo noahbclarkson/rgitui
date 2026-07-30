@@ -341,6 +341,10 @@
           "description": "Heighten the diff viewer. Command id: `grow_diff_viewer`."
         },
         {
+          "const": "rgitui::OpenKeymap",
+          "description": "Open keymap.json in your editor to rebind shortcuts. Command id: `open_keymap`."
+        },
+        {
           "const": "menu::Cancel",
           "description": "Dismiss the focused overlay, dialog, search or selection. Command id: `cancel`."
         },

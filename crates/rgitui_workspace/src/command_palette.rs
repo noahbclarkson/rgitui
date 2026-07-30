@@ -478,6 +478,12 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             "Help",
         ),
         PaletteCommand::new(
+            CommandId::OpenKeymap,
+            "Preferences: Open Keymap File",
+            Some("Edit keymap.json to rebind keyboard shortcuts"),
+            "Preferences",
+        ),
+        PaletteCommand::new(
             CommandId::Blame,
             "View: Blame File",
             Some("Show what revision and author last modified each line"),

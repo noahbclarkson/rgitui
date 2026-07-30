@@ -703,7 +703,12 @@ pub(super) fn subscribe_shortcuts_help(
 ) {
     cx.subscribe(
         shortcuts_help,
-        |_this, _sh, _event: &ShortcutsHelpEvent, _cx| {},
+        |this, _sh, event: &ShortcutsHelpEvent, cx| match event {
+            // Handled here rather than in the panel so a failure to create the
+            // file surfaces as a toast like every other error.
+            ShortcutsHelpEvent::OpenKeymapFile => this.open_keymap_file(cx),
+            ShortcutsHelpEvent::Dismissed => {}
+        },
     )
     .detach();
 }

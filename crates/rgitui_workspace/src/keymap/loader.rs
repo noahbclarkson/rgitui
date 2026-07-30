@@ -120,6 +120,58 @@ pub fn keymap_path() -> PathBuf {
     rgitui_settings::keymap_path()
 }
 
+/// The starter `keymap.json` written when the user first opens the file.
+///
+/// The example bindings name real actions at their real default keystrokes,
+/// taken from the registry, so the stub cannot advertise something that does not
+/// exist. It is commented out, so writing it changes no binding.
+pub fn keymap_stub() -> String {
+    let example = ALL_COMMANDS
+        .iter()
+        .find(|meta| !meta.default_bindings.is_empty())
+        .expect("the registry binds at least one command");
+    let (keystrokes, context) = example.default_bindings[0];
+
+    format!(
+        "// rgitui keybindings. Saving this file reloads them immediately.\n\
+         //\n\
+         // Every action name is listed in docs/KEYBINDINGS.md. For completion\n\
+         // while editing, point your editor at docs/keymap.schema.json for this\n\
+         // filename — the file itself is a JSON array, so it has nowhere to put\n\
+         // a \"$schema\" key.\n\
+         //\n\
+         // `secondary` is the platform's primary modifier: cmd on macOS, ctrl\n\
+         // elsewhere. A binding you add wins over the default it replaces.\n\
+         [\n  \
+         {{\n    \
+         \"context\": \"{context}\",\n    \
+         \"bindings\": {{\n      \
+         // Bind an action to a keystroke.\n      \
+         // \"ctrl-alt-s\": \"{action}\",\n      \
+         // Remove a default binding.\n      \
+         // \"{keystrokes}\": null\n    \
+         }}\n  \
+         }}\n\
+         ]\n",
+        action = example.action_name,
+    )
+}
+
+/// Makes sure `keymap.json` exists, creating it with [`keymap_stub`] if not.
+///
+/// Returns the path either way, so the caller can hand it to an editor.
+pub fn ensure_keymap_file() -> std::io::Result<PathBuf> {
+    let path = keymap_path();
+    if path.exists() {
+        return Ok(path);
+    }
+    if let Some(directory) = path.parent() {
+        std::fs::create_dir_all(directory)?;
+    }
+    std::fs::write(&path, keymap_stub())?;
+    Ok(path)
+}
+
 /// The default bindings declared by `commands!`, in registry order.
 ///
 /// Pure, so the default set can be validated without an `App`.
@@ -422,6 +474,26 @@ mod tests {
                 spec.action
             );
         }
+    }
+
+    /// The stub is written into `keymap.json`, so it must load cleanly — an
+    /// example that does not parse would greet the user with an error toast.
+    #[test]
+    fn the_starter_keymap_parses_and_binds_nothing() {
+        let stub = keymap_stub();
+        let (pending, problems) = parse_user_specs(&stub);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            pending.is_empty(),
+            "the starter keymap must leave every binding at its default: {pending:?}"
+        );
+        // The commented examples name a real action and a real default keystroke.
+        let example = ALL_COMMANDS
+            .iter()
+            .find(|meta| !meta.default_bindings.is_empty())
+            .expect("the registry binds at least one command");
+        assert!(stub.contains(example.action_name), "{stub}");
+        assert!(stub.contains(example.default_bindings[0].0), "{stub}");
     }
 
     #[test]
