@@ -3945,9 +3945,15 @@ impl SettingsView {
     fn render_shortcut_row(&self, id: CommandId, cx: &Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
         let summary = crate::keymap::summary(cx);
+        let is_user_defined = summary.is_user_defined(id);
         let shortcut = summary
             .display(id)
             .unwrap_or_else(|| crate::keymap::display::UNBOUND.to_owned());
+        let color = if is_user_defined {
+            Color::Info
+        } else {
+            Color::Muted
+        };
 
         div()
             .h_flex()
@@ -3961,6 +3967,13 @@ impl SettingsView {
                     .color(Color::Muted),
             )
             .child(div().flex_1())
+            .when(is_user_defined, |row| {
+                row.child(
+                    Label::new("keymap.json")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Info),
+                )
+            })
             .child(
                 div()
                     .h_flex()
@@ -3972,7 +3985,7 @@ impl SettingsView {
                     .child(
                         Label::new(SharedString::from(shortcut))
                             .size(LabelSize::XSmall)
-                            .color(Color::Muted)
+                            .color(color)
                             .weight(FontWeight::SEMIBOLD),
                     ),
             )

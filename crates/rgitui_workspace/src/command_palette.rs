@@ -948,6 +948,13 @@ impl Render for CommandPalette {
                             }
 
                             if let Some(shortcut_text) = shortcut {
+                                // A binding the user defined is tinted, matching
+                                // the badge in the shortcut reference.
+                                let hint_color = if summary.is_user_defined(cmd_id) {
+                                    Color::Info
+                                } else {
+                                    Color::Muted
+                                };
                                 row = row.child(
                                     div()
                                         .h_flex()
@@ -960,7 +967,7 @@ impl Render for CommandPalette {
                                         .child(
                                             Label::new(SharedString::from(shortcut_text))
                                                 .size(LabelSize::XSmall)
-                                                .color(Color::Muted)
+                                                .color(hint_color)
                                                 .weight(FontWeight::MEDIUM),
                                         ),
                                 );

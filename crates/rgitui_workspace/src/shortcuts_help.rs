@@ -1,9 +1,12 @@
 //! The keyboard shortcut reference, rendered from the keymap in force.
 //!
 //! Nothing here is a literal list of shortcuts. Every row comes from
-//! [`crate::keymap::summary`]: the group is a `commands!` view block, the
-//! description is the command's doc comment, and the keystroke is the one the
-//! user's `keymap.json` actually produced rather than the registry default.
+//! [`crate::keymap::summary`]: the description is the command's doc comment, the
+//! keystroke is what the user's `keymap.json` actually produced, a binding the
+//! user supplied is badged as such, and a binding that was dropped — because two
+//! of theirs collided, or because a keystroke now belongs to another command —
+//! is shown as a warning on the row it affects. Opening this panel is therefore
+//! how a user finds out *which* of their bindings was ignored and why.
 
 use gpui::prelude::*;
 use gpui::{
@@ -11,7 +14,7 @@ use gpui::{
     Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
+use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize};
 
 use crate::keymap::{self, CommandBindings, CommandGroup, KeymapSummary};
 use crate::CommandId;
@@ -20,6 +23,9 @@ use crate::CommandId;
 pub enum ShortcutsHelpEvent {
     Dismissed,
 }
+
+/// Badge text marking a binding that came from the user's `keymap.json`.
+const USER_BINDING_BADGE: &str = "keymap.json";
 
 pub struct ShortcutsHelp {
     visible: bool,
@@ -70,13 +76,15 @@ impl ShortcutsHelp {
         }
     }
 
-    /// Renders one command's row: what it does and what it is bound to.
+    /// Renders one command's row: what it does, what it is bound to, where that
+    /// binding came from and anything wrong with it.
     fn render_command(&self, entry: &CommandBindings, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let hover_bg = colors.ghost_element_hover;
+        let is_user_defined = entry.is_user_defined();
         let keystrokes = entry.display();
 
-        let row = div()
+        let mut row = div()
             .v_flex()
             .w_full()
             .py(px(5.))
@@ -103,6 +111,14 @@ impl ShortcutsHelp {
                 ),
             );
 
+        if is_user_defined {
+            headline = headline.child(
+                div()
+                    .flex_shrink_0()
+                    .child(Badge::new(USER_BINDING_BADGE).color(Color::Info)),
+            );
+        }
+
         headline = match keystrokes {
             Some(keystrokes) => headline.child(
                 div()
@@ -113,7 +129,11 @@ impl ShortcutsHelp {
                     .gap_1()
                     .rounded(px(5.))
                     .border_1()
-                    .border_color(colors.border)
+                    .border_color(if is_user_defined {
+                        Color::Info.color(cx)
+                    } else {
+                        colors.border
+                    })
                     .bg(colors.hint_background)
                     .items_center()
                     .child(
@@ -132,7 +152,31 @@ impl ShortcutsHelp {
             ),
         };
 
-        row.child(headline)
+        row = row.child(headline);
+
+        for warning in &entry.warnings {
+            row = row.child(
+                div()
+                    .h_flex()
+                    .w_full()
+                    .gap(px(6.))
+                    .items_start()
+                    .child(
+                        Icon::new(IconName::AlertTriangle)
+                            .size(IconSize::XSmall)
+                            .color(Color::Warning),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Label::new(SharedString::from(warning.clone()))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Warning),
+                        ),
+                    ),
+            );
+        }
+
+        row
     }
 
     fn render_group(&self, group: &CommandGroup, cx: &mut Context<Self>) -> impl IntoElement {
@@ -172,11 +216,22 @@ impl ShortcutsHelp {
 
     /// The header summary line, counted from the keymap rather than written out.
     fn subtitle(summary: &KeymapSummary) -> String {
-        format!(
+        let mut parts = vec![format!(
             "{} of {} commands are bound",
             summary.bound_command_count(),
             summary.commands().len()
-        )
+        )];
+        let user_bindings = summary.user_binding_count();
+        if user_bindings > 0 {
+            parts.push(format!("{user_bindings} from your keymap.json",));
+        }
+        let warnings = summary.warning_count();
+        if warnings > 0 {
+            parts.push(format!(
+                "{warnings} with a problem — see the warnings below",
+            ));
+        }
+        parts.join(", ")
     }
 }
 
@@ -415,6 +470,7 @@ impl Render for ShortcutsHelp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::conflict::BindingSpec;
     use crate::keymap::display::KeystrokeStyle;
 
     fn defaults() -> KeymapSummary {
@@ -478,5 +534,37 @@ mod tests {
             subtitle.contains(&summary.bound_command_count().to_string()),
             "{subtitle}"
         );
+        // Nothing to warn about and nothing user-defined in the defaults.
+        assert!(!subtitle.contains("keymap.json"), "{subtitle}");
+        assert!(!subtitle.contains("problem"), "{subtitle}");
+    }
+
+    /// A user binding and a conflict both have to be visible in the panel: the
+    /// badge comes from `is_user_defined`, the warning row from `warnings`.
+    #[test]
+    fn the_subtitle_and_rows_surface_user_bindings_and_conflicts() {
+        let mut specs = crate::keymap::loader::default_specs();
+        specs.push(BindingSpec::user_binding(
+            "ctrl-alt-9",
+            Some("Workspace"),
+            "rgitui::Pull",
+        ));
+        specs.push(BindingSpec::user_binding(
+            "ctrl-alt-9",
+            Some("Workspace"),
+            "rgitui::Push",
+        ));
+        let report = crate::keymap::conflict::detect_conflicts(&specs);
+        let applied: Vec<usize> = (0..specs.len()).filter(|i| report.is_kept(*i)).collect();
+        let summary = KeymapSummary::build(&specs, &applied, &report, KeystrokeStyle::Words);
+
+        let subtitle = ShortcutsHelp::subtitle(&summary);
+        assert!(subtitle.contains("keymap.json"), "{subtitle}");
+        assert!(subtitle.contains("problem"), "{subtitle}");
+
+        // Push won, so it carries the badge; Pull lost, so it carries the warning.
+        assert!(summary.is_user_defined(CommandId::Push));
+        assert_eq!(summary.warnings(CommandId::Pull).len(), 1);
+        assert!(summary.warnings(CommandId::Pull)[0].contains("ignored"));
     }
 }
