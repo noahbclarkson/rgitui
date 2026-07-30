@@ -297,12 +297,12 @@ impl TextInput {
         }
 
         let key = event.keystroke.key.as_str();
-        let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+        let primary = event.keystroke.modifiers.secondary();
         let shift = event.keystroke.modifiers.shift;
 
         match key {
             "enter" => {
-                if self.multiline && !ctrl && !self.read_only {
+                if self.multiline && !primary && !self.read_only {
                     self.delete_selection();
                     self.text.insert(self.cursor, '\n');
                     self.cursor += 1;
@@ -324,7 +324,7 @@ impl TextInput {
                     cx.notify();
                     return;
                 }
-                if ctrl {
+                if primary {
                     let t = self.prev_word_boundary();
                     if t < self.cursor {
                         self.text.drain(t..self.cursor);
@@ -367,7 +367,7 @@ impl TextInput {
                     cx.notify();
                     return;
                 }
-                let t = if ctrl {
+                let t = if primary {
                     self.prev_word_boundary()
                 } else {
                     self.prev_boundary()
@@ -385,7 +385,7 @@ impl TextInput {
                     cx.notify();
                     return;
                 }
-                let t = if ctrl {
+                let t = if primary {
                     self.next_word_boundary()
                 } else {
                     self.next_boundary()
@@ -407,7 +407,7 @@ impl TextInput {
             _ => {}
         }
 
-        if ctrl {
+        if primary {
             match key {
                 "a" => {
                     self.selection = Some(0);
@@ -460,14 +460,14 @@ impl TextInput {
         }
 
         if let Some(kc) = &event.keystroke.key_char {
-            if !ctrl {
+            if !primary {
                 self.delete_selection();
                 self.text.insert_str(self.cursor, kc);
                 self.cursor += kc.len();
                 cx.emit(TextInputEvent::Changed(self.text.clone()));
                 cx.notify();
             }
-        } else if key.len() == 1 && !ctrl {
+        } else if key.len() == 1 && !primary {
             let Some(ch) = key.chars().next() else {
                 return;
             };

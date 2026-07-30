@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use gpui::prelude::*;
 use gpui::{
     div, px, ClickEvent, Context, EventEmitter, FocusHandle, FontWeight, KeyDownEvent, Render,
@@ -15,6 +17,24 @@ struct ShortcutCategory {
     title: &'static str,
     description: &'static str,
     shortcuts: &'static [(&'static str, &'static str)],
+}
+
+/// Name of the platform's primary shortcut modifier, matching
+/// `gpui::Modifiers::secondary`: the Command key on macOS, Control elsewhere.
+const PRIMARY_MODIFIER: &str = if cfg!(target_os = "macos") {
+    "Cmd"
+} else {
+    "Ctrl"
+};
+
+/// Rewrites the `Ctrl` chords in a shortcut label to the platform's primary
+/// modifier, so macOS shows `Cmd+Shift+P` rather than `Ctrl+Shift+P`.
+fn with_primary_modifier<'a>(label: &'a str, primary: &str) -> Cow<'a, str> {
+    if primary == "Ctrl" || !label.contains("Ctrl+") {
+        Cow::Borrowed(label)
+    } else {
+        Cow::Owned(label.replace("Ctrl+", &format!("{primary}+")))
+    }
 }
 
 pub struct ShortcutsHelp {
@@ -221,10 +241,12 @@ impl ShortcutsHelp {
                             .bg(colors.hint_background)
                             .items_center()
                             .child(
-                                Label::new(*key)
-                                    .size(LabelSize::Small)
-                                    .weight(FontWeight::BOLD)
-                                    .color(Color::Default),
+                                Label::new(
+                                    with_primary_modifier(key, PRIMARY_MODIFIER).into_owned(),
+                                )
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::BOLD)
+                                .color(Color::Default),
                             ),
                     ),
             );
@@ -462,6 +484,45 @@ mod tests {
         let event = ShortcutsHelpEvent::Dismissed;
         match event {
             ShortcutsHelpEvent::Dismissed => {}
+        }
+    }
+
+    #[test]
+    fn primary_modifier_rewrites_every_ctrl_chord_on_macos() {
+        assert_eq!(with_primary_modifier("Ctrl+Shift+P", "Cmd"), "Cmd+Shift+P");
+        assert_eq!(
+            with_primary_modifier("Ctrl+Z / Ctrl+Shift+Z", "Cmd"),
+            "Cmd+Z / Cmd+Shift+Z"
+        );
+    }
+
+    #[test]
+    fn primary_modifier_leaves_labels_untouched_elsewhere() {
+        assert_eq!(
+            with_primary_modifier("Ctrl+Shift+P", "Ctrl"),
+            "Ctrl+Shift+P"
+        );
+        assert_eq!(
+            with_primary_modifier("Alt+1 / 2 / 3 / 4", "Cmd"),
+            "Alt+1 / 2 / 3 / 4"
+        );
+        assert_eq!(with_primary_modifier("j / k", "Cmd"), "j / k");
+    }
+
+    #[test]
+    fn every_documented_shortcut_label_is_platform_correct() {
+        for category in ShortcutsHelp::shortcut_categories() {
+            for (label, _) in category.shortcuts {
+                let rendered = with_primary_modifier(label, PRIMARY_MODIFIER);
+                if PRIMARY_MODIFIER == "Cmd" {
+                    assert!(
+                        !rendered.contains("Ctrl+"),
+                        "label {label:?} still advertises Ctrl on a Cmd platform"
+                    );
+                } else {
+                    assert_eq!(rendered, *label);
+                }
+            }
         }
     }
 }

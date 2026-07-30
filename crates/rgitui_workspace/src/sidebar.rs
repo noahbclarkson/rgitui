@@ -652,13 +652,13 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+        let primary = event.keystroke.modifiers.secondary();
 
         if self.cached_nav_items.is_empty() {
             return;
         }
 
-        let wants_filter = (key == "/" && !ctrl) || (key == "f" && ctrl);
+        let wants_filter = (key == "/" && !primary) || (key == "f" && primary);
         if wants_filter && !self.branch_filter_active {
             self.branch_filter_active = true;
             self.branch_filter_editor.update(cx, |editor, cx| {
@@ -671,12 +671,12 @@ impl Sidebar {
 
         // Block Ctrl+F (graph search) when branch filter is active
         // so Ctrl+F re-focuses the filter input instead.
-        if ctrl && self.branch_filter_active {
+        if primary && self.branch_filter_active {
             cx.stop_propagation();
             return;
         }
 
-        if ctrl {
+        if primary {
             return;
         }
 

@@ -1131,7 +1131,7 @@ impl DiffViewer {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+        let primary = event.keystroke.modifiers.secondary();
         let row_count = self.row_count();
 
         if row_count == 0 {
@@ -1139,7 +1139,7 @@ impl DiffViewer {
         }
 
         match key {
-            "j" | "down" if !ctrl => {
+            "j" | "down" if !primary => {
                 let next = match self.highlighted_row {
                     Some(i) if i + 1 < row_count => i + 1,
                     None => 0,
@@ -1149,7 +1149,7 @@ impl DiffViewer {
                 self.scroll_row_into_view(next, cx);
                 cx.notify();
             }
-            "k" | "up" if !ctrl => {
+            "k" | "up" if !primary => {
                 let next = match self.highlighted_row {
                     Some(i) if i > 0 => i - 1,
                     None if row_count > 0 => 0,
@@ -1160,7 +1160,7 @@ impl DiffViewer {
                 self.scroll_row_into_view(next, cx);
                 cx.notify();
             }
-            "g" if !ctrl && !event.keystroke.modifiers.shift => {
+            "g" if !primary && !event.keystroke.modifiers.shift => {
                 self.highlighted_row = Some(0);
                 self.scroll_row_into_view(0, cx);
                 cx.notify();
@@ -1171,7 +1171,7 @@ impl DiffViewer {
                 self.scroll_row_into_view(last, cx);
                 cx.notify();
             }
-            "]" if !ctrl => {
+            "]" if !primary => {
                 // Jump to next hunk header after current position
                 let start = self.highlighted_row.map(|r| r + 1).unwrap_or(0);
                 let next = match self.display_mode {
@@ -1200,7 +1200,7 @@ impl DiffViewer {
                 }
                 cx.stop_propagation();
             }
-            "[" if !ctrl => {
+            "[" if !primary => {
                 // Jump to previous hunk header before current position
                 let end = self.highlighted_row.unwrap_or(row_count);
                 let prev = match self.display_mode {
@@ -1233,18 +1233,21 @@ impl DiffViewer {
                 }
                 cx.stop_propagation();
             }
-            "d" if !ctrl => {
+            "d" if !primary => {
                 self.toggle_display_mode(cx);
             }
-            "c" if ctrl => {
+            "c" if primary => {
                 self.copy_selected_lines(cx);
             }
-            "a" if ctrl && row_count > 0 => {
+            "a" if primary && row_count > 0 => {
                 self.selection_anchor = Some(0);
                 self.selected_lines = Some(0..row_count);
                 cx.notify();
             }
-            "p" if !ctrl && !event.keystroke.modifiers.alt && !event.keystroke.modifiers.shift => {
+            "p" if !primary
+                && !event.keystroke.modifiers.alt
+                && !event.keystroke.modifiers.shift =>
+            {
                 // p: toggle partial line-selection mode. Meaningless for
                 // committed or stashed content, which cannot be staged at all.
                 if self.source.is_historical() {
@@ -1259,7 +1262,7 @@ impl DiffViewer {
                 cx.notify();
                 cx.stop_propagation();
             }
-            "s" | "S" if !event.keystroke.modifiers.alt && !ctrl => {
+            "s" | "S" if !event.keystroke.modifiers.alt && !primary => {
                 // s: stage hunks under selection (or cursor hunk if no selection).
                 // Only the working tree can be staged; committed and stashed
                 // content is historical and has nothing to stage.
@@ -1299,7 +1302,7 @@ impl DiffViewer {
                 }
                 cx.stop_propagation();
             }
-            "u" | "U" if !event.keystroke.modifiers.alt && !ctrl => {
+            "u" | "U" if !event.keystroke.modifiers.alt && !primary => {
                 // u: unstage hunks under selection (or cursor hunk if no selection).
                 // Only the index can be unstaged.
                 if self.source.staging_action() == Some(StagingAction::Unstage) {
@@ -1334,7 +1337,7 @@ impl DiffViewer {
                 }
                 cx.stop_propagation();
             }
-            "s" | "S" if event.keystroke.modifiers.alt && !ctrl => {
+            "s" | "S" if event.keystroke.modifiers.alt && !primary => {
                 // Alt+S: stage the current hunk
                 if self.source.staging_action() == Some(StagingAction::Stage) {
                     if let Some(idx) = self.current_hunk_index() {
@@ -1343,7 +1346,7 @@ impl DiffViewer {
                 }
                 cx.stop_propagation();
             }
-            "u" | "U" if event.keystroke.modifiers.alt && !ctrl => {
+            "u" | "U" if event.keystroke.modifiers.alt && !primary => {
                 // Alt+U: unstage the current hunk
                 if self.source.staging_action() == Some(StagingAction::Unstage) {
                     if let Some(idx) = self.current_hunk_index() {

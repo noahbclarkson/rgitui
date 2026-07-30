@@ -466,22 +466,22 @@ impl InteractiveRebase {
             "enter" => {
                 self.execute(cx);
             }
-            "up" | "k" if !modifiers.control => {
+            "up" | "k" if !modifiers.secondary() => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
                     cx.notify();
                 }
             }
-            "down" | "j" if !modifiers.control => {
+            "down" | "j" if !modifiers.secondary() => {
                 if self.selected_index + 1 < self.entries.len() {
                     self.selected_index += 1;
                     cx.notify();
                 }
             }
-            "up" if modifiers.control => {
+            "up" if modifiers.secondary() => {
                 self.move_entry_up(cx);
             }
-            "down" if modifiers.control => {
+            "down" if modifiers.secondary() => {
                 self.move_entry_down(cx);
             }
             _ => {
