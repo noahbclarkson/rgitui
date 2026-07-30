@@ -134,6 +134,10 @@ fn quarter_arc_offsets() -> &'static [(f32, f32)] {
 #[derive(Debug, Clone)]
 pub enum GraphViewEvent {
     CommitSelected(git2::Oid),
+    /// The set of selected commits changed. Emitted alongside `CommitSelected`
+    /// for a single selection, and on its own while a multi-selection is built,
+    /// so command availability can follow without a diff being recomputed.
+    SelectionChanged,
     CherryPick(git2::Oid),
     RevertCommit(git2::Oid),
     CreateBranchAtCommit(git2::Oid),
@@ -373,6 +377,130 @@ fn worktree_targets_commit_immediately_above(
         })
 }
 
+/// The commit index displayed at `list_index`, or `None` when that row is a
+/// virtual worktree row.
+///
+/// `worktree_rows` is the ascending list of rows occupied by worktree
+/// pseudo-nodes: each one shifts every commit below it down by one.
+fn commit_index_for_row(worktree_rows: &[usize], list_index: usize) -> Option<usize> {
+    if worktree_rows.binary_search(&list_index).is_ok() {
+        return None;
+    }
+    let virtual_rows_above = worktree_rows.partition_point(|row| *row < list_index);
+    Some(list_index - virtual_rows_above)
+}
+
+/// The row `commit_index` is displayed at, or `None` when it is outside the
+/// window of commits that have a computed graph row.
+///
+/// The inverse of [`commit_index_for_row`]. `worktree_rows` must be ascending;
+/// a worktree row sitting at or above the commit's own row pushes it down, and
+/// because the rows are distinct and sorted, `row - ordinal` is non-decreasing —
+/// so a single pass is enough.
+fn row_for_commit_index(
+    worktree_rows: &[usize],
+    commit_count: usize,
+    commit_index: usize,
+) -> Option<usize> {
+    if commit_index >= commit_count {
+        return None;
+    }
+    let mut row = commit_index;
+    for worktree_row in worktree_rows {
+        if *worktree_row <= row {
+            row += 1;
+        }
+    }
+    Some(row)
+}
+
+/// The set of commits selected in the graph, plus the anchor a range extension
+/// grows from.
+///
+/// Members are *commit* indices, never list indices, so a virtual worktree row
+/// can never join the selection and inserting or removing one leaves it alone.
+/// The set is arbitrary rather than a single range: ctrl-click punches holes in
+/// it, and operations that need a contiguous run (squash, for one) validate that
+/// for themselves and explain the failure.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct CommitSelection {
+    indices: std::collections::BTreeSet<usize>,
+    anchor: Option<usize>,
+    /// The selection as it stood when the anchor was last set. A range extension
+    /// unions the anchor range onto this, so extending again *replaces* the
+    /// previous range instead of accumulating every row the cursor passed over.
+    anchor_base: std::collections::BTreeSet<usize>,
+}
+
+impl CommitSelection {
+    /// A selection restored from commit indices, e.g. after the commit list was
+    /// reloaded and the previous members were looked up again by OID.
+    fn from_parts(indices: impl IntoIterator<Item = usize>, anchor: Option<usize>) -> Self {
+        let indices: std::collections::BTreeSet<usize> = indices.into_iter().collect();
+        Self {
+            anchor: anchor.filter(|_| !indices.is_empty()),
+            indices,
+            anchor_base: std::collections::BTreeSet::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.indices.clear();
+        self.anchor = None;
+        self.anchor_base.clear();
+    }
+
+    /// Collapses the selection onto one commit — a plain click or a plain
+    /// `j`/`k`, which must behave exactly as they did before multi-select.
+    fn replace(&mut self, commit_index: usize) {
+        self.indices.clear();
+        self.indices.insert(commit_index);
+        self.anchor = Some(commit_index);
+        // Extending from here selects exactly the anchor range.
+        self.anchor_base.clear();
+    }
+
+    /// Adds or removes one commit, leaving the rest of the selection alone, and
+    /// re-anchors so a following range extension grows from this commit.
+    fn toggle(&mut self, commit_index: usize) {
+        if !self.indices.remove(&commit_index) {
+            self.indices.insert(commit_index);
+        }
+        self.anchor = Some(commit_index);
+        self.anchor_base = self.indices.clone();
+    }
+
+    /// Selects the inclusive range between the anchor and `commit_index`, on top
+    /// of whatever was selected when the anchor was set.
+    fn extend_to(&mut self, commit_index: usize) {
+        let Some(anchor) = self.anchor else {
+            self.replace(commit_index);
+            return;
+        };
+        let (first, last) = (anchor.min(commit_index), anchor.max(commit_index));
+        self.indices = self.anchor_base.clone();
+        self.indices.extend(first..=last);
+    }
+
+    fn contains(&self, commit_index: usize) -> bool {
+        self.indices.contains(&commit_index)
+    }
+
+    fn len(&self) -> usize {
+        self.indices.len()
+    }
+
+    fn anchor(&self) -> Option<usize> {
+        self.anchor
+    }
+
+    /// Members in ascending commit order — newest commit first, since the commit
+    /// list itself is ordered newest first.
+    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.indices.iter().copied()
+    }
+}
+
 /// The commit graph panel.
 pub struct GraphView {
     commits: Arc<Vec<CommitInfo>>,
@@ -380,6 +508,12 @@ pub struct GraphView {
     global_max_lane: usize,
     selected_index: Option<usize>,
     selected_oid: Option<git2::Oid>,
+    /// Every selected commit. The cursor (`selected_index`) is the member that
+    /// drives the diff and detail panels; the rest are highlighted only.
+    selection: CommitSelection,
+    /// [`Self::selection`] projected onto list indices, so a row can test its own
+    /// membership without walking the set on every frame.
+    selected_rows: Arc<HashSet<usize>>,
     row_height: f32,
     scroll_handle: UniformListScrollHandle,
     context_menu: Option<ContextMenuState>,
@@ -404,7 +538,9 @@ pub struct GraphView {
     search_debounce_task: Option<gpui::Task<()>>,
     worktree_infos: Vec<WorktreeGraphInfo>,
     worktree_row_positions: Vec<WorktreeRowPosition>,
-    worktree_row_set: HashSet<usize>,
+    /// Ascending list indices occupied by worktree pseudo-nodes. Drives the
+    /// list-index ↔ commit-index mapping.
+    worktree_rows: Vec<usize>,
     virtual_rows_prefix: Arc<Vec<usize>>,
     show_settings_popover: bool,
     /// SHA display length: 0 = default short (7), or specific length (7/8/10/12/40).
@@ -460,6 +596,8 @@ impl GraphView {
             global_max_lane: 0,
             selected_index: None,
             selected_oid: None,
+            selection: CommitSelection::default(),
+            selected_rows: Arc::new(HashSet::new()),
             row_height: 32.0,
             scroll_handle: UniformListScrollHandle::new(),
             context_menu: None,
@@ -477,7 +615,7 @@ impl GraphView {
             search_debounce_task: None,
             worktree_infos: Vec::new(),
             worktree_row_positions: Vec::new(),
-            worktree_row_set: HashSet::new(),
+            worktree_rows: Vec::new(),
             virtual_rows_prefix: Arc::new(Vec::new()),
             show_settings_popover: false,
             sha_display_length: 0,
@@ -557,7 +695,20 @@ impl GraphView {
                 let prev_selected_oid = this.selected_oid;
                 let prev_selected_index = this.selected_index;
                 let prev_selected_worktree =
-                    prev_selected_index.is_some_and(|index| this.worktree_row_set.contains(&index));
+                    prev_selected_index.is_some_and(|index| this.is_worktree_row(index));
+                // The multi-selection is remembered by OID too: commit indices
+                // shift whenever commits are loaded, filtered or reordered.
+                let prev_selected_oids: Vec<git2::Oid> = this
+                    .selection
+                    .iter()
+                    .filter_map(|commit_index| this.commits.get(commit_index))
+                    .map(|commit| commit.oid)
+                    .collect();
+                let prev_anchor_oid = this
+                    .selection
+                    .anchor()
+                    .and_then(|commit_index| this.commits.get(commit_index))
+                    .map(|commit| commit.oid);
 
                 this.global_max_lane = graph_rows
                     .iter()
@@ -591,6 +742,17 @@ impl GraphView {
                 } else {
                     this.selected_index = None;
                 }
+
+                // Members that survived the reload keep their place in the
+                // selection; the rest are dropped along with their commits.
+                let restored: Vec<usize> = prev_selected_oids
+                    .iter()
+                    .filter_map(|oid| this.commits.iter().position(|commit| commit.oid == *oid))
+                    .collect();
+                let restored_anchor = prev_anchor_oid
+                    .and_then(|oid| this.commits.iter().position(|commit| commit.oid == oid));
+                this.selection = CommitSelection::from_parts(restored, restored_anchor);
+                this.sync_selected_rows();
 
                 if this.show_search && !this.search_editor.read(cx).is_empty() {
                     this.update_search_filter(cx);
@@ -664,22 +826,29 @@ impl GraphView {
             &self.worktree_infos,
             self.global_max_lane,
         );
-        self.worktree_row_set.clear();
-        for position in &self.worktree_row_positions {
-            self.worktree_row_set.insert(position.list_index);
-        }
+        // `compute_worktree_row_positions` returns positions sorted by list index,
+        // which is what the mapping helpers rely on.
+        self.worktree_rows = self
+            .worktree_row_positions
+            .iter()
+            .map(|position| position.list_index)
+            .collect();
+        debug_assert!(self.worktree_rows.windows(2).all(|pair| pair[0] < pair[1]));
 
         let visible_commit_count = self.commits.len().min(self.graph_rows.len());
         let total_items = visible_commit_count + self.worktree_row_positions.len();
         let mut virtual_rows_prefix = vec![0; total_items];
         let mut virtual_count = 0;
         for (list_index, prefix) in virtual_rows_prefix.iter_mut().enumerate() {
-            if self.worktree_row_set.contains(&list_index) {
+            if self.worktree_rows.binary_search(&list_index).is_ok() {
                 virtual_count += 1;
             }
             *prefix = virtual_count;
         }
         self.virtual_rows_prefix = Arc::new(virtual_rows_prefix);
+        // Rows shift when a worktree row appears or disappears, so the projection
+        // of the selection onto list indices has to follow.
+        self.sync_selected_rows();
     }
 
     fn worktree_row_at_list_index(&self, list_index: usize) -> Option<&WorktreeRowPosition> {
@@ -688,28 +857,34 @@ impl GraphView {
             .find(|position| position.list_index == list_index)
     }
 
+    /// Whether `list_index` is a virtual worktree row rather than a commit.
+    fn is_worktree_row(&self, list_index: usize) -> bool {
+        self.worktree_rows.binary_search(&list_index).is_ok()
+    }
+
     fn commit_index_for_list_index(&self, list_index: usize) -> Option<usize> {
-        if self.worktree_row_set.contains(&list_index) {
+        if list_index >= self.total_list_items() {
             return None;
         }
-        self.virtual_rows_prefix
-            .get(list_index)
-            .map(|virtual_count| list_index - *virtual_count)
+        commit_index_for_row(&self.worktree_rows, list_index)
     }
 
     fn list_index_for_commit_index(&self, commit_index: usize) -> Option<usize> {
-        if commit_index >= self.commits.len().min(self.graph_rows.len()) {
-            return None;
-        }
-        let virtual_rows_before = self
-            .worktree_row_positions
+        row_for_commit_index(
+            &self.worktree_rows,
+            self.commits.len().min(self.graph_rows.len()),
+            commit_index,
+        )
+    }
+
+    /// Re-projects [`Self::selection`] onto the list indices the rows are drawn at.
+    fn sync_selected_rows(&mut self) {
+        let rows: HashSet<usize> = self
+            .selection
             .iter()
-            .enumerate()
-            .filter(|(ordinal, position)| {
-                position.list_index.saturating_sub(*ordinal) <= commit_index
-            })
-            .count();
-        Some(commit_index + virtual_rows_before)
+            .filter_map(|commit_index| self.list_index_for_commit_index(commit_index))
+            .collect();
+        self.selected_rows = Arc::new(rows);
     }
 
     /// Total number of list items (virtual worktree rows + commits).
@@ -728,6 +903,30 @@ impl GraphView {
 
     pub fn selected_index(&self) -> Option<usize> {
         self.selected_index
+    }
+
+    /// Every selected commit, newest first.
+    ///
+    /// One plain click or one `j` leaves exactly one entry here, so callers that
+    /// only care about the cursor can keep using [`Self::selected_commit`].
+    pub fn selected_commits(&self) -> Vec<&CommitInfo> {
+        self.selection
+            .iter()
+            .filter_map(|commit_index| self.commits.get(commit_index))
+            .collect()
+    }
+
+    /// The OIDs of [`Self::selected_commits`], newest first.
+    pub fn selected_commit_oids(&self) -> Vec<git2::Oid> {
+        self.selected_commits()
+            .into_iter()
+            .map(|commit| commit.oid)
+            .collect()
+    }
+
+    /// How many commits are selected. Zero while a worktree row is the cursor.
+    pub fn selected_commit_count(&self) -> usize {
+        self.selection.len()
     }
 
     pub fn commit_count(&self) -> usize {
@@ -816,12 +1015,22 @@ impl GraphView {
     }
 
     /// Select an item by its index in the uniform list (accounts for working tree row).
+    ///
+    /// This is the plain-click / plain-`j` path, so it collapses any multi-selection
+    /// back onto the one row and re-anchors range extension there.
     fn select_list_index(&mut self, list_index: usize, cx: &mut Context<Self>) {
         let total = self.total_list_items();
         if list_index >= total {
             return;
         }
         self.selected_index = Some(list_index);
+        match self.commit_index_for_list_index(list_index) {
+            Some(commit_index) => self.selection.replace(commit_index),
+            // A worktree row is not a commit, so nothing stays selected.
+            None => self.selection.clear(),
+        }
+        self.sync_selected_rows();
+        cx.emit(GraphViewEvent::SelectionChanged);
         if let Some(worktree_idx) = self
             .worktree_row_at_list_index(list_index)
             .map(|position| position.worktree_idx)
@@ -840,6 +1049,137 @@ impl GraphView {
             }
         }
         cx.notify();
+    }
+
+    /// The commit the cursor sits on, or `None` when it sits on a worktree row.
+    fn cursor_commit_index(&self) -> Option<usize> {
+        self.selected_index
+            .and_then(|list_index| self.commit_index_for_list_index(list_index))
+    }
+
+    /// Adds or removes one row without disturbing the rest of the selection —
+    /// the secondary-click gesture.
+    ///
+    /// Worktree rows carry no commit, so a toggle on one is ignored rather than
+    /// letting a virtual row into the selection.
+    pub fn toggle_selection_at_list_index(&mut self, list_index: usize, cx: &mut Context<Self>) {
+        let Some(commit_index) = self.commit_index_for_list_index(list_index) else {
+            return;
+        };
+        if commit_index >= self.commits.len() {
+            return;
+        }
+        self.selection.toggle(commit_index);
+        if self.selection.contains(commit_index) {
+            // Move the cursor onto the row that was just added, so a following
+            // extension grows from where the user last clicked.
+            self.selected_index = Some(list_index);
+            self.selected_oid = self.commits.get(commit_index).map(|commit| commit.oid);
+        }
+        self.sync_selected_rows();
+        self.emit_single_selection(cx);
+        cx.emit(GraphViewEvent::SelectionChanged);
+        cx.notify();
+    }
+
+    /// Extends the selection from the anchor to `list_index` — the shift-click
+    /// gesture. A worktree row has no commit to extend to, so it is ignored.
+    pub fn extend_selection_to_list_index(&mut self, list_index: usize, cx: &mut Context<Self>) {
+        let Some(commit_index) = self.commit_index_for_list_index(list_index) else {
+            return;
+        };
+        self.extend_selection_to_commit(commit_index, None, cx);
+    }
+
+    /// Extends the selection down one commit, keeping the anchor put.
+    pub fn extend_selection_next(&mut self, cx: &mut Context<Self>) {
+        self.extend_selection_by_one(true, cx);
+    }
+
+    /// Extends the selection up one commit, keeping the anchor put.
+    pub fn extend_selection_prev(&mut self, cx: &mut Context<Self>) {
+        self.extend_selection_by_one(false, cx);
+    }
+
+    /// Moves the cursor one commit and extends the selection to it.
+    ///
+    /// The step is taken in *commit* space, so a virtual worktree row between two
+    /// commits is stepped straight over: it can never be part of the selection.
+    fn extend_selection_by_one(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let commit_count = self.commits.len().min(self.graph_rows.len());
+        if commit_count == 0 {
+            return;
+        }
+        let Some(cursor) = self.cursor_commit_index() else {
+            // The cursor is on a worktree row (or nowhere): there is no commit to
+            // extend from, so fall back to plain movement.
+            if forward {
+                self.select_next_row(cx);
+            } else {
+                self.select_prev_row(cx);
+            }
+            return;
+        };
+        let target = if forward {
+            cursor + 1
+        } else {
+            match cursor.checked_sub(1) {
+                Some(target) => target,
+                None => return,
+            }
+        };
+        if target >= commit_count {
+            return;
+        }
+        self.extend_selection_to_commit(target, Some(ScrollStrategy::Center), cx);
+    }
+
+    fn extend_selection_to_commit(
+        &mut self,
+        commit_index: usize,
+        scroll: Option<ScrollStrategy>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(list_index) = self.list_index_for_commit_index(commit_index) else {
+            return;
+        };
+        if self.selection.anchor().is_none() {
+            // Nothing anchored yet: anchor where the cursor is, so shift-j from a
+            // fresh selection grows from the current row rather than jumping.
+            let anchor = self.cursor_commit_index().unwrap_or(commit_index);
+            self.selection.replace(anchor);
+        }
+        self.selection.extend_to(commit_index);
+        self.selected_index = Some(list_index);
+        self.selected_oid = self.commits.get(commit_index).map(|commit| commit.oid);
+        self.sync_selected_rows();
+        self.emit_single_selection(cx);
+        cx.emit(GraphViewEvent::SelectionChanged);
+        if let Some(strategy) = scroll {
+            self.scroll_handle.scroll_to_item(list_index, strategy);
+        }
+        cx.notify();
+    }
+
+    /// Emits `CommitSelected` only while exactly one commit is selected.
+    ///
+    /// Growing a multi-selection must not fire a diff computation per row, so the
+    /// diff and detail panels keep showing whatever single commit was last chosen.
+    fn emit_single_selection(&mut self, cx: &mut Context<Self>) {
+        if self.selection.len() != 1 {
+            return;
+        }
+        let Some(commit_index) = self.selection.iter().next() else {
+            return;
+        };
+        let Some(oid) = self.commits.get(commit_index).map(|commit| commit.oid) else {
+            return;
+        };
+        if let Some(list_index) = self.list_index_for_commit_index(commit_index) {
+            self.selected_index = Some(list_index);
+        }
+        self.selected_oid = Some(oid);
+        cx.emit(GraphViewEvent::CommitSelected(oid));
     }
 
     /// Toggle the search bar visibility. Clears query when hiding.
@@ -1187,6 +1527,7 @@ impl Render for GraphView {
         let commits = self.commits.clone();
         let graph_rows = self.graph_rows.clone();
         let selected_index = self.selected_index;
+        let selected_rows = Arc::clone(&self.selected_rows);
         let worktree_infos = self.worktree_infos.clone();
         let worktree_row_positions = self.worktree_row_positions.clone();
         let virtual_rows_prefix = self.virtual_rows_prefix.clone();
@@ -1583,7 +1924,9 @@ impl Render for GraphView {
                         let commit = &commits[commit_idx];
                         let oid = commit.oid;
                         let graph_row = &graph_rows[commit_idx];
-                        let selected = selected_index == Some(i);
+                        // Every member of a multi-selection is highlighted the same
+                        // way as a lone selection; the cursor is `selected_index`.
+                        let selected = selected_index == Some(i) || selected_rows.contains(&i);
                         let is_current_match = current_match_index == Some(commit_idx);
                         let is_any_match = has_search_query && filter_match_set.contains(&commit_idx);
                         let is_head_row = graph_row.is_head;
@@ -1708,9 +2051,14 @@ impl Render for GraphView {
                                                 return;
                                             }
                                             this.dismiss_context_menu(cx);
+                                            let modifiers = event.modifiers();
                                             if event.click_count() >= 2 {
                                                 // Double-click: checkout this commit
                                                 cx.emit(GraphViewEvent::CheckoutCommit(oid));
+                                            } else if modifiers.shift {
+                                                this.extend_selection_to_list_index(i, cx);
+                                            } else if modifiers.secondary() {
+                                                this.toggle_selection_at_list_index(i, cx);
                                             } else {
                                                 this.select_list_index(i, cx);
                                             }
@@ -3902,5 +4250,230 @@ mod tests {
         let t = now - Duration::days(400);
         let result = format_relative_time(&t, now);
         assert_eq!(result, "1y ago");
+    }
+
+    // ── Row ↔ commit index mapping ────────────────────────────────────
+
+    /// The list indices worktree rows occupy for a real layout, so the mapping
+    /// tests below are pinned to what `compute_worktree_row_positions` produces
+    /// rather than to a hand-guessed arrangement.
+    fn worktree_rows_for(commits: &[CommitInfo], worktrees: &[WorktreeGraphInfo]) -> Vec<usize> {
+        let graph_rows = compute_graph(commits);
+        compute_worktree_row_positions(
+            commits,
+            &graph_rows,
+            worktrees,
+            graph_lane_count(&graph_rows),
+        )
+        .iter()
+        .map(|position| position.list_index)
+        .collect()
+    }
+
+    #[test]
+    fn rows_map_to_commits_one_to_one_without_worktree_rows() {
+        for commit_index in 0..3 {
+            assert_eq!(
+                row_for_commit_index(&[], 3, commit_index),
+                Some(commit_index)
+            );
+            assert_eq!(commit_index_for_row(&[], commit_index), Some(commit_index));
+        }
+        assert_eq!(row_for_commit_index(&[], 3, 3), None);
+    }
+
+    #[test]
+    fn an_interleaved_worktree_row_shifts_every_commit_below_it() {
+        // 3 -> 2 -> 1 with a dirty worktree on commit 2 (commit index 1), whose
+        // pseudo-node therefore takes the row commit 2 used to sit on.
+        let commits = vec![
+            make_commit(3, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[1], Vec::new()),
+            make_commit(1, &[], Vec::new()),
+        ];
+        let worktrees = vec![dirty_worktree("wip", Some(make_oid(2)), false)];
+        let worktree_rows = worktree_rows_for(&commits, &worktrees);
+        assert_eq!(worktree_rows, vec![1]);
+
+        // The commit above the worktree row keeps its row; the ones below shift.
+        assert_eq!(row_for_commit_index(&worktree_rows, 3, 0), Some(0));
+        assert_eq!(row_for_commit_index(&worktree_rows, 3, 1), Some(2));
+        assert_eq!(row_for_commit_index(&worktree_rows, 3, 2), Some(3));
+
+        assert_eq!(commit_index_for_row(&worktree_rows, 0), Some(0));
+        // The worktree row itself is not a commit.
+        assert_eq!(commit_index_for_row(&worktree_rows, 1), None);
+        assert_eq!(commit_index_for_row(&worktree_rows, 2), Some(1));
+        assert_eq!(commit_index_for_row(&worktree_rows, 3), Some(2));
+    }
+
+    #[test]
+    fn several_worktree_rows_round_trip_through_the_mapping() {
+        let commits = vec![
+            make_commit(4, &[3], vec![RefLabel::Head]),
+            make_commit(3, &[2], Vec::new()),
+            make_commit(2, &[1], Vec::new()),
+            make_commit(1, &[], Vec::new()),
+        ];
+        let worktrees = vec![
+            dirty_worktree("current", Some(make_oid(4)), true),
+            dirty_worktree("other", Some(make_oid(2)), false),
+        ];
+        let worktree_rows = worktree_rows_for(&commits, &worktrees);
+        assert_eq!(worktree_rows.len(), 2);
+
+        for commit_index in 0..commits.len() {
+            let row = row_for_commit_index(&worktree_rows, commits.len(), commit_index)
+                .expect("every commit has a row");
+            assert!(
+                !worktree_rows.contains(&row),
+                "commit {commit_index} was mapped onto worktree row {row}"
+            );
+            assert_eq!(
+                commit_index_for_row(&worktree_rows, row),
+                Some(commit_index)
+            );
+        }
+        for row in &worktree_rows {
+            assert_eq!(commit_index_for_row(&worktree_rows, *row), None);
+        }
+    }
+
+    // ── Selection set mechanics ───────────────────────────────────────
+
+    fn members(selection: &CommitSelection) -> Vec<usize> {
+        selection.iter().collect()
+    }
+
+    #[test]
+    fn a_plain_selection_holds_one_commit_and_anchors_there() {
+        let mut selection = CommitSelection::default();
+        selection.replace(4);
+        assert_eq!(members(&selection), vec![4]);
+        assert_eq!(selection.anchor(), Some(4));
+        assert_eq!(selection.len(), 1);
+
+        // A second plain selection replaces the first — this is the click and
+        // `j`/`k` path, which must behave exactly as it did before multi-select.
+        selection.replace(7);
+        assert_eq!(members(&selection), vec![7]);
+        assert_eq!(selection.anchor(), Some(7));
+    }
+
+    #[test]
+    fn toggling_adds_and_removes_single_commits() {
+        let mut selection = CommitSelection::default();
+        selection.replace(2);
+        selection.toggle(5);
+        selection.toggle(8);
+        assert_eq!(members(&selection), vec![2, 5, 8]);
+        assert!(selection.contains(5));
+
+        selection.toggle(5);
+        assert_eq!(members(&selection), vec![2, 8]);
+        assert!(!selection.contains(5));
+        // The anchor follows the toggled row even when it was removed.
+        assert_eq!(selection.anchor(), Some(5));
+    }
+
+    #[test]
+    fn extending_grows_a_range_from_the_anchor_in_both_directions() {
+        let mut selection = CommitSelection::default();
+        selection.replace(3);
+        selection.extend_to(5);
+        assert_eq!(members(&selection), vec![3, 4, 5]);
+        // Re-extending replaces the previous range instead of accumulating.
+        selection.extend_to(4);
+        assert_eq!(members(&selection), vec![3, 4]);
+        // Crossing the anchor selects the other side of it, anchor unmoved.
+        selection.extend_to(1);
+        assert_eq!(members(&selection), vec![1, 2, 3]);
+        assert_eq!(selection.anchor(), Some(3));
+    }
+
+    #[test]
+    fn extending_keeps_what_was_selected_when_the_anchor_was_set() {
+        let mut selection = CommitSelection::default();
+        selection.replace(0);
+        selection.toggle(4);
+        selection.extend_to(6);
+        assert_eq!(members(&selection), vec![0, 4, 5, 6]);
+    }
+
+    #[test]
+    fn extending_without_an_anchor_selects_just_the_target() {
+        let mut selection = CommitSelection::default();
+        selection.extend_to(9);
+        assert_eq!(members(&selection), vec![9]);
+        assert_eq!(selection.anchor(), Some(9));
+    }
+
+    #[test]
+    fn a_plain_selection_resets_the_anchor_and_drops_the_rest() {
+        let mut selection = CommitSelection::default();
+        selection.replace(2);
+        selection.extend_to(6);
+        assert_eq!(selection.len(), 5);
+
+        selection.replace(6);
+        assert_eq!(members(&selection), vec![6]);
+        assert_eq!(selection.anchor(), Some(6));
+        // Extending after the reset grows from the new anchor only.
+        selection.extend_to(8);
+        assert_eq!(members(&selection), vec![6, 7, 8]);
+    }
+
+    #[test]
+    fn clearing_drops_the_selection_and_the_anchor() {
+        let mut selection = CommitSelection::default();
+        selection.replace(1);
+        selection.extend_to(3);
+        selection.clear();
+        assert_eq!(members(&selection), Vec::<usize>::new());
+        assert_eq!(selection.anchor(), None);
+        assert_eq!(selection.len(), 0);
+    }
+
+    #[test]
+    fn a_restored_selection_keeps_its_members_and_anchor() {
+        let selection = CommitSelection::from_parts([5, 2, 3], Some(2));
+        assert_eq!(members(&selection), vec![2, 3, 5]);
+        assert_eq!(selection.anchor(), Some(2));
+
+        // Everything the reload dropped leaves nothing to anchor to.
+        let emptied = CommitSelection::from_parts([], Some(2));
+        assert_eq!(emptied.anchor(), None);
+    }
+
+    /// A keyboard extension steps in commit space, so a worktree row between two
+    /// commits is stepped straight over and the selection stays contiguous — which
+    /// is what the squash validator needs.
+    #[test]
+    fn a_selection_spanning_a_worktree_row_is_contiguous_in_commit_space() {
+        let commits = vec![
+            make_commit(3, &[2], vec![RefLabel::Head]),
+            make_commit(2, &[1], Vec::new()),
+            make_commit(1, &[], Vec::new()),
+        ];
+        let worktrees = vec![dirty_worktree("wip", Some(make_oid(2)), false)];
+        let worktree_rows = worktree_rows_for(&commits, &worktrees);
+        assert_eq!(worktree_rows, vec![1]);
+
+        let mut selection = CommitSelection::default();
+        selection.replace(0);
+        selection.extend_to(1);
+        assert_eq!(members(&selection), vec![0, 1]);
+
+        // The two selected commits are two rows apart because the worktree row
+        // sits between them, and neither maps onto that row.
+        let rows: Vec<usize> = selection
+            .iter()
+            .map(|commit_index| {
+                row_for_commit_index(&worktree_rows, commits.len(), commit_index)
+                    .expect("selected commits have rows")
+            })
+            .collect();
+        assert_eq!(rows, vec![0, 2]);
+        assert!(rows.iter().all(|row| !worktree_rows.contains(row)));
     }
 }

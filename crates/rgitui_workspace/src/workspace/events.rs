@@ -1699,6 +1699,12 @@ pub(super) fn subscribe_graph(
     cx.subscribe(graph, {
         move |this, _graph, event: &GraphViewEvent, cx| {
             match event {
+                // Availability of the multi-commit operations follows the graph
+                // selection, so the palette context is refreshed here rather than
+                // only after a repository refresh.
+                GraphViewEvent::SelectionChanged => {
+                    this.update_command_context(cx);
+                }
                 GraphViewEvent::CommitSelected(oid) => {
                     let commit_oid = *oid;
                     log::info!("CommitSelected: oid={:.7}", commit_oid);

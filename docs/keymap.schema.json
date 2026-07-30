@@ -381,6 +381,14 @@
           "description": "Select the oldest loaded commit in the graph. Command id: `graph_select_last`."
         },
         {
+          "const": "graph::GraphExtendSelectionNext",
+          "description": "Add the next commit in the graph to the selection. Command id: `graph_extend_selection_next`."
+        },
+        {
+          "const": "graph::GraphExtendSelectionPrev",
+          "description": "Add the previous commit in the graph to the selection. Command id: `graph_extend_selection_prev`."
+        },
+        {
           "const": "graph::GraphCancel",
           "description": "Close the graph search, or dismiss the graph context menu. Command id: `graph_cancel`."
         },

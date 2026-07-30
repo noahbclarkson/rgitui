@@ -89,6 +89,8 @@ impl Workspace {
             CommandId::GraphSelectPrev => graph.select_prev_row(cx),
             CommandId::GraphSelectFirst => graph.select_first_row(cx),
             CommandId::GraphSelectLast => graph.select_last_row(cx),
+            CommandId::GraphExtendSelectionNext => graph.extend_selection_next(cx),
+            CommandId::GraphExtendSelectionPrev => graph.extend_selection_prev(cx),
             CommandId::GraphCancel => graph.cancel(window, cx),
             CommandId::CopyCommitSha => graph.copy_selected_sha(cx),
             CommandId::CopyCommitMessage => graph.copy_selected_message(cx),
@@ -735,6 +737,8 @@ impl Workspace {
             | CommandId::GraphSelectPrev
             | CommandId::GraphSelectFirst
             | CommandId::GraphSelectLast
+            | CommandId::GraphExtendSelectionNext
+            | CommandId::GraphExtendSelectionPrev
             | CommandId::GraphCancel
             | CommandId::CopyCommitSha
             | CommandId::CopyCommitMessage

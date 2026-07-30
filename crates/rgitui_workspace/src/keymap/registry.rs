@@ -239,6 +239,10 @@ commands! {
         GraphSelectFirst ["home" in "GraphView", "g"] [hidden];
         /// Select the oldest loaded commit in the graph.
         GraphSelectLast ["end" in "GraphView", "shift-g"] [hidden];
+        /// Add the next commit in the graph to the selection.
+        GraphExtendSelectionNext ["shift-down", "shift-j"] [hidden];
+        /// Add the previous commit in the graph to the selection.
+        GraphExtendSelectionPrev ["shift-up", "shift-k"] [hidden];
         /// Close the graph search, or dismiss the graph context menu.
         GraphCancel "escape" in "GraphView" [hidden];
         /// Copy the selected commit's SHA to the clipboard.
