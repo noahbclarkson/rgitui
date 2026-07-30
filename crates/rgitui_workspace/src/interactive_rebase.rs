@@ -56,7 +56,7 @@ impl RebaseAction {
 }
 
 /// A single commit entry in the interactive rebase list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RebaseEntry {
     pub oid: String,
     pub original_message: String,

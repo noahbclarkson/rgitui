@@ -84,6 +84,12 @@ impl Workspace {
             cx.propagate();
             return;
         };
+        // Squashing needs the project, the rebase dialog and the toast queue, so it
+        // is handled on the workspace rather than inside `graph.update`.
+        if cmd == CommandId::SquashSelected {
+            self.squash_selected_commits(cx);
+            return;
+        }
         graph.update(cx, |graph, cx| match cmd {
             CommandId::GraphSelectNext => graph.select_next_row(cx),
             CommandId::GraphSelectPrev => graph.select_prev_row(cx),
@@ -96,6 +102,52 @@ impl Workspace {
             CommandId::CopyCommitMessage => graph.copy_selected_message(cx),
             _ => cx.propagate(),
         });
+    }
+
+    /// Pre-fills the interactive rebase dialog with a plan that squashes the
+    /// commits selected in the graph into the oldest of them.
+    ///
+    /// Nothing is executed here: the plan goes into the dialog so the user can
+    /// review it, adjust the actions and confirm through the dialog's own
+    /// `Execute` path. Validation happens first — see [`crate::squash`] for why —
+    /// and a rejection becomes a toast that names the condition that failed.
+    fn squash_selected_commits(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        let graph = tab.graph.clone();
+        let project = tab.project.clone();
+        let selected = graph.read(cx).selected_commit_oids();
+
+        let planned = {
+            let proj = project.read(cx);
+            proj.head_oid_at(proj.repo_path()).map(|head_oid| {
+                crate::squash::plan_squash(proj.recent_commits(), head_oid, &selected)
+            })
+        };
+
+        match planned {
+            Some(Ok(plan)) => {
+                self.overlays.interactive_rebase.update(cx, |ir, cx| {
+                    ir.show_visible(
+                        plan.entries,
+                        format!("{} (rebase onto)", plan.base_label),
+                        cx,
+                    );
+                });
+            }
+            Some(Err(rejection)) => {
+                self.show_toast(rejection.message(), ToastKind::Warning, cx);
+            }
+            None => {
+                self.show_toast(
+                    "Could not resolve HEAD, so there is nothing to squash onto. Refresh and \
+                     try again.",
+                    ToastKind::Warning,
+                    cx,
+                );
+            }
+        }
     }
 
     /// Runs a `diff::*` command against the active tab's diff viewer.
@@ -739,6 +791,7 @@ impl Workspace {
             | CommandId::GraphSelectLast
             | CommandId::GraphExtendSelectionNext
             | CommandId::GraphExtendSelectionPrev
+            | CommandId::SquashSelected
             | CommandId::GraphCancel
             | CommandId::CopyCommitSha
             | CommandId::CopyCommitMessage

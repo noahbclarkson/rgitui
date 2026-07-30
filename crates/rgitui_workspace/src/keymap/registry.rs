@@ -32,8 +32,8 @@
 // invocation site; `always_show` is the default and is referenced through
 // `$crate`, so it is not imported here.
 use crate::command_palette::{
-    has_changes, has_github_token, has_remotes, has_staged, has_stashes, in_progress_operation,
-    is_bisecting, worktree_clean, CommandContext,
+    has_changes, has_github_token, has_multi_commit_selection, has_remotes, has_staged,
+    has_stashes, in_progress_operation, is_bisecting, worktree_clean, CommandContext,
 };
 
 /// Static description of a single command.
@@ -243,6 +243,8 @@ commands! {
         GraphExtendSelectionNext ["shift-down", "shift-j"] [hidden];
         /// Add the previous commit in the graph to the selection.
         GraphExtendSelectionPrev ["shift-up", "shift-k"] [hidden];
+        /// Squash the selected commits into the oldest of them.
+        SquashSelected "secondary-shift-s" if has_multi_commit_selection [hidden];
         /// Close the graph search, or dismiss the graph context menu.
         GraphCancel "escape" in "GraphView" [hidden];
         /// Copy the selected commit's SHA to the clipboard.

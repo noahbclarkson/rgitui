@@ -33,6 +33,9 @@ pub struct CommandContext {
     pub in_progress_operation: bool,
     /// True when the user has a GitHub token configured.
     pub has_github_token: bool,
+    /// True when the commit graph has more than one commit selected, which is
+    /// what the multi-commit operations (squash, for one) need.
+    pub has_multi_commit_selection: bool,
 }
 
 impl CommandContext {
@@ -48,7 +51,17 @@ impl CommandContext {
             has_staged: false,
             in_progress_operation: false,
             has_github_token: false,
+            has_multi_commit_selection: false,
         }
+    }
+
+    /// Records whether the commit graph has more than one commit selected.
+    ///
+    /// Kept off [`Self::from_parts`], which maps *repository* state: this flag
+    /// comes from the graph view's selection and changes far more often.
+    pub fn with_multi_commit_selection(mut self, selected: bool) -> Self {
+        self.has_multi_commit_selection = selected;
+        self
     }
 
     /// Build a context from primitive inputs. Keeps the `RepoState` →
@@ -81,6 +94,7 @@ impl CommandContext {
                     | rgitui_git::RepoState::RevertSequence
             ),
             has_github_token,
+            has_multi_commit_selection: false,
         }
     }
 }
@@ -128,6 +142,11 @@ pub(crate) const fn has_staged(ctx: CommandContext) -> bool {
 /// Show only when in a merge, rebase, cherry-pick, or revert in-progress state.
 pub(crate) const fn in_progress_operation(ctx: CommandContext) -> bool {
     ctx.in_progress_operation
+}
+
+/// Show only when the commit graph has two or more commits selected.
+pub(crate) const fn has_multi_commit_selection(ctx: CommandContext) -> bool {
+    ctx.has_multi_commit_selection
 }
 
 /// The command identifier, its gpui action and its default keybinding are

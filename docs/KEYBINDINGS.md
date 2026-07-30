@@ -122,6 +122,7 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | `end` or `shift-g` | `GraphView` or `GraphView && !TextInput` | `graph::GraphSelectLast` | Select the oldest loaded commit in the graph. |
 | `shift-down` or `shift-j` | `GraphView && !TextInput` | `graph::GraphExtendSelectionNext` | Add the next commit in the graph to the selection. |
 | `shift-up` or `shift-k` | `GraphView && !TextInput` | `graph::GraphExtendSelectionPrev` | Add the previous commit in the graph to the selection. |
+| `secondary-shift-s` | `GraphView && !TextInput` | `graph::SquashSelected` | Squash the selected commits into the oldest of them. |
 | `escape` | `GraphView` | `graph::GraphCancel` | Close the graph search, or dismiss the graph context menu. |
 | `y` | `GraphView && !TextInput` | `graph::CopyCommitSha` | Copy the selected commit's SHA to the clipboard. |
 | `shift-c` | `GraphView && !TextInput` | `graph::CopyCommitMessage` | Copy the selected commit's message to the clipboard. |

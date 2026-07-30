@@ -29,6 +29,7 @@ mod settings_window;
 mod shortcuts_help;
 mod sidebar;
 mod splash_screen;
+mod squash;
 mod stash_branch_dialog;
 mod stash_save_dialog;
 mod status_bar;

@@ -257,6 +257,7 @@ impl Workspace {
             !proj.status().staged.is_empty(),
             has_token,
         )
+        .with_multi_commit_selection(tab.graph.read(cx).selected_commit_count() > 1)
     }
 
     /// Update the command palette's context with fresh data from the active tab.

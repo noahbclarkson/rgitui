@@ -389,6 +389,10 @@
           "description": "Add the previous commit in the graph to the selection. Command id: `graph_extend_selection_prev`."
         },
         {
+          "const": "graph::SquashSelected",
+          "description": "Squash the selected commits into the oldest of them. Command id: `squash_selected`."
+        },
+        {
           "const": "graph::GraphCancel",
           "description": "Close the graph search, or dismiss the graph context menu. Command id: `graph_cancel`."
         },
