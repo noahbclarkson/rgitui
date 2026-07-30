@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
 use gpui::prelude::*;
-use gpui::{
-    div, px, ClickEvent, Context, EventEmitter, FocusHandle, FontWeight, KeyDownEvent, Render,
-    Window,
-};
+use gpui::{div, px, ClickEvent, Context, EventEmitter, FocusHandle, FontWeight, Render, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
+
+use crate::keymap;
+use crate::CommandId;
 
 #[derive(Debug, Clone)]
 pub enum ShortcutsHelpEvent {
@@ -87,15 +87,14 @@ impl ShortcutsHelp {
         cx.notify();
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.keystroke.key.as_str() == "escape" {
-            self.dismiss(cx);
-            cx.stop_propagation();
+    /// Runs a keyboard command scoped to `ShortcutsHelp`.
+    ///
+    /// Enter is not handled here: it is propagated so the focused field's own
+    /// submission fires exactly once.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.dismiss(cx),
+            _ => cx.propagate(),
         }
     }
 
@@ -116,10 +115,13 @@ impl ShortcutsHelp {
             },
             ShortcutCategory {
                 title: "Navigation",
-                description: "Focus a panel first. Plain-letter shortcuts are context-sensitive.",
+                description: "Focus a panel first — plain letters only act on the focused panel.",
                 shortcuts: &[
-                    ("j / k", "Move up / down in the focused panel"),
-                    ("g / G", "Jump to first / last item"),
+                    (
+                        "j / k or Up / Down",
+                        "Move the selection in the focused panel",
+                    ),
+                    ("g / G or Home / End", "Jump to first / last item"),
                     ("Tab / Shift+Tab", "Cycle focused panel"),
                     ("Alt+1 / 2 / 3 / 4", "Focus sidebar / graph / detail / diff"),
                     (
@@ -135,22 +137,26 @@ impl ShortcutsHelp {
             },
             ShortcutCategory {
                 title: "Views & Search",
-                description: "Fast access to panels and graph-specific tools.",
+                description: "Panels and graph tools. Letters act on the panel that has focus.",
                 shortcuts: &[
-                    ("Ctrl+F", "Toggle commit graph search"),
-                    ("Ctrl+Shift+F", "Toggle global search across the repository"),
-                    ("/", "Start in-graph search"),
-                    ("d", "Toggle diff mode (unified / split)"),
-                    ("b", "Toggle blame view for selected file"),
-                    ("h", "Toggle file history view for selected file"),
-                    ("y", "Copy SHA of selected commit"),
-                    ("Shift+C", "Copy commit message of selected commit"),
+                    ("Ctrl+F or /", "Toggle commit graph search"),
+                    ("Ctrl+Shift+F", "Search the working tree"),
+                    ("Shift+D", "Toggle diff mode (unified / split)"),
+                    ("d", "In the diff viewer: cycle display mode"),
+                    ("[ / ]", "In the diff viewer: previous / next hunk"),
+                    (
+                        "y / Shift+C",
+                        "In the graph: copy the commit's SHA / message",
+                    ),
+                    ("d", "In blame or file history: back to the diff"),
+                    ("h / b", "In blame / file history: switch to the other view"),
+                    ("/ or Ctrl+F", "In the detail panel: filter changed files"),
                     (
                         "Mouse drag / Shift+click",
                         "Select lines in the diff viewer",
                     ),
                     ("Ctrl+C", "Copy selected diff lines"),
-                    ("Esc", "Close the active overlay or modal"),
+                    ("Esc", "Close the innermost overlay, modal or search"),
                 ],
             },
             ShortcutCategory {
@@ -351,7 +357,7 @@ impl Render for ShortcutsHelp {
         let modal = div()
             .id("shortcuts-help-container")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| keymap::bind_actions(el, "ShortcutsHelp", &["Menu"], cx, Self::dispatch_command))
             .v_flex()
             .w(modal_width)
             .h(modal_height)

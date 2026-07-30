@@ -2,13 +2,15 @@ use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, FontWeight, KeyDownEvent,
-    Render, Window,
+    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, FontWeight, Render, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 #[derive(Debug, Clone)]
 pub enum RepoCloneEvent {
@@ -179,11 +181,14 @@ impl RepoCloneDialog {
         .detach();
     }
 
-    fn handle_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        // Enter is handled solely via each editor's `Submit` event so it fires
-        // exactly once; here we only need the modal-level Escape-to-dismiss.
-        if event.keystroke.key.as_str() == "escape" {
-            self.hide(cx);
+    /// Runs a keyboard command scoped to `RepoCloneDialog`.
+    ///
+    /// Enter is not handled here: it is propagated so the focused field's own
+    /// submission fires exactly once.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.hide(cx),
+            _ => cx.propagate(),
         }
     }
 }
@@ -218,7 +223,7 @@ impl Render for RepoCloneDialog {
             self.url_editor.update(cx, |e, cx| e.focus(window, cx));
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let url = self.url_editor.read(cx).text().trim().to_string();
         let path = self.path_editor.read(cx).text().trim().to_string();
         let can_clone = !url.is_empty() && !path.is_empty();
@@ -232,7 +237,9 @@ impl Render for RepoCloneDialog {
         let mut modal = div()
             .id("repo-clone-dialog-modal")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(el, "RepoCloneDialog", &["Menu"], cx, Self::dispatch_command)
+            })
             .v_flex()
             .w(px(500.))
             .elevation_3(cx)

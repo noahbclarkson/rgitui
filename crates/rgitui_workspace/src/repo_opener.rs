@@ -2,13 +2,16 @@ use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, FontWeight,
-    KeyDownEvent, Render, SharedString, Window,
+    div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, FontWeight, Render,
+    SharedString, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 #[derive(Debug, Clone)]
 pub enum RepoOpenerEvent {
@@ -182,45 +185,45 @@ impl RepoOpener {
         .detach();
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-
-        match key {
-            "escape" => {
-                self.dismiss(cx);
-                cx.stop_propagation();
-            }
-            "up" => {
-                if self.filtered_indices.is_empty() {
-                    return;
-                }
-                self.selected_index = Some(match self.selected_index {
+    /// Runs a keyboard command scoped to `RepoOpener` or to the shared `List`
+    /// group.
+    ///
+    /// Enter is propagated so the path field's own submission opens the
+    /// highlighted repository exactly once.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.dismiss(cx),
+            CommandId::SelectPrev => self.select_row(
+                match self.selected_index {
                     Some(index) if index > 0 => index - 1,
                     Some(index) => index,
                     None => self.filtered_indices.len().saturating_sub(1),
-                });
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "down" => {
-                if self.filtered_indices.is_empty() {
-                    return;
-                }
-                self.selected_index = Some(match self.selected_index {
+                },
+                cx,
+            ),
+            CommandId::SelectNext => self.select_row(
+                match self.selected_index {
                     Some(index) if index + 1 < self.filtered_indices.len() => index + 1,
                     Some(index) => index,
                     None => 0,
-                });
-                cx.notify();
-                cx.stop_propagation();
+                },
+                cx,
+            ),
+            CommandId::SelectFirst => self.select_row(0, cx),
+            CommandId::SelectLast => {
+                self.select_row(self.filtered_indices.len().saturating_sub(1), cx)
             }
-            _ => {}
+            _ => cx.propagate(),
         }
+    }
+
+    /// Moves the highlight within the filtered list.
+    fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        self.selected_index = Some(row.min(self.filtered_indices.len() - 1));
+        cx.notify();
     }
 }
 
@@ -230,12 +233,14 @@ impl Render for RepoOpener {
             return div().id("repo-opener").into_any_element();
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
 
         let mut modal = div()
             .id("repo-opener-modal")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(el, "RepoOpener List", &["Menu"], cx, Self::dispatch_command)
+            })
             .v_flex()
             .w(px(500.))
             .max_h(px(480.))

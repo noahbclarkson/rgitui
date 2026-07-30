@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
     div, px, relative, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Window,
+    InteractiveElement, IntoElement, ParentElement, Render, Window,
 };
 use rgitui_theme::{
     hex_to_hsla_strict, hsla_to_hex, json_theme::save_theme_to_file, ActiveTheme, Appearance,
@@ -9,6 +9,9 @@ use rgitui_theme::{
 };
 use rgitui_theme::{StatusColors, ThemeColors};
 use rgitui_ui::{Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput};
+
+use crate::keymap;
+use crate::CommandId;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -272,23 +275,14 @@ impl ThemeEditorDialog {
         self.status_inputs = status_inputs;
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event.keystroke.key.as_str() {
-            "escape" => {
-                self.dismiss(cx);
-            }
-            "enter" => {
-                self.save(cx);
-            }
-            "tab" => {
-                self.advance_focus(event.keystroke.modifiers.shift, window, cx);
-            }
-            _ => {}
+    /// Runs a keyboard command scoped to `ThemeEditor`.
+    fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.dismiss(cx),
+            CommandId::Confirm => self.save(cx),
+            CommandId::ThemeEditorNextField => self.advance_focus(false, window, cx),
+            CommandId::ThemeEditorPrevField => self.advance_focus(true, window, cx),
+            _ => cx.propagate(),
         }
     }
 
@@ -412,7 +406,7 @@ impl Render for ThemeEditorDialog {
             }
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let invalid_border = cx.status().error;
         let valid_border = colors.border_transparent;
         let theme = self.editable_theme.clone();
@@ -442,7 +436,15 @@ impl Render for ThemeEditorDialog {
                 div()
                     .id("theme-editor-modal")
                     .track_focus(&self.focus_handle)
-                    .on_key_down(cx.listener(Self::handle_key_down))
+                    .map(|el| {
+                        keymap::bind_actions(
+                            el,
+                            "ThemeEditor",
+                            &["Menu", "ThemeEditor"],
+                            cx,
+                            Self::dispatch_command,
+                        )
+                    })
                     .on_click(|_: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                     })

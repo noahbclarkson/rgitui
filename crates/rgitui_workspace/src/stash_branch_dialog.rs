@@ -5,14 +5,16 @@
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render,
-    SharedString, Window,
+    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, SharedString, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
     TextInputEvent,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 /// Events emitted by the stash branch dialog.
 #[derive(Debug, Clone)]
@@ -143,9 +145,14 @@ impl StashBranchDialog {
         None
     }
 
-    fn handle_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if event.keystroke.key.as_str() == "escape" {
-            self.dismiss(cx);
+    /// Runs a keyboard command scoped to `StashBranchDialog`.
+    ///
+    /// Enter is not handled here: it is propagated so the focused field's own
+    /// submission fires exactly once.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.dismiss(cx),
+            _ => cx.propagate(),
         }
     }
 
@@ -183,7 +190,7 @@ impl Render for StashBranchDialog {
             self.editor.update(cx, |e, cx| e.focus(window, cx));
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let branch_name = self.editor.read(cx).text().to_string();
         let has_error = self.error_message.is_some();
         let can_create = !branch_name.is_empty() && !has_error;
@@ -203,7 +210,15 @@ impl Render for StashBranchDialog {
         let mut modal = div()
             .id("stash-branch-dialog-modal")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "StashBranchDialog",
+                    &["Menu"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .v_flex()
             .w(px(440.))
             .elevation_3(cx)

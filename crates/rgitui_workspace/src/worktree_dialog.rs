@@ -1,12 +1,13 @@
 use gpui::prelude::*;
-use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render, Window,
-};
+use gpui::{div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
     TextInputEvent, TintColor,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 /// Events emitted by the worktree creation dialog.
 #[derive(Debug, Clone)]
@@ -188,14 +189,14 @@ impl WorktreeDialog {
         cx.notify();
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.keystroke.key.as_str() == "escape" {
-            self.dismiss(cx);
+    /// Runs a keyboard command scoped to `WorktreeDialog`.
+    ///
+    /// Enter is not handled here: it is propagated so the focused field's own
+    /// submission fires exactly once.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.dismiss(cx),
+            _ => cx.propagate(),
         }
     }
 }
@@ -206,7 +207,7 @@ impl Render for WorktreeDialog {
             return div().id("worktree-dialog").into_any_element();
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let name_text = self.name_editor.read(cx).text().to_string();
         let path_text = self.path_editor.read(cx).text().to_string();
         let has_error = self.error_message.is_some();
@@ -221,7 +222,9 @@ impl Render for WorktreeDialog {
         let mut modal = div()
             .id("worktree-dialog-modal")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(el, "WorktreeDialog", &["Menu"], cx, Self::dispatch_command)
+            })
             .v_flex()
             .w(px(480.))
             .elevation_3(cx)

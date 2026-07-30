@@ -4,14 +4,15 @@
 //! field; pressing Enter with an empty field creates `git stash push` (default "WIP" message).
 
 use gpui::prelude::*;
-use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render, Window,
-};
+use gpui::{div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
     TextInputEvent, TintColor,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 /// Events emitted by the stash save dialog.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,16 +111,14 @@ impl StashSaveDialog {
         cx.notify();
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Enter is handled solely via the editor's `Submit` event so it fires
-        // exactly once; here we only need the modal-level Escape-to-dismiss.
-        if event.keystroke.key.as_str() == "escape" {
-            self.dismiss(cx);
+    /// Runs a keyboard command scoped to `StashSaveDialog`.
+    ///
+    /// Enter is not handled here: it is propagated so the focused field's own
+    /// submission fires exactly once.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.dismiss(cx),
+            _ => cx.propagate(),
         }
     }
 
@@ -142,7 +141,7 @@ impl Render for StashSaveDialog {
             self.editor.update(cx, |e, cx| e.focus(window, cx));
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
 
         let accent_color = Color::Accent.color(cx);
         let icon_bg = gpui::Hsla {
@@ -173,7 +172,15 @@ impl Render for StashSaveDialog {
                 div()
                     .id("stash-save-dialog-modal")
                     .track_focus(&self.focus_handle)
-                    .on_key_down(cx.listener(Self::handle_key_down))
+                    .map(|el| {
+                        keymap::bind_actions(
+                            el,
+                            "StashSaveDialog",
+                            &["Menu"],
+                            cx,
+                            Self::dispatch_command,
+                        )
+                    })
                     .v_flex()
                     .w(px(480.))
                     .elevation_3(cx)

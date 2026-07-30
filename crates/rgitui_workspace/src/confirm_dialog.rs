@@ -1,10 +1,10 @@
 use gpui::prelude::*;
-use gpui::{
-    div, px, ClickEvent, Context, EventEmitter, FocusHandle, KeyDownEvent, Render, SharedString,
-    Window,
-};
+use gpui::{div, px, ClickEvent, Context, EventEmitter, FocusHandle, Render, SharedString, Window};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize};
+
+use crate::keymap;
+use crate::CommandId;
 
 /// The action that was confirmed (so the workspace knows what to do).
 #[derive(Debug, Clone, PartialEq)]
@@ -107,16 +107,12 @@ impl ConfirmDialog {
         cx.notify();
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" => self.confirm(cx),
-            _ => {}
+    /// Runs a keyboard command scoped to `ConfirmDialog`.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.cancel(cx),
+            CommandId::Confirm => self.confirm(cx),
+            _ => cx.propagate(),
         }
     }
 
@@ -184,7 +180,7 @@ impl Render for ConfirmDialog {
             self.focus_handle.focus(window, cx);
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let title: SharedString = self.title.clone().into();
         let message: SharedString = self.message.clone().into();
         let icon = self.severity_icon();
@@ -218,7 +214,15 @@ impl Render for ConfirmDialog {
                 div()
                     .id("confirm-dialog-modal")
                     .track_focus(&self.focus_handle)
-                    .on_key_down(cx.listener(Self::handle_key_down))
+                    .map(|el| {
+                        keymap::bind_actions(
+                            el,
+                            "ConfirmDialog",
+                            &["Menu"],
+                            cx,
+                            Self::dispatch_command,
+                        )
+                    })
                     .v_flex()
                     .w(px(420.))
                     .elevation_3(cx)

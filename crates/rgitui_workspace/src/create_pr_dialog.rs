@@ -4,8 +4,7 @@ use futures::AsyncReadExt;
 use gpui::http_client::AsyncBody;
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Render,
-    SharedString, Window,
+    div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, SharedString, Window,
 };
 use http_client::HttpClient;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
@@ -13,6 +12,9 @@ use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, Icon, IconName, IconSize, Label,
     LabelSize, TextInput, TextInputEvent,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 /// Events emitted by the PR creation dialog.
 #[derive(Debug, Clone)]
@@ -223,16 +225,15 @@ impl CreatePrDialog {
         .detach();
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" if event.keystroke.modifiers.shift => self.submit(cx),
-            _ => {}
+    /// Runs a keyboard command scoped to `CreatePrDialog`.
+    ///
+    /// Plain Enter is propagated so it inserts a newline in the multi-line body;
+    /// submitting is `shift-enter`.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => self.cancel(cx),
+            CommandId::SubmitPullRequest => self.submit(cx),
+            _ => cx.propagate(),
         }
     }
 
@@ -248,7 +249,7 @@ impl Render for CreatePrDialog {
             return div().id("create-pr-dialog").into_any_element();
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let head_label: SharedString = self.head_branch.clone().into();
         let base_label: SharedString = self.base_branch.clone().into();
 
@@ -275,7 +276,15 @@ impl Render for CreatePrDialog {
                 div()
                     .id("create-pr-dialog-modal")
                     .track_focus(&self.focus_handle)
-                    .on_key_down(cx.listener(Self::handle_key_down))
+                    .map(|el| {
+                        keymap::bind_actions(
+                            el,
+                            "CreatePrDialog",
+                            &["Menu", "CreatePrDialog"],
+                            cx,
+                            Self::dispatch_command,
+                        )
+                    })
                     .v_flex()
                     .w(px(520.))
                     .max_h(px(600.))

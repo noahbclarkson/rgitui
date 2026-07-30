@@ -1,7 +1,6 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, Bounds, ClickEvent, Context, Entity, FocusHandle, KeyDownEvent, Pixels, Render,
-    Subscription, Window,
+    div, px, Bounds, ClickEvent, Context, Entity, FocusHandle, Pixels, Render, Subscription, Window,
 };
 use rgitui_settings::{SavedWindowBounds, SettingsState};
 use rgitui_theme::{ActiveTheme, StyledExt, ThemeState};
@@ -22,6 +21,9 @@ pub struct SettingsWindow {
     _settings_observer: Subscription,
     _view_subscription: Subscription,
 }
+
+use crate::keymap;
+use crate::CommandId;
 
 impl SettingsWindow {
     /// Construct a `SettingsWindow`. Must be called inside the new window's
@@ -92,14 +94,14 @@ impl SettingsWindow {
         &self.view
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        if event.keystroke.key.as_str() == "escape" {
-            window.remove_window();
+    /// Runs a keyboard command scoped to `SettingsWindow`.
+    ///
+    /// Each window owns its own dismissal: workspace overlays are not visible
+    /// from here and cannot be dismissed from here.
+    fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => window.remove_window(),
+            _ => cx.propagate(),
         }
     }
 }
@@ -117,7 +119,9 @@ impl Render for SettingsWindow {
         div()
             .id("settings-window-root")
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(el, "SettingsWindow", &["Menu"], cx, Self::dispatch_command)
+            })
             .v_flex()
             .size_full()
             .bg(background)
