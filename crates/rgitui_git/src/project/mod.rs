@@ -835,6 +835,7 @@ impl GitProject {
 #[cfg(test)]
 mod tests {
     use super::{normalize_repo_path, GitProject};
+    use rgitui_test_support::TempRepo;
     use std::path::PathBuf;
 
     fn has_adjacent_legacy_change_events(source: &str) -> bool {
@@ -862,63 +863,47 @@ mod tests {
     }
 
     /// Build a repo with one commit containing `tracked.txt`.
-    fn repo_with_one_commit() -> (tempfile::TempDir, git2::Repository) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-        {
-            let mut config = repo.config().unwrap();
-            config.set_str("user.name", "Test").unwrap();
-            config.set_str("user.email", "test@test.com").unwrap();
-        }
-        std::fs::write(dir.path().join("tracked.txt"), "original\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(std::path::Path::new("tracked.txt")).unwrap();
-        index.write().unwrap();
-        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .unwrap();
-        drop(tree);
-        (dir, repo)
+    fn repo_with_one_commit() -> TempRepo {
+        let fixture = TempRepo::init();
+        fixture.commit_file("tracked.txt", "original\n", "initial");
+        fixture
     }
 
     #[test]
     fn untracked_files_do_not_make_the_worktree_dirty() {
-        let (dir, repo) = repo_with_one_commit();
-        assert!(!super::repo_has_worktree_changes(&repo).unwrap());
+        let fixture = repo_with_one_commit();
+        let repo = fixture.repo();
+        assert!(!super::repo_has_worktree_changes(repo).unwrap());
 
         // A scratch file with no .gitignore entry must not block checkout.
-        std::fs::write(dir.path().join("notes.txt"), "scratch").unwrap();
-        std::fs::create_dir(dir.path().join("build")).unwrap();
-        std::fs::write(dir.path().join("build").join("out.o"), "junk").unwrap();
+        fixture.write_file("notes.txt", "scratch");
+        fixture.write_file("build/out.o", "junk");
 
         assert!(
-            !super::repo_has_worktree_changes(&repo).unwrap(),
+            !super::repo_has_worktree_changes(repo).unwrap(),
             "untracked files must not count as worktree changes"
         );
-        assert!(super::ensure_clean_worktree(&repo, "Checkout").is_ok());
+        assert!(super::ensure_clean_worktree(repo, "Checkout").is_ok());
     }
 
     #[test]
     fn modified_tracked_files_make_the_worktree_dirty() {
-        let (dir, repo) = repo_with_one_commit();
-        std::fs::write(dir.path().join("tracked.txt"), "edited\n").unwrap();
+        let fixture = repo_with_one_commit();
+        fixture.write_file("tracked.txt", "edited\n");
 
-        assert!(super::repo_has_worktree_changes(&repo).unwrap());
-        let err = super::ensure_clean_worktree(&repo, "Checkout").unwrap_err();
+        assert!(super::repo_has_worktree_changes(fixture.repo()).unwrap());
+        let err = super::ensure_clean_worktree(fixture.repo(), "Checkout").unwrap_err();
         assert!(err.to_string().contains("Checkout"));
     }
 
     #[test]
     fn staged_changes_make_the_worktree_dirty() {
-        let (dir, repo) = repo_with_one_commit();
-        std::fs::write(dir.path().join("staged.txt"), "new\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(std::path::Path::new("staged.txt")).unwrap();
-        index.write().unwrap();
+        let fixture = repo_with_one_commit();
+        fixture.write_file("staged.txt", "new\n");
+        fixture.stage("staged.txt");
 
         assert!(
-            super::repo_has_worktree_changes(&repo).unwrap(),
+            super::repo_has_worktree_changes(fixture.repo()).unwrap(),
             "a staged addition is a tracked change"
         );
     }

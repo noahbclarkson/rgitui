@@ -130,90 +130,40 @@ impl GitProject {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rgitui_test_support::TempRepo;
     use std::path::Path;
-    use tempfile::TempDir;
 
     // Build a repo where:
     // - "tracked.txt" is created in commit 1, modified in commit 3
     // - "other.txt"   is created in commit 2
-    fn make_multi_file_repo() -> (TempDir, std::path::PathBuf) {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
-        let repo = git2::Repository::init(&path).unwrap();
-
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Alice").unwrap();
-        cfg.set_str("user.email", "alice@example.com").unwrap();
-        drop(cfg);
-
-        let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
-
-        // Commit 1: create tracked.txt
-        let tracked = path.join("tracked.txt");
-        std::fs::write(&tracked, "hello\n").unwrap();
-        let mut idx = repo.index().unwrap();
-        idx.add_path(Path::new("tracked.txt")).unwrap();
-        idx.write().unwrap();
-        let t1 = idx.write_tree().unwrap();
-        let tree1 = repo.find_tree(t1).unwrap();
-        let c1 = repo
-            .commit(Some("HEAD"), &sig, &sig, "add tracked.txt", &tree1, &[])
-            .unwrap();
-        let c1 = repo.find_commit(c1).unwrap();
-
-        // Commit 2: create other.txt (tracked.txt unchanged)
-        let other = path.join("other.txt");
-        std::fs::write(&other, "world\n").unwrap();
-        let mut idx = repo.index().unwrap();
-        idx.add_path(Path::new("other.txt")).unwrap();
-        idx.write().unwrap();
-        let t2 = idx.write_tree().unwrap();
-        let tree2 = repo.find_tree(t2).unwrap();
-        let c2 = repo
-            .commit(Some("HEAD"), &sig, &sig, "add other.txt", &tree2, &[&c1])
-            .unwrap();
-        let c2 = repo.find_commit(c2).unwrap();
-
-        // Commit 3: modify tracked.txt
-        std::fs::write(&tracked, "hello updated\n").unwrap();
-        let mut idx = repo.index().unwrap();
-        idx.add_path(Path::new("tracked.txt")).unwrap();
-        idx.write().unwrap();
-        let t3 = idx.write_tree().unwrap();
-        let tree3 = repo.find_tree(t3).unwrap();
-        repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            "modify tracked.txt",
-            &tree3,
-            &[&c2],
-        )
-        .unwrap();
-
-        (dir, path)
+    fn make_multi_file_repo() -> TempRepo {
+        let repo = TempRepo::init();
+        repo.commit_file("tracked.txt", "hello\n", "add tracked.txt");
+        repo.commit_file("other.txt", "world\n", "add other.txt");
+        repo.commit_file("tracked.txt", "hello updated\n", "modify tracked.txt");
+        repo
     }
 
     #[test]
     fn file_history_returns_only_touching_commits() {
-        let (_dir, path) = make_multi_file_repo();
-        let entries = compute_file_history(&path, Path::new("tracked.txt"), 100).unwrap();
+        let repo = make_multi_file_repo();
+        let entries = compute_file_history(repo.path(), Path::new("tracked.txt"), 100).unwrap();
         // commit 1 (add) + commit 3 (modify) touch tracked.txt; commit 2 does not
         assert_eq!(entries.len(), 2, "expected 2 commits for tracked.txt");
     }
 
     #[test]
     fn file_history_unrelated_file_excluded() {
-        let (_dir, path) = make_multi_file_repo();
-        let entries = compute_file_history(&path, Path::new("other.txt"), 100).unwrap();
+        let repo = make_multi_file_repo();
+        let entries = compute_file_history(repo.path(), Path::new("other.txt"), 100).unwrap();
         // Only commit 2 touches other.txt
         assert_eq!(entries.len(), 1, "expected 1 commit for other.txt");
     }
 
     #[test]
     fn file_history_latest_commit_first() {
-        let (_dir, path) = make_multi_file_repo();
-        let entries = compute_file_history(&path, Path::new("tracked.txt"), 100).unwrap();
+        let repo = make_multi_file_repo();
+        let entries = compute_file_history(repo.path(), Path::new("tracked.txt"), 100).unwrap();
         // The most recent touching commit is commit 3 ("modify tracked.txt")
         assert!(
             entries[0].summary.contains("modify"),
@@ -224,13 +174,16 @@ mod tests {
 
     #[test]
     fn file_history_at_commit_excludes_later_changes() {
-        let (_dir, path) = make_multi_file_repo();
-        let repo = Repository::open(&path).unwrap();
-        let before_latest = repo.revparse_single("HEAD~1").unwrap().id();
+        let repo = make_multi_file_repo();
+        let before_latest = repo.repo().revparse_single("HEAD~1").unwrap().id();
 
-        let entries =
-            compute_file_history_at(&path, Path::new("tracked.txt"), 100, Some(before_latest))
-                .unwrap();
+        let entries = compute_file_history_at(
+            repo.path(),
+            Path::new("tracked.txt"),
+            100,
+            Some(before_latest),
+        )
+        .unwrap();
 
         assert_eq!(entries.len(), 1);
         assert!(entries[0].summary.contains("add tracked"));
@@ -238,25 +191,25 @@ mod tests {
 
     #[test]
     fn file_history_limit_respected() {
-        let (_dir, path) = make_multi_file_repo();
+        let repo = make_multi_file_repo();
         // tracked.txt has 2 touching commits; requesting limit=1 should return 1
-        let entries = compute_file_history(&path, Path::new("tracked.txt"), 1).unwrap();
+        let entries = compute_file_history(repo.path(), Path::new("tracked.txt"), 1).unwrap();
         assert_eq!(entries.len(), 1);
     }
 
     #[test]
     fn file_history_author_populated() {
-        let (_dir, path) = make_multi_file_repo();
-        let entries = compute_file_history(&path, Path::new("tracked.txt"), 100).unwrap();
+        let repo = make_multi_file_repo();
+        let entries = compute_file_history(repo.path(), Path::new("tracked.txt"), 100).unwrap();
         assert!(!entries.is_empty());
-        assert_eq!(entries[0].author.name, "Alice");
-        assert_eq!(entries[0].author.email, "alice@example.com");
+        assert_eq!(entries[0].author.name, TempRepo::AUTHOR_NAME);
+        assert_eq!(entries[0].author.email, TempRepo::AUTHOR_EMAIL);
     }
 
     #[test]
     fn file_history_short_id_is_seven_chars() {
-        let (_dir, path) = make_multi_file_repo();
-        let entries = compute_file_history(&path, Path::new("tracked.txt"), 100).unwrap();
+        let repo = make_multi_file_repo();
+        let entries = compute_file_history(repo.path(), Path::new("tracked.txt"), 100).unwrap();
         for entry in &entries {
             assert_eq!(
                 entry.short_id.len(),
@@ -269,8 +222,9 @@ mod tests {
 
     #[test]
     fn file_history_nonexistent_file_returns_empty() {
-        let (_dir, path) = make_multi_file_repo();
-        let entries = compute_file_history(&path, Path::new("does_not_exist.txt"), 100).unwrap();
+        let repo = make_multi_file_repo();
+        let entries =
+            compute_file_history(repo.path(), Path::new("does_not_exist.txt"), 100).unwrap();
         assert!(entries.is_empty(), "unknown file should yield 0 entries");
     }
 

@@ -23,4 +23,5 @@ rgitui_settings.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
+rgitui_test_support.workspace = true
+tempfile.workspace = true

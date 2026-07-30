@@ -1204,62 +1204,22 @@ mod tests {
 #[cfg(test)]
 mod load_more_tests {
     use super::*;
-    use tempfile::TempDir;
-
-    /// Create a bare temporary git repo with `n` commits on main.
-    fn make_repo_with_commits(n: usize) -> (TempDir, std::path::PathBuf, git2::Oid) {
-        let dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-
-        // Configure minimal identity so commits succeed.
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test").unwrap();
-        config.set_str("user.email", "test@test.com").unwrap();
-        drop(config);
-
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-        let tree_oid = {
-            let mut idx = repo.index().unwrap();
-            idx.write_tree().unwrap()
-        };
-
-        let mut last_oid = git2::Oid::zero();
-        for i in 0..n {
-            let tree = repo.find_tree(tree_oid).unwrap();
-            let parents: Vec<git2::Commit> = if i == 0 {
-                vec![]
-            } else {
-                vec![repo.find_commit(last_oid).unwrap()]
-            };
-            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-            last_oid = repo
-                .commit(
-                    Some("refs/heads/main"),
-                    &sig,
-                    &sig,
-                    &format!("commit {}", i),
-                    &tree,
-                    &parent_refs,
-                )
-                .unwrap();
-        }
-        let path = dir.path().to_path_buf();
-        (dir, path, last_oid)
-    }
+    use rgitui_test_support::TempRepo;
 
     #[test]
     fn load_more_returns_next_page() {
-        let (_dir, path, tip) = make_repo_with_commits(5);
-        let branch_tips = vec![(tip, false, "main".to_string())];
+        let repo = TempRepo::with_commits(5);
+        let path = repo.path();
+        let branch_tips = vec![(repo.head_oid(), false, "main".to_string())];
         // Page 1: first 3 commits.
         let (page1, more1) =
-            load_more_commits_from_repo(&path, 0, None, 3, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(path, 0, None, 3, &branch_tips, &[], None).unwrap();
         assert_eq!(page1.len(), 3);
         assert!(more1);
         // Page 2: anchored on the oldest loaded commit, take up to 2.
         let cursor = page1.last().map(|c| c.oid);
         let (page2, more2) =
-            load_more_commits_from_repo(&path, 3, cursor, 2, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(path, 3, cursor, 2, &branch_tips, &[], None).unwrap();
         // 5 commits total, 3 already loaded → 2 remaining, no more after that.
         assert_eq!(page2.len(), 2);
         assert!(!more2);
@@ -1272,25 +1232,27 @@ mod load_more_tests {
 
     #[test]
     fn load_more_detects_has_more() {
-        let (_dir, path, tip) = make_repo_with_commits(5);
-        let branch_tips = vec![(tip, false, "main".to_string())];
+        let repo = TempRepo::with_commits(5);
+        let path = repo.path();
+        let branch_tips = vec![(repo.head_oid(), false, "main".to_string())];
         // First page, limit 3 → should have more.
         let (commits, has_more) =
-            load_more_commits_from_repo(&path, 0, None, 3, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(path, 0, None, 3, &branch_tips, &[], None).unwrap();
         assert_eq!(commits.len(), 3);
         assert!(has_more);
     }
 
     #[test]
     fn load_more_empty_past_end() {
-        let (_dir, path, tip) = make_repo_with_commits(3);
-        let branch_tips = vec![(tip, false, "main".to_string())];
+        let repo = TempRepo::with_commits(3);
+        let path = repo.path();
+        let branch_tips = vec![(repo.head_oid(), false, "main".to_string())];
         // Cursor at the oldest commit: nothing remains beyond it.
         let (all, _) =
-            load_more_commits_from_repo(&path, 0, None, 3, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(path, 0, None, 3, &branch_tips, &[], None).unwrap();
         let cursor = all.last().map(|c| c.oid);
         let (commits, has_more) =
-            load_more_commits_from_repo(&path, 3, cursor, 5, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(path, 3, cursor, 5, &branch_tips, &[], None).unwrap();
         assert!(commits.is_empty());
         assert!(!has_more);
     }
@@ -1301,33 +1263,20 @@ mod load_more_tests {
         // shift the boundary and skip a commit. The stable cursor re-anchors on
         // the OID, so even though `already_loaded` is now stale the page is
         // still contiguous.
-        let (dir, path, tip) = make_repo_with_commits(5);
+        let repo = TempRepo::with_commits(5);
+        let path = repo.path();
+        let tip = repo.head_oid();
         let mut branch_tips = vec![(tip, false, "main".to_string())];
 
         let (page1, _) =
-            load_more_commits_from_repo(&path, 0, None, 3, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(path, 0, None, 3, &branch_tips, &[], None).unwrap();
         let cursor = page1.last().map(|c| c.oid);
 
         // A new commit lands on main between the two page loads.
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-        let tree = repo
-            .find_tree(repo.index().unwrap().write_tree().unwrap())
-            .unwrap();
-        let new_tip = repo
-            .commit(
-                Some("refs/heads/main"),
-                &sig,
-                &sig,
-                "commit 5",
-                &tree,
-                &[&repo.find_commit(tip).unwrap()],
-            )
-            .unwrap();
-        branch_tips[0] = (new_tip, false, "main".to_string());
+        branch_tips[0] = (repo.commit("commit 5"), false, "main".to_string());
 
         let (page2, _) =
-            load_more_commits_from_repo(&path, 3, cursor, 5, &branch_tips, &[], None).unwrap();
+            load_more_commits_from_repo(path, 3, cursor, 5, &branch_tips, &[], None).unwrap();
 
         let loaded: std::collections::HashSet<_> =
             page1.iter().chain(page2.iter()).map(|c| c.oid).collect();
@@ -1343,14 +1292,15 @@ mod load_more_tests {
 
     #[test]
     fn refresh_peels_annotated_tags_and_reads_remote_head() {
-        let (_dir, path, tip) = make_repo_with_commits(1);
-        let repo = git2::Repository::open(&path).unwrap();
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-        let target = repo.find_object(tip, None).unwrap();
-        repo.tag("v1", &target, &sig, "release", false).unwrap();
-        repo.reference("refs/remotes/origin/main", tip, true, "test")
+        let repo = TempRepo::with_commits(1);
+        let tip = repo.head_oid();
+        let git = repo.repo();
+        let target = git.find_object(tip, None).unwrap();
+        git.tag("v1", &target, &repo.signature(), "release", false)
             .unwrap();
-        repo.reference_symbolic(
+        git.reference("refs/remotes/origin/main", tip, true, "test")
+            .unwrap();
+        git.reference_symbolic(
             "refs/remotes/origin/HEAD",
             "refs/remotes/origin/main",
             true,
@@ -1358,9 +1308,8 @@ mod load_more_tests {
         )
         .unwrap();
         drop(target);
-        drop(repo);
 
-        let data = gather_refresh_data_internal(&path, false, 10, None, None).unwrap();
+        let data = gather_refresh_data_internal(repo.path(), false, 10, None, None).unwrap();
         assert_eq!(data.default_branch.as_deref(), Some("main"));
         assert!(data
             .tags
@@ -1379,20 +1328,19 @@ mod load_more_tests {
 
     #[test]
     fn refresh_excludes_commits_reachable_only_from_stash_ref() {
-        let (_dir, path, _tip) = make_repo_with_commits(1);
-        let repo = git2::Repository::open(&path).unwrap();
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-        let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
-        let stash_only = repo
+        let repo = TempRepo::with_commits(1);
+        let git = repo.repo();
+        let tree_oid = git.index().unwrap().write_tree().unwrap();
+        let tree = git.find_tree(tree_oid).unwrap();
+        let sig = repo.signature();
+        let stash_only = git
             .commit(None, &sig, &sig, "stash only", &tree, &[])
             .unwrap();
-        repo.reference("refs/stash", stash_only, true, "test")
+        git.reference("refs/stash", stash_only, true, "test")
             .unwrap();
         drop(tree);
-        drop(repo);
 
-        let data = gather_refresh_data_internal(&path, false, 10, None, None).unwrap();
+        let data = gather_refresh_data_internal(repo.path(), false, 10, None, None).unwrap();
         assert!(!data
             .recent_commits
             .iter()
@@ -1401,21 +1349,23 @@ mod load_more_tests {
 
     #[test]
     fn author_filter_treats_regex_characters_literally() {
-        let (_dir, path, tip) = make_repo_with_commits(1);
-        let repo = git2::Repository::open(&path).unwrap();
-        let sig = git2::Signature::now("Special", "person+tag@example.com").unwrap();
-        let tree = repo.find_commit(tip).unwrap().tree().unwrap();
-        let parent = repo.find_commit(tip).unwrap();
-        let special = repo
-            .commit(Some("HEAD"), &sig, &sig, "special", &tree, &[&parent])
-            .unwrap();
-        drop(parent);
-        drop(tree);
-        drop(repo);
+        let repo = TempRepo::with_commits(1);
+        let special = repo.commit_file_as(
+            "Special",
+            "person+tag@example.com",
+            "special.txt",
+            "special\n",
+            "special",
+        );
 
-        let data =
-            gather_refresh_data_internal(&path, false, 10, None, Some("person+tag@example.com"))
-                .unwrap();
+        let data = gather_refresh_data_internal(
+            repo.path(),
+            false,
+            10,
+            None,
+            Some("person+tag@example.com"),
+        )
+        .unwrap();
         assert_eq!(data.recent_commits.len(), 1);
         assert_eq!(data.recent_commits[0].oid, special);
     }
@@ -1442,25 +1392,22 @@ mod load_more_tests {
 #[cfg(test)]
 mod is_merged_tests {
     use super::*;
-    use tempfile::TempDir;
-
-    fn configure_signature(repo: &Repository) {
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test").unwrap();
-        config.set_str("user.email", "test@test.com").unwrap();
-    }
+    use rgitui_test_support::TempRepo;
 
     fn empty_tree_oid(repo: &Repository) -> git2::Oid {
         repo.index().unwrap().write_tree().unwrap()
     }
 
+    /// Commit an empty tree onto an arbitrary ref, which is how these tests
+    /// draw a topology without caring about file contents.
     fn commit(
-        repo: &Repository,
+        fixture: &TempRepo,
         refname: &str,
         message: &str,
         parent: Option<git2::Oid>,
     ) -> git2::Oid {
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let repo = fixture.repo();
+        let sig = fixture.signature();
         let tree_oid = empty_tree_oid(repo);
         let tree = repo.find_tree(tree_oid).unwrap();
         let mut parents: Vec<git2::Commit> = Vec::new();
@@ -1472,8 +1419,9 @@ mod is_merged_tests {
             .unwrap()
     }
 
-    fn merge(repo: &Repository, into_ref: &str, from_ref: &str, message: &str) -> git2::Oid {
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+    fn merge(fixture: &TempRepo, into_ref: &str, from_ref: &str, message: &str) -> git2::Oid {
+        let repo = fixture.repo();
+        let sig = fixture.signature();
         let tree_oid = empty_tree_oid(repo);
         let tree = repo.find_tree(tree_oid).unwrap();
         let main_commit = repo
@@ -1505,13 +1453,12 @@ mod is_merged_tests {
     /// merge_base(branch_tip=B, main_tip=M) should equal B (B is ancestor of M).
     #[test]
     fn branch_merged_into_main_returns_true() {
-        let dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-        configure_signature(&repo);
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
 
-        let a = commit(&repo, "refs/heads/main", "A", None);
-        let b = commit(&repo, "refs/heads/branch", "B", Some(a));
-        let m = merge(&repo, "refs/heads/main", "refs/heads/branch", "Merge");
+        let a = commit(&fixture, "refs/heads/main", "A", None);
+        let b = commit(&fixture, "refs/heads/branch", "B", Some(a));
+        let m = merge(&fixture, "refs/heads/main", "refs/heads/branch", "Merge");
 
         // Verify B is a parent of M
         let m_commit = repo.find_commit(m).unwrap();
@@ -1530,13 +1477,12 @@ mod is_merged_tests {
     /// merge_base(branch_tip=B, main_tip=C) should NOT equal B.
     #[test]
     fn branch_not_merged_returns_false() {
-        let dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-        configure_signature(&repo);
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
 
-        let a = commit(&repo, "refs/heads/main", "A", None);
-        let b = commit(&repo, "refs/heads/branch", "B", Some(a));
-        let c = commit(&repo, "refs/heads/main", "C", Some(a));
+        let a = commit(&fixture, "refs/heads/main", "A", None);
+        let b = commit(&fixture, "refs/heads/branch", "B", Some(a));
+        let c = commit(&fixture, "refs/heads/main", "C", Some(a));
 
         let mb = repo.merge_base(b, c).unwrap();
         assert_ne!(
@@ -1555,16 +1501,15 @@ mod is_merged_tests {
     /// merge_base(branch_tip=B, main_tip=B) == B (same commit).
     #[test]
     fn fast_forward_merged_returns_true() {
-        let dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-        configure_signature(&repo);
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
 
-        let a = commit(&repo, "refs/heads/main", "A", None);
+        let a = commit(&fixture, "refs/heads/main", "A", None);
         // Create branch at A (same as main)
         repo.branch("branch", &repo.find_commit(a).unwrap(), false)
             .unwrap();
         // Advance branch to B
-        let b = commit(&repo, "refs/heads/branch", "B", Some(a));
+        let b = commit(&fixture, "refs/heads/branch", "B", Some(a));
 
         // Fast-forward: move main ref to branch tip
         let mut main_ref = repo.find_reference("refs/heads/main").unwrap();
@@ -1596,15 +1541,14 @@ mod is_merged_tests {
     /// merge_base(branch_tip=D, main_tip=C) should NOT equal D.
     #[test]
     fn main_advanced_after_branch_returns_false() {
-        let dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-        configure_signature(&repo);
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
 
-        let a = commit(&repo, "refs/heads/main", "A", None);
-        let d = commit(&repo, "refs/heads/branch", "D", Some(a));
-        let _b = commit(&repo, "refs/heads/main", "B", Some(a));
+        let a = commit(&fixture, "refs/heads/main", "A", None);
+        let d = commit(&fixture, "refs/heads/branch", "D", Some(a));
+        let _b = commit(&fixture, "refs/heads/main", "B", Some(a));
         let c = commit(
-            &repo,
+            &fixture,
             "refs/heads/main",
             "C",
             Some(
@@ -1626,17 +1570,15 @@ mod is_merged_tests {
 
     #[test]
     fn merged_status_is_computed_against_current_branch() {
-        let dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-        configure_signature(&repo);
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
 
-        let a = commit(&repo, "refs/heads/main", "A", None);
-        let _feature_tip = commit(&repo, "refs/heads/feature", "B", Some(a));
-        let _diverged_tip = commit(&repo, "refs/heads/diverged", "D", Some(a));
+        let a = commit(&fixture, "refs/heads/main", "A", None);
+        let _feature_tip = commit(&fixture, "refs/heads/feature", "B", Some(a));
+        let _diverged_tip = commit(&fixture, "refs/heads/diverged", "D", Some(a));
         repo.set_head("refs/heads/feature").unwrap();
-        drop(repo);
 
-        let data = gather_refresh_data_internal(dir.path(), false, 100, None, None).unwrap();
+        let data = gather_refresh_data_internal(fixture.path(), false, 100, None, None).unwrap();
         let main = data
             .branches
             .iter()

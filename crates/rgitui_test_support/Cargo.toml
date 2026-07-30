@@ -10,3 +10,5 @@ workspace = true
 [dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 rgitui_theme.workspace = true
+git2.workspace = true
+tempfile.workspace = true

@@ -225,8 +225,7 @@ fn parse_grep_output(raw: &str) -> Vec<SearchResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::TempDir;
+    use rgitui_test_support::TempRepo;
 
     // Unit tests for parse_grep_output — no git repo required.
     #[test]
@@ -381,43 +380,20 @@ mod tests {
         assert_eq!(results[0].content, "Download from ftp://server.com/file");
     }
 
-    fn make_test_repo() -> (TempDir, std::path::PathBuf) {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
-        let repo = git2::Repository::init(&path).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Alice").unwrap();
-        cfg.set_str("user.email", "alice@example.com").unwrap();
-        drop(cfg);
-
-        let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
-        let msg = "Initial commit\n";
-
-        // Create a file with search content.
-        fs::write(
-            path.join("hello.rs"),
-            "fn main() {\n    println!(\"hello\");\n}\n",
-        )
-        .unwrap();
-        fs::write(path.join("other.txt"), "nothing here\n").unwrap();
-
-        // Add files to index and commit.
-        let mut idx = repo.index().unwrap();
-        idx.add_path(std::path::Path::new("hello.rs")).unwrap();
-        idx.add_path(std::path::Path::new("other.txt")).unwrap();
-        idx.write().unwrap();
-        let tree_id = idx.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[])
-            .unwrap();
-
-        (dir, path)
+    fn make_test_repo() -> TempRepo {
+        let repo = TempRepo::init();
+        repo.write_file("hello.rs", "fn main() {\n    println!(\"hello\");\n}\n");
+        repo.write_file("other.txt", "nothing here\n");
+        repo.stage("hello.rs");
+        repo.stage("other.txt");
+        repo.commit("Initial commit\n");
+        repo
     }
 
     #[test]
     fn git_grep_finds_match() {
-        let (_dir, path) = make_test_repo();
-        let results = git_grep(&path, "println").unwrap();
+        let repo = make_test_repo();
+        let results = git_grep(repo.path(), "println").unwrap();
         assert_eq!(results.len(), 1, "expected 1 match, got {:?}", results);
         assert_eq!(
             results[0].line_number, 2,
@@ -433,15 +409,15 @@ mod tests {
 
     #[test]
     fn git_grep_multiple_matches() {
-        let (_dir, path) = make_test_repo();
-        let results = git_grep(&path, "fn").unwrap();
+        let repo = make_test_repo();
+        let results = git_grep(repo.path(), "fn").unwrap();
         assert_eq!(results.len(), 1, "expected 1 match, got {:?}", results);
     }
 
     #[test]
     fn git_grep_no_matches() {
-        let (_dir, path) = make_test_repo();
-        let results = git_grep(&path, "xyzzy").unwrap();
+        let repo = make_test_repo();
+        let results = git_grep(repo.path(), "xyzzy").unwrap();
         assert_eq!(results.len(), 0);
     }
 
@@ -449,30 +425,19 @@ mod tests {
     /// option. Without `-e` these turned into git flags and failed the search.
     #[test]
     fn git_grep_treats_leading_dash_as_a_pattern() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
-        let repo = git2::Repository::init(&path).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Alice").unwrap();
-        cfg.set_str("user.email", "alice@example.com").unwrap();
-        drop(cfg);
+        let repo = TempRepo::init();
+        repo.commit_file("flags.txt", "run with -v for verbose\n", "initial\n");
 
-        fs::write(path.join("flags.txt"), "run with -v for verbose\n").unwrap();
-        let mut idx = repo.index().unwrap();
-        idx.add_path(std::path::Path::new("flags.txt")).unwrap();
-        idx.write().unwrap();
-        let tree = repo.find_tree(idx.write_tree().unwrap()).unwrap();
-        let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "initial\n", &tree, &[])
-            .unwrap();
-
-        let results = git_grep(&path, "-v").unwrap();
+        let results = git_grep(repo.path(), "-v").unwrap();
         assert_eq!(results.len(), 1, "expected 1 match, got {:?}", results);
         assert!(results[0].content.contains("-v"));
 
         // An option-shaped pattern with no match is simply "no results", not an
         // error from git rejecting an unknown flag.
-        assert_eq!(git_grep(&path, "--upload-pack=echo").unwrap().len(), 0);
-        assert_eq!(git_grep(&path, "-f/etc/passwd").unwrap().len(), 0);
+        assert_eq!(
+            git_grep(repo.path(), "--upload-pack=echo").unwrap().len(),
+            0
+        );
+        assert_eq!(git_grep(repo.path(), "-f/etc/passwd").unwrap().len(), 0);
     }
 }
