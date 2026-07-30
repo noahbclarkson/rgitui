@@ -13,6 +13,11 @@
 //!
 //! When introducing a new dialog or overlay, decide which window it lives
 //! in and add Esc dismissal to that window's handler.
+//!
+//! The workspace's *global* shortcuts no longer live here: they are declared by
+//! `commands!` in [`crate::keymap::registry`] and dispatched as gpui actions, so
+//! users can rebind them from `keymap.json`. What is left is the Esc cascade and
+//! the view-local and panel-focus shortcuts, which Phase B will migrate too.
 
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 
@@ -21,6 +26,26 @@ use crate::{CommandId, ToastKind};
 use super::{BottomPanelMode, FocusedPanel, Workspace};
 
 impl Workspace {
+    /// Whether any overlay or dialog that suppresses panel shortcuts is open.
+    ///
+    /// Also drives the `modal` key context on the workspace root, which is how
+    /// `Workspace && !modal` keeps rebindable global shortcuts from firing while
+    /// a modal is up.
+    pub(super) fn any_overlay_active(&self, cx: &Context<Self>) -> bool {
+        self.overlays.command_palette.read(cx).is_visible()
+            || self.overlays.interactive_rebase.read(cx).is_visible()
+            || self.overlays.theme_editor.read(cx).is_visible()
+            || self.dialogs.branch_dialog.read(cx).is_visible()
+            || self.dialogs.tag_dialog.read(cx).is_visible()
+            || self.dialogs.worktree_dialog.read(cx).is_visible()
+            || self.dialogs.rename_dialog.read(cx).is_visible()
+            || self.overlays.repo_opener.read(cx).is_visible()
+            || self.dialogs.confirm_dialog.read(cx).is_visible()
+            || self.dialogs.stash_branch_dialog.read(cx).is_visible()
+            || self.overlays.global_search.read(cx).is_visible()
+            || self.overlays.shortcuts_help.read(cx).is_visible()
+    }
+
     pub(super) fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -121,34 +146,15 @@ impl Workspace {
             return;
         }
 
-        // Ctrl+Shift+T to open theme editor (Ctrl+9 as alternative)
-        if modifiers.secondary() && modifiers.shift && key == "t" {
-            self.execute_command(CommandId::OpenThemeEditor, cx);
-            return;
-        }
-        if modifiers.alt && !modifiers.secondary() && key == "9" {
-            self.execute_command(CommandId::OpenThemeEditor, cx);
-            return;
-        }
-
-        // When an overlay is active, only allow modal toggle shortcuts (below) and Escape (above).
-        // Block all panel-specific shortcuts (j/k, Alt+1/2/3/4, Tab, resize, etc.)
-        // TODO(audit): QUAL-10 — this hand-rolled dispatcher (plus the ~30 per-view
-        // on_key_down string-matchers) should migrate to GPUI actions!/KeyBinding with a
-        // data-driven, user-rebindable keymap, letting the focus/key_context tree resolve
-        // overlay precedence instead of this manual `any_overlay_active` gate.
-        let any_overlay_active = self.overlays.command_palette.read(cx).is_visible()
-            || self.overlays.interactive_rebase.read(cx).is_visible()
-            || self.overlays.theme_editor.read(cx).is_visible()
-            || self.dialogs.branch_dialog.read(cx).is_visible()
-            || self.dialogs.tag_dialog.read(cx).is_visible()
-            || self.dialogs.worktree_dialog.read(cx).is_visible()
-            || self.dialogs.rename_dialog.read(cx).is_visible()
-            || self.overlays.repo_opener.read(cx).is_visible()
-            || self.dialogs.confirm_dialog.read(cx).is_visible()
-            || self.dialogs.stash_branch_dialog.read(cx).is_visible()
-            || self.overlays.global_search.read(cx).is_visible()
-            || self.overlays.shortcuts_help.read(cx).is_visible();
+        // When an overlay is active, only allow Escape (above) plus the
+        // rebindable global actions, whose `!modal` context handles this for
+        // them. Block all panel-specific shortcuts (j/k, Alt+1/2/3/4, Tab,
+        // resize, etc.)
+        // TODO(audit): QUAL-10 (phase B) — the remaining per-view
+        // on_key_down string-matchers should also migrate to `commands!` +
+        // KeyBinding, letting the focus/key_context tree resolve overlay
+        // precedence instead of this manual `any_overlay_active` gate.
+        let any_overlay_active = self.any_overlay_active(cx);
 
         // Ctrl+Shift+F to toggle global search
         if !any_overlay_active && modifiers.secondary() && modifiers.shift && key == "f" {
@@ -165,12 +171,6 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            return;
-        }
-
-        // Ctrl+Shift+R to fetch
-        if !any_overlay_active && modifiers.secondary() && modifiers.shift && key == "r" {
-            self.execute_command(CommandId::Fetch, cx);
             return;
         }
 
@@ -193,52 +193,6 @@ impl Workspace {
                     g.toggle_search_focused(window, cx);
                 });
             }
-            return;
-        }
-
-        // Ctrl+G to generate AI commit message
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "g" {
-            self.execute_command(CommandId::AiMessage, cx);
-            return;
-        }
-
-        // Ctrl+Shift+P or Cmd+Shift+P to open command palette
-        if modifiers.secondary() && modifiers.shift && key == "p" {
-            self.save_focus(window, cx);
-            self.overlays.command_palette.update(cx, |cp, cx| {
-                cp.toggle(window, cx);
-            });
-            return;
-        }
-
-        // Ctrl+, to open settings
-        if modifiers.secondary() && key == "," {
-            self.save_focus(window, cx);
-            self.open_or_focus_settings(cx);
-            return;
-        }
-
-        // F5 to refresh
-        if !any_overlay_active && key == "f5" {
-            self.execute_command(CommandId::Refresh, cx);
-        }
-
-        // Ctrl+O to open repo opener
-        if modifiers.secondary() && key == "o" {
-            self.save_focus(window, cx);
-            self.overlays.repo_opener.update(cx, |ro, cx| {
-                ro.toggle(window, cx);
-            });
-            return;
-        }
-
-        // ? to toggle shortcuts help (without modifiers) — works even when
-        // command palette is open, since the palette shows '?' as a hint.
-        if key == "?" && !modifiers.control && !modifiers.platform && !modifiers.alt {
-            self.save_focus(window, cx);
-            self.overlays.shortcuts_help.update(cx, |sh, cx| {
-                sh.toggle(window, cx);
-            });
             return;
         }
 
@@ -435,95 +389,6 @@ impl Workspace {
             }
         }
 
-        // Ctrl+S to stage all
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "s" {
-            self.execute_command(CommandId::StageAll, cx);
-            return;
-        }
-
-        // Ctrl+Shift+S to unstage all
-        if !any_overlay_active && modifiers.secondary() && modifiers.shift && key == "s" {
-            self.execute_command(CommandId::UnstageAll, cx);
-            return;
-        }
-
-        // Ctrl+U to unstage all (alternative)
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "u" {
-            self.execute_command(CommandId::UnstageAll, cx);
-            return;
-        }
-
-        // Ctrl+B to create branch
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "b" {
-            self.execute_command(CommandId::CreateBranch, cx);
-            return;
-        }
-
-        // Ctrl+Shift+B to switch branch (focus sidebar for branch navigation)
-        if !any_overlay_active && modifiers.secondary() && modifiers.shift && key == "b" {
-            self.focus_panel(FocusedPanel::Sidebar, window, cx);
-            return;
-        }
-
-        // Ctrl+Enter to commit
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "enter" {
-            self.execute_command(CommandId::Commit, cx);
-            return;
-        }
-
-        // Ctrl+Z to stash save
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "z" {
-            self.execute_command(CommandId::StashSave, cx);
-            return;
-        }
-
-        // Ctrl+Shift+Z to stash pop
-        if !any_overlay_active && modifiers.secondary() && modifiers.shift && key == "z" {
-            self.execute_command(CommandId::StashPop, cx);
-            return;
-        }
-
-        // Ctrl+Tab to switch to next tab. Deliberately not the primary
-        // modifier: macOS reserves Cmd+Tab for the application switcher, so the
-        // WindowServer swallows it before the app sees it. Ctrl+Tab is also the
-        // native tab-cycling chord there.
-        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "tab" {
-            if !self.tabs.is_empty() {
-                self.active_tab = (self.active_tab + 1) % self.tabs.len();
-                cx.notify();
-            }
-            return;
-        }
-
-        // Ctrl+Shift+Tab to switch to previous tab. Ctrl for the same reason as
-        // Ctrl+Tab above.
-        if !any_overlay_active && modifiers.control && modifiers.shift && key == "tab" {
-            if !self.tabs.is_empty() {
-                if self.active_tab == 0 {
-                    self.active_tab = self.tabs.len() - 1;
-                } else {
-                    self.active_tab -= 1;
-                }
-                cx.notify();
-            }
-            return;
-        }
-
-        // Ctrl+W to close current tab
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "w" {
-            if !self.tabs.is_empty() {
-                self.close_tab(self.active_tab, cx);
-            }
-            return;
-        }
-
-        // Ctrl+H to return to workspace home. Deliberately not the primary
-        // modifier: macOS reserves Cmd+H for Hide Application.
-        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "h" {
-            self.go_home(cx);
-            return;
-        }
-
         // Alt+1/2/3/4 to focus sidebar/graph/detail/diff panel
         if !any_overlay_active && modifiers.alt && !modifiers.secondary() {
             match key {
@@ -541,22 +406,6 @@ impl Workspace {
                 }
                 "4" => {
                     self.focus_panel(FocusedPanel::DiffViewer, window, cx);
-                    return;
-                }
-                "5" => {
-                    self.execute_command(CommandId::ToggleIssues, cx);
-                    return;
-                }
-                "6" => {
-                    self.execute_command(CommandId::TogglePullRequests, cx);
-                    return;
-                }
-                "7" => {
-                    self.execute_command(CommandId::ToggleBranchHealth, cx);
-                    return;
-                }
-                "8" => {
-                    self.execute_command(CommandId::ToggleStashes, cx);
                     return;
                 }
                 _ => {}

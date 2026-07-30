@@ -602,6 +602,9 @@ impl Render for TextInput {
             } else {
                 "native-text-input"
             })
+            // Lets keybindings exclude text fields with `!TextInput`, so an
+            // unmodified single-key shortcut cannot steal a typed character.
+            .key_context("TextInput")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))

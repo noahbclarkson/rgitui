@@ -1,13 +1,56 @@
-use gpui::Context;
+use gpui::{Context, Window};
 
 use crate::{CommandId, CommitPanelEvent, ConfirmAction, ToastKind};
 
 use super::{
-    BottomPanelMode, ProjectTab, RightPanelMode, ViewCacheEntry, ViewCacheKey, ViewCaches,
-    Workspace,
+    BottomPanelMode, FocusedPanel, ProjectTab, RightPanelMode, ViewCacheEntry, ViewCacheKey,
+    ViewCaches, Workspace,
 };
 
 impl Workspace {
+    /// Entry point for keyboard-invoked commands.
+    ///
+    /// The generated `on_action` handlers (see [`crate::keymap::attach_actions`])
+    /// all land here. Commands that need a [`Window`] — to move focus or to
+    /// focus an overlay's input — are handled directly; everything else goes to
+    /// [`Self::execute_command`], which is also what the command palette calls.
+    pub(super) fn dispatch_command(
+        &mut self,
+        cmd: CommandId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match cmd {
+            CommandId::CommandPalette => {
+                self.save_focus(window, cx);
+                self.overlays.command_palette.update(cx, |palette, cx| {
+                    palette.toggle(window, cx);
+                });
+            }
+            CommandId::Settings => {
+                self.save_focus(window, cx);
+                self.open_or_focus_settings(cx);
+            }
+            CommandId::OpenRepo => {
+                self.save_focus(window, cx);
+                self.overlays.repo_opener.update(cx, |opener, cx| {
+                    opener.toggle(window, cx);
+                });
+            }
+            CommandId::Shortcuts => {
+                self.save_focus(window, cx);
+                self.overlays.shortcuts_help.update(cx, |help, cx| {
+                    help.toggle(window, cx);
+                });
+            }
+            // Switching branches means focusing the sidebar's branch list.
+            CommandId::SwitchBranch => {
+                self.focus_panel(FocusedPanel::Sidebar, window, cx);
+            }
+            cmd => self.execute_command(cmd, cx),
+        }
+    }
+
     pub(super) fn execute_command(&mut self, cmd: CommandId, cx: &mut Context<Self>) {
         match cmd {
             CommandId::Settings => {

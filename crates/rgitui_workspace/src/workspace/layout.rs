@@ -10,12 +10,25 @@ use rgitui_ui::{
     Spinner, SpinnerSize, Tab, TabBar, Tooltip,
 };
 
+use crate::keymap;
 use crate::{CommandId, StatusBar, TitleBar, ToastKind};
 
 use super::{
     BottomPanelMode, CommitInputResize, DetailPanelResize, DiffViewerResize, RightPanelMode,
     SidebarResize, ViewAvailability, Workspace,
 };
+
+/// Key context identifier for the workspace root.
+///
+/// Global bindings are scoped to it (see `commands!` in
+/// [`crate::keymap::registry`]); `WORKSPACE_MODAL_KEY_CONTEXT` adds `modal` so
+/// `Workspace && !modal` bindings stand down while an overlay is up.
+const WORKSPACE_KEY_CONTEXT: &str = "Workspace";
+/// Key context for the workspace root while an overlay or dialog is open.
+const WORKSPACE_MODAL_KEY_CONTEXT: &str = "Workspace modal";
+
+/// The `view` name whose `commands!` block the workspace root binds.
+const WORKSPACE_VIEW: &str = "Workspace";
 
 /// Resize bounds for the right detail panel, shared by the drag handle and the
 /// Ctrl+[ / Ctrl+] keyboard shortcuts so both input paths clamp identically.
@@ -56,6 +69,44 @@ impl Workspace {
     pub(super) fn rem_size_for_font_size(font_size: u32) -> gpui::Pixels {
         let clamped = font_size.clamp(MIN_UI_FONT_SIZE, MAX_UI_FONT_SIZE);
         px(clamped as f32 * BASELINE_REM_SIZE / DEFAULT_UI_FONT_SIZE as f32)
+    }
+
+    /// Key context for the workspace root element.
+    ///
+    /// `modal` is added while any overlay or dialog is open. Deriving it here
+    /// rather than from the overlays' own contexts means `!modal` holds even for
+    /// dialogs that do not take focus, matching the old `any_overlay_active`
+    /// gate exactly.
+    fn workspace_key_context(&self, cx: &Context<Self>) -> &'static str {
+        if self.any_overlay_active(cx) {
+            WORKSPACE_MODAL_KEY_CONTEXT
+        } else {
+            WORKSPACE_KEY_CONTEXT
+        }
+    }
+
+    /// The workspace root element, carrying the `Workspace` key context and one
+    /// `on_action` handler per `Workspace` command declared by `commands!`.
+    ///
+    /// Being on the root means the handlers are in the dispatch path of whatever
+    /// child holds focus, so a global shortcut works from any panel.
+    fn workspace_root(
+        &self,
+        cx: &mut Context<Self>,
+        ui_font: gpui::Font,
+        background: gpui::Hsla,
+    ) -> gpui::Stateful<gpui::Div> {
+        let root = div()
+            .id("workspace-root")
+            .key_context(self.workspace_key_context(cx))
+            .size_full()
+            .font(ui_font)
+            .bg(background)
+            .on_key_down(cx.listener(Self::handle_key_down));
+
+        keymap::attach_actions(root, WORKSPACE_VIEW, cx, |workspace, cmd, window, cx| {
+            workspace.dispatch_command(cmd, window, cx);
+        })
     }
 }
 
@@ -113,12 +164,8 @@ impl Render for Workspace {
 
         // If no tabs, show welcome screen
         if self.tabs.is_empty() {
-            return div()
-                .id("workspace-root")
-                .size_full()
-                .font(ui_font.clone())
-                .bg(colors.background)
-                .on_key_down(cx.listener(Self::handle_key_down))
+            let root = self.workspace_root(cx, ui_font.clone(), colors.background);
+            return root
                 .child(self.render_welcome_interactive(cx))
                 .child(self.toast_layer.clone())
                 .child(self.overlays.command_palette.clone())
@@ -406,13 +453,9 @@ impl Render for Workspace {
         let operation_output_bar = self.render_operation_output_bar(cx);
         let update_banner = self.render_update_banner(cx);
 
-        div()
-            .id("workspace-root")
-            .v_flex()
-            .size_full()
-            .font(ui_font)
-            .bg(colors.background)
-            .on_key_down(cx.listener(Self::handle_key_down))
+        let root = self.workspace_root(cx, ui_font, colors.background).v_flex();
+
+        root
             // Title bar
             .child({
                 let sidebar = active_tab.sidebar.clone();
