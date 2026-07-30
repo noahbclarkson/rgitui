@@ -34,3 +34,9 @@ smol.workspace = true
 semver.workspace = true
 urlencoding.workspace = true
 async-channel.workspace = true
+
+[dev-dependencies]
+# `test-support` unlocks gpui's headless test harness (TestApp, TestAppWindow,
+# keystroke/mouse simulation). Test builds only; normal builds are unaffected.
+gpui = { workspace = true, features = ["test-support"] }
+rgitui_test_support.workspace = true

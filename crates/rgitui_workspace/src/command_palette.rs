@@ -1606,4 +1606,61 @@ mod tests {
         // The command was constructed — verify no panic on creation
         assert_eq!(cmd.label, "Git: Pop Stash");
     }
+
+    /// View-level harness test: opens the palette in a real (headless) GPUI
+    /// test window and drives it entirely through simulated keystrokes,
+    /// proving that focus, key dispatch, and render-driven state updates work
+    /// end to end. This is the reference pattern for writing gpui view tests
+    /// in this codebase (see README_TESTING.md).
+    #[test]
+    fn palette_keyboard_navigation_in_test_window() {
+        use rgitui_test_support::ViewTest;
+
+        use super::{CommandContext, CommandPalette};
+
+        let mut window = ViewTest::open(|_window, cx| CommandPalette::new(cx));
+
+        // Open the palette; `toggle` focuses the query editor.
+        window.update(|palette, window, cx| {
+            palette.set_context(CommandContext {
+                has_remotes: true,
+                ..CommandContext::none()
+            });
+            palette.toggle(window, cx);
+        });
+        let unfiltered_count = window.read(|palette, _| {
+            assert!(palette.is_visible(), "toggle should show the palette");
+            palette.filtered_indices.len()
+        });
+        assert!(unfiltered_count > 1);
+
+        // Type into the focused query editor; the palette re-filters on change.
+        window.simulate_input("push");
+        window.read(|palette, cx| {
+            assert_eq!(palette.query_editor.read(cx).text(), "push");
+            let filtered_count = palette.filtered_indices.len();
+            assert!(filtered_count > 0, "matching commands should remain");
+            assert!(
+                filtered_count < unfiltered_count,
+                "typing should narrow the list ({filtered_count} vs {unfiltered_count})"
+            );
+            let top = &palette.commands[palette.filtered_indices[0].0];
+            assert!(
+                top.label.to_lowercase().contains("push"),
+                "expected a push command at the top, got {:?}",
+                top.label
+            );
+            assert_eq!(palette.selected_index, 0);
+        });
+
+        // Arrow keys bubble past the text input to the palette's key handler.
+        window.simulate_keystroke("down");
+        window.read(|palette, _| assert_eq!(palette.selected_index, 1));
+        window.simulate_keystroke("up");
+        window.read(|palette, _| assert_eq!(palette.selected_index, 0));
+
+        // Escape dismisses the palette.
+        window.simulate_keystroke("escape");
+        window.read(|palette, _| assert!(!palette.is_visible()));
+    }
 }

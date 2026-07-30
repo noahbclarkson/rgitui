@@ -10,6 +10,7 @@ members = [
     "crates/rgitui_diff",
     "crates/rgitui_ai",
     "crates/rgitui_settings",
+    "crates/rgitui_test_support",
 ]
 default-members = ["crates/rgitui"]
 
@@ -39,6 +40,7 @@ rgitui_graph = { path = "crates/rgitui_graph" }
 rgitui_diff = { path = "crates/rgitui_diff" }
 rgitui_ai = { path = "crates/rgitui_ai" }
 rgitui_settings = { path = "crates/rgitui_settings" }
+rgitui_test_support = { path = "crates/rgitui_test_support" }
 
 # Core
 anyhow = "1"

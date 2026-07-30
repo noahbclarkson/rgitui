@@ -1,0 +1,12 @@
+[package]
+name = "rgitui_test_support"
+version = "0.3.2"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+rgitui_theme.workspace = true
