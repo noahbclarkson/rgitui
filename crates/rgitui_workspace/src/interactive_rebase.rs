@@ -1,11 +1,14 @@
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, App, Bounds, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render,
+    canvas, div, px, App, Bounds, ClickEvent, Context, ElementId, Entity, EventEmitter,
+    FocusHandle, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render,
     SharedString, WeakEntity, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
-use rgitui_ui::{Button, ButtonSize, ButtonStyle, Label, LabelSize, Tooltip};
+use rgitui_ui::{Button, ButtonSize, ButtonStyle, Label, LabelSize, TextInput, Tooltip};
+
+use crate::keymap;
+use crate::CommandId;
 
 /// The action to perform on a commit during interactive rebase.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,8 +77,14 @@ pub struct InteractiveRebase {
     entries: Vec<RebaseEntry>,
     target_ref: String,
     selected_index: usize,
-    /// When editing a reword message, this holds (entry index, message, cursor position).
-    editing_reword: Option<(usize, String, usize)>,
+    /// Index of the entry whose reword message is being edited, if any.
+    ///
+    /// The message itself lives in [`Self::reword_editor`]: reusing the shared
+    /// text field means normal mode's `p`/`r`/`s`/`f`/`d` are simply scoped
+    /// `!TextInput` instead of being swallowed by a hand-rolled editor.
+    editing_reword: Option<usize>,
+    /// Text field backing reword editing.
+    reword_editor: Entity<TextInput>,
     focus_handle: FocusHandle,
 
     // Drag-to-reorder state
@@ -109,6 +118,11 @@ impl InteractiveRebase {
             target_ref: String::new(),
             selected_index: 0,
             editing_reword: None,
+            reword_editor: cx.new(|cx| {
+                let mut input = TextInput::new(cx);
+                input.set_placeholder("Enter new commit message...");
+                input
+            }),
             focus_handle: cx.focus_handle(),
             dragging_index: None,
             drag_hover_index: None,
@@ -170,13 +184,7 @@ impl InteractiveRebase {
     }
 
     fn execute(&mut self, cx: &mut Context<Self>) {
-        // Finalize any in-progress reword editing
-        if let Some((idx, ref msg, _)) = self.editing_reword {
-            if idx < self.entries.len() {
-                self.entries[idx].action = RebaseAction::Reword(msg.clone());
-            }
-        }
-        self.editing_reword = None;
+        self.commit_reword(cx);
 
         // Cancel any in-progress drag
         self.dragging_index = None;
@@ -189,45 +197,75 @@ impl InteractiveRebase {
         cx.notify();
     }
 
-    fn set_action_on_selected(&mut self, action: RebaseAction, cx: &mut Context<Self>) {
-        if let Some(entry) = self.entries.get_mut(self.selected_index) {
-            // If switching to reword, start editing
-            if matches!(&action, RebaseAction::Reword(_)) {
-                let msg = entry.original_message.clone();
-                let len = msg.len();
-                self.editing_reword = Some((self.selected_index, msg, len));
-            } else {
-                // If we were editing this entry's reword, cancel editing
-                if let Some((edit_idx, _, _)) = &self.editing_reword {
-                    if *edit_idx == self.selected_index {
-                        self.editing_reword = None;
-                    }
-                }
-            }
-            entry.action = action;
-            cx.notify();
-        }
+    fn set_action_on_selected(
+        &mut self,
+        action: RebaseAction,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_action_on(self.selected_index, action, window, cx);
     }
 
     fn cycle_action(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(entry) = self.entries.get_mut(index) {
-            let next = entry.action.next();
-            // If cycling to reword, start editing
-            if matches!(&next, RebaseAction::Reword(_)) {
-                let msg = entry.original_message.clone();
-                let len = msg.len();
-                self.editing_reword = Some((index, msg, len));
-            } else {
-                // If we were editing this entry's reword, cancel editing
-                if let Some((edit_idx, _, _)) = &self.editing_reword {
-                    if *edit_idx == index {
-                        self.editing_reword = None;
-                    }
+        let Some(entry) = self.entries.get(index) else {
+            return;
+        };
+        let next = entry.action.next();
+        self.set_action_on(index, next, None, cx);
+    }
+
+    /// Applies `action` to the entry at `index`, starting or stopping reword
+    /// editing to match. Passing a `window` focuses the reword field, which is
+    /// what makes the bare-letter action shortcuts stand down while typing.
+    fn set_action_on(
+        &mut self,
+        index: usize,
+        action: RebaseAction,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry) = self.entries.get_mut(index) else {
+            return;
+        };
+        let original_message = entry.original_message.clone();
+        let starts_reword = matches!(&action, RebaseAction::Reword(_));
+        entry.action = action;
+
+        if starts_reword {
+            self.editing_reword = Some(index);
+            self.reword_editor.update(cx, |editor, cx| {
+                editor.set_text(original_message, cx);
+                if let Some(window) = window {
+                    editor.focus(window, cx);
                 }
-            }
-            entry.action = next;
-            cx.notify();
+            });
+        } else if self.editing_reword == Some(index) {
+            self.editing_reword = None;
         }
+        cx.notify();
+    }
+
+    /// Writes the reword field's text back into the entry being edited and
+    /// leaves reword mode.
+    fn commit_reword(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.editing_reword.take() else {
+            return;
+        };
+        let message = self.reword_editor.read(cx).text().to_string();
+        if let Some(entry) = self.entries.get_mut(index) {
+            entry.action = RebaseAction::Reword(message);
+        }
+    }
+
+    /// Abandons reword editing, restoring the entry to `pick`.
+    fn abandon_reword(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.editing_reword.take() else {
+            return;
+        };
+        if let Some(entry) = self.entries.get_mut(index) {
+            entry.action = RebaseAction::Pick;
+        }
+        cx.notify();
     }
 
     fn move_entry_up(&mut self, cx: &mut Context<Self>) {
@@ -235,7 +273,7 @@ impl InteractiveRebase {
             self.entries
                 .swap(self.selected_index, self.selected_index - 1);
             // Update editing index if needed
-            if let Some((ref mut edit_idx, _, _)) = self.editing_reword {
+            if let Some(edit_idx) = self.editing_reword.as_mut() {
                 if *edit_idx == self.selected_index {
                     *edit_idx -= 1;
                 } else if *edit_idx == self.selected_index - 1 {
@@ -252,7 +290,7 @@ impl InteractiveRebase {
             self.entries
                 .swap(self.selected_index, self.selected_index + 1);
             // Update editing index if needed
-            if let Some((ref mut edit_idx, _, _)) = self.editing_reword {
+            if let Some(edit_idx) = self.editing_reword.as_mut() {
                 if *edit_idx == self.selected_index {
                     *edit_idx += 1;
                 } else if *edit_idx == self.selected_index + 1 {
@@ -340,13 +378,9 @@ impl InteractiveRebase {
         };
 
         if drag_idx != hover_idx {
-            let mut edit_idx: Option<usize> = self.editing_reword.as_ref().map(|(i, _, _)| *i);
+            let mut edit_idx = self.editing_reword;
             Self::apply_drag_reorder(&mut self.entries, drag_idx, hover_idx, &mut edit_idx);
-            if let Some(ref mut editing) = self.editing_reword {
-                if let Some(idx) = edit_idx {
-                    editing.0 = idx;
-                }
-            }
+            self.editing_reword = edit_idx;
             // Keep selection on the moved entry
             self.selected_index = hover_idx;
         }
@@ -357,105 +391,21 @@ impl InteractiveRebase {
         cx.notify();
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let keystroke = &event.keystroke;
-        let key = keystroke.key.as_str();
-        let modifiers = &keystroke.modifiers;
-
-        // If editing a reword message, handle text input
-        if let Some((_, ref mut msg, ref mut cursor)) = self.editing_reword {
-            match key {
-                "escape" => {
-                    let Some((idx, _, _)) = self.editing_reword.take() else {
-                        return;
-                    };
-                    if let Some(entry) = self.entries.get_mut(idx) {
-                        entry.action = RebaseAction::Pick;
-                    }
-                    cx.notify();
-                    return;
-                }
-                "enter" => {
-                    let Some((idx, msg, _)) = self.editing_reword.take() else {
-                        return;
-                    };
-                    if let Some(entry) = self.entries.get_mut(idx) {
-                        entry.action = RebaseAction::Reword(msg);
-                    }
-                    cx.notify();
-                    return;
-                }
-                "backspace" => {
-                    if *cursor > 0 {
-                        *cursor -= 1;
-                        msg.remove(*cursor);
-                    }
-                    cx.notify();
-                    return;
-                }
-                "delete" => {
-                    if *cursor < msg.len() {
-                        msg.remove(*cursor);
-                    }
-                    cx.notify();
-                    return;
-                }
-                "left" => {
-                    if *cursor > 0 {
-                        *cursor -= 1;
-                    }
-                    cx.notify();
-                    return;
-                }
-                "right" => {
-                    if *cursor < msg.len() {
-                        *cursor += 1;
-                    }
-                    cx.notify();
-                    return;
-                }
-                "home" => {
-                    *cursor = 0;
-                    cx.notify();
-                    return;
-                }
-                "end" => {
-                    *cursor = msg.len();
-                    cx.notify();
-                    return;
-                }
-                _ => {
-                    if let Some(key_char) = &keystroke.key_char {
-                        msg.insert_str(*cursor, key_char);
-                        *cursor += key_char.len();
-                        cx.notify();
-                        return;
-                    } else if key.len() == 1 && !modifiers.control && !modifiers.platform {
-                        let Some(ch) = key.chars().next() else {
-                            return;
-                        };
-                        if ch.is_ascii_graphic() || ch == ' ' {
-                            msg.insert(*cursor, ch);
-                            *cursor += 1;
-                            cx.notify();
-                            return;
-                        }
-                    }
-                    return;
-                }
-            }
-        }
-
-        // Normal mode key handling
-        match key {
-            "escape" => {
-                // Cancel any in-progress drag, then dismiss
-                if self.dragging_index.is_some() {
+    /// Runs a keyboard command scoped to `InteractiveRebase` or to the shared
+    /// `List` group.
+    ///
+    /// Reword editing needs no branch here: the message field is a real
+    /// [`TextInput`], so while it has focus the `!TextInput` half of the
+    /// bare-letter contexts keeps `p`/`r`/`s`/`f`/`d` out of the way, and Esc and
+    /// Enter fall through to the arms below only after it has taken what it needs.
+    fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            CommandId::Cancel => {
+                if self.editing_reword.is_some() {
+                    // Leaving reword mode is the first meaning of Esc here.
+                    self.abandon_reword(cx);
+                    self.focus_handle.focus(window, cx);
+                } else if self.dragging_index.is_some() {
                     self.dragging_index = None;
                     self.drag_hover_index = None;
                     cx.notify();
@@ -463,51 +413,52 @@ impl InteractiveRebase {
                     self.dismiss(cx);
                 }
             }
-            "enter" => {
-                self.execute(cx);
+            CommandId::Confirm => {
+                if self.editing_reword.is_some() {
+                    self.commit_reword(cx);
+                    self.focus_handle.focus(window, cx);
+                    cx.notify();
+                } else {
+                    self.execute(cx);
+                }
             }
-            "up" | "k" if !modifiers.secondary() => {
+            CommandId::SelectPrev => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
                     cx.notify();
                 }
             }
-            "down" | "j" if !modifiers.secondary() => {
+            CommandId::SelectNext => {
                 if self.selected_index + 1 < self.entries.len() {
                     self.selected_index += 1;
                     cx.notify();
                 }
             }
-            "up" if modifiers.secondary() => {
-                self.move_entry_up(cx);
+            CommandId::SelectFirst => {
+                self.selected_index = 0;
+                cx.notify();
             }
-            "down" if modifiers.secondary() => {
-                self.move_entry_down(cx);
+            CommandId::SelectLast => {
+                self.selected_index = self.entries.len().saturating_sub(1);
+                cx.notify();
             }
-            _ => {
-                // Action shortcuts
-                if !modifiers.control && !modifiers.platform {
-                    if let Some(key_char) = keystroke.key_char.as_deref().or(Some(key)) {
-                        match key_char {
-                            "p" => self.set_action_on_selected(RebaseAction::Pick, cx),
-                            "r" => {
-                                self.set_action_on_selected(RebaseAction::Reword(String::new()), cx)
-                            }
-                            "s" => self.set_action_on_selected(RebaseAction::Squash, cx),
-                            "f" => self.set_action_on_selected(RebaseAction::Fixup, cx),
-                            "d" => self.set_action_on_selected(RebaseAction::Drop, cx),
-                            _ => {}
-                        }
-                    }
-                }
+            CommandId::RebaseMoveUp => self.move_entry_up(cx),
+            CommandId::RebaseMoveDown => self.move_entry_down(cx),
+            CommandId::RebasePick => self.set_action_on_selected(RebaseAction::Pick, None, cx),
+            CommandId::RebaseReword => {
+                self.set_action_on_selected(RebaseAction::Reword(String::new()), Some(window), cx)
             }
+            CommandId::RebaseSquash => self.set_action_on_selected(RebaseAction::Squash, None, cx),
+            CommandId::RebaseFixup => self.set_action_on_selected(RebaseAction::Fixup, None, cx),
+            CommandId::RebaseDrop => self.set_action_on_selected(RebaseAction::Drop, None, cx),
+            _ => cx.propagate(),
         }
     }
 }
 
 impl Render for InteractiveRebase {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
 
         if !self.visible {
             return div().id("interactive-rebase").into_any_element();
@@ -578,20 +529,9 @@ impl Render for InteractiveRebase {
             let is_dropped = matches!(entry.action, RebaseAction::Drop);
 
             // Determine what message to display
-            let is_editing = self
-                .editing_reword
-                .as_ref()
-                .is_some_and(|(edit_idx, _, _)| *edit_idx == idx);
+            let is_editing = self.editing_reword == Some(idx);
 
-            let display_msg: SharedString = if let Some((_, ref msg, _)) =
-                self.editing_reword.as_ref().filter(|_| is_editing)
-            {
-                if msg.is_empty() {
-                    "Enter new commit message...".into()
-                } else {
-                    SharedString::from(msg.clone())
-                }
-            } else if let RebaseAction::Reword(ref msg) = entry.action {
+            let display_msg: SharedString = if let RebaseAction::Reword(ref msg) = entry.action {
                 if msg.is_empty() {
                     SharedString::from(entry.original_message.clone())
                 } else {
@@ -603,16 +543,6 @@ impl Render for InteractiveRebase {
 
             let msg_color = if is_dropped {
                 Color::Disabled
-            } else if is_editing {
-                if self
-                    .editing_reword
-                    .as_ref()
-                    .is_some_and(|(_, msg, _)| msg.is_empty())
-                {
-                    Color::Placeholder
-                } else {
-                    Color::Default
-                }
             } else {
                 Color::Default
             };
@@ -746,80 +676,7 @@ impl Render for InteractiveRebase {
 
             // Message (or reword editor)
             if is_editing {
-                let Some((_, ref msg, cursor)) = self.editing_reword.as_ref() else {
-                    continue;
-                };
-                let cursor = *cursor;
-                let text_color = colors.text;
-                let editor_bg = colors.editor_background;
-                let border_focused = colors.border_focused;
-
-                let mut input_row = div().h_flex().items_center().flex_1();
-
-                if msg.is_empty() {
-                    input_row = input_row
-                        .child(div().w(px(2.)).h(px(14.)).bg(text_color))
-                        .child(
-                            Label::new("Enter new commit message...")
-                                .size(LabelSize::Small)
-                                .color(Color::Placeholder),
-                        );
-                } else {
-                    let before = &msg[..cursor];
-                    let cursor_char = if cursor < msg.len() {
-                        &msg[cursor..cursor + 1]
-                    } else {
-                        ""
-                    };
-                    let after = if cursor + 1 < msg.len() {
-                        &msg[cursor + 1..]
-                    } else {
-                        ""
-                    };
-
-                    if !before.is_empty() {
-                        input_row = input_row.child(
-                            Label::new(SharedString::from(before.to_string()))
-                                .size(LabelSize::Small),
-                        );
-                    }
-                    if !cursor_char.is_empty() {
-                        input_row = input_row.child(
-                            div().bg(text_color).child(
-                                Label::new(SharedString::from(cursor_char.to_string()))
-                                    .size(LabelSize::Small)
-                                    .color(Color::Custom(gpui::Hsla {
-                                        h: 0.0,
-                                        s: 0.0,
-                                        l: 0.0,
-                                        a: 1.0,
-                                    })),
-                            ),
-                        );
-                    } else {
-                        input_row = input_row.child(div().w(px(2.)).h(px(14.)).bg(text_color));
-                    }
-                    if !after.is_empty() {
-                        input_row = input_row.child(
-                            Label::new(SharedString::from(after.to_string()))
-                                .size(LabelSize::Small),
-                        );
-                    }
-                }
-
-                row = row.child(
-                    div()
-                        .flex_1()
-                        .h(px(24.))
-                        .px_1()
-                        .bg(editor_bg)
-                        .border_1()
-                        .border_color(border_focused)
-                        .rounded(px(4.))
-                        .h_flex()
-                        .items_center()
-                        .child(input_row),
-                );
+                row = row.child(div().flex_1().child(self.reword_editor.clone()));
             } else {
                 // Strikethrough for dropped commits
                 if is_dropped {
@@ -857,7 +714,15 @@ impl Render for InteractiveRebase {
         let modal = div()
             .id("interactive-rebase-modal")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "InteractiveRebase List",
+                    &["Menu", "InteractiveRebase"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 |_: &gpui::MouseDownEvent, _, cx| {

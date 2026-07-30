@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, EventEmitter,
-    FocusHandle, KeyDownEvent, ListSizingBehavior, ObjectFit, Render, SharedString, WeakEntity,
+    div, img, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, Entity,
+    EventEmitter, FocusHandle, ListSizingBehavior, ObjectFit, Render, SharedString, WeakEntity,
     Window,
 };
 use rgitui_diff::DiffSource;
@@ -16,10 +16,12 @@ use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     AvatarCache, Badge, ButtonSize, ButtonStyle, DiffStat, Icon, IconButton, IconName, IconSize,
-    Label, LabelSize,
+    Label, LabelSize, TextInput, TextInputEvent,
 };
 
+use crate::keymap;
 use crate::markdown_view::render_markdown;
+use crate::CommandId;
 
 /// Rows the changed-files list keeps when the header and commit message leave it
 /// little room. Once it is this short the panel scrolls as one region instead.
@@ -446,6 +448,12 @@ pub struct DetailPanel {
     selected_file_index: Option<usize>,
     focus_handle: FocusHandle,
     copied_field: Option<(&'static str, Instant)>,
+    /// The changed-files filter field. Owns the text, the cursor and the
+    /// selection, so the panel's own key handling never has to ask whether the
+    /// user is typing.
+    file_search_editor: Entity<TextInput>,
+    /// Mirror of the filter field's text, kept in sync by its `Changed` event so
+    /// the pure filtering helpers can stay `cx`-free.
     file_search_query: Option<String>,
     file_search_active: bool,
     file_view_mode: FileViewMode,
@@ -459,6 +467,22 @@ impl EventEmitter<DetailPanelEvent> for DetailPanel {}
 
 impl DetailPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let file_search_editor = cx.new(|cx| {
+            let mut input = TextInput::new(cx);
+            input.set_placeholder("Filter files...");
+            input
+        });
+        cx.subscribe(
+            &file_search_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    this.file_search_query = (!text.is_empty()).then(|| text.clone());
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
         Self {
             commit: None,
             commit_diff: None,
@@ -468,6 +492,7 @@ impl DetailPanel {
             selected_file_index: None,
             focus_handle: cx.focus_handle(),
             copied_field: None,
+            file_search_editor,
             file_search_query: None,
             file_search_active: false,
             file_view_mode: FileViewMode::default(),
@@ -525,121 +550,81 @@ impl DetailPanel {
             .unwrap_or(0)
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-        let modifiers = &event.keystroke.modifiers;
+    /// Runs a keyboard command scoped to `DetailPanel` or to the shared `List`
+    /// group.
+    ///
+    /// There is no "am I typing?" branch: the filter field is a real
+    /// [`TextInput`], so the `!TextInput` half of the bare-letter contexts keeps
+    /// `v`, `[`, `]` and `/` out of the way while it has focus, and the arrow
+    /// keys keep working because they are not scoped that way.
+    fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
         let file_count = self.file_count();
 
-        // Commit prev/next navigation — works regardless of file count
-        match key {
-            "[" => {
+        match cmd {
+            // Commit navigation works regardless of file count.
+            CommandId::PrevCommitDetails => {
                 if self.commit.is_some() {
                     cx.emit(DetailPanelEvent::NavigatePrevCommit);
                 }
             }
-            "]" => {
+            CommandId::NextCommitDetails => {
                 if self.commit.is_some() {
                     cx.emit(DetailPanelEvent::NavigateNextCommit);
                 }
             }
-            _ => {}
-        }
-
-        // File search toggle: / or Ctrl+F
-        if (key == "/" && !modifiers.secondary()) || (modifiers.secondary() && key == "f") {
-            self.file_search_active = true;
-            cx.notify();
-            return;
-        }
-
-        // Escape clears search
-        if key == "escape" {
-            if self.file_search_query.is_some() || self.file_search_active {
-                self.file_search_query = None;
-                self.file_search_active = false;
+            CommandId::FileSearch => {
+                self.file_search_active = true;
+                self.file_search_editor
+                    .update(cx, |editor, cx| editor.focus(window, cx));
                 cx.notify();
             }
-            return;
-        }
-
-        // When search is active, capture printable characters as query
-        if self.file_search_active {
-            // Use key_char for printable input (same as TextInput)
-            if let Some(kc) = &event.keystroke.key_char {
-                let ch = kc.to_lowercase().chars().next().unwrap_or(' ');
-                let new_query = match &mut self.file_search_query {
-                    Some(q) => {
-                        q.push(ch);
-                        q.clone()
-                    }
-                    None => ch.to_string(),
-                };
-                self.file_search_query = Some(new_query);
-                cx.notify();
-            } else if key == "backspace" {
-                if let Some(q) = &mut self.file_search_query {
-                    q.pop();
-                    if q.is_empty() {
-                        self.file_search_query = None;
-                    }
-                }
-                cx.notify();
-            }
-            return;
-        }
-
-        if file_count == 0 {
-            return;
-        }
-
-        match key {
-            "j" | "down" => {
-                let next = match self.selected_file_index {
+            CommandId::Cancel => self.clear_file_search(cx),
+            _ if file_count == 0 => {}
+            CommandId::SelectNext => self.select_file(
+                match self.selected_file_index {
                     Some(i) if i + 1 < file_count => Some(i + 1),
                     None => Some(0),
                     other => other,
-                };
-                if next != self.selected_file_index {
-                    self.selected_file_index = next;
-                    self.emit_file_selected(cx);
-                    cx.notify();
-                }
-            }
-            "k" | "up" => {
-                let next = match self.selected_file_index {
+                },
+                cx,
+            ),
+            CommandId::SelectPrev => self.select_file(
+                match self.selected_file_index {
                     Some(i) if i > 0 => Some(i - 1),
-                    None if file_count > 0 => Some(0),
+                    None => Some(0),
                     other => other,
-                };
-                if next != self.selected_file_index {
-                    self.selected_file_index = next;
-                    self.emit_file_selected(cx);
-                    cx.notify();
-                }
-            }
-            "home" | "g" if self.selected_file_index != Some(0) => {
-                self.selected_file_index = Some(0);
-                self.emit_file_selected(cx);
-                cx.notify();
-            }
-            "end" => {
-                let last = file_count.saturating_sub(1);
-                if self.selected_file_index != Some(last) {
-                    self.selected_file_index = Some(last);
-                    self.emit_file_selected(cx);
-                    cx.notify();
-                }
-            }
-            "v" => {
-                self.request_file_view_mode_toggle(cx);
-            }
-            _ => {}
+                },
+                cx,
+            ),
+            CommandId::SelectFirst => self.select_file(Some(0), cx),
+            CommandId::SelectLast => self.select_file(Some(file_count - 1), cx),
+            CommandId::ToggleFileTree => self.request_file_view_mode_toggle(cx),
+            // A command this view does not own falls through to the next handler
+            // out, and finally to the focused text field.
+            _ => cx.propagate(),
         }
+    }
+
+    /// Moves the changed-files selection, emitting only on an actual change.
+    fn select_file(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+        if index == self.selected_file_index {
+            return;
+        }
+        self.selected_file_index = index;
+        self.emit_file_selected(cx);
+        cx.notify();
+    }
+
+    /// Closes the changed-files filter and clears its query.
+    fn clear_file_search(&mut self, cx: &mut Context<Self>) {
+        if self.file_search_query.is_none() && !self.file_search_active {
+            return;
+        }
+        self.file_search_query = None;
+        self.file_search_active = false;
+        self.file_search_editor
+            .update(cx, |editor, cx| editor.clear(cx));
+        cx.notify();
     }
 
     fn request_file_view_mode_toggle(&mut self, cx: &mut Context<Self>) {
@@ -1335,8 +1320,15 @@ impl Render for DetailPanel {
         let mut panel = div()
             .id("detail-panel")
             .track_focus(&self.focus_handle)
-            .key_context("DetailPanel")
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "DetailPanel List",
+                    &["Menu", "DetailPanel"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .v_flex()
             .size_full()
             .bg(colors.panel_background);
@@ -1819,38 +1811,24 @@ impl Render for DetailPanel {
                 ];
 
                 if is_searching {
-                    let query_clone = query_str.clone();
                     let search_input: gpui::AnyElement = div()
                         .flex_1()
                         .h_flex()
                         .items_center()
-                        .px_2()
                         .gap_1()
-                        .bg(colors.ghost_element_selected)
-                        .border_1()
-                        .border_color(colors.text_accent)
-                        .rounded(px(4.))
                         .child(
                             Icon::new(IconName::Search)
                                 .size(IconSize::XSmall)
                                 .color(Color::Muted),
                         )
-                        .child(
-                            div().flex_1().child(
-                                Label::new(query_clone.clone())
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Default),
-                            ),
-                        )
+                        .child(div().flex_1().child(self.file_search_editor.clone()))
                         .child(
                             IconButton::new("clear-search", IconName::X)
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Transparent)
                                 .tooltip("Clear search (Esc)")
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.file_search_query = None;
-                                    this.file_search_active = false;
-                                    cx.notify();
+                                    this.clear_file_search(cx);
                                 }))
                                 .into_any_element(),
                         )
