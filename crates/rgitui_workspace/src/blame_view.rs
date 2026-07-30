@@ -5,13 +5,16 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render, ScrollStrategy,
-    SharedString, UniformListScrollHandle, WeakEntity, Window,
+    ListSizingBehavior, MouseButton, MouseDownEvent, Render, ScrollStrategy, SharedString,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::BlameLine;
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
+
+use crate::keymap;
+use crate::CommandId;
 
 /// Events emitted by the blame view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,76 +100,46 @@ impl BlameView {
         map
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-        let modifiers = &event.keystroke.modifiers;
+    /// Runs a keyboard command scoped to `BlameView` or to the shared `List`
+    /// group. Esc is a *navigation* here — back to the diff — which is why the
+    /// view owns `BlameShowDiff` instead of leaning on `menu::Cancel`.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
         let line_count = self.lines.len();
-        if line_count == 0 {
-            return;
-        }
 
-        match key {
-            "j" | "down" => {
-                let next = self
-                    .highlighted_row
-                    .map(|r| (r + 1).min(line_count - 1))
-                    .unwrap_or(0);
-                self.highlighted_row = Some(next);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "k" | "up" => {
-                let prev = self
-                    .highlighted_row
-                    .map(|r| r.saturating_sub(1))
-                    .unwrap_or(0);
-                self.highlighted_row = Some(prev);
-                self.scroll_handle
-                    .scroll_to_item(prev, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "enter" => {
-                if let Some(row) = self.highlighted_row {
-                    if let Some(line) = self.lines.get(row) {
-                        let oid = line.entry.oid.to_string();
-                        cx.emit(BlameViewEvent::CommitSelected(oid));
-                    }
+        match cmd {
+            CommandId::BlameShowDiff => cx.emit(BlameViewEvent::SwitchToDiff),
+            CommandId::BlameShowHistory => cx.emit(BlameViewEvent::SwitchToHistory),
+            CommandId::Cancel => cx.emit(BlameViewEvent::Dismissed),
+            _ if line_count == 0 => {}
+            CommandId::SelectNext => self.highlight_row(
+                self.highlighted_row
+                    .map_or(0, |row| (row + 1).min(line_count - 1)),
+                ScrollStrategy::Nearest,
+                cx,
+            ),
+            CommandId::SelectPrev => self.highlight_row(
+                self.highlighted_row.map_or(0, |row| row.saturating_sub(1)),
+                ScrollStrategy::Nearest,
+                cx,
+            ),
+            CommandId::SelectFirst => self.highlight_row(0, ScrollStrategy::Top, cx),
+            CommandId::SelectLast => self.highlight_row(line_count - 1, ScrollStrategy::Bottom, cx),
+            CommandId::Confirm => {
+                if let Some(line) = self.highlighted_row.and_then(|row| self.lines.get(row)) {
+                    cx.emit(BlameViewEvent::CommitSelected(line.entry.oid.to_string()));
                 }
-                cx.stop_propagation();
             }
-            "escape" | "d" => {
-                cx.emit(BlameViewEvent::SwitchToDiff);
-                cx.stop_propagation();
-            }
-            "h" => {
-                cx.emit(BlameViewEvent::SwitchToHistory);
-                cx.stop_propagation();
-            }
-            "g" => {
-                if modifiers.shift {
-                    // G (Shift+G) — jump to last line
-                    let last = line_count - 1;
-                    self.highlighted_row = Some(last);
-                    self.scroll_handle
-                        .scroll_to_item(last, ScrollStrategy::Bottom);
-                } else {
-                    // g — jump to first line
-                    self.highlighted_row = Some(0);
-                    self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
-                }
-                cx.notify();
-                cx.stop_propagation();
-            }
-            _ => {}
+            // A command this view does not own falls through to the next handler
+            // out, and finally to the focused text field.
+            _ => cx.propagate(),
         }
+    }
+
+    /// Moves the keyboard highlight and scrolls it into view.
+    fn highlight_row(&mut self, row: usize, strategy: ScrollStrategy, cx: &mut Context<Self>) {
+        self.highlighted_row = Some(row);
+        self.scroll_handle.scroll_to_item(row, strategy);
+        cx.notify();
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -233,7 +206,7 @@ impl BlameView {
 
 impl Render for BlameView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
 
         if self.lines.is_empty() {
             return self.render_empty_state(cx);
@@ -460,8 +433,15 @@ impl Render for BlameView {
         div()
             .id("blame-view")
             .track_focus(&self.focus_handle)
-            .key_context("BlameView")
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "BlameView List",
+                    &["Menu", "BlameView"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .v_flex()
             .size_full()
             .bg(editor_bg)

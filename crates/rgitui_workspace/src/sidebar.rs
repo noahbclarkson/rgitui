@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, uniform_list, App, Bounds, ClickEvent, Context, ElementId, Entity,
-    EventEmitter, FocusHandle, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent,
-    MouseMoveEvent, Pixels, Point, Render, ScrollStrategy, SharedString, Size,
-    UniformListScrollHandle, WeakEntity, Window,
+    EventEmitter, FocusHandle, ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent,
+    Pixels, Point, Render, ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity,
+    Window,
 };
 use rgitui_git::{
     BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
@@ -22,6 +22,9 @@ use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, IconButton, IconName, Label, LabelSize, TextInput,
     TextInputEvent, Tooltip,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 /// Events from the sidebar.
 #[derive(Debug, Clone)]
@@ -645,147 +648,116 @@ impl Sidebar {
     }
 
     /// Handle keyboard events for sidebar navigation.
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-        let primary = event.keystroke.modifiers.secondary();
+    /// Runs a keyboard command scoped to `Sidebar` or to the shared `List` group.
+    fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
+        if cmd == CommandId::FilterBranches {
+            self.branch_filter_active = true;
+            self.branch_filter_editor
+                .update(cx, |editor, cx| editor.focus(window, cx));
+            cx.notify();
+            return;
+        }
 
         if self.cached_nav_items.is_empty() {
+            cx.propagate();
             return;
         }
 
-        let wants_filter = (key == "/" && !primary) || (key == "f" && primary);
-        if wants_filter && !self.branch_filter_active {
-            self.branch_filter_active = true;
-            self.branch_filter_editor.update(cx, |editor, cx| {
-                editor.focus(_window, cx);
-            });
-            cx.notify();
-            cx.stop_propagation();
+        let last = self.cached_nav_items.len().saturating_sub(1);
+        match cmd {
+            CommandId::Cancel => self.clear_branch_filter(cx),
+            // Bounded section lists follow keyboard selection through their own
+            // scroll handles; the outer sidebar still owns movement between
+            // section viewports.
+            CommandId::SelectPrev => {
+                self.select_row(self.keyboard_index.map_or(0, |i| i.saturating_sub(1)), cx)
+            }
+            CommandId::SelectNext => {
+                self.select_row(self.keyboard_index.map_or(0, |i| (i + 1).min(last)), cx)
+            }
+            CommandId::SelectFirst => self.select_row(0, cx),
+            CommandId::SelectLast => self.select_row(last, cx),
+            CommandId::Confirm => self.activate_keyboard_item(cx),
+            CommandId::ToggleStageRow => self.toggle_stage_selected_row(cx),
+            CommandId::DiscardRow => self.discard_selected_row(cx),
+            // A command this view does not own falls through to the next handler
+            // out, and finally to the focused text field.
+            _ => cx.propagate(),
+        }
+    }
+
+    /// Moves the keyboard selection and scrolls it into view.
+    fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.keyboard_index = Some(row);
+        self.scroll_keyboard_row_into_view();
+        cx.notify();
+    }
+
+    /// Closes the branch filter and restores the unfiltered lists.
+    fn clear_branch_filter(&mut self, cx: &mut Context<Self>) {
+        if !self.branch_filter_active && self.branch_filter.is_empty() {
             return;
         }
+        self.branch_filter_active = false;
+        self.branch_filter.clear();
+        self.branch_filter_editor
+            .update(cx, |editor, cx| editor.clear(cx));
+        self.rebuild_flattened_branches();
+        self.rebuild_nav_items();
+        cx.notify();
+    }
 
-        // Block Ctrl+F (graph search) when branch filter is active
-        // so Ctrl+F re-focuses the filter input instead.
-        if primary && self.branch_filter_active {
-            cx.stop_propagation();
+    /// Stages the selected unstaged file, or unstages the selected staged one.
+    fn toggle_stage_selected_row(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.selected_nav_item() else {
             return;
-        }
-
-        if primary {
-            return;
-        }
-
-        match key {
-            "escape" => {
-                if self.branch_filter_active || !self.branch_filter.is_empty() {
-                    self.branch_filter_active = false;
-                    self.branch_filter.clear();
-                    self.branch_filter_editor.update(cx, |editor, cx| {
-                        editor.clear(cx);
-                    });
-                    self.rebuild_flattened_branches();
-                    self.rebuild_nav_items();
-                    cx.notify();
-                    cx.stop_propagation();
+        };
+        match item {
+            SidebarItem::StagedFile(i) => {
+                if let Some(file) = self.staged.get(i) {
+                    cx.emit(SidebarEvent::UnstageFile(file.path.display().to_string()));
                 }
             }
-            // Bounded section lists follow keyboard selection through
-            // their own scroll handles; the outer sidebar still owns movement
-            // between section viewports.
-            "up" | "k" => {
-                let new_idx = match self.keyboard_index {
-                    Some(i) if i > 0 => i - 1,
-                    Some(_) => 0,
-                    None => 0,
-                };
-                self.keyboard_index = Some(new_idx);
-                self.scroll_keyboard_row_into_view();
-                cx.notify();
-            }
-            "down" | "j" => {
-                let max = self.cached_nav_items.len().saturating_sub(1);
-                let new_idx = match self.keyboard_index {
-                    Some(i) => (i + 1).min(max),
-                    None => 0,
-                };
-                self.keyboard_index = Some(new_idx);
-                self.scroll_keyboard_row_into_view();
-                cx.notify();
-            }
-            "enter" | " " => {
-                self.activate_keyboard_item(cx);
-            }
-            "home" => {
-                self.keyboard_index = Some(0);
-                self.scroll_keyboard_row_into_view();
-                cx.notify();
-            }
-            "end" => {
-                self.keyboard_index = Some(self.cached_nav_items.len().saturating_sub(1));
-                self.scroll_keyboard_row_into_view();
-                cx.notify();
-            }
-            "s" => {
-                if let Some(idx) = self.keyboard_index {
-                    if let Some(item) = self.cached_nav_items.get(idx).cloned() {
-                        match item {
-                            SidebarItem::StagedFile(i) => {
-                                if let Some(file) = self.staged.get(i) {
-                                    cx.emit(SidebarEvent::UnstageFile(
-                                        file.path.display().to_string(),
-                                    ));
-                                }
-                            }
-                            SidebarItem::UnstagedFile(i) => {
-                                if let Some(file) = self.unstaged.get(i) {
-                                    cx.emit(SidebarEvent::StageFile(
-                                        file.path.display().to_string(),
-                                    ));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            "x" | "delete" => {
-                if let Some(idx) = self.keyboard_index {
-                    if let Some(item) = self.cached_nav_items.get(idx).cloned() {
-                        match item {
-                            SidebarItem::Tag(i) => {
-                                if let Some(tag) = self.tags.get(i) {
-                                    cx.emit(SidebarEvent::TagDelete(tag.name.clone()));
-                                }
-                            }
-                            SidebarItem::Stash(i) => {
-                                cx.emit(SidebarEvent::StashDrop(i));
-                            }
-                            SidebarItem::LocalBranch(i) => {
-                                if let Some(branch) = self.local_branches.get(i) {
-                                    if !branch.is_head {
-                                        cx.emit(SidebarEvent::BranchDelete(branch.name.clone()));
-                                    }
-                                }
-                            }
-                            SidebarItem::UnstagedFile(i) => {
-                                if let Some(file) = self.unstaged.get(i) {
-                                    cx.emit(SidebarEvent::DiscardFile(
-                                        file.path.display().to_string(),
-                                    ));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+            SidebarItem::UnstagedFile(i) => {
+                if let Some(file) = self.unstaged.get(i) {
+                    cx.emit(SidebarEvent::StageFile(file.path.display().to_string()));
                 }
             }
             _ => {}
         }
+    }
+
+    /// Discards the selected change, or deletes the selected branch, tag or stash.
+    fn discard_selected_row(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.selected_nav_item() else {
+            return;
+        };
+        match item {
+            SidebarItem::Tag(i) => {
+                if let Some(tag) = self.tags.get(i) {
+                    cx.emit(SidebarEvent::TagDelete(tag.name.clone()));
+                }
+            }
+            SidebarItem::Stash(i) => cx.emit(SidebarEvent::StashDrop(i)),
+            SidebarItem::LocalBranch(i) => {
+                if let Some(branch) = self.local_branches.get(i) {
+                    if !branch.is_head {
+                        cx.emit(SidebarEvent::BranchDelete(branch.name.clone()));
+                    }
+                }
+            }
+            SidebarItem::UnstagedFile(i) => {
+                if let Some(file) = self.unstaged.get(i) {
+                    cx.emit(SidebarEvent::DiscardFile(file.path.display().to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The nav item the keyboard selection points at, if any.
+    fn selected_nav_item(&self) -> Option<SidebarItem> {
+        self.cached_nav_items.get(self.keyboard_index?).cloned()
     }
 
     /// Focus the sidebar for keyboard navigation.
@@ -1486,8 +1458,15 @@ impl Render for Sidebar {
         let panel = div()
             .id("sidebar-panel")
             .track_focus(&self.focus_handle)
-            .key_context("Sidebar")
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "Sidebar List",
+                    &["Menu", "Sidebar"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .v_flex()
             .w_full()
             .h_full()

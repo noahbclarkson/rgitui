@@ -4,12 +4,15 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, KeyDownEvent,
-    Render, ScrollHandle, SharedString, Window,
+    div, px, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, Render,
+    ScrollHandle, SharedString, Window,
 };
 use rgitui_git::SearchResult;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent};
+
+use crate::keymap;
+use crate::CommandId;
 
 const SEARCH_RESULT_ROW_HEIGHT: f32 = 28.0;
 const SEARCH_RESULTS_PAGE_SIZE: usize = 250;
@@ -269,80 +272,56 @@ impl GlobalSearchView {
         }
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
+    /// Runs a keyboard command scoped to the shared `List` group.
+    ///
+    /// Enter opens the highlighted match; with nothing highlighted it is
+    /// propagated so the query field's own submission runs the search.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
         let count = self.results.len();
 
-        match key {
-            "j" | "down" => {
+        match cmd {
+            CommandId::Cancel => cx.emit(GlobalSearchViewEvent::Dismissed),
+            CommandId::Confirm => match self.highlighted_row.and_then(|r| self.results.get(r)) {
+                Some(result) => cx.emit(GlobalSearchViewEvent::ResultSelected {
+                    path: result.path.to_string_lossy().to_string(),
+                    line_number: result.line_number,
+                }),
+                None => cx.propagate(),
+            },
+            _ if count == 0 => {}
+            CommandId::SelectNext => {
                 let next = self
                     .highlighted_row
-                    .map(|r| (r + 1).min(count.saturating_sub(1)))
-                    .unwrap_or(0);
-                if count > 0 {
-                    if next >= self.visible_result_count {
-                        self.visible_result_count =
-                            expanded_visible_result_count(self.visible_result_count, count);
-                    }
-                    self.highlighted_row = Some(next);
-                    self.scroll_handle.scroll_to_item(next);
-                    cx.notify();
+                    .map_or(0, |row| (row + 1).min(count - 1));
+                // Walking past the rendered page is an explicit request for more.
+                if next >= self.visible_result_count {
+                    self.visible_result_count =
+                        expanded_visible_result_count(self.visible_result_count, count);
                 }
-                cx.stop_propagation();
+                self.highlight_row(next, cx);
             }
-            "k" | "up" => {
-                let prev = self
-                    .highlighted_row
-                    .map(|r| r.saturating_sub(1))
-                    .unwrap_or(0);
-                if count > 0 {
-                    self.highlighted_row = Some(prev);
-                    self.scroll_handle.scroll_to_item(prev);
-                    cx.notify();
-                }
-                cx.stop_propagation();
+            CommandId::SelectPrev => {
+                let prev = self.highlighted_row.map_or(0, |row| row.saturating_sub(1));
+                self.highlight_row(prev, cx);
             }
-            "enter" => {
-                if let Some(row) = self.highlighted_row {
-                    if let Some(result) = self.results.get(row) {
-                        cx.emit(GlobalSearchViewEvent::ResultSelected {
-                            path: result.path.to_string_lossy().to_string(),
-                            line_number: result.line_number,
-                        });
-                    }
-                }
-                cx.stop_propagation();
+            CommandId::SelectFirst => self.highlight_row(0, cx),
+            CommandId::SelectLast => {
+                // Jumping to the final match is an explicit request to
+                // materialize the remaining pages.
+                self.visible_result_count = count;
+                self.highlight_row(count - 1, cx);
             }
-            "escape" => {
-                cx.emit(GlobalSearchViewEvent::Dismissed);
-                cx.stop_propagation();
-            }
-            "g" => {
-                if event.keystroke.modifiers.shift {
-                    // Shift+G — jump to last
-                    if count > 0 {
-                        // Jumping to the final match is an explicit request to
-                        // materialize the remaining pages.
-                        self.visible_result_count = count;
-                        self.highlighted_row = Some(count - 1);
-                        self.scroll_handle.scroll_to_item(count - 1);
-                        cx.notify();
-                    }
-                } else if count > 0 {
-                    // g — jump to first
-                    self.highlighted_row = Some(0);
-                    self.scroll_handle.scroll_to_item(0);
-                    cx.notify();
-                }
-                cx.stop_propagation();
-            }
-            _ => {}
+            // A command this view does not own falls through to the next handler
+            // out, and finally to the focused text field.
+            _ => cx.propagate(),
         }
+    }
+
+    /// Moves the keyboard highlight and scrolls it into view.
+    fn highlight_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.highlighted_row = Some(row);
+        self.scroll_handle.scroll_to_item(row);
+        cx.notify();
     }
 }
 
@@ -366,7 +345,16 @@ impl Render for GlobalSearchView {
             .min_h_0()
             .overflow_hidden()
             .bg(colors.editor_background)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .track_focus(&self.focus_handle)
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "SearchPanel List",
+                    &["Menu"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .child(self.render_toolbar(result_count, loading, cx));
 
         if content_state == SearchContentState::Results {

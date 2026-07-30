@@ -4,14 +4,16 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    InteractiveElement, KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent,
-    ParentElement, Render, ScrollStrategy, SharedString, Styled, UniformListScrollHandle,
-    WeakEntity, Window,
+    InteractiveElement, ListSizingBehavior, MouseButton, MouseDownEvent, ParentElement, Render,
+    ScrollStrategy, SharedString, Styled, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{BisectDecision, BisectLogEntry};
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
+
+use crate::keymap;
+use crate::CommandId;
 
 const BISECT_ICON: IconName = IconName::GitMerge;
 
@@ -90,69 +92,42 @@ impl BisectView {
         (good, bad, skip, start)
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-        let modifiers = &event.keystroke.modifiers;
+    /// Runs a keyboard command scoped to the shared `List` group.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
         let count = self.entries.len();
-        if count == 0 {
-            return;
-        }
 
-        match key {
-            "j" | "down" => {
-                let next = self
-                    .highlighted_row
-                    .map(|r| (r + 1).min(count - 1))
-                    .unwrap_or(0);
-                self.highlighted_row = Some(next);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "k" | "up" => {
-                let prev = self
-                    .highlighted_row
-                    .map(|r| r.saturating_sub(1))
-                    .unwrap_or(0);
-                self.highlighted_row = Some(prev);
-                self.scroll_handle
-                    .scroll_to_item(prev, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "enter" => {
-                if let Some(row) = self.highlighted_row {
-                    if let Some(entry) = self.entries.get(row) {
-                        cx.emit(BisectViewEvent::CommitSelected(entry.sha.clone()));
-                    }
+        match cmd {
+            CommandId::Cancel => cx.emit(BisectViewEvent::Dismissed),
+            _ if count == 0 => {}
+            CommandId::SelectNext => self.highlight_row(
+                self.highlighted_row
+                    .map_or(0, |row| (row + 1).min(count - 1)),
+                ScrollStrategy::Nearest,
+                cx,
+            ),
+            CommandId::SelectPrev => self.highlight_row(
+                self.highlighted_row.map_or(0, |row| row.saturating_sub(1)),
+                ScrollStrategy::Nearest,
+                cx,
+            ),
+            CommandId::SelectFirst => self.highlight_row(0, ScrollStrategy::Top, cx),
+            CommandId::SelectLast => self.highlight_row(count - 1, ScrollStrategy::Bottom, cx),
+            CommandId::Confirm => {
+                if let Some(entry) = self.highlighted_row.and_then(|row| self.entries.get(row)) {
+                    cx.emit(BisectViewEvent::CommitSelected(entry.sha.clone()));
                 }
-                cx.stop_propagation();
             }
-            "escape" => {
-                cx.emit(BisectViewEvent::Dismissed);
-                cx.stop_propagation();
-            }
-            "g" => {
-                if modifiers.shift {
-                    let last = count - 1;
-                    self.highlighted_row = Some(last);
-                    self.scroll_handle
-                        .scroll_to_item(last, ScrollStrategy::Bottom);
-                } else {
-                    self.highlighted_row = Some(0);
-                    self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
-                }
-                cx.notify();
-                cx.stop_propagation();
-            }
-            _ => {}
+            // A command this view does not own falls through to the next handler
+            // out, and finally to the focused text field.
+            _ => cx.propagate(),
         }
+    }
+
+    /// Moves the keyboard highlight and scrolls it into view.
+    fn highlight_row(&mut self, row: usize, strategy: ScrollStrategy, cx: &mut Context<Self>) {
+        self.highlighted_row = Some(row);
+        self.scroll_handle.scroll_to_item(row, strategy);
+        cx.notify();
     }
 
     fn render_header(&self, cx: &mut Context<Self>, count: usize) -> gpui::Div {
@@ -440,8 +415,15 @@ impl Render for BisectView {
         div()
             .id("bisect-view")
             .track_focus(&self.focus_handle)
-            .key_context("BisectView")
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "BisectView List",
+                    &["Menu", "BisectView"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .v_flex()
             .size_full()
             .bg(editor_bg)

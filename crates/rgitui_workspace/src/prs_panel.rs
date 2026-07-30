@@ -6,8 +6,8 @@ use futures::AsyncReadExt;
 use gpui::prelude::*;
 use gpui::{
     div, http_client::AsyncBody, px, uniform_list, App, ClickEvent, Context, ElementId, Entity,
-    EventEmitter, FocusHandle, KeyDownEvent, Render, ScrollStrategy, SharedString,
-    UniformListScrollHandle, WeakEntity, Window,
+    EventEmitter, FocusHandle, Render, ScrollStrategy, SharedString, UniformListScrollHandle,
+    WeakEntity, Window,
 };
 use http_client::HttpClient;
 
@@ -22,6 +22,9 @@ use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
     TextInput, TintColor,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 #[derive(Clone, Debug)]
 pub struct PullRequest {
@@ -733,58 +736,48 @@ impl PrsPanel {
             .child(el)
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-
+    /// Runs a keyboard command scoped to the shared `List` group.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
         if self.view_mode == PrsPanelView::Detail {
-            if key == "escape" {
+            if cmd == CommandId::Cancel {
                 self.go_back(cx);
-                cx.stop_propagation();
             }
             return;
         }
 
         let count = self.prs.len();
         if count == 0 {
+            cx.propagate();
             return;
         }
 
-        match key {
-            "down" | "j" => {
-                let next = self
-                    .selected_index
-                    .map(|i| (i + 1).min(count - 1))
-                    .unwrap_or(0);
-                self.selected_index = Some(next);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
+        match cmd {
+            CommandId::SelectNext => self.select_row(
+                self.selected_index.map_or(0, |i| (i + 1).min(count - 1)),
+                cx,
+            ),
+            CommandId::SelectPrev => {
+                self.select_row(self.selected_index.map_or(0, |i| i.saturating_sub(1)), cx)
             }
-            "up" | "k" => {
-                let prev = self
-                    .selected_index
-                    .map(|i| i.saturating_sub(1))
-                    .unwrap_or(0);
-                self.selected_index = Some(prev);
-                self.scroll_handle
-                    .scroll_to_item(prev, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "enter" => {
+            CommandId::SelectFirst => self.select_row(0, cx),
+            CommandId::SelectLast => self.select_row(count - 1, cx),
+            CommandId::Confirm => {
                 if let Some(index) = self.selected_index {
                     self.select_pr(index, cx);
-                    cx.stop_propagation();
                 }
             }
-            _ => {}
+            // A command this view does not own falls through to the next handler
+            // out, and finally to the focused text field.
+            _ => cx.propagate(),
         }
+    }
+
+    /// Moves the keyboard selection and scrolls it into view.
+    fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.selected_index = Some(row);
+        self.scroll_handle
+            .scroll_to_item(row, ScrollStrategy::Nearest);
+        cx.notify();
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1272,7 +1265,9 @@ impl Render for PrsPanel {
         let mut panel = div()
             .id("prs-panel")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(el, "PrsPanel List", &["Menu"], cx, Self::dispatch_command)
+            })
             .v_flex()
             .size_full()
             .bg(panel_bg);

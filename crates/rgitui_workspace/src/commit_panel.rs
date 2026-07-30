@@ -394,7 +394,6 @@ impl Render for CommitPanel {
                 div()
                     .id("commit-content-area")
                     .track_focus(&self.focus_handle)
-                    .key_context("CommitPanel")
                     .v_flex()
                     .flex_1()
                     .min_h(px(120.))

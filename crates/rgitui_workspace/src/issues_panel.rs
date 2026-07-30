@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    KeyDownEvent, Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
+    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, Render,
+    ScrollStrategy, SharedString, UniformListScrollHandle, Window,
 };
 
 use crate::github_api::GithubCollectionError;
@@ -18,6 +18,9 @@ use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
     TextInput, TextInputEvent,
 };
+
+use crate::keymap;
+use crate::CommandId;
 
 #[derive(Clone, Debug)]
 pub struct Issue {
@@ -661,64 +664,55 @@ impl IssuesPanel {
         .detach();
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-
+    /// Runs a keyboard command scoped to the shared `List` group.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
         if self.view_mode == IssuesPanelView::Detail {
-            if key == "escape" {
+            if cmd == CommandId::Cancel {
                 self.go_back(cx);
-                cx.stop_propagation();
             }
             return;
         }
 
-        // While searching the text input owns the keyboard; list navigation
-        // must not steal j/k or hijack Enter from the search submission.
-        if self.is_searching {
+        // While the search field is open it owns Enter; propagating lets the
+        // field's own submission run the search instead of opening a row.
+        if self.is_searching && cmd == CommandId::Confirm {
+            cx.propagate();
             return;
         }
 
         let count = self.issues.len();
         if count == 0 {
+            cx.propagate();
             return;
         }
 
-        match key {
-            "down" | "j" => {
-                let next = self
-                    .selected_index
-                    .map(|i| (i + 1).min(count - 1))
-                    .unwrap_or(0);
-                self.selected_index = Some(next);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
+        match cmd {
+            CommandId::SelectNext => self.select_row(
+                self.selected_index.map_or(0, |i| (i + 1).min(count - 1)),
+                cx,
+            ),
+            CommandId::SelectPrev => {
+                self.select_row(self.selected_index.map_or(0, |i| i.saturating_sub(1)), cx)
             }
-            "up" | "k" => {
-                let prev = self
-                    .selected_index
-                    .map(|i| i.saturating_sub(1))
-                    .unwrap_or(0);
-                self.selected_index = Some(prev);
-                self.scroll_handle
-                    .scroll_to_item(prev, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "enter" => {
+            CommandId::SelectFirst => self.select_row(0, cx),
+            CommandId::SelectLast => self.select_row(count - 1, cx),
+            CommandId::Confirm => {
                 if let Some(index) = self.selected_index {
                     self.select_issue(index, cx);
-                    cx.stop_propagation();
                 }
             }
-            _ => {}
+            // A command this view does not own falls through to the next handler
+            // out, and finally to the focused text field.
+            _ => cx.propagate(),
         }
+    }
+
+    /// Moves the keyboard selection and scrolls it into view.
+    fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.selected_index = Some(row);
+        self.scroll_handle
+            .scroll_to_item(row, ScrollStrategy::Nearest);
+        cx.notify();
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1207,7 +1201,15 @@ impl Render for IssuesPanel {
         let mut panel = div()
             .id("issues-panel")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "IssuesPanel List",
+                    &["Menu"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .v_flex()
             .size_full()
             .bg(panel_bg);

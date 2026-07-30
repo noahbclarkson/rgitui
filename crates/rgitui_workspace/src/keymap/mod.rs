@@ -28,6 +28,36 @@ use gpui::{App, Global};
 pub use loader::keymap_path;
 pub use registry::{actions, attach_actions, CommandId, CommandMeta, ALL_COMMANDS};
 
+/// Declares a view's key context and attaches the commands it handles.
+///
+/// `key_context` is the space-separated identifier list gpui matches binding
+/// contexts against — a view's own name plus any group it joins, e.g.
+/// `"BlameView List"`. `views` names the `commands!` blocks whose `on_action`
+/// handlers to install, typically the shared `"Menu"` block plus the view's own.
+///
+/// Every handler funnels into `dispatch`, so a view keeps one entry point for
+/// keyboard-invoked commands. gpui stops propagating an action at the first
+/// handler it reaches walking outwards from the focused element, which is what
+/// makes `Esc`, `Enter` and `j`/`k` mean the right thing per view without any
+/// `if focused` checks.
+pub fn bind_actions<E, V>(
+    element: E,
+    key_context: &'static str,
+    views: &[&'static str],
+    cx: &mut gpui::Context<V>,
+    dispatch: fn(&mut V, CommandId, &mut gpui::Window, &mut gpui::Context<V>),
+) -> E
+where
+    E: gpui::InteractiveElement,
+    V: 'static,
+{
+    let mut element = element.key_context(key_context);
+    for view in views {
+        element = attach_actions(element, view, cx, dispatch);
+    }
+    element
+}
+
 /// Debounce applied after a `keymap.json` change before reloading, so an editor
 /// writing the file in several steps triggers one reload.
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);

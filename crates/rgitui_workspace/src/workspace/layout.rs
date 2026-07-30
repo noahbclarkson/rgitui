@@ -27,9 +27,6 @@ const WORKSPACE_KEY_CONTEXT: &str = "Workspace";
 /// Key context for the workspace root while an overlay or dialog is open.
 const WORKSPACE_MODAL_KEY_CONTEXT: &str = "Workspace modal";
 
-/// The `view` name whose `commands!` block the workspace root binds.
-const WORKSPACE_VIEW: &str = "Workspace";
-
 /// Resize bounds for the right detail panel, shared by the drag handle and the
 /// Ctrl+[ / Ctrl+] keyboard shortcuts so both input paths clamp identically.
 pub(super) const MIN_DETAIL_PANEL_WIDTH: f32 = 180.0;
@@ -86,26 +83,37 @@ impl Workspace {
     }
 
     /// The workspace root element, carrying the `Workspace` key context and one
-    /// `on_action` handler per `Workspace` command declared by `commands!`.
+    /// `on_action` handler per command in the `Workspace`, `GraphView` and
+    /// `DiffViewer` blocks of `commands!`.
     ///
     /// Being on the root means the handlers are in the dispatch path of whatever
-    /// child holds focus, so a global shortcut works from any panel.
+    /// child holds focus, so a global shortcut works from any panel. The last two
+    /// blocks are bound here rather than on those views' own elements because
+    /// they live in crates that cannot name the generated actions (see
+    /// [`crate::keymap::registry`]); their bindings are still scoped to the
+    /// `GraphView` and `DiffViewer` key contexts, so they only fire when those
+    /// panels hold focus.
     fn workspace_root(
         &self,
         cx: &mut Context<Self>,
         ui_font: gpui::Font,
         background: gpui::Hsla,
     ) -> gpui::Stateful<gpui::Div> {
-        let root = div()
+        let mut root = div()
             .id("workspace-root")
             .key_context(self.workspace_key_context(cx))
             .size_full()
             .font(ui_font)
-            .bg(background)
-            .on_key_down(cx.listener(Self::handle_key_down));
+            .bg(background);
 
-        keymap::attach_actions(root, WORKSPACE_VIEW, cx, |workspace, cmd, window, cx| {
+        root = keymap::attach_actions(root, "Workspace", cx, |workspace, cmd, window, cx| {
             workspace.dispatch_command(cmd, window, cx);
+        });
+        root = keymap::attach_actions(root, "GraphView", cx, |workspace, cmd, window, cx| {
+            workspace.dispatch_graph_command(cmd, window, cx);
+        });
+        keymap::attach_actions(root, "DiffViewer", cx, |workspace, cmd, window, cx| {
+            workspace.dispatch_diff_command(cmd, window, cx);
         })
     }
 }

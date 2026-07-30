@@ -4,13 +4,16 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    KeyDownEvent, ListSizingBehavior, MouseButton, MouseDownEvent, Render, ScrollStrategy,
-    SharedString, UniformListScrollHandle, WeakEntity, Window,
+    ListSizingBehavior, MouseButton, MouseDownEvent, Render, ScrollStrategy, SharedString,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::CommitInfo;
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
+
+use crate::keymap;
+use crate::CommandId;
 
 /// Events emitted by the file history view.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,76 +87,46 @@ impl FileHistoryView {
         self.focus_handle.is_focused(window)
     }
 
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.as_str();
-        let modifiers = &event.keystroke.modifiers;
+    /// Runs a keyboard command scoped to `FileHistoryView` or to the shared
+    /// `List` group. Esc navigates back to the diff rather than dismissing, so
+    /// the view owns `HistoryShowDiff` instead of leaning on `menu::Cancel`.
+    fn dispatch_command(&mut self, cmd: CommandId, _window: &mut Window, cx: &mut Context<Self>) {
         let count = self.commits.len();
-        if count == 0 {
-            return;
-        }
 
-        match key {
-            "j" | "down" => {
-                let next = self
-                    .highlighted_row
-                    .map(|r| (r + 1).min(count - 1))
-                    .unwrap_or(0);
-                self.highlighted_row = Some(next);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "k" | "up" => {
-                let prev = self
-                    .highlighted_row
-                    .map(|r| r.saturating_sub(1))
-                    .unwrap_or(0);
-                self.highlighted_row = Some(prev);
-                self.scroll_handle
-                    .scroll_to_item(prev, ScrollStrategy::Nearest);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "enter" => {
-                if let Some(row) = self.highlighted_row {
-                    if let Some(commit) = self.commits.get(row) {
-                        let oid = commit.oid.to_string();
-                        cx.emit(FileHistoryViewEvent::CommitSelected(oid));
-                    }
+        match cmd {
+            CommandId::HistoryShowDiff => cx.emit(FileHistoryViewEvent::SwitchToDiff),
+            CommandId::HistoryShowBlame => cx.emit(FileHistoryViewEvent::SwitchToBlame),
+            CommandId::Cancel => cx.emit(FileHistoryViewEvent::Dismissed),
+            _ if count == 0 => {}
+            CommandId::SelectNext => self.highlight_row(
+                self.highlighted_row
+                    .map_or(0, |row| (row + 1).min(count - 1)),
+                ScrollStrategy::Nearest,
+                cx,
+            ),
+            CommandId::SelectPrev => self.highlight_row(
+                self.highlighted_row.map_or(0, |row| row.saturating_sub(1)),
+                ScrollStrategy::Nearest,
+                cx,
+            ),
+            CommandId::SelectFirst => self.highlight_row(0, ScrollStrategy::Top, cx),
+            CommandId::SelectLast => self.highlight_row(count - 1, ScrollStrategy::Bottom, cx),
+            CommandId::Confirm => {
+                if let Some(commit) = self.highlighted_row.and_then(|row| self.commits.get(row)) {
+                    cx.emit(FileHistoryViewEvent::CommitSelected(commit.oid.to_string()));
                 }
-                cx.stop_propagation();
             }
-            "escape" | "d" => {
-                cx.emit(FileHistoryViewEvent::SwitchToDiff);
-                cx.stop_propagation();
-            }
-            "b" => {
-                cx.emit(FileHistoryViewEvent::SwitchToBlame);
-                cx.stop_propagation();
-            }
-            "g" => {
-                if modifiers.shift {
-                    // G (Shift+G) — jump to last commit
-                    let last = count - 1;
-                    self.highlighted_row = Some(last);
-                    self.scroll_handle
-                        .scroll_to_item(last, ScrollStrategy::Bottom);
-                } else {
-                    // g — jump to first commit
-                    self.highlighted_row = Some(0);
-                    self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
-                }
-                cx.notify();
-                cx.stop_propagation();
-            }
-            _ => {}
+            // A command this view does not own falls through to the next handler
+            // out, and finally to the focused text field.
+            _ => cx.propagate(),
         }
+    }
+
+    /// Moves the keyboard highlight and scrolls it into view.
+    fn highlight_row(&mut self, row: usize, strategy: ScrollStrategy, cx: &mut Context<Self>) {
+        self.highlighted_row = Some(row);
+        self.scroll_handle.scroll_to_item(row, strategy);
+        cx.notify();
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -220,7 +193,7 @@ impl FileHistoryView {
 
 impl Render for FileHistoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
 
         if self.commits.is_empty() {
             return self.render_empty_state(cx);
@@ -398,8 +371,15 @@ impl Render for FileHistoryView {
         div()
             .id("file-history-view")
             .track_focus(&self.focus_handle)
-            .key_context("FileHistoryView")
-            .on_key_down(cx.listener(Self::handle_key_down))
+            .map(|el| {
+                keymap::bind_actions(
+                    el,
+                    "FileHistoryView List",
+                    &["Menu", "FileHistoryView"],
+                    cx,
+                    Self::dispatch_command,
+                )
+            })
             .v_flex()
             .size_full()
             .bg(editor_bg)

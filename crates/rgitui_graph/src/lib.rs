@@ -7,10 +7,9 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, img, point, px, uniform_list, Animation, AnimationExt, App, Bounds, ClickEvent,
-    Context, CursorStyle, ElementId, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder,
-    Pixels, Point, Render, ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity,
-    Window,
+    Context, CursorStyle, ElementId, Entity, EventEmitter, FocusHandle, ListSizingBehavior,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render,
+    ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel};
 use rgitui_settings::{GraphStyle, SettingsState};
@@ -997,107 +996,90 @@ impl GraphView {
     }
 
     /// Handle key events on the focused search input.
-    fn handle_graph_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self
-            .search_editor
-            .read(cx)
-            .focus_handle(cx)
-            .is_focused(window)
-        {
-            if event.keystroke.key.as_str() == "escape" {
-                // Cancel any in-progress drag-to-rebase.
-                self.dragging_oid = None;
-                self.drag_start_position = None;
-                self.drag_moved = false;
-                self.suppress_next_click = false;
-                self.show_search = false;
-                self.search_editor
-                    .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
-                self.filter_matches.clear();
-                self.filter_match_set_arc = Arc::new(HashSet::new());
-                self.current_match = 0;
-                self.graph_focus.focus(window, cx);
-                cx.notify();
-            }
+    /// Moves the selection by one row, scrolling it into view.
+    ///
+    /// The workspace drives this from the `graph::*` actions: this crate sits
+    /// below `rgitui_workspace` in the dependency graph and so cannot name them.
+    pub fn select_next_row(&mut self, cx: &mut Context<Self>) {
+        let total = self.total_list_items();
+        let next = match self.selected_index {
+            Some(index) if index + 1 < total => index + 1,
+            None if total > 0 => 0,
+            _ => return,
+        };
+        self.select_row(next, ScrollStrategy::Center, cx);
+    }
+
+    /// Moves the selection up one row, scrolling it into view.
+    pub fn select_prev_row(&mut self, cx: &mut Context<Self>) {
+        let next = match self.selected_index {
+            Some(index) if index > 0 => index - 1,
+            None if self.total_list_items() > 0 => 0,
+            _ => return,
+        };
+        self.select_row(next, ScrollStrategy::Center, cx);
+    }
+
+    /// Selects the newest commit.
+    pub fn select_first_row(&mut self, cx: &mut Context<Self>) {
+        if self.total_list_items() > 0 {
+            self.select_row(0, ScrollStrategy::Top, cx);
+        }
+    }
+
+    /// Selects the oldest loaded commit.
+    pub fn select_last_row(&mut self, cx: &mut Context<Self>) {
+        let total = self.total_list_items();
+        if total > 0 {
+            self.select_row(total - 1, ScrollStrategy::Center, cx);
+        }
+    }
+
+    fn select_row(&mut self, index: usize, strategy: ScrollStrategy, cx: &mut Context<Self>) {
+        self.select_list_index(index, cx);
+        self.scroll_handle.scroll_to_item(index, strategy);
+    }
+
+    /// Closes the search field, or dismisses the context menu.
+    ///
+    /// Also cancels an in-progress drag-to-rebase, which a stray Esc must not
+    /// leave half-applied.
+    pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dragging_oid = None;
+        self.drag_start_position = None;
+        self.drag_moved = false;
+        self.suppress_next_click = false;
+
+        if self.show_search {
+            self.show_search = false;
+            self.search_editor
+                .update(cx, |editor: &mut rgitui_ui::TextInput, cx| editor.clear(cx));
+            self.filter_matches.clear();
+            self.filter_match_set_arc = Arc::new(HashSet::new());
+            self.current_match = 0;
+            self.graph_focus.focus(window, cx);
+            cx.notify();
             return;
         }
-        let keystroke = &event.keystroke;
-        let key = keystroke.key.as_str();
-        // The platform's primary modifier: Command on macOS, Control elsewhere.
-        // Treating both as interchangeable made the Windows key act as Control.
-        let primary = keystroke.modifiers.secondary();
 
-        let total = self.total_list_items();
-        match key {
-            "j" | "down" if !primary => {
-                let next = match self.selected_index {
-                    Some(i) if i + 1 < total => i + 1,
-                    None if total > 0 => 0,
-                    _ => return,
-                };
-                self.select_list_index(next, cx);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Center);
-            }
-            "k" | "up" if !primary => {
-                let next = match self.selected_index {
-                    Some(i) if i > 0 => i - 1,
-                    None if total > 0 => 0,
-                    _ => return,
-                };
-                self.select_list_index(next, cx);
-                self.scroll_handle
-                    .scroll_to_item(next, ScrollStrategy::Center);
-            }
-            "g" if !primary && !keystroke.modifiers.shift
-                && total > 0 => {
-                    self.select_list_index(0, cx);
-                    self.scroll_handle
-                        .scroll_to_item(0, ScrollStrategy::Top);
-                }
-            "g" if keystroke.modifiers.shift
-                && total > 0 => {
-                    let last = total - 1;
-                    self.select_list_index(last, cx);
-                    self.scroll_handle
-                        .scroll_to_item(last, ScrollStrategy::Center);
-                }
-            "end"
-                if total > 0 => {
-                    let last = total - 1;
-                    self.select_list_index(last, cx);
-                    self.scroll_handle
-                        .scroll_to_item(last, ScrollStrategy::Center);
-                }
-            "home"
-                if total > 0 => {
-                    self.select_list_index(0, cx);
-                    self.scroll_handle
-                        .scroll_to_item(0, ScrollStrategy::Top);
-                }
-            "/" if !primary => {
-                self.show_search = true;
-                self.search_editor.update(cx, |e: &mut rgitui_ui::TextInput, cx| e.focus(window, cx));
-                cx.notify();
-            }
-            "escape"
-                // Dismiss context menu or deselect
-                if self.context_menu.is_some() => {
-                    self.dismiss_context_menu(cx);
-                }
-            "y" | "Y" if !primary && !keystroke.modifiers.shift => {
-                // Copy SHA of selected commit (standard GitKraken shortcut)
-                if let Some(commit) = self.selected_commit() {
-                    let sha = format!("{}", commit.oid);
-                    cx.emit(GraphViewEvent::CopyCommitSha(sha));
-                }
-            }
-            _ => {}
+        if self.context_menu.is_some() {
+            self.dismiss_context_menu(cx);
+        }
+    }
+
+    /// Copies the selected commit's SHA to the clipboard.
+    pub fn copy_selected_sha(&mut self, cx: &mut Context<Self>) {
+        if let Some(commit) = self.selected_commit() {
+            let sha = commit.oid.to_string();
+            cx.emit(GraphViewEvent::CopyCommitSha(sha));
+        }
+    }
+
+    /// Copies the selected commit's message to the clipboard.
+    pub fn copy_selected_message(&mut self, cx: &mut Context<Self>) {
+        if let Some(commit) = self.selected_commit() {
+            let message = commit.message.clone();
+            cx.emit(GraphViewEvent::CopyCommitMessage(message));
         }
     }
 }
@@ -2216,8 +2198,9 @@ impl Render for GraphView {
         let mut container = div()
             .id("graph-view")
             .track_focus(&self.graph_focus)
+            // Bindings scoped to `GraphView` resolve to `graph::*` actions the
+            // workspace root handles; this crate cannot name them itself.
             .key_context("GraphView")
-            .on_key_down(cx.listener(Self::handle_graph_key_down))
             .relative()
             .v_flex()
             .size_full()

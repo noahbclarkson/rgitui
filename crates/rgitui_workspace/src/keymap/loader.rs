@@ -122,8 +122,8 @@ pub fn default_specs() -> Vec<BindingSpec> {
     ALL_COMMANDS
         .iter()
         .flat_map(|meta| {
-            meta.default_keystrokes.iter().map(|keystrokes| {
-                BindingSpec::default_binding(keystrokes, meta.context, meta.action_name)
+            meta.default_bindings.iter().map(|(keystrokes, context)| {
+                BindingSpec::default_binding(keystrokes, context, meta.action_name)
             })
         })
         .collect()

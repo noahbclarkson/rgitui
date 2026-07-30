@@ -31,14 +31,44 @@ fn views() -> Vec<&'static str> {
     views
 }
 
+/// Escapes a value for a Markdown table cell.
+///
+/// GFM splits table rows on `|` even inside a code span, so an `||` context
+/// predicate would silently break the row it sits in.
+fn table_cell(value: &str) -> String {
+    value.replace('|', "\\|")
+}
+
 /// Renders a command's default keystrokes for a Markdown table cell.
 fn keystroke_cell(meta: &CommandMeta) -> String {
-    if meta.default_keystrokes.is_empty() {
+    if meta.default_bindings.is_empty() {
         return "_unbound_".to_owned();
     }
-    meta.default_keystrokes
+    meta.default_bindings
         .iter()
-        .map(|keystroke| format!("`{keystroke}`"))
+        .map(|(keystroke, _)| format!("`{}`", table_cell(keystroke)))
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+/// Renders the key contexts a command's default bindings are scoped to.
+///
+/// Keystrokes of one command may differ here — a vim-style letter usually
+/// carries `&& !TextInput` where its arrow-key twin does not — so each distinct
+/// context is listed once, in binding order.
+fn context_cell(meta: &CommandMeta) -> String {
+    let mut contexts: Vec<&'static str> = Vec::new();
+    for (_, context) in meta.default_bindings {
+        if !contexts.contains(context) {
+            contexts.push(context);
+        }
+    }
+    if contexts.is_empty() {
+        return "—".to_owned();
+    }
+    contexts
+        .iter()
+        .map(|context| format!("`{}`", table_cell(context)))
         .collect::<Vec<_>>()
         .join(" or ")
 }
@@ -89,13 +119,14 @@ pub fn keybindings_markdown() -> String {
 
     for view in views() {
         let _ = write!(out, "\n## {view}\n\n");
-        out.push_str("| Keystroke | Action | Description |\n");
-        out.push_str("| --- | --- | --- |\n");
+        out.push_str("| Keystroke | Context | Action | Description |\n");
+        out.push_str("| --- | --- | --- | --- |\n");
         for meta in ALL_COMMANDS.iter().filter(|meta| meta.view == view) {
             let _ = writeln!(
                 out,
-                "| {} | `{}` | {} |",
+                "| {} | {} | `{}` | {} |",
                 keystroke_cell(meta),
+                context_cell(meta),
                 meta.action_name,
                 meta.description()
             );
@@ -105,13 +136,23 @@ pub fn keybindings_markdown() -> String {
     let _ = write!(
         out,
         "\n## Key contexts\n\n\
+         A binding fires when its context matches somewhere on the path from the \
+         focused element to the window root, and the deepest matching binding \
+         wins. That is what lets one keystroke mean different things in different \
+         panels without any `if focused` checks.\n\n\
          | Context | Set on |\n\
          | --- | --- |\n\
          | `Workspace` | the workspace root, so it is always in scope |\n\
+         | `SettingsWindow` | the settings window root |\n\
          | `modal` | added to the workspace root while any overlay or dialog is open |\n\
-         | `TextInput` | any focused text field, so single-key shortcuts do not steal typing |\n\
+         | `TextInput` | any text field, so single-key shortcuts do not steal typing |\n\
+         | `List` | every panel, picker and dialog that owns a row selection |\n\
+         | a view name | the panel, overlay or dialog of that name — see the tables above |\n\
          \n\
-         Contexts combine with `&&`, `||` and `!`, and `>` matches a descendant.\n"
+         Contexts combine with `&&`, `||` and `!`, and `>` matches a descendant. \
+         `!TextInput` is false whenever a text field is anywhere on the focus \
+         path, which is why the vim-style letters carry it and the arrow keys \
+         do not.\n"
     );
 
     out
@@ -278,6 +319,25 @@ mod tests {
             include_str!("../../../../docs/keymap.schema.json"),
             &keymap_json_schema(),
         );
+    }
+
+    /// A `||` context predicate must not split the table row it sits in.
+    #[test]
+    fn table_cells_escape_the_pipe_that_would_split_a_row() {
+        assert_eq!(
+            table_cell("Workspace || SettingsWindow"),
+            "Workspace \\|\\| SettingsWindow"
+        );
+
+        let markdown = keybindings_markdown();
+        for line in markdown.lines().filter(|line| line.starts_with('|')) {
+            let without_escapes = line.replace("\\|", "");
+            assert!(
+                !without_escapes.contains("||"),
+                "this table row contains an unescaped `||`, which splits it into empty cells: \
+                 {line}"
+            );
+        }
     }
 
     #[test]

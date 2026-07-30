@@ -299,6 +299,238 @@
         {
           "const": "rgitui::CloseTab",
           "description": "Close the active repository tab. Command id: `close_tab`."
+        },
+        {
+          "const": "rgitui::FocusSidebar",
+          "description": "Move keyboard focus to the sidebar. Command id: `focus_sidebar`."
+        },
+        {
+          "const": "rgitui::FocusGraph",
+          "description": "Move keyboard focus to the commit graph. Command id: `focus_graph`."
+        },
+        {
+          "const": "rgitui::FocusDetailPanel",
+          "description": "Move keyboard focus to the commit detail panel. Command id: `focus_detail_panel`."
+        },
+        {
+          "const": "rgitui::FocusDiffViewer",
+          "description": "Move keyboard focus to the diff viewer. Command id: `focus_diff_viewer`."
+        },
+        {
+          "const": "rgitui::FocusNextPanel",
+          "description": "Move keyboard focus to the next panel. Command id: `focus_next_panel`."
+        },
+        {
+          "const": "rgitui::FocusPrevPanel",
+          "description": "Move keyboard focus to the previous panel. Command id: `focus_prev_panel`."
+        },
+        {
+          "const": "rgitui::ShrinkDetailPanel",
+          "description": "Narrow the detail panel. Command id: `shrink_detail_panel`."
+        },
+        {
+          "const": "rgitui::GrowDetailPanel",
+          "description": "Widen the detail panel. Command id: `grow_detail_panel`."
+        },
+        {
+          "const": "rgitui::ShrinkDiffViewer",
+          "description": "Shorten the diff viewer. Command id: `shrink_diff_viewer`."
+        },
+        {
+          "const": "rgitui::GrowDiffViewer",
+          "description": "Heighten the diff viewer. Command id: `grow_diff_viewer`."
+        },
+        {
+          "const": "menu::Cancel",
+          "description": "Dismiss the focused overlay, dialog, search or selection. Command id: `cancel`."
+        },
+        {
+          "const": "menu::Confirm",
+          "description": "Activate the selected row, or submit the focused dialog. Command id: `confirm`."
+        },
+        {
+          "const": "menu::SelectNext",
+          "description": "Move the selection down one row. Command id: `select_next`."
+        },
+        {
+          "const": "menu::SelectPrev",
+          "description": "Move the selection up one row. Command id: `select_prev`."
+        },
+        {
+          "const": "menu::SelectFirst",
+          "description": "Move the selection to the first row. Command id: `select_first`."
+        },
+        {
+          "const": "menu::SelectLast",
+          "description": "Move the selection to the last row. Command id: `select_last`."
+        },
+        {
+          "const": "graph::GraphSelectNext",
+          "description": "Select the next commit in the graph. Command id: `graph_select_next`."
+        },
+        {
+          "const": "graph::GraphSelectPrev",
+          "description": "Select the previous commit in the graph. Command id: `graph_select_prev`."
+        },
+        {
+          "const": "graph::GraphSelectFirst",
+          "description": "Select the newest commit in the graph. Command id: `graph_select_first`."
+        },
+        {
+          "const": "graph::GraphSelectLast",
+          "description": "Select the oldest loaded commit in the graph. Command id: `graph_select_last`."
+        },
+        {
+          "const": "graph::GraphCancel",
+          "description": "Close the graph search, or dismiss the graph context menu. Command id: `graph_cancel`."
+        },
+        {
+          "const": "graph::CopyCommitSha",
+          "description": "Copy the selected commit's SHA to the clipboard. Command id: `copy_commit_sha`."
+        },
+        {
+          "const": "graph::CopyCommitMessage",
+          "description": "Copy the selected commit's message to the clipboard. Command id: `copy_commit_message`."
+        },
+        {
+          "const": "diff::DiffSelectNext",
+          "description": "Move the diff cursor down one row. Command id: `diff_select_next`."
+        },
+        {
+          "const": "diff::DiffSelectPrev",
+          "description": "Move the diff cursor up one row. Command id: `diff_select_prev`."
+        },
+        {
+          "const": "diff::DiffSelectFirst",
+          "description": "Move the diff cursor to the first row. Command id: `diff_select_first`."
+        },
+        {
+          "const": "diff::DiffSelectLast",
+          "description": "Move the diff cursor to the last row. Command id: `diff_select_last`."
+        },
+        {
+          "const": "diff::NextHunk",
+          "description": "Jump to the next hunk. Command id: `next_hunk`."
+        },
+        {
+          "const": "diff::PrevHunk",
+          "description": "Jump to the previous hunk. Command id: `prev_hunk`."
+        },
+        {
+          "const": "diff::ToggleDiffDisplayMode",
+          "description": "Cycle the diff viewer's display mode. Command id: `toggle_diff_display_mode`."
+        },
+        {
+          "const": "diff::TogglePartialSelection",
+          "description": "Toggle line-level selection in the diff viewer. Command id: `toggle_partial_selection`."
+        },
+        {
+          "const": "diff::StageSelection",
+          "description": "Stage the hunks or lines under the diff selection. Command id: `stage_selection`."
+        },
+        {
+          "const": "diff::UnstageSelection",
+          "description": "Unstage the hunks or lines under the diff selection. Command id: `unstage_selection`."
+        },
+        {
+          "const": "diff::StageCurrentHunk",
+          "description": "Stage the hunk under the diff cursor. Command id: `stage_current_hunk`."
+        },
+        {
+          "const": "diff::UnstageCurrentHunk",
+          "description": "Unstage the hunk under the diff cursor. Command id: `unstage_current_hunk`."
+        },
+        {
+          "const": "diff::CopyDiffSelection",
+          "description": "Copy the selected diff lines to the clipboard. Command id: `copy_diff_selection`."
+        },
+        {
+          "const": "diff::SelectAllDiffLines",
+          "description": "Select every line in the diff. Command id: `select_all_diff_lines`."
+        },
+        {
+          "const": "detail::ToggleFileTree",
+          "description": "Switch the changed-files list between the flat and tree layouts. Command id: `toggle_file_tree`."
+        },
+        {
+          "const": "detail::PrevCommitDetails",
+          "description": "Show the previous commit's details. Command id: `prev_commit_details`."
+        },
+        {
+          "const": "detail::NextCommitDetails",
+          "description": "Show the next commit's details. Command id: `next_commit_details`."
+        },
+        {
+          "const": "detail::FileSearch",
+          "description": "Filter the changed-files list. Command id: `file_search`."
+        },
+        {
+          "const": "sidebar::ToggleStageRow",
+          "description": "Stage or unstage the selected file. Command id: `toggle_stage_row`."
+        },
+        {
+          "const": "sidebar::DiscardRow",
+          "description": "Discard the selected change, or delete the selected branch, tag or stash. Command id: `discard_row`."
+        },
+        {
+          "const": "sidebar::FilterBranches",
+          "description": "Filter the branch list. Command id: `filter_branches`."
+        },
+        {
+          "const": "blame::BlameShowDiff",
+          "description": "Leave the blame view and go back to the diff. Command id: `blame_show_diff`."
+        },
+        {
+          "const": "blame::BlameShowHistory",
+          "description": "Show the blamed file's commit history. Command id: `blame_show_history`."
+        },
+        {
+          "const": "history::HistoryShowDiff",
+          "description": "Leave the file history and go back to the diff. Command id: `history_show_diff`."
+        },
+        {
+          "const": "history::HistoryShowBlame",
+          "description": "Blame the file whose history is shown. Command id: `history_show_blame`."
+        },
+        {
+          "const": "rebase::RebaseMoveUp",
+          "description": "Move the selected commit earlier in the rebase plan. Command id: `rebase_move_up`."
+        },
+        {
+          "const": "rebase::RebaseMoveDown",
+          "description": "Move the selected commit later in the rebase plan. Command id: `rebase_move_down`."
+        },
+        {
+          "const": "rebase::RebasePick",
+          "description": "Keep the selected commit as it is. Command id: `rebase_pick`."
+        },
+        {
+          "const": "rebase::RebaseReword",
+          "description": "Reword the selected commit's message. Command id: `rebase_reword`."
+        },
+        {
+          "const": "rebase::RebaseSquash",
+          "description": "Squash the selected commit into the previous one. Command id: `rebase_squash`."
+        },
+        {
+          "const": "rebase::RebaseFixup",
+          "description": "Squash the selected commit into the previous one, discarding its message. Command id: `rebase_fixup`."
+        },
+        {
+          "const": "rebase::RebaseDrop",
+          "description": "Drop the selected commit. Command id: `rebase_drop`."
+        },
+        {
+          "const": "theme::ThemeEditorNextField",
+          "description": "Focus the next field in the theme editor. Command id: `theme_editor_next_field`."
+        },
+        {
+          "const": "theme::ThemeEditorPrevField",
+          "description": "Focus the previous field in the theme editor. Command id: `theme_editor_prev_field`."
+        },
+        {
+          "const": "pr::SubmitPullRequest",
+          "description": "Open the pull request described in the dialog. Command id: `submit_pull_request`."
         }
       ]
     }

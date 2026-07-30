@@ -6,8 +6,8 @@
 //! * a `gpui` [`Action`](gpui::Action) unit struct in the declared namespace,
 //! * the canonical keymap name (`namespace::PascalCase` — gpui panics if an
 //!   action name contains `::` itself, so the namespace is the only separator),
-//! * the default keystroke(s),
-//!   the key context the binding is scoped to,
+//! * the default binding(s) — keystrokes paired with the key context each one
+//!   is scoped to,
 //! * the command-palette availability predicate,
 //! * whether the command is offered in the command palette at all,
 //! * and the doc comment, reused as the description in `docs/KEYBINDINGS.md`
@@ -27,6 +27,8 @@
 //!         StageAll "secondary-s" if has_changes;
 //!         /// Unstage everything.
 //!         UnstageAll ["secondary-shift-s", "secondary-u"] if has_changes;
+//!         /// Move the selection down.
+//!         SelectNext ["down", "j" in "List && !TextInput"] in "List";
 //!         /// Pull from the tracked remote.
 //!         Pull unbound if has_remotes;
 //!     }
@@ -39,32 +41,59 @@
 //! * The keystroke slot takes one string, a bracketed list of strings (several
 //!   default keystrokes for one command), or the bare word `unbound` for a
 //!   command that is reachable only from the palette.
-//! * `in "<predicate>"` overrides the block's key context for one command.
+//! * `in "<predicate>"` overrides the block's key context. Written after the
+//!   keystroke slot it applies to the whole command; written after one keystroke
+//!   *inside* the bracketed list it applies to that keystroke alone. The latter
+//!   is what lets `down` stay live inside a text field while the vim-style `j`
+//!   for the same command stands down (`!TextInput`).
 //! * `if <predicate_fn>` names a `fn(CommandContext) -> bool` in scope;
 //!   the default is `always_show`.
 //! * `[hidden]` keeps the command out of the command palette.
 
-/// Expands the keystroke slot of a `commands!` entry into a `&'static [&'static str]`.
-macro_rules! command_keystrokes {
-    (unbound) => {
-        &[] as &[&'static str]
+/// Picks the more specific of two key contexts: the override if one was
+/// written, otherwise the inherited default.
+macro_rules! command_context {
+    ($inherited:literal) => {
+        $inherited
     };
-    ([$($keystroke:literal),* $(,)?]) => {
-        &[$($keystroke),*] as &[&'static str]
-    };
-    ($keystroke:literal) => {
-        &[$keystroke] as &[&'static str]
+    ($inherited:literal, $override:literal) => {
+        $override
     };
 }
 
-/// Resolves a command's key context: the per-command override if present,
-/// otherwise the enclosing `view` block's default.
-macro_rules! command_context {
-    ($default:literal) => {
-        $default
+/// Expands the keystroke slot of a `commands!` entry into the command's default
+/// bindings: `&'static [(keystrokes, key context)]`.
+///
+/// The leading argument(s) are the inherited context — the `view` block default,
+/// then the per-command `in "..."` when one was written — and each keystroke may
+/// narrow it further with its own `in "..."`. The two arities are spelled out
+/// separately because `macro_rules!` cannot expand a repetition of the inherited
+/// context inside the repetition over keystrokes.
+macro_rules! command_bindings {
+    ($inherited:literal, unbound) => {
+        &[] as &[(&'static str, &'static str)]
     };
-    ($default:literal, $override:literal) => {
-        $override
+    ($inherited:literal, [$($keystroke:literal $(in $context:literal)?),* $(,)?]) => {
+        &[$(
+            ($keystroke, command_context!($inherited $(, $context)?)),
+        )*] as &[(&'static str, &'static str)]
+    };
+    ($inherited:literal, $keystroke:literal) => {
+        &[($keystroke, $inherited)] as &[(&'static str, &'static str)]
+    };
+    ($view:literal, $command:literal, unbound) => {
+        &[] as &[(&'static str, &'static str)]
+    };
+    (
+        $view:literal, $command:literal,
+        [$($keystroke:literal $(in $context:literal)?),* $(,)?]
+    ) => {
+        &[$(
+            ($keystroke, command_context!($command $(, $context)?)),
+        )*] as &[(&'static str, &'static str)]
+    };
+    ($view:literal, $command:literal, $keystroke:literal) => {
+        &[($keystroke, $command)] as &[(&'static str, &'static str)]
     };
 }
 
@@ -229,8 +258,9 @@ macro_rules! commands {
                     view: stringify!($view),
                     namespace: stringify!($namespace),
                     action_name: concat!(stringify!($namespace), "::", stringify!($name)),
-                    default_keystrokes: command_keystrokes!($keystrokes),
-                    context: command_context!($view_context $(, $context)?),
+                    default_bindings: command_bindings!(
+                        $view_context $(, $context)?, $keystrokes
+                    ),
                     description: concat!("" $(, $doc)*),
                     in_palette: command_in_palette!($([$hidden])?),
                     availability: command_predicate!($($predicate)?),

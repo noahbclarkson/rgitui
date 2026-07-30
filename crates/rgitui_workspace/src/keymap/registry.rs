@@ -9,6 +9,24 @@
 //! the hand-rolled `any_overlay_active` gate for the commands listed here.
 //! `TextInput` is set by [`rgitui_ui::TextInput`], so `!TextInput` keeps
 //! unmodified single-key shortcuts from stealing typed characters.
+//!
+//! Every panel, picker and dialog that owns a row selection also sets `List`
+//! alongside its own name, e.g. `key_context("BlameView List")`. The shared
+//! `menu` commands below are bound once against `List`, and each view registers
+//! its own handler for them; gpui dispatches an action from the focused element
+//! outwards and the first handler consumes it, so the view that owns the
+//! selection is the one that moves. The same mechanism resolves `menu::Cancel`
+//! and `menu::Confirm` — there is no cascade of `if visible` checks anywhere.
+//!
+//! # Views in other crates
+//!
+//! `GraphView` (`rgitui_graph`) and `DiffViewer` (`rgitui_diff`) sit *below*
+//! this crate in the dependency graph, so they cannot name these actions. Their
+//! commands are therefore declared here in the `graph` and `diff` namespaces and
+//! handled on the workspace root, which is an ancestor of both on every dispatch
+//! path; the views themselves only declare their key context. That also means
+//! they do not join the `List` group: a shared `menu` command has to be handled
+//! by the element that owns the selection, and these two cannot handle anything.
 
 // The `if <predicate>` clause of `commands!` resolves these by name at the
 // invocation site; `always_show` is the default and is referenced through
@@ -30,10 +48,11 @@ pub struct CommandMeta {
     pub namespace: &'static str,
     /// The full gpui action name, as written in `keymap.json`.
     pub action_name: &'static str,
-    /// Default keystrokes. Empty when the command has no default binding.
-    pub default_keystrokes: &'static [&'static str],
-    /// Key context predicate the default bindings are scoped to.
-    pub context: &'static str,
+    /// Default bindings as `(keystrokes, key context)`. Empty when the command
+    /// has no default binding. One command may bind several keystrokes, each in
+    /// its own context — that is how `down` stays live inside a text field while
+    /// the vim-style `j` for the same command stands down.
+    pub default_bindings: &'static [(&'static str, &'static str)],
     /// Doc comment from the declaration. Leading whitespace is not trimmed.
     pub description: &'static str,
     /// Whether the command is offered in the command palette.
@@ -108,9 +127,9 @@ commands! {
         /// Continue the merge, rebase, cherry-pick or revert in progress.
         ContinueMerge unbound if in_progress_operation;
         /// Switch the diff viewer between unified and side-by-side.
-        ToggleDiffMode unbound;
+        ToggleDiffMode "shift-d" in "Workspace && !modal && !TextInput";
         /// Search the commit graph.
-        Search unbound;
+        Search ["secondary-f", "/" in "Workspace && !modal && !TextInput"];
         /// Generate a commit message with the configured AI provider.
         AiMessage "secondary-g" if has_staged;
         /// Reload the repository state from disk.
@@ -150,7 +169,7 @@ commands! {
         /// Skip the current bisect commit.
         BisectSkip unbound if is_bisecting;
         /// Search the contents of the working tree.
-        GlobalSearch unbound;
+        GlobalSearch "secondary-shift-f";
         /// Toggle the issues panel.
         ToggleIssues "alt-5";
         /// Toggle the pull requests panel.
@@ -171,6 +190,158 @@ commands! {
         PrevTab "secondary-shift-tab" [hidden];
         /// Close the active repository tab.
         CloseTab "secondary-w" [hidden];
+        /// Move keyboard focus to the sidebar.
+        FocusSidebar "alt-1" [hidden];
+        /// Move keyboard focus to the commit graph.
+        FocusGraph "alt-2" [hidden];
+        /// Move keyboard focus to the commit detail panel.
+        FocusDetailPanel "alt-3" [hidden];
+        /// Move keyboard focus to the diff viewer.
+        FocusDiffViewer "alt-4" [hidden];
+        /// Move keyboard focus to the next panel.
+        FocusNextPanel "tab" in "Workspace && !modal && !TextInput" [hidden];
+        /// Move keyboard focus to the previous panel.
+        FocusPrevPanel "shift-tab" in "Workspace && !modal && !TextInput" [hidden];
+        /// Narrow the detail panel.
+        ShrinkDetailPanel "secondary-[" [hidden];
+        /// Widen the detail panel.
+        GrowDetailPanel "secondary-]" [hidden];
+        /// Shorten the diff viewer.
+        ShrinkDiffViewer "secondary-up" [hidden];
+        /// Heighten the diff viewer.
+        GrowDiffViewer "secondary-down" [hidden];
+    }
+
+    // Bound once and handled by whichever element owns the selection or the
+    // dismissal. See the module docs for how gpui resolves that.
+    view Menu in menu context "List" {
+        /// Dismiss the focused overlay, dialog, search or selection.
+        Cancel "escape" in "Workspace || SettingsWindow" [hidden];
+        /// Activate the selected row, or submit the focused dialog.
+        Confirm ["enter" in "Workspace || SettingsWindow", "space" in "List && !TextInput"]
+            [hidden];
+        /// Move the selection down one row.
+        SelectNext ["down", "j" in "List && !TextInput"] [hidden];
+        /// Move the selection up one row.
+        SelectPrev ["up", "k" in "List && !TextInput"] [hidden];
+        /// Move the selection to the first row.
+        SelectFirst ["home", "g" in "List && !TextInput"] [hidden];
+        /// Move the selection to the last row.
+        SelectLast ["end", "shift-g" in "List && !TextInput"] [hidden];
+    }
+
+    view GraphView in graph context "GraphView && !TextInput" {
+        /// Select the next commit in the graph.
+        GraphSelectNext ["down" in "GraphView", "j"] [hidden];
+        /// Select the previous commit in the graph.
+        GraphSelectPrev ["up" in "GraphView", "k"] [hidden];
+        /// Select the newest commit in the graph.
+        GraphSelectFirst ["home" in "GraphView", "g"] [hidden];
+        /// Select the oldest loaded commit in the graph.
+        GraphSelectLast ["end" in "GraphView", "shift-g"] [hidden];
+        /// Close the graph search, or dismiss the graph context menu.
+        GraphCancel "escape" in "GraphView" [hidden];
+        /// Copy the selected commit's SHA to the clipboard.
+        CopyCommitSha "y" [hidden];
+        /// Copy the selected commit's message to the clipboard.
+        CopyCommitMessage "shift-c" [hidden];
+    }
+
+    // The diff viewer hosts no text field, but the bare letters below still carry
+    // `!TextInput` so that `bare_character_bindings_stand_down_for_text_input`
+    // holds for every binding in the registry without exceptions.
+    view DiffViewer in diff context "DiffViewer && !TextInput" {
+        /// Move the diff cursor down one row.
+        DiffSelectNext ["down", "j"] [hidden];
+        /// Move the diff cursor up one row.
+        DiffSelectPrev ["up", "k"] [hidden];
+        /// Move the diff cursor to the first row.
+        DiffSelectFirst ["home", "g"] [hidden];
+        /// Move the diff cursor to the last row.
+        DiffSelectLast ["end", "shift-g"] [hidden];
+        /// Jump to the next hunk.
+        NextHunk "]" [hidden];
+        /// Jump to the previous hunk.
+        PrevHunk "[" [hidden];
+        /// Cycle the diff viewer's display mode.
+        ToggleDiffDisplayMode "d" [hidden];
+        /// Toggle line-level selection in the diff viewer.
+        TogglePartialSelection "p" [hidden];
+        /// Stage the hunks or lines under the diff selection.
+        StageSelection ["s", "shift-s"] [hidden];
+        /// Unstage the hunks or lines under the diff selection.
+        UnstageSelection ["u", "shift-u"] [hidden];
+        /// Stage the hunk under the diff cursor.
+        StageCurrentHunk "alt-s" [hidden];
+        /// Unstage the hunk under the diff cursor.
+        UnstageCurrentHunk "alt-u" [hidden];
+        /// Copy the selected diff lines to the clipboard.
+        CopyDiffSelection "secondary-c" [hidden];
+        /// Select every line in the diff.
+        SelectAllDiffLines "secondary-a" [hidden];
+    }
+
+    view DetailPanel in detail context "DetailPanel && !TextInput" {
+        /// Switch the changed-files list between the flat and tree layouts.
+        ToggleFileTree "v" [hidden];
+        /// Show the previous commit's details.
+        PrevCommitDetails "[" [hidden];
+        /// Show the next commit's details.
+        NextCommitDetails "]" [hidden];
+        /// Filter the changed-files list.
+        FileSearch ["/", "secondary-f" in "DetailPanel"] [hidden];
+    }
+
+    view Sidebar in sidebar context "Sidebar && !TextInput" {
+        /// Stage or unstage the selected file.
+        ToggleStageRow "s" [hidden];
+        /// Discard the selected change, or delete the selected branch, tag or stash.
+        DiscardRow ["x", "delete" in "Sidebar"] [hidden];
+        /// Filter the branch list.
+        FilterBranches ["/", "secondary-f" in "Sidebar"] [hidden];
+    }
+
+    view BlameView in blame context "BlameView && !TextInput" {
+        /// Leave the blame view and go back to the diff.
+        BlameShowDiff ["escape" in "BlameView", "d"] [hidden];
+        /// Show the blamed file's commit history.
+        BlameShowHistory "h" [hidden];
+    }
+
+    view FileHistoryView in history context "FileHistoryView && !TextInput" {
+        /// Leave the file history and go back to the diff.
+        HistoryShowDiff ["escape" in "FileHistoryView", "d"] [hidden];
+        /// Blame the file whose history is shown.
+        HistoryShowBlame "b" [hidden];
+    }
+
+    view InteractiveRebase in rebase context "InteractiveRebase && !TextInput" {
+        /// Move the selected commit earlier in the rebase plan.
+        RebaseMoveUp "secondary-up" in "InteractiveRebase" [hidden];
+        /// Move the selected commit later in the rebase plan.
+        RebaseMoveDown "secondary-down" in "InteractiveRebase" [hidden];
+        /// Keep the selected commit as it is.
+        RebasePick "p" [hidden];
+        /// Reword the selected commit's message.
+        RebaseReword "r" [hidden];
+        /// Squash the selected commit into the previous one.
+        RebaseSquash "s" [hidden];
+        /// Squash the selected commit into the previous one, discarding its message.
+        RebaseFixup "f" [hidden];
+        /// Drop the selected commit.
+        RebaseDrop "d" [hidden];
+    }
+
+    view ThemeEditor in theme context "ThemeEditor" {
+        /// Focus the next field in the theme editor.
+        ThemeEditorNextField "tab" [hidden];
+        /// Focus the previous field in the theme editor.
+        ThemeEditorPrevField "shift-tab" [hidden];
+    }
+
+    view CreatePrDialog in pr context "CreatePrDialog" {
+        /// Open the pull request described in the dialog.
+        SubmitPullRequest "shift-enter" [hidden];
     }
 }
 
@@ -184,14 +355,9 @@ impl CommandId {
             .expect("every CommandId has metadata")
     }
 
-    /// The key context the default bindings for this command are scoped to.
-    pub fn context(self) -> &'static str {
-        self.meta().context
-    }
-
-    /// This command's default keystrokes, or an empty slice when it has none.
-    pub fn default_keystrokes(self) -> &'static [&'static str] {
-        self.meta().default_keystrokes
+    /// This command's default bindings, or an empty slice when it has none.
+    pub fn default_bindings(self) -> &'static [(&'static str, &'static str)] {
+        self.meta().default_bindings
     }
 
     /// A one-line description of what this command does.
@@ -411,6 +577,174 @@ mod tests {
                 meta.action_name
             );
         }
+    }
+
+    /// Every `(keystrokes, context, action)` triple the registry declares.
+    fn default_bindings() -> Vec<(&'static str, &'static str, &'static str)> {
+        ALL_COMMANDS
+            .iter()
+            .flat_map(|meta| {
+                meta.default_bindings
+                    .iter()
+                    .map(move |(keystrokes, context)| (*keystrokes, *context, meta.action_name))
+            })
+            .collect()
+    }
+
+    /// The actions a keystroke is bound to, paired with the context of each.
+    fn bindings_for(keystrokes: &str) -> Vec<(&'static str, &'static str)> {
+        default_bindings()
+            .into_iter()
+            .filter(|(keys, _, _)| *keys == keystrokes)
+            .map(|(_, context, action)| (action, context))
+            .collect()
+    }
+
+    /// Whether a keystroke is one a user could be typing into a text field: no
+    /// modifier beyond shift, and a single printable key.
+    fn is_typeable(keystrokes: &str) -> bool {
+        let mut parts = keystrokes.split_whitespace();
+        let (Some(single), None) = (parts.next(), parts.next()) else {
+            // A chord always starts with a modifier in this registry.
+            return false;
+        };
+        let Ok(keystroke) = gpui::Keystroke::parse(single) else {
+            return false;
+        };
+        let modifiers = keystroke.modifiers;
+        if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+            return false;
+        }
+        keystroke.key.chars().count() == 1 || keystroke.key == "space"
+    }
+
+    /// The whole point of Phase B: gpui dispatches bindings deepest-context
+    /// first, so one letter can mean different things in different panels. Each
+    /// of these is bound several times over, and every binding must name a
+    /// distinct action in a distinct context — otherwise one of them is dead.
+    #[test]
+    fn ambiguous_letters_resolve_to_one_action_per_context() {
+        for keystrokes in ["d", "s", "p", "b", "h", "j", "k", "g", "y", "/", "[", "]"] {
+            let bindings = bindings_for(keystrokes);
+            assert!(
+                !bindings.is_empty(),
+                "`{keystrokes}` is documented as context-sensitive but is not bound at all"
+            );
+
+            let actions: HashSet<&str> = bindings.iter().map(|(action, _)| *action).collect();
+            assert_eq!(
+                actions.len(),
+                bindings.len(),
+                "`{keystrokes}` binds the same action twice: {bindings:?}"
+            );
+
+            let contexts: HashSet<&str> = bindings.iter().map(|(_, context)| *context).collect();
+            assert_eq!(
+                contexts.len(),
+                bindings.len(),
+                "`{keystrokes}` binds two actions in the same context, so one never fires: \
+                 {bindings:?}"
+            );
+        }
+    }
+
+    /// The four letters the migration called out by name, pinned to the view that
+    /// owns each so a future block cannot quietly steal one.
+    #[test]
+    fn the_overloaded_letters_are_owned_by_the_expected_views() {
+        let expected: &[(&str, &[&str])] = &[
+            (
+                "d",
+                &[
+                    "diff::ToggleDiffDisplayMode",
+                    "blame::BlameShowDiff",
+                    "history::HistoryShowDiff",
+                    "rebase::RebaseDrop",
+                ],
+            ),
+            (
+                "s",
+                &[
+                    "diff::StageSelection",
+                    "sidebar::ToggleStageRow",
+                    "rebase::RebaseSquash",
+                ],
+            ),
+            ("p", &["diff::TogglePartialSelection", "rebase::RebasePick"]),
+            ("b", &["history::HistoryShowBlame"]),
+            ("h", &["blame::BlameShowHistory"]),
+        ];
+
+        for (keystrokes, actions) in expected {
+            let bound: HashSet<&str> = bindings_for(keystrokes)
+                .into_iter()
+                .map(|(action, _)| action)
+                .collect();
+            let want: HashSet<&str> = actions.iter().copied().collect();
+            assert_eq!(bound, want, "the owners of `{keystrokes}` changed");
+        }
+    }
+
+    /// gpui dispatches keymap bindings *before* `on_key_down`, so any binding a
+    /// user could type must stand down while a text field is focused. `!TextInput`
+    /// is false whenever a text field is anywhere on the focus path, which is
+    /// exactly the guarantee needed.
+    #[test]
+    fn bare_character_bindings_stand_down_for_text_input() {
+        for (keystrokes, context, action) in default_bindings() {
+            if !is_typeable(keystrokes) {
+                continue;
+            }
+            assert!(
+                context.contains("!TextInput"),
+                "`{keystrokes}` is bound to {action} in context `{context}`, which would swallow \
+                 the character while a text field has focus; add `&& !TextInput`"
+            );
+        }
+    }
+
+    /// The shared dismissal must be reachable from both windows, since each owns
+    /// its own Esc handling and Esc never crosses windows.
+    #[test]
+    fn cancel_and_confirm_are_bound_across_both_window_roots() {
+        for (id, keystrokes) in [(CommandId::Cancel, "escape"), (CommandId::Confirm, "enter")] {
+            let context = id
+                .default_bindings()
+                .iter()
+                .find(|(keys, _)| *keys == keystrokes)
+                .map(|(_, context)| *context)
+                .unwrap_or_else(|| panic!("{id} is not bound to `{keystrokes}`"));
+            assert!(context.contains("Workspace"), "{id}: `{context}`");
+            assert!(context.contains("SettingsWindow"), "{id}: `{context}`");
+        }
+    }
+
+    /// The per-keystroke `in "..."` override: `down` stays live inside a text
+    /// field while the vim-style `j` for the same command stands down.
+    #[test]
+    fn one_command_can_bind_keystrokes_in_different_contexts() {
+        assert_eq!(
+            CommandId::SelectNext.default_bindings(),
+            &[("down", "List"), ("j", "List && !TextInput")]
+        );
+        assert_eq!(
+            CommandId::SelectLast.default_bindings(),
+            &[("end", "List"), ("shift-g", "List && !TextInput")]
+        );
+    }
+
+    /// A view block's `context` is the default for its commands, and a
+    /// per-command `in "..."` overrides it.
+    #[test]
+    fn a_view_context_is_inherited_unless_overridden() {
+        assert_eq!(
+            CommandId::BlameShowDiff.default_bindings(),
+            &[("escape", "BlameView"), ("d", "BlameView && !TextInput")]
+        );
+        assert_eq!(
+            CommandId::BlameShowHistory.default_bindings(),
+            &[("h", "BlameView && !TextInput")]
+        );
     }
 
     #[test]
