@@ -74,6 +74,31 @@ impl Workspace {
                     te.show_for_active_theme(cx);
                 });
             }
+            CommandId::NextTab => {
+                if !self.tabs.is_empty() {
+                    self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                    cx.notify();
+                }
+            }
+            CommandId::PrevTab => {
+                if !self.tabs.is_empty() {
+                    self.active_tab = if self.active_tab == 0 {
+                        self.tabs.len() - 1
+                    } else {
+                        self.active_tab - 1
+                    };
+                    cx.notify();
+                }
+            }
+            CommandId::CloseTab => {
+                if !self.tabs.is_empty() {
+                    self.close_tab(self.active_tab, cx);
+                }
+            }
+            // Toggling the palette needs a `Window`, so it is handled in
+            // `dispatch_command`. It is `[hidden]`, so the palette never
+            // dispatches it to itself.
+            CommandId::CommandPalette => {}
             cmd => {
                 let Some(tab) = self.tabs.get(self.active_tab).cloned() else {
                     return;
@@ -497,7 +522,11 @@ impl Workspace {
             | CommandId::WorkspaceHome
             | CommandId::RestoreLastWorkspace
             | CommandId::Undo
-            | CommandId::OpenThemeEditor => {}
+            | CommandId::OpenThemeEditor
+            | CommandId::CommandPalette
+            | CommandId::NextTab
+            | CommandId::PrevTab
+            | CommandId::CloseTab => {}
         }
     }
 
