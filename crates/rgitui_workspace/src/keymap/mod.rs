@@ -5,6 +5,8 @@
 //!   gpui action structs and [`ALL_COMMANDS`].
 //! * [`conflict`] detects ambiguous bindings before gpui silently resolves them.
 //! * [`loader`] reads `keymap.json` and assembles the final binding list.
+//! * [`generate`] renders the committed `docs/KEYBINDINGS.md` and
+//!   `docs/keymap.schema.json`.
 //!
 //! [`init`] wires it up: it applies the bindings and watches `keymap.json` so
 //! saving the file reloads it. Reload outcomes land in [`KeymapState`], which the
@@ -14,6 +16,7 @@
 pub(crate) mod macros;
 
 pub mod conflict;
+pub mod generate;
 pub mod loader;
 pub mod registry;
 

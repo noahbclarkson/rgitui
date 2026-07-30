@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/noahbclarkson/rgitui/main/docs/keymap.schema.json",
+  "title": "rgitui keymap",
+  "description": "Generated from the `commands!` declaration in `crates/rgitui_workspace/src/keymap/registry.rs`. Do not edit by hand.",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/section"
+  },
+  "$defs": {
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "type": "string",
+          "description": "When these bindings are active, e.g. `Workspace && !modal`. Combine identifiers with `&&`, `||` and `!`; `>` matches a descendant. Omit to bind everywhere."
+        },
+        "use_key_equivalents": {
+          "type": "boolean",
+          "description": "Interpret keystrokes by their position on a QWERTY keyboard. macOS only.",
+          "default": false
+        },
+        "bindings": {
+          "type": "object",
+          "description": "Keystrokes to actions. A keystroke is modifiers then a key joined by `-` (`secondary-shift-p`); separate the keystrokes of a chord with spaces (`ctrl-k ctrl-o`). Later entries win.",
+          "additionalProperties": {
+            "$ref": "#/$defs/action"
+          }
+        }
+      }
+    },
+    "action": {
+      "description": "An action name, a two-element `[name, input]` array, or `null` to unbind.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/actionName"
+        },
+        {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": [
+            {
+              "$ref": "#/$defs/actionName"
+            },
+            true
+          ]
+        },
+        {
+          "type": "null",
+          "description": "Remove this binding."
+        }
+      ]
+    },
+    "actionName": {
+      "type": "string",
+      "anyOf": [
+        {
+          "const": "zed::NoAction",
+          "description": "Remove the binding this keystroke would otherwise have."
+        },
+        {
+          "const": "rgitui::Fetch",
+          "description": "Download objects and refs from the tracked remote. Command id: `fetch`."
+        },
+        {
+          "const": "rgitui::Pull",
+          "description": "Fetch from and integrate with the tracked remote branch. Command id: `pull`."
+        },
+        {
+          "const": "rgitui::Push",
+          "description": "Update the remote ref along with associated objects. Command id: `push`."
+        },
+        {
+          "const": "rgitui::PushAll",
+          "description": "Push every open repository. Command id: `push_all`."
+        },
+        {
+          "const": "rgitui::PullAll",
+          "description": "Pull every open repository. Command id: `pull_all`."
+        },
+        {
+          "const": "rgitui::ForcePush",
+          "description": "Overwrite the remote branch with the local one. Command id: `force_push`."
+        },
+        {
+          "const": "rgitui::Commit",
+          "description": "Commit the staged changes using the message in the commit panel. Command id: `commit`."
+        },
+        {
+          "const": "rgitui::StageAll",
+          "description": "Stage every change in the working tree. Command id: `stage_all`."
+        },
+        {
+          "const": "rgitui::UnstageAll",
+          "description": "Unstage everything currently staged. Command id: `unstage_all`."
+        },
+        {
+          "const": "rgitui::StashSave",
+          "description": "Stash the working tree and index. Command id: `stash_save`."
+        },
+        {
+          "const": "rgitui::StashPop",
+          "description": "Apply the latest stash entry and drop it. Command id: `stash_pop`."
+        },
+        {
+          "const": "rgitui::StashApply",
+          "description": "Apply the latest stash entry and keep it. Command id: `stash_apply`."
+        },
+        {
+          "const": "rgitui::StashDrop",
+          "description": "Delete a stash entry. Command id: `stash_drop`."
+        },
+        {
+          "const": "rgitui::CreateBranch",
+          "description": "Create a new branch. Command id: `create_branch`."
+        },
+        {
+          "const": "rgitui::DeleteBranch",
+          "description": "Delete a branch. Command id: `delete_branch`."
+        },
+        {
+          "const": "rgitui::RenameBranch",
+          "description": "Rename a branch. Command id: `rename_branch`."
+        },
+        {
+          "const": "rgitui::MergeBranch",
+          "description": "Merge another branch into the current one. Command id: `merge_branch`."
+        },
+        {
+          "const": "rgitui::CreateTag",
+          "description": "Create a tag. Command id: `create_tag`."
+        },
+        {
+          "const": "rgitui::CreateWorktree",
+          "description": "Create a linked worktree. Command id: `create_worktree`."
+        },
+        {
+          "const": "rgitui::CreatePr",
+          "description": "Open a pull request for the current branch. Command id: `create_pr`."
+        },
+        {
+          "const": "rgitui::CherryPick",
+          "description": "Cherry-pick a commit onto the current branch. Command id: `cherry_pick`."
+        },
+        {
+          "const": "rgitui::RevertCommit",
+          "description": "Revert a commit. Command id: `revert_commit`."
+        },
+        {
+          "const": "rgitui::InteractiveRebase",
+          "description": "Start an interactive rebase. Command id: `interactive_rebase`."
+        },
+        {
+          "const": "rgitui::DiscardAll",
+          "description": "Discard every uncommitted change. Command id: `discard_all`."
+        },
+        {
+          "const": "rgitui::CleanUntracked",
+          "description": "Delete untracked files. Command id: `clean_untracked`."
+        },
+        {
+          "const": "rgitui::ResetHard",
+          "description": "Reset the working tree and index to HEAD. Command id: `reset_hard`."
+        },
+        {
+          "const": "rgitui::AbortOperation",
+          "description": "Abort the merge, rebase, cherry-pick or revert in progress. Command id: `abort_operation`."
+        },
+        {
+          "const": "rgitui::ContinueMerge",
+          "description": "Continue the merge, rebase, cherry-pick or revert in progress. Command id: `continue_merge`."
+        },
+        {
+          "const": "rgitui::ToggleDiffMode",
+          "description": "Switch the diff viewer between unified and side-by-side. Command id: `toggle_diff_mode`."
+        },
+        {
+          "const": "rgitui::Search",
+          "description": "Search the commit graph. Command id: `search`."
+        },
+        {
+          "const": "rgitui::AiMessage",
+          "description": "Generate a commit message with the configured AI provider. Command id: `ai_message`."
+        },
+        {
+          "const": "rgitui::Refresh",
+          "description": "Reload the repository state from disk. Command id: `refresh`."
+        },
+        {
+          "const": "rgitui::Settings",
+          "description": "Open the settings window. Command id: `settings`."
+        },
+        {
+          "const": "rgitui::OpenRepo",
+          "description": "Open the repository picker. Command id: `open_repo`."
+        },
+        {
+          "const": "rgitui::WorkspaceHome",
+          "description": "Close every tab and return to the workspace home screen. Command id: `workspace_home`."
+        },
+        {
+          "const": "rgitui::RestoreLastWorkspace",
+          "description": "Reopen the most recently saved workspace. Command id: `restore_last_workspace`."
+        },
+        {
+          "const": "rgitui::Shortcuts",
+          "description": "Show the keyboard shortcut reference. Command id: `shortcuts`."
+        },
+        {
+          "const": "rgitui::SwitchBranch",
+          "description": "Focus the sidebar to switch branches. Command id: `switch_branch`."
+        },
+        {
+          "const": "rgitui::Blame",
+          "description": "Blame the selected file. Command id: `blame`."
+        },
+        {
+          "const": "rgitui::Undo",
+          "description": "Undo the last git operation. Command id: `undo`."
+        },
+        {
+          "const": "rgitui::FileHistory",
+          "description": "Show the commit history of the selected file. Command id: `file_history`."
+        },
+        {
+          "const": "rgitui::Reflog",
+          "description": "Show the reflog. Command id: `reflog`."
+        },
+        {
+          "const": "rgitui::Submodules",
+          "description": "Show the submodule list. Command id: `submodules`."
+        },
+        {
+          "const": "rgitui::Bisect",
+          "description": "Show the bisect log. Command id: `bisect`."
+        },
+        {
+          "const": "rgitui::BisectStart",
+          "description": "Start a bisect session. Command id: `bisect_start`."
+        },
+        {
+          "const": "rgitui::BisectGood",
+          "description": "Mark the current bisect commit as good. Command id: `bisect_good`."
+        },
+        {
+          "const": "rgitui::BisectBad",
+          "description": "Mark the current bisect commit as bad. Command id: `bisect_bad`."
+        },
+        {
+          "const": "rgitui::BisectReset",
+          "description": "End the bisect session and restore HEAD. Command id: `bisect_reset`."
+        },
+        {
+          "const": "rgitui::BisectSkip",
+          "description": "Skip the current bisect commit. Command id: `bisect_skip`."
+        },
+        {
+          "const": "rgitui::GlobalSearch",
+          "description": "Search the contents of the working tree. Command id: `global_search`."
+        },
+        {
+          "const": "rgitui::ToggleIssues",
+          "description": "Toggle the issues panel. Command id: `toggle_issues`."
+        },
+        {
+          "const": "rgitui::TogglePullRequests",
+          "description": "Toggle the pull requests panel. Command id: `toggle_pull_requests`."
+        },
+        {
+          "const": "rgitui::ToggleBranchHealth",
+          "description": "Toggle the branch health panel. Command id: `toggle_branch_health`."
+        },
+        {
+          "const": "rgitui::ToggleStashes",
+          "description": "Toggle the stashes panel. Command id: `toggle_stashes`."
+        },
+        {
+          "const": "rgitui::StashBranch",
+          "description": "Create a branch from a stash entry. Command id: `stash_branch`."
+        },
+        {
+          "const": "rgitui::OpenThemeEditor",
+          "description": "Open the theme editor. Command id: `open_theme_editor`."
+        },
+        {
+          "const": "rgitui::CommandPalette",
+          "description": "Toggle the command palette. Command id: `command_palette`."
+        },
+        {
+          "const": "rgitui::NextTab",
+          "description": "Activate the next repository tab. Command id: `next_tab`."
+        },
+        {
+          "const": "rgitui::PrevTab",
+          "description": "Activate the previous repository tab. Command id: `prev_tab`."
+        },
+        {
+          "const": "rgitui::CloseTab",
+          "description": "Close the active repository tab. Command id: `close_tab`."
+        }
+      ]
+    }
+  }
+}
