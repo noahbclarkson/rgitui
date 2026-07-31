@@ -2,7 +2,8 @@
 //!
 //! Two files are derived from `commands!` and checked in:
 //!
-//! * `docs/KEYBINDINGS.md` — the user-facing reference,
+//! * `docs/KEYBINDINGS.md` — the user-facing reference, including the
+//!   nested-context overlaps [`super::shadow`] finds in the defaults,
 //! * `docs/keymap.schema.json` — a JSON Schema enumerating every action name so
 //!   editors can complete `keymap.json`.
 //!
@@ -82,8 +83,9 @@ pub fn keybindings_markdown() -> String {
     out.push_str(GENERATED_NOTICE);
     out.push_str(" -->\n\n");
     out.push_str(
-        "Every shortcut below is rebindable. Create `keymap.json` next to `settings.json` in \
-         rgitui's config directory and bind the action names from the tables below.\n\n",
+        "Every shortcut below is rebindable, and press `?` in rgitui to see the ones actually \
+         in force — that reference is generated from the same declaration as this page, so it \
+         follows your own keybindings rather than the defaults.\n\n",
     );
     out.push_str(
         "`secondary` is the platform's primary modifier: `cmd` on macOS, `ctrl` everywhere \
@@ -91,6 +93,18 @@ pub fn keybindings_markdown() -> String {
          command palette (`secondary-shift-p`).\n\n",
     );
     out.push_str("## Customising\n\n");
+    out.push_str(
+        "Keybindings live in `keymap.json`, next to `settings.json` in rgitui's config \
+         directory:\n\n\
+         | Platform | Path |\n\
+         | --- | --- |\n\
+         | Linux | `~/.config/rgitui/keymap.json` |\n\
+         | macOS | `~/Library/Application Support/rgitui/keymap.json` |\n\
+         | Windows | `%APPDATA%\\rgitui\\keymap.json` |\n\n\
+         Run the **Open keymap.json** command from the palette, or use the button in the \
+         shortcut reference, to create the file with a commented example already in it and \
+         open it in your editor.\n\n",
+    );
     out.push_str(
         "```jsonc\n\
          [\n  \
@@ -113,8 +127,8 @@ pub fn keybindings_markdown() -> String {
          dropped rather than silently ignored.\n\n",
     );
     out.push_str(
-        "`docs/keymap.schema.json` lists every action name; point your editor at it for \
-         completion.\n",
+        "`docs/keymap.schema.json` lists every action name with its description; associate it \
+         with `keymap.json` in your editor's JSON schema settings for completion and hovers.\n",
     );
 
     for view in views() {
@@ -155,6 +169,45 @@ pub fn keybindings_markdown() -> String {
          do not.\n"
     );
 
+    out.push_str(&shadowing_section());
+
+    out
+}
+
+/// Renders the "Where a panel wins a keystroke" section.
+///
+/// Derived from the same analysis the shortcut reference shows on the affected
+/// row, so the page cannot claim a keystroke works somewhere it does not.
+fn shadowing_section() -> String {
+    let specs = super::loader::default_specs();
+    let shadows = super::shadow::detect_shadowing(&specs);
+
+    let mut out = String::from("\n## Where a panel wins a keystroke\n\n");
+    out.push_str(
+        "The deepest match wins, so a few of the shortcuts above cannot be reached while a \
+         particular panel has focus. That is intended — the alternative would be a panel \
+         unable to give a letter its own meaning. Both bindings stay active; only one of them \
+         is what the keystroke does in that panel.\n\n",
+    );
+
+    if shadows.is_empty() {
+        out.push_str("The defaults currently have no such overlaps.\n");
+        return out;
+    }
+
+    out.push_str("| Keystroke | Runs | While focused | So this is out of reach |\n");
+    out.push_str("| --- | --- | --- | --- |\n");
+    for shadow in &shadows {
+        let node = super::registry::context_node(shadow.context);
+        let _ = writeln!(
+            out,
+            "| `{}` | `{}` | {} | `{}` |",
+            table_cell(&specs[shadow.inner].keystrokes),
+            specs[shadow.inner].action,
+            node.map_or(shadow.context, |node| node.label),
+            specs[shadow.outer].action,
+        );
+    }
     out
 }
 
@@ -342,15 +395,52 @@ mod tests {
 
     #[test]
     fn the_doc_lists_every_command_exactly_once() {
+        // Only the per-view tables: the shadowing table further down names some
+        // commands again on purpose.
         let markdown = keybindings_markdown();
+        let tables = markdown
+            .split_once("\n## Key contexts")
+            .map_or(markdown.as_str(), |(tables, _)| tables);
         for meta in ALL_COMMANDS {
             let row = format!("| `{}` |", meta.action_name);
             assert_eq!(
-                markdown.matches(&row).count(),
+                tables.matches(&row).count(),
                 1,
-                "{} appears {} times in the generated doc",
+                "{} appears {} times in the command tables",
                 meta.action_name,
-                markdown.matches(&row).count()
+                tables.matches(&row).count()
+            );
+        }
+    }
+
+    /// The shadowing table is only useful if it names real actions and real
+    /// contexts, so it is checked against the registry rather than eyeballed.
+    #[test]
+    fn the_shadowing_table_names_registry_actions() {
+        let section = shadowing_section();
+        let rows: Vec<&str> = section
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .collect();
+        assert!(!rows.is_empty(), "{section}");
+
+        for row in rows {
+            let cells: Vec<&str> = row.trim_matches('|').split('|').map(str::trim).collect();
+            let [_keystroke, inner, label, outer] = cells.as_slice() else {
+                panic!("a shadowing row has the wrong shape: {row}");
+            };
+            for action in [inner, outer] {
+                let name = action.trim_matches('`');
+                assert!(
+                    super::super::registry::command_for_action(name).is_some(),
+                    "`{name}` in the shadowing table is not a registry action"
+                );
+            }
+            assert!(
+                super::super::registry::CONTEXT_TREE
+                    .iter()
+                    .any(|node| node.label == *label && !node.modal),
+                "`{label}` in the shadowing table is not a non-modal element label"
             );
         }
     }

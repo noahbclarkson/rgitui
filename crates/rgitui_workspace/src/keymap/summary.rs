@@ -32,6 +32,17 @@
 //! the affected command gets a warning saying where its keystroke went. That is
 //! how a rebind shows up as "this command lost its shortcut" instead of as a
 //! shortcut that does nothing.
+//!
+//! # Severity
+//!
+//! Not everything worth telling the user is a problem, so each note carries a
+//! [`NoteSeverity`]. A [`NoteSeverity::Warning`] means something was dropped or a
+//! command lost a keystroke it will not get back. A [`NoteSeverity::Info`] is the
+//! nested-context shadowing [`super::shadow`] finds: both bindings are applied
+//! and the scoping is very likely deliberate — the shipped defaults produce
+//! several — so it must never become a toast or a startup warning. Keeping both
+//! on one list means the shortcuts panel shows them in the same place, styled by
+//! severity, with no second channel to keep in step.
 
 use std::sync::Arc;
 
@@ -40,6 +51,7 @@ use super::conflict::{
 };
 use super::display::{self, KeystrokeStyle};
 use super::registry::{command_for_action, CommandId, ALL_COMMANDS};
+use super::shadow;
 
 /// One binding of one command, as it will actually fire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +73,31 @@ impl EffectiveBinding {
     }
 }
 
+/// How much a note matters. See the [module docs](self#severity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteSeverity {
+    /// Something was dropped, or the command lost a keystroke for good.
+    Warning,
+    /// A deeper binding wins the keystroke somewhere. Nothing was dropped.
+    Info,
+}
+
+/// One thing worth telling the user about a command's bindings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeymapNote {
+    /// How much it matters.
+    pub severity: NoteSeverity,
+    /// The explanation, ready to render.
+    pub message: String,
+}
+
+impl KeymapNote {
+    /// Whether this note reports an actual problem.
+    pub fn is_warning(&self) -> bool {
+        self.severity == NoteSeverity::Warning
+    }
+}
+
 /// Everything the UI needs to show about one command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandBindings {
@@ -68,9 +105,10 @@ pub struct CommandBindings {
     pub command: CommandId,
     /// Bindings that will fire, in precedence order (last wins).
     pub bindings: Vec<EffectiveBinding>,
-    /// Problems the user should know about: a binding of theirs that was
-    /// dropped, or a keystroke this command lost to another.
-    pub warnings: Vec<String>,
+    /// What the user should know: a binding of theirs that was dropped, a
+    /// keystroke this command lost to another, or where a panel wins one of its
+    /// keystrokes. Warnings first, then info, each in detection order.
+    pub notes: Vec<KeymapNote>,
 }
 
 impl CommandBindings {
@@ -82,6 +120,15 @@ impl CommandBindings {
     /// Whether any of this command's bindings came from `keymap.json`.
     pub fn is_user_defined(&self) -> bool {
         self.bindings.iter().any(EffectiveBinding::is_user_defined)
+    }
+
+    /// The messages of this command's notes at one severity.
+    pub fn messages(&self, severity: NoteSeverity) -> Vec<&str> {
+        self.notes
+            .iter()
+            .filter(|note| note.severity == severity)
+            .map(|note| note.message.as_str())
+            .collect()
     }
 }
 
@@ -135,29 +182,30 @@ impl KeymapSummary {
             .map(|meta| CommandBindings {
                 command: meta.id,
                 bindings: Vec::new(),
-                warnings: Vec::new(),
+                notes: Vec::new(),
             })
             .collect();
         let mut unattributed_warnings = Vec::new();
 
         for conflict in &report.conflicts {
             let ignored = &specs[conflict.ignored];
-            warn(
+            note(
                 &mut commands,
                 &mut unattributed_warnings,
                 &ignored.action,
+                NoteSeverity::Warning,
                 conflict.message.clone(),
             );
         }
 
         // Only applied specs can fire, and only in the order they were applied.
-        let applied: Vec<&BindingSpec> = applied.iter().map(|&index| &specs[index]).collect();
-        let sequences: Vec<Option<Vec<NormalizedKeystroke>>> = applied
+        let applied_specs: Vec<&BindingSpec> = applied.iter().map(|&index| &specs[index]).collect();
+        let sequences: Vec<Option<Vec<NormalizedKeystroke>>> = applied_specs
             .iter()
             .map(|spec| conflict::normalize_sequence(&spec.keystrokes))
             .collect();
 
-        for (index, spec) in applied.iter().enumerate() {
+        for (index, spec) in applied_specs.iter().enumerate() {
             if spec.is_unbind() {
                 continue;
             }
@@ -165,12 +213,13 @@ impl KeymapSummary {
                 continue;
             };
 
-            if let Some(shadow) = shadow_of(index, &applied, &sequences) {
-                warn(
+            if let Some(shadow) = shadow_of(index, &applied_specs, &sequences) {
+                note(
                     &mut commands,
                     &mut unattributed_warnings,
                     &spec.action,
-                    shadow_message(&display, applied[shadow]),
+                    NoteSeverity::Warning,
+                    shadow_message(&display, applied_specs[shadow]),
                 );
                 continue;
             }
@@ -187,6 +236,25 @@ impl KeymapSummary {
                 context: spec.context.clone(),
                 source: spec.source,
             });
+        }
+
+        // Last, so every command's warnings come before its info notes: a panel
+        // binding that wins a keystroke from a global one. Both bindings are
+        // applied — the finding is filed against the command that cannot reach
+        // its keystroke while that panel has focus.
+        for found in shadow::detect_shadowing(specs) {
+            if applied.binary_search(&found.inner).is_err()
+                || applied.binary_search(&found.outer).is_err()
+            {
+                continue;
+            }
+            note(
+                &mut commands,
+                &mut unattributed_warnings,
+                &specs[found.outer].action,
+                NoteSeverity::Info,
+                found.message,
+            );
         }
 
         Self {
@@ -229,9 +297,21 @@ impl KeymapSummary {
             .is_some_and(CommandBindings::is_user_defined)
     }
 
-    /// Warnings for one command: dropped bindings and lost keystrokes.
-    pub fn warnings(&self, id: CommandId) -> &[String] {
-        self.command(id).map_or(&[], |entry| &entry.warnings)
+    /// Everything worth saying about one command's bindings, warnings first.
+    pub fn notes(&self, id: CommandId) -> &[KeymapNote] {
+        self.command(id).map_or(&[], |entry| &entry.notes)
+    }
+
+    /// Problems with one command: dropped bindings and lost keystrokes.
+    pub fn warnings(&self, id: CommandId) -> Vec<&str> {
+        self.command(id)
+            .map_or_else(Vec::new, |entry| entry.messages(NoteSeverity::Warning))
+    }
+
+    /// Informational notes for one command: keystrokes a panel wins from it.
+    pub fn infos(&self, id: CommandId) -> Vec<&str> {
+        self.command(id)
+            .map_or_else(Vec::new, |entry| entry.messages(NoteSeverity::Info))
     }
 
     /// Number of bindings that came from `keymap.json`.
@@ -244,10 +324,13 @@ impl KeymapSummary {
     }
 
     /// Number of commands carrying at least one warning.
+    ///
+    /// Informational notes are excluded on purpose: the shipped defaults produce
+    /// several, and counting them would tell every user their keymap has problems.
     pub fn warning_count(&self) -> usize {
         self.commands
             .iter()
-            .filter(|entry| !entry.warnings.is_empty())
+            .filter(|entry| entry.notes.iter().any(KeymapNote::is_warning))
             .count()
             + usize::from(!self.unattributed_warnings.is_empty())
     }
@@ -301,19 +384,24 @@ impl KeymapSummary {
     }
 }
 
-/// Files a warning against the command that owns `action`, or against the
-/// summary as a whole when the action belongs to no registry command.
-fn warn(
+/// Files a note against the command that owns `action`.
+///
+/// A *warning* about an action no registry command owns goes to `unattributed`
+/// instead, so nothing the user has to fix is lost. An *informational* note about
+/// one is dropped: there is no row for it to sit next to and nothing to fix.
+fn note(
     commands: &mut [CommandBindings],
     unattributed: &mut Vec<String>,
     action: &str,
+    severity: NoteSeverity,
     message: String,
 ) {
     match command_for_action(action)
         .and_then(|id| commands.iter_mut().find(|entry| entry.command == id))
     {
-        Some(entry) => entry.warnings.push(message),
-        None => unattributed.push(message),
+        Some(entry) => entry.notes.push(KeymapNote { severity, message }),
+        None if severity == NoteSeverity::Warning => unattributed.push(message),
+        None => {}
     }
 }
 
@@ -424,15 +512,44 @@ mod tests {
                 assert_eq!(binding.source, BindingSource::Default);
             }
             assert!(
-                entry.warnings.is_empty(),
+                entry.messages(NoteSeverity::Warning).is_empty(),
                 "{} warns about the defaults: {:?}",
                 meta.action_name,
-                entry.warnings
+                entry.notes
             );
         }
         assert!(summary.unattributed_warnings.is_empty());
         assert_eq!(summary.user_binding_count(), 0);
         assert_eq!(summary.warning_count(), 0);
+    }
+
+    /// The defaults rely on deeper-wins scoping, so they legitimately produce
+    /// informational notes — and none of them may be a warning, because that is
+    /// what the load-time toast is driven from.
+    #[test]
+    fn the_defaults_note_where_a_panel_wins_a_keystroke() {
+        let summary = defaults();
+        let infos = summary.infos(CommandId::Search);
+        assert!(
+            infos.iter().any(|message| {
+                message.contains("sidebar::FilterBranches") && message.contains("the sidebar")
+            }),
+            "{infos:?}"
+        );
+        assert!(summary
+            .infos(CommandId::Cancel)
+            .iter()
+            .any(|message| message.contains("graph::GraphCancel")));
+
+        // Info notes must not inflate the "you have a problem" count.
+        assert_eq!(summary.warning_count(), 0);
+        assert!(
+            summary
+                .commands()
+                .iter()
+                .any(|entry| !entry.messages(NoteSeverity::Info).is_empty()),
+            "the defaults should have at least one info note"
+        );
     }
 
     #[test]

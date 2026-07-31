@@ -4,6 +4,8 @@
 //! * [`registry`] declares every command with it, producing [`CommandId`], the
 //!   gpui action structs and [`ALL_COMMANDS`].
 //! * [`conflict`] detects ambiguous bindings before gpui silently resolves them.
+//! * [`shadow`] reports, informationally, where a panel binding wins a keystroke
+//!   from a global one — legitimate scoping, but worth knowing about.
 //! * [`loader`] reads `keymap.json` and assembles the final binding list.
 //! * [`display`] renders a keystroke the way the user reads it.
 //! * [`summary`] records what the load produced — the effective binding of every
@@ -24,6 +26,7 @@ pub mod display;
 pub mod generate;
 pub mod loader;
 pub mod registry;
+pub mod shadow;
 pub mod summary;
 
 use std::path::PathBuf;
@@ -35,7 +38,9 @@ use gpui::{App, Global};
 pub use display::{humanize_sequence, KeystrokeStyle};
 pub use loader::{ensure_keymap_file, keymap_path, keymap_stub};
 pub use registry::{actions, attach_actions, CommandId, CommandMeta, ALL_COMMANDS};
-pub use summary::{CommandBindings, CommandGroup, EffectiveBinding, KeymapSummary};
+pub use summary::{
+    CommandBindings, CommandGroup, EffectiveBinding, KeymapNote, KeymapSummary, NoteSeverity,
+};
 
 /// Declares a view's key context and attaches the commands it handles.
 ///

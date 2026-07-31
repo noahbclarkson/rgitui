@@ -2,11 +2,21 @@
 
 <!-- Generated from the `commands!` declaration in `crates/rgitui_workspace/src/keymap/registry.rs`. Do not edit by hand. -->
 
-Every shortcut below is rebindable. Create `keymap.json` next to `settings.json` in rgitui's config directory and bind the action names from the tables below.
+Every shortcut below is rebindable, and press `?` in rgitui to see the ones actually in force — that reference is generated from the same declaration as this page, so it follows your own keybindings rather than the defaults.
 
 `secondary` is the platform's primary modifier: `cmd` on macOS, `ctrl` everywhere else. Commands marked _unbound_ have no default keystroke and are reached from the command palette (`secondary-shift-p`).
 
 ## Customising
+
+Keybindings live in `keymap.json`, next to `settings.json` in rgitui's config directory:
+
+| Platform | Path |
+| --- | --- |
+| Linux | `~/.config/rgitui/keymap.json` |
+| macOS | `~/Library/Application Support/rgitui/keymap.json` |
+| Windows | `%APPDATA%\rgitui\keymap.json` |
+
+Run the **Open keymap.json** command from the palette, or use the button in the shortcut reference, to create the file with a commented example already in it and open it in your editor.
 
 ```jsonc
 [
@@ -24,7 +34,7 @@ Every shortcut below is rebindable. Create `keymap.json` next to `settings.json`
 
 The file is reloaded when you save it. Bindings you add win over the defaults. Two bindings on the same keystroke in overlapping contexts, or a binding that shadows the prefix of a chord, are reported as a toast and the losing binding is dropped rather than silently ignored.
 
-`docs/keymap.schema.json` lists every action name; point your editor at it for completion.
+`docs/keymap.schema.json` lists every action name with its description; associate it with `keymap.json` in your editor's JSON schema settings for completion and hovers.
 
 ## Workspace
 
@@ -217,3 +227,17 @@ A binding fires when its context matches somewhere on the path from the focused 
 | a view name | the panel, overlay or dialog of that name — see the tables above |
 
 Contexts combine with `&&`, `||` and `!`, and `>` matches a descendant. `!TextInput` is false whenever a text field is anywhere on the focus path, which is why the vim-style letters carry it and the arrow keys do not.
+
+## Where a panel wins a keystroke
+
+The deepest match wins, so a few of the shortcuts above cannot be reached while a particular panel has focus. That is intended — the alternative would be a panel unable to give a letter its own meaning. Both bindings stay active; only one of them is what the keystroke does in that panel.
+
+| Keystroke | Runs | While focused | So this is out of reach |
+| --- | --- | --- | --- |
+| `/` | `sidebar::FilterBranches` | the sidebar | `rgitui::Search` |
+| `secondary-f` | `sidebar::FilterBranches` | the sidebar | `rgitui::Search` |
+| `escape` | `graph::GraphCancel` | the commit graph | `menu::Cancel` |
+| `/` | `detail::FileSearch` | the commit detail panel | `rgitui::Search` |
+| `secondary-f` | `detail::FileSearch` | the commit detail panel | `rgitui::Search` |
+| `escape` | `blame::BlameShowDiff` | the blame view | `menu::Cancel` |
+| `escape` | `history::HistoryShowDiff` | the file history | `menu::Cancel` |

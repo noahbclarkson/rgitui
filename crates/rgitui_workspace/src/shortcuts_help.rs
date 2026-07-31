@@ -7,6 +7,10 @@
 //! of theirs collided, or because a keystroke now belongs to another command —
 //! is shown as a warning on the row it affects. Opening this panel is therefore
 //! how a user finds out *which* of their bindings was ignored and why.
+//!
+//! Rows also carry the informational notes: a panel binding winning a keystroke
+//! from a global one is legitimate scoping, so it is styled as an aside and is
+//! deliberately absent from the "with a problem" count in the header.
 
 use gpui::prelude::*;
 use gpui::{
@@ -18,7 +22,7 @@ use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
 };
 
-use crate::keymap::{self, CommandBindings, CommandGroup, KeymapSummary};
+use crate::keymap::{self, CommandBindings, CommandGroup, KeymapSummary, NoteSeverity};
 use crate::CommandId;
 
 #[derive(Debug, Clone)]
@@ -158,23 +162,25 @@ impl ShortcutsHelp {
 
         row = row.child(headline);
 
-        for warning in &entry.warnings {
+        for note in &entry.notes {
+            // Info notes are the deliberate deeper-wins scoping the defaults rely
+            // on, so they read as an aside rather than as something to fix.
+            let (icon, color) = match note.severity {
+                NoteSeverity::Warning => (IconName::AlertTriangle, Color::Warning),
+                NoteSeverity::Info => (IconName::Info, Color::Muted),
+            };
             row = row.child(
                 div()
                     .h_flex()
                     .w_full()
                     .gap(px(6.))
                     .items_start()
-                    .child(
-                        Icon::new(IconName::AlertTriangle)
-                            .size(IconSize::XSmall)
-                            .color(Color::Warning),
-                    )
+                    .child(Icon::new(icon).size(IconSize::XSmall).color(color))
                     .child(
                         div().flex_1().min_w_0().child(
-                            Label::new(SharedString::from(warning.clone()))
+                            Label::new(SharedString::from(note.message.clone()))
                                 .size(LabelSize::XSmall)
-                                .color(Color::Warning),
+                                .color(color),
                         ),
                     ),
             );

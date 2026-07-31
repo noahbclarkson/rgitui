@@ -357,6 +357,248 @@ commands! {
     }
 }
 
+/// One element of the key-context tree — a `key_context(...)` call and where the
+/// element carrying it sits.
+///
+/// gpui evaluates a binding's context predicate against every prefix of the path
+/// from the window root down to the focused element and keeps the *deepest* match
+/// ([`gpui::KeyBindingContextPredicate::depth_of`]); the deepest match wins. A
+/// binding scoped to a panel therefore takes a keystroke away from a global
+/// binding whenever that panel has focus.
+///
+/// `commands!` cannot see that: a `view` block says which context a binding is
+/// scoped *to*, never where that context sits. So the shape is written out below
+/// and [`super::shadow`] walks it to reconstruct the focus paths.
+pub struct KeyContextNode {
+    /// The element's key context, verbatim as passed to `key_context`. The first
+    /// identifier names the element; any others are groups it joins, like `List`.
+    pub context: &'static str,
+    /// The enclosing element's [`Self::name`], or `None` for a window root.
+    pub parent: Option<&'static str>,
+    /// Whether the workspace root carries `modal` while this element is up, which
+    /// is what makes `Workspace && !modal` bindings stand down. Mirrors
+    /// `Workspace::any_overlay_active`, the gate that actually sets it.
+    pub modal: bool,
+    /// How to name the element in a message to the user, e.g. "the commit graph".
+    pub label: &'static str,
+}
+
+impl KeyContextNode {
+    /// The identifier naming this element — the first one in [`Self::context`].
+    pub fn name(&self) -> &'static str {
+        self.context
+            .split_whitespace()
+            .next()
+            // Unreachable: `context_tree_is_well_formed` rejects an empty context.
+            .expect("every node names its element")
+    }
+
+    /// Every identifier this element's key context sets.
+    pub fn identifiers(&self) -> impl Iterator<Item = &'static str> {
+        self.context.split_whitespace()
+    }
+}
+
+/// The element tree the key contexts hang off, roots first.
+///
+/// Hand-written because the `key_context` calls it mirrors are spread across
+/// three crates and only run at render time, so there is nothing to derive it
+/// from. `every_registry_context_is_in_the_tree` fails when a `commands!` block
+/// names a context that is missing here, so a new view cannot slip past
+/// [`super::shadow`]'s analysis unnoticed.
+pub const CONTEXT_TREE: &[KeyContextNode] = &[
+    // Window roots. Each owns its own dispatch path — a binding scoped to one is
+    // never reachable from the other, which is why `menu::Cancel` names both.
+    KeyContextNode {
+        context: "Workspace",
+        parent: None,
+        modal: false,
+        label: "the main window",
+    },
+    KeyContextNode {
+        context: "SettingsWindow",
+        parent: None,
+        modal: false,
+        label: "the settings window",
+    },
+    // Panels. Always present, so a binding of theirs competes with a global one.
+    KeyContextNode {
+        context: "Sidebar List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the sidebar",
+    },
+    KeyContextNode {
+        context: "GraphView",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the commit graph",
+    },
+    KeyContextNode {
+        context: "DetailPanel List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the commit detail panel",
+    },
+    KeyContextNode {
+        context: "DiffViewer",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the diff viewer",
+    },
+    KeyContextNode {
+        context: "BlameView List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the blame view",
+    },
+    KeyContextNode {
+        context: "FileHistoryView List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the file history",
+    },
+    KeyContextNode {
+        context: "ReflogView List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the reflog",
+    },
+    KeyContextNode {
+        context: "SubmoduleView List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the submodule list",
+    },
+    KeyContextNode {
+        context: "BisectView List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the bisect log",
+    },
+    KeyContextNode {
+        context: "IssuesPanel List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the issues panel",
+    },
+    KeyContextNode {
+        context: "PrsPanel List",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the pull requests panel",
+    },
+    // Overlays and dialogs. `modal: true` marks the ones
+    // `Workspace::any_overlay_active` counts; the three that it does not are
+    // spelled out below, so this table stays a description of what the app does
+    // rather than of what it ought to do.
+    KeyContextNode {
+        context: "CommandPalette List",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the command palette",
+    },
+    KeyContextNode {
+        context: "SearchPanel List",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the working-tree search",
+    },
+    KeyContextNode {
+        context: "RepoOpener List",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the repository picker",
+    },
+    KeyContextNode {
+        context: "ShortcutsHelp",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the shortcut reference",
+    },
+    KeyContextNode {
+        context: "InteractiveRebase List",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the interactive rebase editor",
+    },
+    KeyContextNode {
+        context: "ThemeEditor",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the theme editor",
+    },
+    KeyContextNode {
+        context: "BranchDialog",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the branch dialog",
+    },
+    KeyContextNode {
+        context: "TagDialog",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the tag dialog",
+    },
+    KeyContextNode {
+        context: "WorktreeDialog",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the worktree dialog",
+    },
+    KeyContextNode {
+        context: "RenameDialog",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the rename dialog",
+    },
+    KeyContextNode {
+        context: "ConfirmDialog",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the confirmation dialog",
+    },
+    KeyContextNode {
+        context: "StashBranchDialog",
+        parent: Some("Workspace"),
+        modal: true,
+        label: "the stash-branch dialog",
+    },
+    // These three are not in `any_overlay_active`, so global shortcuts stay live
+    // behind them.
+    KeyContextNode {
+        context: "CreatePrDialog",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the pull request dialog",
+    },
+    KeyContextNode {
+        context: "RepoCloneDialog",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the clone dialog",
+    },
+    KeyContextNode {
+        context: "StashSaveDialog",
+        parent: Some("Workspace"),
+        modal: false,
+        label: "the stash dialog",
+    },
+];
+
+/// Identifiers that flag an element rather than name a place in the tree, so they
+/// are absent from [`CONTEXT_TREE`] on purpose.
+///
+/// `modal` is added to the workspace root by whichever overlay is up — see
+/// [`KeyContextNode::modal`]. `TextInput` is set by [`rgitui_ui::TextInput`],
+/// which can appear under any of the nodes above.
+pub const CONTEXT_MARKERS: &[&str] = &["modal", "TextInput"];
+
+/// The node whose element sets `name`, if any.
+pub fn context_node(name: &str) -> Option<&'static KeyContextNode> {
+    CONTEXT_TREE.iter().find(|node| node.name() == name)
+}
+
 impl CommandId {
     /// Static metadata for this command.
     pub fn meta(self) -> &'static CommandMeta {
@@ -417,6 +659,7 @@ pub fn command_for_action(action_name: &str) -> Option<CommandId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::KeyBindingContextPredicate;
     use std::collections::HashSet;
 
     /// The historical `CommandId::as_str()` values. These are persisted and
@@ -758,6 +1001,97 @@ mod tests {
             CommandId::BlameShowHistory.default_bindings(),
             &[("h", "BlameView && !TextInput")]
         );
+    }
+
+    /// Every identifier a context predicate mentions, negated ones included —
+    /// `!TextInput` still has to be accounted for by the tree or the markers.
+    fn predicate_identifiers(predicate: &gpui::KeyBindingContextPredicate, out: &mut Vec<String>) {
+        use gpui::KeyBindingContextPredicate as P;
+        match predicate {
+            P::Identifier(name) => out.push(name.to_string()),
+            P::Equal(key, _) | P::NotEqual(key, _) => out.push(key.to_string()),
+            P::Not(inner) => predicate_identifiers(inner, out),
+            P::Descendant(left, right) | P::And(left, right) | P::Or(left, right) => {
+                predicate_identifiers(left, out);
+                predicate_identifiers(right, out);
+            }
+        }
+    }
+
+    #[test]
+    fn context_tree_is_well_formed() {
+        let mut names = HashSet::new();
+        for node in CONTEXT_TREE {
+            assert!(
+                !node.context.trim().is_empty(),
+                "a node has no key context at all"
+            );
+            assert!(
+                !node.label.trim().is_empty(),
+                "{} has no user-facing label",
+                node.name()
+            );
+            assert!(names.insert(node.name()), "{} appears twice", node.name());
+        }
+
+        for node in CONTEXT_TREE {
+            let Some(parent) = node.parent else {
+                continue;
+            };
+            assert!(
+                names.contains(&parent),
+                "{}'s parent `{parent}` is not in the tree",
+                node.name()
+            );
+            // Walking up must terminate at a root rather than loop.
+            let mut current = node;
+            let mut hops = 0;
+            while let Some(parent) = current.parent {
+                current = context_node(parent).expect("the parent is in the tree");
+                hops += 1;
+                assert!(
+                    hops <= CONTEXT_TREE.len(),
+                    "{} sits in a parent cycle",
+                    node.name()
+                );
+            }
+        }
+
+        let roots: Vec<&str> = CONTEXT_TREE
+            .iter()
+            .filter(|node| node.parent.is_none())
+            .map(KeyContextNode::name)
+            .collect();
+        assert_eq!(
+            roots,
+            ["Workspace", "SettingsWindow"],
+            "each window root owns its own dispatch path; adding one is a decision, \
+             not an accident"
+        );
+    }
+
+    /// The guard that keeps [`CONTEXT_TREE`] honest: a new `commands!` block
+    /// naming a context nobody placed in the tree would escape the shadowing
+    /// analysis silently, so it fails the build instead.
+    #[test]
+    fn every_registry_context_is_in_the_tree() {
+        let mut known: HashSet<&str> = CONTEXT_MARKERS.iter().copied().collect();
+        known.extend(CONTEXT_TREE.iter().flat_map(KeyContextNode::identifiers));
+
+        for (keystrokes, context, action) in default_bindings() {
+            let predicate = KeyBindingContextPredicate::parse(context)
+                .unwrap_or_else(|error| panic!("`{context}` does not parse: {error}"));
+            let mut identifiers = Vec::new();
+            predicate_identifiers(&predicate, &mut identifiers);
+            for identifier in identifiers {
+                assert!(
+                    known.contains(identifier.as_str()),
+                    "`{identifier}` (from the `{context}` binding of `{keystrokes}` to {action}) \
+                     is in no CONTEXT_TREE node and is not a marker, so shadowing against it \
+                     cannot be detected. Add the element to CONTEXT_TREE in this file."
+                );
+            }
+        }
     }
 
     #[test]
