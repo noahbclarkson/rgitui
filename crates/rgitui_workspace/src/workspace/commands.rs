@@ -111,7 +111,11 @@ impl Workspace {
     /// review it, adjust the actions and confirm through the dialog's own
     /// `Execute` path. Validation happens first — see [`crate::squash`] for why —
     /// and a rejection becomes a toast that names the condition that failed.
-    fn squash_selected_commits(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// Both routes to squashing end here: the `graph::SquashSelected` keystroke
+    /// and the graph's "Squash selected commits" context-menu item, which only
+    /// checks that two rows are selected before emitting.
+    pub(super) fn squash_selected_commits(&mut self, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(self.active_tab) else {
             return;
         };

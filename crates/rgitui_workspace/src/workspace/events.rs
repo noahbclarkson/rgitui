@@ -2141,6 +2141,10 @@ pub(super) fn subscribe_graph(
                             ir.show_visible(entries, format!("{} (rebase onto)", base_short), cx);
                         });
                 }
+                // The context-menu route to squashing. It lands on the same
+                // helper as the `graph::SquashSelected` keystroke, so the
+                // validation and the rejection wording cannot drift apart.
+                GraphViewEvent::SquashSelected => this.squash_selected_commits(cx),
             }
         }
     })

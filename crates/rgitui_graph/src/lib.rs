@@ -36,24 +36,177 @@ impl Render for DateColumnResize {
 
 /// Width of the commit graph context menu.
 const CONTEXT_MENU_WIDTH: f32 = 200.0;
-/// Number of action rows in the context menu.
-const CONTEXT_MENU_ITEM_COUNT: f32 = 14.0;
 /// Height of a single context-menu action row (`.h(px(26.))`).
 const CONTEXT_MENU_ITEM_HEIGHT: f32 = 26.0;
-/// Number of separators drawn between menu groups.
-const CONTEXT_MENU_SEPARATOR_COUNT: f32 = 4.0;
 /// Effective height of one separator: `.h(px(1.))` plus `.my(px(2.))` top and bottom.
 const CONTEXT_MENU_SEPARATOR_HEIGHT: f32 = 1.0 + 2.0 + 2.0;
 /// Combined top and bottom padding on the menu container (`.py(px(3.))`).
 const CONTEXT_MENU_VERTICAL_PADDING: f32 = 3.0 + 3.0;
 
-/// Natural rendered height of the context menu, derived from its real item and
-/// separator metrics. Shared by clamping and the dismiss hit-test so both agree
-/// on where the menu actually sits.
-const fn context_menu_height() -> f32 {
-    CONTEXT_MENU_ITEM_COUNT * CONTEXT_MENU_ITEM_HEIGHT
-        + CONTEXT_MENU_SEPARATOR_COUNT * CONTEXT_MENU_SEPARATOR_HEIGHT
+/// Natural rendered height of a context menu holding `items`.
+///
+/// Counted from the rows themselves rather than from a hand-maintained total, so
+/// adding or hiding an item cannot leave the menu mis-sized. Shared by the
+/// clamping and the dismiss hit-test, which have to agree on where the menu sits.
+fn context_menu_height(items: &[&GraphMenuItem]) -> f32 {
+    let separators = items.iter().filter(|item| item.separator_before).count();
+    items.len() as f32 * CONTEXT_MENU_ITEM_HEIGHT
+        + separators as f32 * CONTEXT_MENU_SEPARATOR_HEIGHT
         + CONTEXT_MENU_VERTICAL_PADDING
+}
+
+/// What a commit graph context-menu row does when clicked.
+///
+/// Carries no commit data: the row is built for one commit and
+/// [`GraphView::menu_event`] fills that in, which keeps the table below a plain
+/// description of the menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraphMenuAction {
+    CherryPick,
+    Revert,
+    Checkout,
+    CreateBranch,
+    CreateTag,
+    BisectGood,
+    BisectBad,
+    Reset,
+    InteractiveRebase,
+    SquashSelected,
+    CopySha,
+    CopyMessage,
+    CopyAuthor,
+    CopyDate,
+    ViewOnGithub,
+}
+
+/// One row of the commit graph context menu.
+struct GraphMenuItem {
+    /// Row label.
+    label: &'static str,
+    /// Leading icon.
+    icon: IconName,
+    /// What clicking the row does.
+    action: GraphMenuAction,
+    /// Whether a group separator is drawn above this row.
+    separator_before: bool,
+    /// Whether the row renders in the error colour, because it rewrites or
+    /// discards committed work.
+    destructive: bool,
+}
+
+impl GraphMenuItem {
+    const fn new(label: &'static str, icon: IconName, action: GraphMenuAction) -> Self {
+        Self {
+            label,
+            icon,
+            action,
+            separator_before: false,
+            destructive: false,
+        }
+    }
+
+    /// Starts a new group: a separator is drawn above this row.
+    const fn grouped(mut self) -> Self {
+        self.separator_before = true;
+        self
+    }
+
+    /// Marks the row as rewriting or discarding work.
+    const fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
+}
+
+/// Every row the commit graph context menu can show, in order.
+///
+/// [`GraphView::context_menu_items`] filters it for the current selection; the
+/// menu's height is then derived from what survives, so no count is maintained
+/// by hand.
+const GRAPH_MENU_ITEMS: &[GraphMenuItem] = &[
+    GraphMenuItem::new(
+        "Cherry-pick commit",
+        IconName::GitCommit,
+        GraphMenuAction::CherryPick,
+    ),
+    GraphMenuItem::new("Revert commit", IconName::Undo, GraphMenuAction::Revert),
+    GraphMenuItem::new(
+        "Checkout commit",
+        IconName::Check,
+        GraphMenuAction::Checkout,
+    ),
+    GraphMenuItem::new(
+        "Create branch here",
+        IconName::GitBranch,
+        GraphMenuAction::CreateBranch,
+    ),
+    GraphMenuItem::new("Create tag here", IconName::Tag, GraphMenuAction::CreateTag),
+    GraphMenuItem::new(
+        "Mark as good (bisect)",
+        IconName::Check,
+        GraphMenuAction::BisectGood,
+    )
+    .grouped(),
+    GraphMenuItem::new(
+        "Mark as bad (bisect)",
+        IconName::X,
+        GraphMenuAction::BisectBad,
+    )
+    .destructive(),
+    GraphMenuItem::new("Reset to here", IconName::Trash, GraphMenuAction::Reset)
+        .grouped()
+        .destructive(),
+    GraphMenuItem::new(
+        "Interactive Rebase",
+        IconName::GitMerge,
+        GraphMenuAction::InteractiveRebase,
+    )
+    .grouped(),
+    // Only offered while the selection could actually be squashed — see
+    // `GraphView::context_menu_items`.
+    GraphMenuItem::new(
+        "Squash selected commits",
+        IconName::GitMerge,
+        GraphMenuAction::SquashSelected,
+    ),
+    GraphMenuItem::new("Copy SHA", IconName::Copy, GraphMenuAction::CopySha).grouped(),
+    GraphMenuItem::new(
+        "Copy commit message",
+        IconName::Edit,
+        GraphMenuAction::CopyMessage,
+    ),
+    GraphMenuItem::new(
+        "Copy author name",
+        IconName::User,
+        GraphMenuAction::CopyAuthor,
+    ),
+    GraphMenuItem::new("Copy date", IconName::Clock, GraphMenuAction::CopyDate),
+    GraphMenuItem::new(
+        "View on GitHub",
+        IconName::ExternalLink,
+        GraphMenuAction::ViewOnGithub,
+    ),
+];
+
+/// Smallest selection a squash can meld: fewer commits than this and there is
+/// nothing to squash into.
+const MIN_SQUASH_SELECTION: usize = 2;
+
+/// The context-menu rows to offer when `selected_commits` commits are selected.
+///
+/// "Squash selected commits" is only offered once there are two commits to meld;
+/// below that it would always fail, so it is hidden rather than shown disabled.
+/// The rest of the rules — a contiguous run on HEAD's own first-parent chain, no
+/// merge commit in the way — belong to the workspace's `plan_squash`, which this
+/// crate sits below. Clicking the row therefore takes the same route as the
+/// `graph::SquashSelected` keystroke and a selection that does not qualify is
+/// refused there, in the same words.
+fn menu_items_for_selection(selected_commits: usize) -> Vec<&'static GraphMenuItem> {
+    let squashable = selected_commits >= MIN_SQUASH_SELECTION;
+    GRAPH_MENU_ITEMS
+        .iter()
+        .filter(|item| squashable || item.action != GraphMenuAction::SquashSelected)
+        .collect()
 }
 
 /// Pre-computed unit circle vertex offsets (cos, sin) for 36-step circles.
@@ -168,6 +321,11 @@ pub enum GraphViewEvent {
     /// interactive rebase editor, allowing the user to reorder, squash, fixup,
     /// reword, or drop them.
     InteractiveRebase(git2::Oid),
+    /// Squash the selected commits together. The workspace validates the
+    /// selection and pre-fills the interactive rebase dialog, or explains why it
+    /// cannot — the same path the `graph::SquashSelected` keystroke takes, so the
+    /// two cannot disagree.
+    SquashSelected,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -793,7 +951,7 @@ impl GraphView {
     /// exactly where the menu sits, even when clamping or scrolling occurs.
     fn context_menu_geometry(&self, click: Point<Pixels>) -> (Pixels, Pixels, Pixels, Pixels) {
         let menu_w = px(CONTEXT_MENU_WIDTH);
-        let natural_h = px(context_menu_height());
+        let natural_h = px(context_menu_height(&self.context_menu_items()));
         let bounds = self.container_bounds;
         // Cap the visible height to the container so a short window scrolls
         // rather than overflowing and clipping unreachable items.
@@ -936,6 +1094,40 @@ impl GraphView {
     /// Total number of rows in the list (includes the virtual working tree row).
     pub fn row_count(&self) -> usize {
         self.total_list_items()
+    }
+
+    /// The context-menu rows to show for the selection as it stands. See
+    /// [`menu_items_for_selection`].
+    fn context_menu_items(&self) -> Vec<&'static GraphMenuItem> {
+        menu_items_for_selection(self.selected_commit_count())
+    }
+
+    /// The event a context-menu row emits, bound to the commit it was opened on.
+    fn menu_event(action: GraphMenuAction, commit: &CommitInfo) -> GraphViewEvent {
+        let oid = commit.oid;
+        match action {
+            GraphMenuAction::CherryPick => GraphViewEvent::CherryPick(oid),
+            GraphMenuAction::Revert => GraphViewEvent::RevertCommit(oid),
+            GraphMenuAction::Checkout => GraphViewEvent::CheckoutCommit(oid),
+            GraphMenuAction::CreateBranch => GraphViewEvent::CreateBranchAtCommit(oid),
+            GraphMenuAction::CreateTag => GraphViewEvent::CreateTagAtCommit(oid),
+            GraphMenuAction::BisectGood => GraphViewEvent::BisectGood(oid),
+            GraphMenuAction::BisectBad => GraphViewEvent::BisectBad(oid),
+            GraphMenuAction::Reset => GraphViewEvent::ResetToCommit(oid, oid.to_string()),
+            GraphMenuAction::InteractiveRebase => GraphViewEvent::InteractiveRebase(oid),
+            GraphMenuAction::SquashSelected => GraphViewEvent::SquashSelected,
+            GraphMenuAction::CopySha => GraphViewEvent::CopyCommitSha(oid.to_string()),
+            GraphMenuAction::CopyMessage => {
+                GraphViewEvent::CopyCommitMessage(commit.message.clone())
+            }
+            GraphMenuAction::CopyAuthor => {
+                GraphViewEvent::CopyAuthorName(commit.author.name.clone())
+            }
+            GraphMenuAction::CopyDate => {
+                GraphViewEvent::CopyDate(commit.time.format("%Y-%m-%d %H:%M:%S").to_string())
+            }
+            GraphMenuAction::ViewOnGithub => GraphViewEvent::ViewOnGithub(oid),
+        }
     }
 
     fn dismiss_context_menu(&mut self, cx: &mut Context<Self>) {
@@ -2762,14 +2954,8 @@ impl Render for GraphView {
         // Context menu overlay
         if let Some(ref menu_state) = self.context_menu {
             if let Some(commit) = self.commits.get(menu_state.commit_index) {
-                let oid = commit.oid;
-                let sha = format!("{}", oid);
-                let msg_clone = commit.message.clone();
-                let author_name_clone = commit.author.name.clone();
-                let date_clone = commit.time.format("%Y-%m-%d %H:%M:%S").to_string();
                 let pos = menu_state.position;
                 let weak = cx.weak_entity();
-                let sha_clone = sha.clone();
 
                 let menu_bg = colors.elevated_surface_background;
                 let menu_border = colors.border;
@@ -2777,22 +2963,7 @@ impl Render for GraphView {
                 let menu_active = colors.ghost_element_active;
                 let menu_accent = colors.text_accent;
 
-                let menu_items: Vec<(&str, IconName)> = vec![
-                    ("Cherry-pick commit", IconName::GitCommit),
-                    ("Revert commit", IconName::Undo),
-                    ("Checkout commit", IconName::Check),
-                    ("Create branch here", IconName::GitBranch),
-                    ("Create tag here", IconName::Tag),
-                    ("Mark as good (bisect)", IconName::Check),
-                    ("Mark as bad (bisect)", IconName::X),
-                    ("Reset to here", IconName::Trash),
-                    ("Interactive Rebase", IconName::GitMerge),
-                    ("Copy SHA", IconName::Copy),
-                    ("Copy commit message", IconName::Edit),
-                    ("Copy author name", IconName::User),
-                    ("Copy date", IconName::Clock),
-                    ("View on GitHub", IconName::ExternalLink),
-                ];
+                let items = self.context_menu_items();
 
                 // Placement and visible height, clamped to the container. Shared
                 // with the dismiss hit-test so both agree on the menu rectangle.
@@ -2832,13 +3003,8 @@ impl Render for GraphView {
                         cx.stop_propagation();
                     });
 
-                for (idx, (label_text, icon_name)) in menu_items.iter().enumerate() {
-                    let label: SharedString = (*label_text).into();
-                    let icon = *icon_name;
-
-                    // Add separator before bisect options, before destructive "Reset",
-                    // before Interactive Rebase, and before clipboard ops
-                    if idx == 5 || idx == 7 || idx == 8 || idx == 12 {
+                for (idx, item) in items.iter().enumerate() {
+                    if item.separator_before {
                         menu = menu.child(
                             div()
                                 .w_full()
@@ -2849,237 +3015,51 @@ impl Render for GraphView {
                         );
                     }
 
-                    let mut item = div()
-                        .id(ElementId::NamedInteger("ctx-action".into(), idx as u64))
-                        .h_flex()
-                        .w_full()
-                        .h(px(26.))
-                        .px(px(8.))
-                        .mx(px(4.))
-                        .gap(px(6.))
-                        .items_center()
-                        .cursor_pointer()
-                        .rounded(px(3.))
-                        .hover(move |s| s.bg(menu_hover).border_l_2().border_color(menu_accent))
-                        .active(move |s| s.bg(menu_active));
-
-                    match idx {
-                        0 => {
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::CherryPick(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        1 => {
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::RevertCommit(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        2 => {
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::CheckoutCommit(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        3 => {
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::CreateBranchAtCommit(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        4 => {
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::CreateTagAtCommit(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        5 => {
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::BisectGood(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        6 => {
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::BisectBad(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        7 => {
-                            let w = weak.clone();
-                            let sha_for_reset = sha_clone.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    let sha_val = sha_for_reset.clone();
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::ResetToCommit(oid, sha_val));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        8 => {
-                            // Interactive Rebase — emit event with the right-clicked commit's OID.
-                            // The workspace handler will build the commit list from HEAD down
-                            // to (including) this commit and open the rebase editor.
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::InteractiveRebase(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        9 => {
-                            let w = weak.clone();
-                            let sha_for_click = sha_clone.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    let sha_val = sha_for_click.clone();
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::CopyCommitSha(sha_val));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        10 => {
-                            let w = weak.clone();
-                            let msg_for_click = msg_clone.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    let msg_val = msg_for_click.clone();
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::CopyCommitMessage(msg_val));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        11 => {
-                            let w = weak.clone();
-                            let author_for_click = author_name_clone.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    let author_val = author_for_click.clone();
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::CopyAuthorName(author_val));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        12 => {
-                            let w = weak.clone();
-                            let date_for_click = date_clone.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    let date_val = date_for_click.clone();
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::CopyDate(date_val));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        13 => {
-                            // View on GitHub — emit OID; workspace handler constructs the URL.
-                            let w = weak.clone();
-                            item = item.on_click(
-                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                    w.update(cx, |this: &mut GraphView, cx| {
-                                        this.context_menu = None;
-                                        cx.emit(GraphViewEvent::ViewOnGithub(oid));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                },
-                            );
-                        }
-                        _ => {}
-                    }
-
-                    // Destructive actions render in error color (Bad and Reset)
-                    let item_color = if idx == 6 || idx == 7 {
-                        Color::Error
+                    // Built here rather than in the click handler so the row
+                    // captures the commit the menu was opened on, even if the
+                    // selection moves before the click lands.
+                    let event = Self::menu_event(item.action, commit);
+                    let weak = weak.clone();
+                    let (icon_color, label_color) = if item.destructive {
+                        (Color::Error, Color::Error)
                     } else {
-                        Color::Muted
-                    };
-                    let label_color = if idx == 6 || idx == 7 {
-                        Color::Error
-                    } else {
-                        Color::Default
+                        (Color::Muted, Color::Default)
                     };
 
-                    item = item
-                        .child(Icon::new(icon).size(IconSize::XSmall).color(item_color))
-                        .child(Label::new(label).size(LabelSize::XSmall).color(label_color));
-
-                    menu = menu.child(item);
+                    menu = menu.child(
+                        div()
+                            .id(ElementId::NamedInteger("ctx-action".into(), idx as u64))
+                            .h_flex()
+                            .w_full()
+                            .h(px(CONTEXT_MENU_ITEM_HEIGHT))
+                            .px(px(8.))
+                            .mx(px(4.))
+                            .gap(px(6.))
+                            .items_center()
+                            .cursor_pointer()
+                            .rounded(px(3.))
+                            .hover(move |s| s.bg(menu_hover).border_l_2().border_color(menu_accent))
+                            .active(move |s| s.bg(menu_active))
+                            .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                let event = event.clone();
+                                weak.update(cx, |this: &mut GraphView, cx| {
+                                    this.context_menu = None;
+                                    cx.emit(event);
+                                    cx.notify();
+                                })
+                                .ok();
+                            })
+                            .child(
+                                Icon::new(item.icon)
+                                    .size(IconSize::XSmall)
+                                    .color(icon_color),
+                            )
+                            .child(
+                                Label::new(SharedString::from(item.label))
+                                    .size(LabelSize::XSmall)
+                                    .color(label_color),
+                            ),
+                    );
                 }
 
                 let menu = menu.with_animation(
@@ -3954,6 +3934,72 @@ mod tests {
         let mut bytes = [0_u8; 20];
         bytes[0] = byte;
         git2::Oid::from_bytes(&bytes).unwrap()
+    }
+
+    use menu_items_for_selection as menu_items;
+
+    #[test]
+    fn squash_is_offered_only_once_two_commits_are_selected() {
+        for selected in [0, 1] {
+            assert!(
+                !menu_items(selected)
+                    .iter()
+                    .any(|item| item.action == GraphMenuAction::SquashSelected),
+                "squash offered with {selected} commit(s) selected"
+            );
+        }
+        for selected in [2, 5] {
+            assert!(
+                menu_items(selected)
+                    .iter()
+                    .any(|item| item.action == GraphMenuAction::SquashSelected),
+                "squash missing with {selected} commits selected"
+            );
+        }
+    }
+
+    /// The bug the hard-coded `CONTEXT_MENU_ITEM_COUNT` used to cause: an item
+    /// added without touching the constant left the menu sized for the old list,
+    /// clipping the last row.
+    #[test]
+    fn the_menu_height_follows_the_rows_it_actually_has() {
+        let without = context_menu_height(&menu_items(1));
+        let with = context_menu_height(&menu_items(2));
+        assert_eq!(
+            with - without,
+            CONTEXT_MENU_ITEM_HEIGHT,
+            "showing squash must add exactly one row's worth of height"
+        );
+
+        let rows = menu_items(2).len() as f32;
+        let separators = menu_items(2)
+            .iter()
+            .filter(|item| item.separator_before)
+            .count() as f32;
+        assert_eq!(
+            with,
+            rows * CONTEXT_MENU_ITEM_HEIGHT
+                + separators * CONTEXT_MENU_SEPARATOR_HEIGHT
+                + CONTEXT_MENU_VERTICAL_PADDING
+        );
+    }
+
+    #[test]
+    fn every_menu_row_is_distinct_and_no_group_starts_the_menu() {
+        let mut seen: Vec<GraphMenuAction> = Vec::new();
+        for item in GRAPH_MENU_ITEMS {
+            assert!(!item.label.is_empty());
+            assert!(
+                !seen.contains(&item.action),
+                "{:?} appears twice in the menu",
+                item.action
+            );
+            seen.push(item.action);
+        }
+        assert!(
+            !GRAPH_MENU_ITEMS[0].separator_before,
+            "a separator above the first row draws a stray line inside the border"
+        );
     }
 
     fn make_commit(oid: u8, parents: &[u8], refs: Vec<RefLabel>) -> CommitInfo {
