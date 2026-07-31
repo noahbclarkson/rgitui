@@ -245,8 +245,12 @@ commands! {
         GraphExtendSelectionNext ["shift-down", "shift-j"] [hidden];
         /// Add the previous commit in the graph to the selection.
         GraphExtendSelectionPrev ["shift-up", "shift-k"] [hidden];
+        // Bare `s`, matching the rebase editor below where `s` already means
+        // squash. `secondary-shift-s` would be dispatched ahead of the
+        // workspace's `rgitui::UnstageAll`, taking that keystroke away from it
+        // whenever the graph held focus.
         /// Squash the selected commits into the oldest of them.
-        SquashSelected "secondary-shift-s" if has_multi_commit_selection [hidden];
+        SquashSelected "s" if has_multi_commit_selection [hidden];
         /// Close the graph search, or dismiss the graph context menu.
         GraphCancel "escape" in "GraphView" [hidden];
         /// Copy the selected commit's SHA to the clipboard.
@@ -673,6 +677,7 @@ mod tests {
             (
                 "s",
                 &[
+                    "graph::SquashSelected",
                     "diff::StageSelection",
                     "sidebar::ToggleStageRow",
                     "rebase::RebaseSquash",
