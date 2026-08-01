@@ -247,13 +247,55 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
     worktrees
 }
 
+/// Files at or below this size are content-hashed in full when fingerprinting
+/// the working tree; larger ones are sampled (see [`mix_file_contents`]).
+const FINGERPRINT_FULL_READ_LIMIT: u64 = 64 * 1024;
+
+/// Bytes taken from each end of a file that exceeds the full-read limit.
+const FINGERPRINT_SAMPLE_LEN: u64 = 32 * 1024;
+
+/// Mix a workdir file's contents into `hasher`, reading a bounded number of
+/// bytes.
+///
+/// Size and mtime alone are not enough: a coarse-timestamp filesystem (FAT32,
+/// some network/WSL/SMB mounts) can hold both steady across an edit. But
+/// reading whole files here is unaffordable — this runs for every modified file
+/// on every refresh, including the watcher's cached path, so a single large
+/// file in the working tree would be re-read every few hundred milliseconds.
+///
+/// Small files are hashed whole. Larger ones are sampled at both ends, which
+/// still catches ordinary edits while keeping the work per file constant.
+fn mix_file_contents(hasher: &mut DefaultHasher, path: &Path, len: u64) {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    if len <= FINGERPRINT_FULL_READ_LIMIT {
+        if let Ok(contents) = std::fs::read(path) {
+            contents.hash(hasher);
+        }
+        return;
+    }
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return;
+    };
+    let sample = FINGERPRINT_SAMPLE_LEN as usize;
+    let mut buf = vec![0u8; sample];
+
+    if file.read_exact(&mut buf).is_ok() {
+        buf.hash(hasher);
+    }
+    if file.seek(SeekFrom::End(-(sample as i64))).is_ok() && file.read_exact(&mut buf).is_ok() {
+        buf.hash(hasher);
+    }
+}
+
 /// Build a cheap fingerprint from `repo.statuses()` output.
 ///
 /// Captures: file paths, status flags, staged blob OIDs (index state), and
-/// mtime+size for workdir-modified tracked files (content changes that don't
-/// move through the index). This is fast — libgit2 uses its own stat cache
-/// for `statuses()`, and the additional `metadata()` calls are only for files
-/// already flagged as workdir-modified.
+/// mtime+size plus bounded content sampling for workdir-modified tracked files
+/// (content changes that don't move through the index). This is fast — libgit2
+/// uses its own stat cache for `statuses()`, and the additional `metadata()`
+/// calls are only for files already flagged as workdir-modified.
 fn status_fingerprint(repo_path: &Path, statuses: &git2::Statuses<'_>) -> u64 {
     let mut hasher = DefaultHasher::new();
     for entry in statuses.iter() {
@@ -266,17 +308,13 @@ fn status_fingerprint(repo_path: &Path, statuses: &git2::Statuses<'_>) -> u64 {
         if entry.status().intersects(
             git2::Status::WT_MODIFIED | git2::Status::WT_RENAMED | git2::Status::WT_TYPECHANGE,
         ) {
-            if let Ok(meta) = std::fs::metadata(repo_path.join(path)) {
+            let full_path = repo_path.join(path);
+            if let Ok(meta) = std::fs::metadata(&full_path) {
                 meta.len().hash(&mut hasher);
                 if let Ok(mtime) = meta.modified() {
                     mtime.hash(&mut hasher);
                 }
-            }
-            // Size and mtime can remain unchanged on coarse timestamp file systems
-            // while an already-modified file's contents change. Hashing its bytes
-            // keeps cached line statistics correct in that case.
-            if let Ok(contents) = std::fs::read(repo_path.join(path)) {
-                contents.hash(&mut hasher);
+                mix_file_contents(&mut hasher, &full_path, meta.len());
             }
         }
     }

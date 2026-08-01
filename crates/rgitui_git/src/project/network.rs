@@ -4,6 +4,7 @@ use gpui::{AsyncApp, Context, Task, WeakEntity};
 
 use crate::types::*;
 
+use super::argsafe::{validate_branch_name, validate_remote_name};
 use super::auth::run_git_network_command;
 use super::refresh::gather_refresh_data;
 use super::{
@@ -83,6 +84,7 @@ impl GitProject {
             let result: anyhow::Result<(Option<String>, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
+                    validate_remote_name(&task_remote_name)?;
                     let details = run_git_network_command(
                         &repo_path,
                         &["fetch", "--prune", &task_remote_name],
@@ -179,6 +181,8 @@ impl GitProject {
                         ensure_clean_worktree(&repo, "Pull")?;
                         drop(repo);
 
+                        validate_remote_name(&task_remote_name)?;
+                        validate_branch_name(&task_branch_name)?;
                         match run_git_network_command(
                             &repo_path,
                             &["pull", &task_remote_name, &task_branch_name],
@@ -341,6 +345,9 @@ impl GitProject {
                         let repo = Repository::open(&repo_path)?;
                         let branch_name = head_branch_name(&repo)?;
                         drop(repo);
+
+                        validate_remote_name(&task_remote_name)?;
+                        validate_branch_name(&task_remote_branch_name)?;
 
                         let mut args = vec!["push"];
                         if force {

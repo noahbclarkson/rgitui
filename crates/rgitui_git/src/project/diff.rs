@@ -54,6 +54,9 @@ pub(crate) fn generate_hunk_patch_for_repo(
 ) -> Result<String> {
     let mut diff_opts = DiffOptions::new();
     diff_opts.pathspec(file_path);
+    // Without this libgit2 fnmatches the pathspec, so a file literally named
+    // `data[1].json` would not match itself and could match a different file.
+    diff_opts.disable_pathspec_match(true);
     diff_opts.include_untracked(true);
     diff_opts.show_untracked_content(true);
     diff_opts.recurse_untracked_dirs(true);
@@ -201,6 +204,9 @@ pub(crate) fn generate_line_patch_for_repo(
 ) -> Result<String> {
     let mut diff_opts = DiffOptions::new();
     diff_opts.pathspec(file_path);
+    // Without this libgit2 fnmatches the pathspec, so a file literally named
+    // `data[1].json` would not match itself and could match a different file.
+    diff_opts.disable_pathspec_match(true);
     diff_opts.include_untracked(true);
     diff_opts.show_untracked_content(true);
     diff_opts.recurse_untracked_dirs(true);
@@ -558,6 +564,9 @@ pub fn compute_file_diff(repo_path: &Path, file_path: &Path, staged: bool) -> Re
     let repo = Repository::open(repo_path)?;
     let mut diff_opts = DiffOptions::new();
     diff_opts.pathspec(file_path);
+    // Without this libgit2 fnmatches the pathspec, so a file literally named
+    // `data[1].json` would not match itself and could match a different file.
+    diff_opts.disable_pathspec_match(true);
     diff_opts.include_untracked(true);
     diff_opts.show_untracked_content(true);
     diff_opts.recurse_untracked_dirs(true);
@@ -639,6 +648,9 @@ impl GitProject {
         let repo = self.open_repo()?;
         let mut diff_opts = DiffOptions::new();
         diff_opts.pathspec(path);
+        // Without this libgit2 fnmatches the pathspec, so a file literally named
+        // `data[1].json` would not match itself and could match a different file.
+        diff_opts.disable_pathspec_match(true);
         diff_opts.include_untracked(true);
         diff_opts.show_untracked_content(true);
         diff_opts.recurse_untracked_dirs(true);

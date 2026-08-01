@@ -54,7 +54,12 @@ parking_lot = "0.12"
 smallvec = { version = "1", features = ["union"] }
 
 # Git
-git2 = "0.20"
+#
+# All network and authentication work shells out to the `git` CLI (see
+# `rgitui_git::project::auth`), so libgit2's own transports are never used.
+# Disabling default features drops the transitive libssh2-sys and openssl-sys
+# C builds along with their CVE surface.
+git2 = { version = "0.20", default-features = false }
 
 # Async
 futures = "0.3"

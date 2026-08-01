@@ -111,13 +111,7 @@ impl Workspace {
             CommandId::PushAll | CommandId::PullAll => {}
             CommandId::Commit => {
                 tab.commit_panel.update(cx, |cp, cx| {
-                    let msg = cp.message(cx);
-                    if !msg.is_empty() {
-                        cx.emit(CommitPanelEvent::CommitRequested {
-                            message: msg,
-                            amend: false,
-                        });
-                    }
+                    cp.request_commit(cx);
                 });
             }
             CommandId::StageAll => {

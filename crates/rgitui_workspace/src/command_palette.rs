@@ -455,7 +455,7 @@ impl CommandPalette {
                 CommandId::Fetch,
                 "Git: Fetch",
                 Some("Download objects and refs from another repository"),
-                Some("Ctrl+Shift+F"),
+                Some("Ctrl+Shift+R"),
                 "Git",
             )
             .with_predicate(has_remotes),
@@ -1574,12 +1574,12 @@ mod tests {
             CommandId::Fetch,
             "Git: Fetch",
             Some("Download objects and refs"),
-            Some("Ctrl+Shift+F"),
+            Some("Ctrl+Shift+R"),
             "Git",
         );
         assert_eq!(cmd.label, "Git: Fetch");
         assert_eq!(cmd.description, Some("Download objects and refs"));
-        assert_eq!(cmd.shortcut, Some("Ctrl+Shift+F"));
+        assert_eq!(cmd.shortcut, Some("Ctrl+Shift+R"));
         assert_eq!(cmd.category, "Git");
     }
 

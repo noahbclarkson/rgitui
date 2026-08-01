@@ -157,76 +157,16 @@ fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     }
 }
 
-/// Parse a hex color string strictly, returning None for invalid input.
-/// Accepts: #RGB, #RGBA, #RRGGBB, #RRGGBBAA (case-insensitive).
-pub fn hex_to_hsla_strict(hex: &str) -> Option<Hsla> {
-    let hex = hex.trim_start_matches('#');
-
-    // Validate: must be 3, 4, 6, or 8 hex digits
-    match hex.len() {
-        3 | 4 | 6 | 8 => {}
-        _ => return None,
-    }
-
-    // Validate all characters are hex digits
-    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-
-    let r: f32;
-    let g: f32;
-    let b: f32;
-    let a: f32;
-
-    match hex.len() {
-        3 => {
-            // #RGB → expand each digit to #RRGGBB (e.g. #ABC → #AABBCC)
-            let bytes = hex.as_bytes();
-            let hex_digit = |b: u8| -> u8 {
-                match b {
-                    b @ b'0'..=b'9' => b - b'0',
-                    b @ b'A'..=b'F' => b - b'A' + 10,
-                    b @ b'a'..=b'f' => b - b'a' + 10,
-                    _ => 0,
-                }
-            };
-            let expand = |b: u8| -> u8 { hex_digit(b) * 17 };
-            r = expand(bytes[0]) as f32 / 255.0;
-            g = expand(bytes[1]) as f32 / 255.0;
-            b = expand(bytes[2]) as f32 / 255.0;
-            a = 1.0;
-        }
-        4 => {
-            // #RGBA → expand to #RRGGBBAA
-            let bytes = hex.as_bytes();
-            let hex_digit = |b: u8| -> u8 {
-                match b {
-                    b @ b'0'..=b'9' => b - b'0',
-                    b @ b'A'..=b'F' => b - b'A' + 10,
-                    b @ b'a'..=b'f' => b - b'a' + 10,
-                    _ => 0,
-                }
-            };
-            let expand = |b: u8| -> u8 { hex_digit(b) * 17 };
-            r = expand(bytes[0]) as f32 / 255.0;
-            g = expand(bytes[1]) as f32 / 255.0;
-            b = expand(bytes[2]) as f32 / 255.0;
-            a = expand(bytes[3]) as f32 / 255.0;
-        }
-        6 => {
-            r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
-            g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
-            b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
-            a = 1.0;
-        }
-        8 => {
-            r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
-            g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
-            b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
-            a = u8::from_str_radix(&hex[6..8], 16).ok()? as f32 / 255.0;
-        }
-        _ => return None,
-    }
+/// Convert 8-bit RGBA channels to `Hsla`.
+///
+/// This is the conversion every colour path ends in. Callers that already hold
+/// channel bytes — syntax highlighting produces one style per span — should use
+/// this directly rather than formatting a hex string only to parse it back.
+pub fn rgba_u8_to_hsla(r: u8, g: u8, b: u8, a: u8) -> Hsla {
+    let r = r as f32 / 255.0;
+    let g = g as f32 / 255.0;
+    let b = b as f32 / 255.0;
+    let a = a as f32 / 255.0;
 
     // RGB to HSL conversion
     let max = r.max(g).max(b);
@@ -234,12 +174,12 @@ pub fn hex_to_hsla_strict(hex: &str) -> Option<Hsla> {
     let l = (max + min) / 2.0;
 
     if (max - min).abs() < f32::EPSILON {
-        return Some(Hsla {
+        return Hsla {
             h: 0.0,
             s: 0.0,
             l,
             a,
-        });
+        };
     }
 
     let d = max - min;
@@ -261,12 +201,64 @@ pub fn hex_to_hsla_strict(hex: &str) -> Option<Hsla> {
         (r - g) / d + 4.0
     };
 
-    Some(Hsla {
+    Hsla {
         h: h / 6.0,
         s,
         l,
         a,
-    })
+    }
+}
+
+/// Parse a hex color string strictly, returning None for invalid input.
+/// Accepts: #RGB, #RGBA, #RRGGBB, #RRGGBBAA (case-insensitive).
+pub fn hex_to_hsla_strict(hex: &str) -> Option<Hsla> {
+    let hex = hex.trim_start_matches('#');
+
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    // Expand a single #RGB(A) digit to its #RRGGBB(AA) byte (e.g. A → AA).
+    let expand = |b: u8| -> u8 {
+        let digit = match b {
+            b @ b'0'..=b'9' => b - b'0',
+            b @ b'A'..=b'F' => b - b'A' + 10,
+            b @ b'a'..=b'f' => b - b'a' + 10,
+            _ => 0,
+        };
+        digit * 17
+    };
+
+    let bytes = hex.as_bytes();
+    let (r, g, b, a) = match hex.len() {
+        3 => (
+            expand(bytes[0]),
+            expand(bytes[1]),
+            expand(bytes[2]),
+            u8::MAX,
+        ),
+        4 => (
+            expand(bytes[0]),
+            expand(bytes[1]),
+            expand(bytes[2]),
+            expand(bytes[3]),
+        ),
+        6 => (
+            u8::from_str_radix(&hex[0..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..6], 16).ok()?,
+            u8::MAX,
+        ),
+        8 => (
+            u8::from_str_radix(&hex[0..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..6], 16).ok()?,
+            u8::from_str_radix(&hex[6..8], 16).ok()?,
+        ),
+        _ => return None,
+    };
+
+    Some(rgba_u8_to_hsla(r, g, b, a))
 }
 
 /// Parse a hex color string into an Hsla value, returning opaque black for invalid input.
@@ -1131,6 +1123,34 @@ mod tests {
 
     fn approx_eq(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
+    }
+
+    /// The byte path and the hex path must agree exactly — syntax highlighting
+    /// uses the former, JSON theme loading the latter.
+    #[test]
+    fn rgba_u8_matches_hex_parsing() {
+        let cases: &[(u8, u8, u8, u8)] = &[
+            (0, 0, 0, 255),
+            (255, 255, 255, 255),
+            (255, 0, 0, 255),
+            (0, 255, 0, 255),
+            (0, 0, 255, 255),
+            (18, 52, 86, 120),
+            (200, 130, 65, 255),
+            (7, 7, 7, 1),
+        ];
+
+        for &(r, g, b, a) in cases {
+            let from_bytes = rgba_u8_to_hsla(r, g, b, a);
+            let from_hex = hex_to_hsla(&format!("#{r:02x}{g:02x}{b:02x}{a:02x}"));
+            assert!(
+                approx_eq(from_bytes.h, from_hex.h)
+                    && approx_eq(from_bytes.s, from_hex.s)
+                    && approx_eq(from_bytes.l, from_hex.l)
+                    && approx_eq(from_bytes.a, from_hex.a),
+                "mismatch for ({r},{g},{b},{a}): {from_bytes:?} vs {from_hex:?}"
+            );
+        }
     }
 
     #[test]

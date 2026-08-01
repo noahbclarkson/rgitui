@@ -42,8 +42,8 @@ fn mix_file_meta(hasher: &mut DefaultHasher, path: &Path) -> bool {
 /// hashed by *content* in addition to size and mtime, so two distinct state
 /// transitions whose newest mtime collapses to the same coarse timestamp
 /// (FAT32 ~2s, some network/WSL/SMB mounts) are still distinguished. Ref files
-/// under `refs/` are hashed by content as well as metadata so fixed-width OID
-/// updates cannot be missed on coarse-timestamp file systems.
+/// under `refs/` are covered by metadata plus their directory mtimes instead —
+/// see [`scan_refs`].
 fn git_state_fingerprint(git_dir: &Path) -> Option<u64> {
     let mut hasher = DefaultHasher::new();
     let mut any = false;
@@ -88,15 +88,36 @@ fn git_state_fingerprint(git_dir: &Path) -> Option<u64> {
 }
 
 /// Recursively accumulate an order-independent fingerprint over every ref file
-/// under `dir` (its path, size and mtime). `read_dir` yields entries in a
-/// filesystem-dependent order, so each file's hash is XOR-folded into `acc` —
-/// that keeps the result stable across scans of an unchanged directory while
-/// still changing when any ref file is added, removed or modified.
+/// under `dir` (its path, size and mtime) plus the mtime of each directory
+/// visited. `read_dir` yields entries in a filesystem-dependent order, so each
+/// entry's hash is XOR-folded into `acc` — that keeps the result stable across
+/// scans of an unchanged directory while still changing when any ref file is
+/// added, removed or modified.
+///
+/// Ref files are deliberately *not* read. This runs every poll tick for the main
+/// repo and each watched worktree, so on a repo with thousands of refs opening
+/// every one of them was a sustained I/O load that scaled with refs × tabs.
+/// Directory mtimes stand in for content: git updates a ref by writing a lock
+/// file and renaming it into place, which touches the containing directory even
+/// when the ref file's own size (a fixed-width OID) and mtime do not move. The
+/// ref that matters most for HEAD state — the checked-out branch — is still
+/// content-hashed separately by [`git_state_fingerprint`], as are `HEAD` and
+/// `packed-refs`.
 fn scan_refs(dir: &Path, acc: &mut u64) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
+
+    if let Ok(meta) = std::fs::metadata(dir) {
+        if let Ok(mtime) = meta.modified() {
+            let mut dir_hasher = DefaultHasher::new();
+            dir.hash(&mut dir_hasher);
+            mtime.hash(&mut dir_hasher);
+            *acc ^= dir_hasher.finish();
+        }
+    }
+
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -107,9 +128,6 @@ fn scan_refs(dir: &Path, acc: &mut u64) {
             meta.len().hash(&mut file_hasher);
             if let Ok(mtime) = meta.modified() {
                 mtime.hash(&mut file_hasher);
-            }
-            if let Ok(content) = std::fs::read(&path) {
-                content.hash(&mut file_hasher);
             }
             *acc ^= file_hasher.finish();
         }
@@ -486,6 +504,64 @@ mod tests {
         std::fs::write(&reference, format!("{}\n", "2".repeat(40))).unwrap();
         let after = git_state_fingerprint(git_dir).unwrap();
         assert_ne!(before, after);
+    }
+
+    /// Ref files outside the checked-out branch are tracked by metadata and
+    /// directory mtime rather than by reading each one, so adding or removing a
+    /// ref must still move the fingerprint.
+    #[test]
+    fn fingerprint_tracks_added_and_removed_refs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let git_dir = temp.path();
+        std::fs::create_dir_all(git_dir.join("refs/heads")).unwrap();
+        std::fs::create_dir_all(git_dir.join("refs/remotes/origin")).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            git_dir.join("refs/heads/main"),
+            format!("{}\n", "1".repeat(40)),
+        )
+        .unwrap();
+
+        let baseline = git_state_fingerprint(git_dir).unwrap();
+
+        let remote_ref = git_dir.join("refs/remotes/origin/feature");
+        std::fs::write(&remote_ref, format!("{}\n", "3".repeat(40))).unwrap();
+        let with_ref = git_state_fingerprint(git_dir).unwrap();
+        assert_ne!(baseline, with_ref, "adding a remote ref must be visible");
+
+        std::fs::remove_file(&remote_ref).unwrap();
+        let without_ref = git_state_fingerprint(git_dir).unwrap();
+        assert_ne!(with_ref, without_ref, "removing a ref must be visible");
+        // Not expected to equal `baseline`: the directory mtime moved when the
+        // ref was created and again when it was removed, and that mtime is part
+        // of the fingerprint. Fingerprints only need to differ when state
+        // differs, never to be reproducible across a round trip.
+    }
+
+    /// The accumulator must not depend on `read_dir` ordering.
+    #[test]
+    fn fingerprint_is_stable_across_repeated_scans() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let git_dir = temp.path();
+        std::fs::create_dir_all(git_dir.join("refs/heads")).unwrap();
+        std::fs::create_dir_all(git_dir.join("refs/tags")).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            git_dir.join("refs/heads/main"),
+            format!("{}\n", "1".repeat(40)),
+        )
+        .unwrap();
+        for i in 0..25 {
+            std::fs::write(
+                git_dir.join(format!("refs/tags/v{i}")),
+                format!("{}\n", "a".repeat(40)),
+            )
+            .unwrap();
+        }
+
+        let first = git_state_fingerprint(git_dir).unwrap();
+        let second = git_state_fingerprint(git_dir).unwrap();
+        assert_eq!(first, second);
     }
 
     #[test]

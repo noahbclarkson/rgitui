@@ -234,7 +234,7 @@ impl Toolbar {
                                 disabled: self.is_fetching,
                                 loading: self.is_fetching,
                                 tooltip_text: "Fetch from remote",
-                                shortcut: None,
+                                shortcut: Some("Ctrl+Shift+R"),
                             },
                             cx,
                         )
@@ -347,10 +347,7 @@ impl Toolbar {
                 Button::new("tb-pr", "Create PR")
                     .icon(IconName::GitPullRequest)
                     .disabled(!self.has_github_token)
-                    .tooltip_fn(Tooltip::with_shortcut(
-                        "Create GitHub pull request",
-                        "Ctrl+G",
-                    ))
+                    .tooltip_fn(Tooltip::text("Create GitHub pull request"))
                     .on_click(
                         cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolbarEvent::CreatePr)),
                     ),

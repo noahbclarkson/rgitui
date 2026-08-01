@@ -1690,7 +1690,7 @@ impl GitProject {
             cx,
         );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<RefreshData> = cx
+            let result: anyhow::Result<(usize, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
                     // Dry run first to count files
@@ -1700,19 +1700,20 @@ impl GitProject {
                         .output()
                         .context("Failed to execute git clean -n")?;
 
-                    let dry_stderr = String::from_utf8_lossy(&dry_output.stderr);
                     if !dry_output.status.success() {
-                        anyhow::bail!("git clean -n failed: {}", dry_stderr.trim());
+                        anyhow::bail!(
+                            "git clean -n failed: {}",
+                            String::from_utf8_lossy(&dry_output.stderr).trim()
+                        );
                     }
 
-                    let file_count = dry_stderr
-                        .lines()
-                        .filter(|l| l.contains("Would remove"))
-                        .count();
+                    // `git clean -n` reports what it would remove on stdout.
+                    let file_count =
+                        count_would_remove(&String::from_utf8_lossy(&dry_output.stdout));
 
                     if file_count == 0 {
                         // Nothing to clean
-                        return gather_refresh_data(&repo_path, commit_limit);
+                        return Ok((0, gather_refresh_data(&repo_path, commit_limit)?));
                     }
 
                     // Actually remove untracked files and directories
@@ -1727,26 +1728,35 @@ impl GitProject {
                         anyhow::bail!("git clean -f failed: {}", stderr.trim());
                     }
 
-                    gather_refresh_data(&repo_path, commit_limit)
+                    Ok((file_count, gather_refresh_data(&repo_path, commit_limit)?))
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok(data) => {
+                        Ok((removed, data)) => {
                             this.apply_refresh_data(data);
+                            let (title, detail) = if removed == 0 {
+                                (
+                                    "Nothing to clean".to_string(),
+                                    "There were no untracked files to remove.".to_string(),
+                                )
+                            } else {
+                                (
+                                    "Cleaned untracked files".to_string(),
+                                    format!(
+                                        "Removed {} untracked {}.",
+                                        removed,
+                                        if removed == 1 { "entry" } else { "entries" }
+                                    ),
+                                )
+                            };
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Clean,
-                                "Cleaned untracked files".to_string(),
-                                (
-                                    Some(
-                                        "All untracked files and directories were removed.".into(),
-                                    ),
-                                    None,
-                                    branch_name.clone(),
-                                ),
+                                title,
+                                (Some(detail), None, branch_name.clone()),
                                 cx,
                             );
                             cx.emit(GitProjectEvent::StatusChanged);
@@ -2607,7 +2617,9 @@ impl GitProject {
                         if !url_inner.starts_with("git@") && !url_inner.starts_with("ssh://") {
                             inject_https_credentials(&mut cmd, &auth, &url_inner);
                         }
-                        cmd.args(["clone", &url_inner, &path_inner.to_string_lossy()]);
+                        // `--` stops a pasted URL beginning with `-` from being
+                        // parsed as an option such as `--upload-pack=`.
+                        cmd.args(["clone", "--", &url_inner, &path_inner.to_string_lossy()]);
                         let output = cmd.output().context("git clone failed")?;
                         if !output.status.success() {
                             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3533,6 +3545,18 @@ pub fn branches_containing_commit(
     containing.sort_by(|a, b| b.is_head.cmp(&a.is_head).then(a.name.cmp(&b.name)));
 
     Ok(containing)
+}
+
+/// Count the entries `git clean -n` reports it would remove.
+///
+/// The dry run writes `Would remove <path>` lines to **stdout**; stderr stays
+/// empty on success. Directories are reported the same way as files, so this
+/// counts entries rather than individual files.
+fn count_would_remove(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter(|line| line.trim_start().starts_with("Would remove "))
+        .count()
 }
 
 // ============================================================================
@@ -4467,5 +4491,56 @@ mod tests {
             .find_commit(repo.head().unwrap().target().unwrap())
             .unwrap();
         assert_eq!(amended.summary().unwrap(), "updated message");
+    }
+
+    #[test]
+    fn count_would_remove_counts_dry_run_entries() {
+        let stdout = "Would remove build/\nWould remove notes.txt\nWould remove a b c.txt\n";
+        assert_eq!(super::count_would_remove(stdout), 3);
+    }
+
+    #[test]
+    fn count_would_remove_ignores_unrelated_output() {
+        assert_eq!(super::count_would_remove(""), 0);
+        assert_eq!(super::count_would_remove("nothing to do\n"), 0);
+        // "Would skip" is emitted for ignored entries when -x is not passed.
+        assert_eq!(super::count_would_remove("Would skip repository sub/\n"), 0);
+        // Only a line that starts with the marker counts; a filename that
+        // merely mentions it must not.
+        assert_eq!(
+            super::count_would_remove("Would remove docs/Would remove me.txt\n"),
+            1
+        );
+    }
+
+    /// `git clean -n` writes its report to stdout, not stderr. Reading the wrong
+    /// stream made `clean_untracked` a silent no-op that still reported success.
+    #[test]
+    fn git_clean_dry_run_reports_on_stdout() {
+        let (_dir, path, _oid) = make_test_repo();
+        fs::write(path.join("untracked.txt"), "scratch").unwrap();
+        fs::create_dir(path.join("untracked_dir")).unwrap();
+        fs::write(path.join("untracked_dir").join("inner.txt"), "scratch").unwrap();
+
+        let output = super::super::git_command()
+            .current_dir(&path)
+            .args(["clean", "-n", "-fd"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(
+            super::count_would_remove(&stdout),
+            2,
+            "expected both untracked entries on stdout, got: {stdout:?}"
+        );
+        assert_eq!(
+            super::count_would_remove(&stderr),
+            0,
+            "stderr should carry no report, got: {stderr:?}"
+        );
     }
 }

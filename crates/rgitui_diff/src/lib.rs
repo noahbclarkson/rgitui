@@ -1867,10 +1867,12 @@ impl DiffViewer {
     fn syntect_style_to_highlight(style: syntect::highlighting::Style) -> HighlightStyle {
         let foreground = style.foreground;
         let mut highlight = HighlightStyle {
-            color: Some(rgitui_theme::hex_to_hsla(&format!(
-                "#{:02x}{:02x}{:02x}{:02x}",
-                foreground.r, foreground.g, foreground.b, foreground.a
-            ))),
+            color: Some(rgitui_theme::rgba_u8_to_hsla(
+                foreground.r,
+                foreground.g,
+                foreground.b,
+                foreground.a,
+            )),
             ..Default::default()
         };
 

@@ -106,6 +106,7 @@ impl ShortcutsHelp {
                 description: "Fast access to panels and graph-specific tools.",
                 shortcuts: &[
                     ("Ctrl+F", "Toggle commit graph search"),
+                    ("Ctrl+Shift+F", "Toggle global search across the repository"),
                     ("/", "Start in-graph search"),
                     ("d", "Toggle diff mode (unified / split)"),
                     ("b", "Toggle blame view for selected file"),
@@ -125,7 +126,7 @@ impl ShortcutsHelp {
                 description:
                     "Common write actions. More advanced operations live in the command palette.",
                 shortcuts: &[
-                    ("Ctrl+Shift+F", "Fetch"),
+                    ("Ctrl+Shift+R", "Fetch"),
                     ("Ctrl+S", "Stage all changes"),
                     ("Ctrl+Shift+S / Ctrl+U", "Unstage all changes"),
                     ("Ctrl+Enter", "Commit"),

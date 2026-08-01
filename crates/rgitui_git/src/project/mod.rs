@@ -1,3 +1,4 @@
+mod argsafe;
 mod auth;
 mod bisect;
 mod blame;
@@ -22,6 +23,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use crate::types::*;
+
+use argsafe::{validate_branch_name, validate_remote_name};
 
 /// Normalize UNC paths (`\\server\share\…` → `//server/share/…`) for libgit2
 /// on Windows. No-op on other platforms.
@@ -98,10 +101,18 @@ fn head_branch_name(repo: &Repository) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Failed to determine the current branch name"))
 }
 
+/// Whether the working tree or index carries changes to **tracked** files.
+///
+/// Untracked and ignored files are deliberately excluded. Git only refuses
+/// checkout/pull/merge/rebase when an operation would actually overwrite an
+/// untracked file, and it names the file when it does. Counting every untracked
+/// file as "dirty" instead made a single un-ignored scratch file block branch
+/// switching entirely, with no way to proceed short of deleting it.
 fn repo_has_worktree_changes(repo: &Repository) -> Result<bool> {
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
+    opts.include_untracked(false)
+        .recurse_untracked_dirs(false)
+        .include_ignored(false)
         .include_unmodified(false);
     Ok(!repo.statuses(Some(&mut opts))?.is_empty())
 }
@@ -109,7 +120,8 @@ fn repo_has_worktree_changes(repo: &Repository) -> Result<bool> {
 fn ensure_clean_worktree(repo: &Repository, operation: &str) -> Result<()> {
     if repo_has_worktree_changes(repo)? {
         anyhow::bail!(
-            "{} requires a clean working tree. Commit, stash, or discard your changes first.",
+            "{} requires a clean working tree. Commit, stash, or discard your changes to \
+             tracked files first.",
             operation
         );
     }
@@ -121,6 +133,7 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
         if let Ok(branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
             if let Ok(upstream) = branch.upstream() {
                 if let Some(upstream_name) = upstream.name()?.and_then(parse_remote_tracking_ref) {
+                    validate_remote_name(&upstream_name.0)?;
                     return Ok(upstream_name.0);
                 }
             }
@@ -136,12 +149,15 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
         return Ok("origin".to_string());
     }
 
-    remote_names
+    let name = remote_names
         .iter()
         .flatten()
         .next()
         .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("No usable git remotes are configured."))
+        .ok_or_else(|| anyhow::anyhow!("No usable git remotes are configured."))?;
+    // Read straight out of .git/config, which git does not validate.
+    validate_remote_name(&name)?;
+    Ok(name)
 }
 
 fn pull_target(repo: &Repository, preferred_remote: Option<&str>) -> Result<(String, String)> {
@@ -153,6 +169,8 @@ fn pull_target(repo: &Repository, preferred_remote: Option<&str>) -> Result<(Str
                     .map(|remote| remote == upstream_name.0)
                     .unwrap_or(true)
                 {
+                    validate_remote_name(&upstream_name.0)?;
+                    validate_branch_name(&upstream_name.1)?;
                     return Ok(upstream_name);
                 }
             }
@@ -162,6 +180,8 @@ fn pull_target(repo: &Repository, preferred_remote: Option<&str>) -> Result<(Str
     let remote_name = preferred_remote
         .map(str::to_string)
         .unwrap_or(default_remote_name(repo)?);
+    validate_remote_name(&remote_name)?;
+    validate_branch_name(&branch_name)?;
     Ok((remote_name, branch_name))
 }
 
@@ -179,6 +199,8 @@ fn push_target(
                     .map(|remote| remote == remote_name)
                     .unwrap_or(true)
                 {
+                    validate_remote_name(&remote_name)?;
+                    validate_branch_name(&remote_branch)?;
                     return Ok((remote_name, remote_branch, false));
                 }
             }
@@ -188,6 +210,8 @@ fn push_target(
     let remote_name = preferred_remote
         .map(str::to_string)
         .unwrap_or(default_remote_name(repo)?);
+    validate_remote_name(&remote_name)?;
+    validate_branch_name(&branch_name)?;
     Ok((remote_name, branch_name, true))
 }
 
@@ -829,6 +853,68 @@ mod tests {
         ] {
             assert!(!has_adjacent_legacy_change_events(source));
         }
+    }
+
+    /// Build a repo with one commit containing `tracked.txt`.
+    fn repo_with_one_commit() -> (tempfile::TempDir, git2::Repository) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "Test").unwrap();
+            config.set_str("user.email", "test@test.com").unwrap();
+        }
+        std::fs::write(dir.path().join("tracked.txt"), "original\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("tracked.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        (dir, repo)
+    }
+
+    #[test]
+    fn untracked_files_do_not_make_the_worktree_dirty() {
+        let (dir, repo) = repo_with_one_commit();
+        assert!(!super::repo_has_worktree_changes(&repo).unwrap());
+
+        // A scratch file with no .gitignore entry must not block checkout.
+        std::fs::write(dir.path().join("notes.txt"), "scratch").unwrap();
+        std::fs::create_dir(dir.path().join("build")).unwrap();
+        std::fs::write(dir.path().join("build").join("out.o"), "junk").unwrap();
+
+        assert!(
+            !super::repo_has_worktree_changes(&repo).unwrap(),
+            "untracked files must not count as worktree changes"
+        );
+        assert!(super::ensure_clean_worktree(&repo, "Checkout").is_ok());
+    }
+
+    #[test]
+    fn modified_tracked_files_make_the_worktree_dirty() {
+        let (dir, repo) = repo_with_one_commit();
+        std::fs::write(dir.path().join("tracked.txt"), "edited\n").unwrap();
+
+        assert!(super::repo_has_worktree_changes(&repo).unwrap());
+        let err = super::ensure_clean_worktree(&repo, "Checkout").unwrap_err();
+        assert!(err.to_string().contains("Checkout"));
+    }
+
+    #[test]
+    fn staged_changes_make_the_worktree_dirty() {
+        let (dir, repo) = repo_with_one_commit();
+        std::fs::write(dir.path().join("staged.txt"), "new\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("staged.txt")).unwrap();
+        index.write().unwrap();
+
+        assert!(
+            super::repo_has_worktree_changes(&repo).unwrap(),
+            "a staged addition is a tracked change"
+        );
     }
 
     #[test]

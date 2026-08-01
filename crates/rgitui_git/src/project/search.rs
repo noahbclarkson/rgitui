@@ -32,7 +32,10 @@ impl GitProject {
 pub fn git_grep(repo_path: &Path, pattern: &str) -> Result<Vec<SearchResult>> {
     let output = super::git_command()
         .current_dir(repo_path)
-        .args(["grep", "-n", pattern])
+        // `-e` keeps a pattern starting with `-` from being parsed as an option
+        // (searching for "-v" or "-f/etc/passwd" would otherwise change what the
+        // command does); the trailing `--` closes the empty pathspec list.
+        .args(["grep", "-n", "-e", pattern, "--"])
         .output()
         .context("Failed to execute git grep")?;
 
@@ -440,5 +443,36 @@ mod tests {
         let (_dir, path) = make_test_repo();
         let results = git_grep(&path, "xyzzy").unwrap();
         assert_eq!(results.len(), 0);
+    }
+
+    /// A pattern beginning with `-` must be searched for, not parsed as an
+    /// option. Without `-e` these turned into git flags and failed the search.
+    #[test]
+    fn git_grep_treats_leading_dash_as_a_pattern() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Alice").unwrap();
+        cfg.set_str("user.email", "alice@example.com").unwrap();
+        drop(cfg);
+
+        fs::write(path.join("flags.txt"), "run with -v for verbose\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(std::path::Path::new("flags.txt")).unwrap();
+        idx.write().unwrap();
+        let tree = repo.find_tree(idx.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial\n", &tree, &[])
+            .unwrap();
+
+        let results = git_grep(&path, "-v").unwrap();
+        assert_eq!(results.len(), 1, "expected 1 match, got {:?}", results);
+        assert!(results[0].content.contains("-v"));
+
+        // An option-shaped pattern with no match is simply "no results", not an
+        // error from git rejecting an unknown flag.
+        assert_eq!(git_grep(&path, "--upload-pack=echo").unwrap().len(), 0);
+        assert_eq!(git_grep(&path, "-f/etc/passwd").unwrap().len(), 0);
     }
 }

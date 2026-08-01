@@ -1,5 +1,7 @@
 use anyhow::{Context as _, Result};
 use rgitui_settings::{current_git_auth_runtime, GitAuthRuntime, GitProviderRuntime};
+
+use super::argsafe::sh_quote;
 use std::path::Path;
 use std::process::Command;
 
@@ -114,7 +116,7 @@ fn ssh_command(key_path: Option<&Path>) -> String {
     if let Some(key_path) = key_path.filter(|path| path.exists()) {
         command.push_str(&format!(
             " -i {} -o IdentitiesOnly=yes",
-            shell_escape(key_path.to_string_lossy().as_ref())
+            sh_quote(key_path.to_string_lossy().as_ref())
         ));
     }
     command
@@ -327,14 +329,6 @@ fn has_credential_helper_for_host(repo_path: &Path, https_url: &str) -> bool {
                 || config.contains("credential.helper")
         }
         Err(_) => false,
-    }
-}
-
-fn shell_escape(s: &str) -> String {
-    if s.contains(' ') || s.contains('\'') || s.contains('"') {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    } else {
-        s.to_string()
     }
 }
 

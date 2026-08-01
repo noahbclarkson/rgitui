@@ -71,22 +71,7 @@ impl CommitPanel {
             &summary_editor,
             |this: &mut Self, _, event: &TextInputEvent, cx| {
                 if let TextInputEvent::Submit = event {
-                    let can_commit =
-                        !this.summary_editor.read(cx).is_empty() && this.staged_count > 0;
-                    if can_commit {
-                        cx.emit(CommitPanelEvent::CommitRequested {
-                            message: this.message(cx),
-                            amend: this.amend,
-                        });
-                        this.summary_editor
-                            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                        this.description_editor
-                            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                        this.amend = false;
-                        this.co_authors.clear();
-                        this.adding_co_author = false;
-                        cx.notify();
-                    }
+                    this.request_commit(cx);
                 }
             },
         )
@@ -127,6 +112,39 @@ impl CommitPanel {
         self.co_authors.clear();
         self.adding_co_author = false;
         cx.notify();
+    }
+
+    /// Whether a commit can be made right now: a summary has been typed and
+    /// something is staged.
+    pub fn can_commit(&self, cx: &Context<Self>) -> bool {
+        !self.summary_editor.read(cx).is_empty() && self.staged_count > 0
+    }
+
+    /// Emit a commit request and reset the panel.
+    ///
+    /// Every entry point — the commit button, Enter in the summary field, and
+    /// the Ctrl+Enter command — routes through here so they cannot disagree
+    /// about the amend flag or the staged-changes guard. Returns whether the
+    /// request was emitted.
+    pub fn request_commit(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.can_commit(cx) {
+            return false;
+        }
+
+        cx.emit(CommitPanelEvent::CommitRequested {
+            message: self.message(cx),
+            amend: self.amend,
+        });
+
+        self.summary_editor
+            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
+        self.description_editor
+            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
+        self.amend = false;
+        self.co_authors.clear();
+        self.adding_co_author = false;
+        cx.notify();
+        true
     }
 
     pub fn message(&self, cx: &Context<Self>) -> String {
@@ -255,8 +273,6 @@ impl Render for CommitPanel {
             SharedString::default()
         };
 
-        let amend = self.amend;
-        let message = self.message(cx);
         let commit_label = self.commit_button_label(summary_empty);
 
         let ai_settings = cx
@@ -689,18 +705,7 @@ impl Render for CommitPanel {
                                     .disabled(!can_commit)
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         cx.stop_propagation();
-                                        cx.emit(CommitPanelEvent::CommitRequested {
-                                            message: message.clone(),
-                                            amend,
-                                        });
-                                        this.summary_editor
-                                            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                                        this.description_editor
-                                            .update(cx, |e: &mut TextInput, cx| e.clear(cx));
-                                        this.amend = false;
-                                        this.co_authors.clear();
-                                        this.adding_co_author = false;
-                                        cx.notify();
+                                        this.request_commit(cx);
                                     })),
                             ),
                     ),

@@ -32,6 +32,33 @@ pub(super) const MAX_DIFF_VIEWER_HEIGHT: f32 = 600.0;
 /// render time so the primary view never collapses below this width.
 pub(super) const MIN_CENTER_WIDTH: f32 = 320.0;
 
+/// The `font_size` setting's default, and the size at which the interface
+/// renders exactly as it did before the setting was wired up.
+const DEFAULT_UI_FONT_SIZE: u32 = 14;
+
+/// GPUI's default rem size, which the component library's `rems()` values were
+/// authored against.
+const BASELINE_REM_SIZE: f32 = 16.0;
+
+/// Bounds matching the settings UI, so a hand-edited settings file cannot make
+/// the interface unusable.
+const MIN_UI_FONT_SIZE: u32 = 8;
+const MAX_UI_FONT_SIZE: u32 = 24;
+
+impl Workspace {
+    /// Translate the configured base font size into a window rem size.
+    ///
+    /// Components render body text at `rems(0.875)`, so against GPUI's 16px
+    /// default rem the interface already had a 14px base — the setting's own
+    /// default. Scaling relative to that keeps the default pixel-identical to
+    /// the previous behaviour while making the label literally true: body text
+    /// lands at exactly `font_size` pixels.
+    pub(super) fn rem_size_for_font_size(font_size: u32) -> gpui::Pixels {
+        let clamped = font_size.clamp(MIN_UI_FONT_SIZE, MAX_UI_FONT_SIZE);
+        px(clamped as f32 * BASELINE_REM_SIZE / DEFAULT_UI_FONT_SIZE as f32)
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log::trace!(
@@ -43,6 +70,15 @@ impl Render for Workspace {
             self.focus.pending_focus_restore = false;
             self.restore_focus(window, cx);
         }
+
+        // Apply the configured UI font size. Every `rgitui_ui` component sizes
+        // itself in `rems`, so setting the window's rem size scales the whole
+        // interface from this one call.
+        window.set_rem_size(Self::rem_size_for_font_size(
+            cx.try_global::<rgitui_settings::SettingsState>()
+                .map(|s| s.settings().font_size)
+                .unwrap_or(DEFAULT_UI_FONT_SIZE),
+        ));
 
         let colors = cx.colors().clone();
 
@@ -2513,5 +2549,38 @@ mod terminal_args_cross_platform_tests {
         let (program, args) = build_terminal_args("kitty", &path);
         assert_eq!(program, "kitty");
         assert_eq!(args, &["/home/user/kitty-test"]);
+    }
+
+    /// The default must reproduce GPUI's 16px rem exactly, so wiring the
+    /// setting up does not resize the interface for anyone who never changed it.
+    #[test]
+    fn default_font_size_keeps_the_baseline_rem_size() {
+        assert_eq!(
+            Workspace::rem_size_for_font_size(super::DEFAULT_UI_FONT_SIZE),
+            gpui::px(16.0)
+        );
+    }
+
+    #[test]
+    fn rem_size_scales_with_font_size() {
+        let small = Workspace::rem_size_for_font_size(10);
+        let default = Workspace::rem_size_for_font_size(14);
+        let large = Workspace::rem_size_for_font_size(20);
+        assert!(small < default && default < large);
+        // Body text renders at rems(0.875), which must land on the configured
+        // size in pixels — that is what the setting's label promises.
+        assert!((f32::from(large) * 0.875 - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn rem_size_clamps_out_of_range_settings() {
+        assert_eq!(
+            Workspace::rem_size_for_font_size(0),
+            Workspace::rem_size_for_font_size(super::MIN_UI_FONT_SIZE)
+        );
+        assert_eq!(
+            Workspace::rem_size_for_font_size(9_999),
+            Workspace::rem_size_for_font_size(super::MAX_UI_FONT_SIZE)
+        );
     }
 }

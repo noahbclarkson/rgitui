@@ -20,6 +20,7 @@ serde_json.workspace = true
 dirs.workspace = true
 smol.workspace = true
 rgitui_settings.workspace = true
+tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"
