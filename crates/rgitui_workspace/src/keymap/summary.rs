@@ -480,8 +480,8 @@ mod tests {
         "Ctrl+"
     };
 
-    /// The drift that motivated this work: the help used to advertise
-    /// `Ctrl+Shift+F` for Fetch while the registry bound `Ctrl+Shift+R`.
+    /// Fetch is the canary: its label must be the keystroke the registry binds,
+    /// so a hand-written label cannot drift away from the binding again.
     #[test]
     fn a_default_label_comes_from_the_registry_keystroke() {
         let summary = defaults();

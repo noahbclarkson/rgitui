@@ -5,8 +5,7 @@
 //!
 //! `Workspace` is set on the workspace root element. The root adds `modal`
 //! whenever an overlay or dialog is open, so `Workspace && !modal` is the
-//! scope for shortcuts that must not fire while a modal is up — it replaces
-//! the hand-rolled `any_overlay_active` gate for the commands listed here.
+//! scope for shortcuts that must not fire while a modal is up.
 //! `TextInput` is set by [`rgitui_ui::TextInput`], so `!TextInput` keeps
 //! unmodified single-key shortcuts from stealing typed characters.
 //!
@@ -878,10 +877,10 @@ mod tests {
         keystroke.key.chars().count() == 1 || keystroke.key == "space"
     }
 
-    /// The whole point of Phase B: gpui dispatches bindings deepest-context
-    /// first, so one letter can mean different things in different panels. Each
-    /// of these is bound several times over, and every binding must name a
-    /// distinct action in a distinct context — otherwise one of them is dead.
+    /// gpui dispatches bindings deepest-context first, so one letter can mean
+    /// different things in different panels. Each of these is bound several
+    /// times over, and every binding must name a distinct action in a distinct
+    /// context — otherwise one of them is dead.
     #[test]
     fn ambiguous_letters_resolve_to_one_action_per_context() {
         for keystrokes in ["d", "s", "p", "b", "h", "j", "k", "g", "y", "/", "[", "]"] {

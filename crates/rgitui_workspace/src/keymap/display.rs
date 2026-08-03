@@ -509,13 +509,13 @@ mod tests {
         }
     }
 
-    /// The scanner has to actually catch the string the old code contained,
-    /// otherwise it is a test that can never fail.
+    /// The scanner must catch a real hardcoded chord in each of the shapes one
+    /// can take, otherwise it is a test that can never fail.
     #[test]
     fn the_chord_scanner_catches_the_label_that_drifted() {
         let needles = chord_needles();
         for offender in [
-            // The literal the shortcut help used to carry for Fetch.
+            // A shortcut-help table entry.
             r#"("Ctrl+Shift+F", "Fetch"),"#,
             // The palette's hint field.
             r#"Some("Ctrl+Shift+F"),"#,

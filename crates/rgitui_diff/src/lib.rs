@@ -77,13 +77,9 @@ impl StagingAction {
 
 /// Where the content currently shown in the diff viewer came from.
 ///
-/// This replaces an earlier `staged: bool` + `commit_id: Option<&str>` pair.
-/// That pair could express the nonsensical state "a commit diff that is also
-/// unstaged", and every historical call site did exactly that — which is what
-/// made commit diffs render an "Unstaged" badge and offer live "Stage Hunk"
-/// buttons. Modelling provenance as one enum makes that state unrepresentable:
-/// staged/unstaged is only a property of the two mutable sources, and a commit
-/// or stash carries its OID instead.
+/// Staged versus unstaged is a property of the two mutable sources only. A
+/// commit or stash has no such distinction — its content is already recorded —
+/// so it carries its OID instead, and offers no staging.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DiffSource {
     /// Unstaged working-tree changes (index → workdir). Can be staged.
@@ -4224,9 +4220,9 @@ mod tests {
 
     #[test]
     fn staging_a_commit_diff_is_rejected_with_an_actionable_message() {
-        // The pre-fix hazard: `s` over a commit diff reached
-        // `GitProject::stage_hunk_at`, which resolves the hunk index against
-        // the working tree — silently staging unrelated uncommitted edits.
+        // A staging request from a commit diff would reach
+        // `GitProject::stage_hunk_at`, which resolves the hunk index against the
+        // working tree — staging unrelated uncommitted edits.
         for action in [StagingAction::Stage, StagingAction::Unstage] {
             let message = DiffSource::Commit(OID.to_string())
                 .reject_staging(action)
@@ -4417,8 +4413,8 @@ mod tests {
     fn is_change_line_accepts_additions_and_deletions_only() {
         // Addition: (None, Some) — staged on the new side.
         assert!(DiffViewer::is_change_line(&(None, Some(3))));
-        // Deletion: (Some, None) — staged on the old side. The pre-fix viewer
-        // dropped these because it filtered to `new_num.is_some()`.
+        // Deletion: (Some, None) — staged on the old side. Filtering on
+        // `new_num.is_some()` would drop these.
         assert!(DiffViewer::is_change_line(&(Some(7), None)));
         // Context: (Some, Some) — carried by the git layer, never a change target.
         assert!(!DiffViewer::is_change_line(&(Some(7), Some(7))));
@@ -4957,10 +4953,10 @@ mod tests {
 ///
 /// The pure tests above prove `DiffSource` classifies content correctly. These
 /// drive a real `DiffViewer` in a headless GPUI window and press the actual
-/// staging keys, which is the only way to show the *hazard* is closed rather
-/// than just the label corrected: before the fix, `s` on a commit diff emitted
-/// `HunkStageRequested`, and the workspace resolved that hunk index against the
-/// working tree — silently staging unrelated uncommitted edits.
+/// staging keys, which is the only way to show that no staging request escapes
+/// a source that cannot be staged. A request that did would reach
+/// `GitProject::stage_hunk_at`, which resolves the hunk index against the
+/// working tree — staging unrelated uncommitted edits.
 #[cfg(test)]
 mod view_tests {
     use gpui::prelude::*;
