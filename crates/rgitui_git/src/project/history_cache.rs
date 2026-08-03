@@ -304,6 +304,7 @@ impl CachedRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rgitui_test_support::TempRepo;
     use std::time::{Duration, Instant};
 
     fn commit(index: usize) -> CommitInfo {
@@ -376,19 +377,14 @@ mod tests {
 
     #[test]
     fn fingerprint_changes_when_head_branch_name_changes_at_same_oid() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let repo = Repository::init(temp.path()).unwrap();
-        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-        let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
-        let oid = repo
-            .commit(Some("refs/heads/main"), &sig, &sig, "initial", &tree, &[])
-            .unwrap();
+        let fixture = TempRepo::init();
+        let oid = fixture.commit("initial");
+        let repo = fixture.repo();
         repo.reference("refs/heads/other", oid, true, "test")
             .unwrap();
-        let main = ref_fingerprint(temp.path()).unwrap();
+        let main = ref_fingerprint(fixture.path()).unwrap();
         repo.set_head("refs/heads/other").unwrap();
-        let other = ref_fingerprint(temp.path()).unwrap();
+        let other = ref_fingerprint(fixture.path()).unwrap();
         assert_ne!(main, other);
     }
 

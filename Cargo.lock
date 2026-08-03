@@ -5097,6 +5097,7 @@ dependencies = [
  "rgitui_ai",
  "rgitui_git",
  "rgitui_settings",
+ "rgitui_test_support",
  "rgitui_theme",
  "rgitui_ui",
  "rgitui_workspace",
@@ -5149,6 +5150,7 @@ dependencies = [
  "notify",
  "parking_lot",
  "rgitui_settings",
+ "rgitui_test_support",
  "serde",
  "serde_json",
  "smol",
@@ -5191,8 +5193,10 @@ dependencies = [
 name = "rgitui_test_support"
 version = "0.3.2"
 dependencies = [
+ "git2",
  "gpui",
  "rgitui_theme",
+ "tempfile",
 ]
 
 [[package]]

@@ -4,109 +4,36 @@
 //! For visual testing, use scripts/screenshot.sh
 
 use chrono::TimeZone;
+use rgitui_test_support::TempRepo;
 use std::path::PathBuf;
 
-/// Creates a temporary git repository with several commits and a branch.
-///
-/// Returns `(TempDir, PathBuf)` where `TempDir` keeps the directory alive and
-/// `PathBuf` is the path to the repository root.
-fn setup_test_repo() -> (tempfile::TempDir, PathBuf) {
-    let tmp = tempfile::tempdir().expect("failed to create temp dir");
-    let repo_path = tmp.path().to_path_buf();
-    let repo = git2::Repository::init(&repo_path).expect("failed to init repo");
-
-    let mut config = repo.config().expect("failed to get repo config");
-    config
-        .set_str("user.name", "Test User")
-        .expect("failed to set user.name");
-    config
-        .set_str("user.email", "test@example.com")
-        .expect("failed to set user.email");
-
-    let sig =
-        git2::Signature::now("Test User", "test@example.com").expect("failed to create signature");
-
-    // Initial commit
-    let file_path = repo_path.join("README.md");
-    std::fs::write(&file_path, "# Test Repository\n").expect("failed to write README");
-    let mut index = repo.index().expect("failed to get index");
-    index
-        .add_path(std::path::Path::new("README.md"))
-        .expect("failed to add README");
-    index.write().expect("failed to write index");
-    let tree_oid = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_oid).expect("failed to find tree");
-    let initial_commit = repo
-        .commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
-        .expect("failed to create initial commit");
-    let initial_commit = repo
-        .find_commit(initial_commit)
-        .expect("failed to find initial commit");
-
-    // Create a feature branch
-    repo.branch("feature-branch", &initial_commit, false)
-        .expect("failed to create branch");
-
-    // Second commit on main
-    std::fs::write(&file_path, "# Test Repository\n\nUpdated content.\n")
-        .expect("failed to write updated README");
-    let mut index = repo.index().expect("failed to get index");
-    index
-        .add_path(std::path::Path::new("README.md"))
-        .expect("failed to add README");
-    index.write().expect("failed to write index");
-    let tree_oid = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_oid).expect("failed to find tree");
-    let second_commit = repo
-        .commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            "Update README",
-            &tree,
-            &[&initial_commit],
-        )
-        .expect("failed to create second commit");
-    let second_commit = repo
-        .find_commit(second_commit)
-        .expect("failed to find second commit");
-
-    // Third commit
-    let src_dir = repo_path.join("src");
-    std::fs::create_dir_all(&src_dir).expect("failed to create src dir");
-    std::fs::write(src_dir.join("main.rs"), "fn main() {}\n").expect("failed to write main.rs");
-    let mut index = repo.index().expect("failed to get index");
-    index
-        .add_path(std::path::Path::new("src/main.rs"))
-        .expect("failed to add main.rs");
-    index.write().expect("failed to write index");
-    let tree_oid = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_oid).expect("failed to find tree");
-    repo.commit(
-        Some("HEAD"),
-        &sig,
-        &sig,
-        "Add main.rs source file",
-        &tree,
-        &[&second_commit],
-    )
-    .expect("failed to create third commit");
-
-    (tmp, repo_path)
+/// Creates a temporary git repository with three commits and a branch that was
+/// cut from the first of them.
+fn setup_test_repo() -> TempRepo {
+    let repo = TempRepo::init();
+    repo.commit_file("README.md", "# Test Repository\n", "Initial commit");
+    repo.branch("feature-branch");
+    repo.commit_file(
+        "README.md",
+        "# Test Repository\n\nUpdated content.\n",
+        "Update README",
+    );
+    repo.commit_file("src/main.rs", "fn main() {}\n", "Add main.rs source file");
+    repo
 }
 
 #[test]
 fn test_repo_path_exists() {
-    let (_tmp, path) = setup_test_repo();
-    assert!(path.exists());
-    assert!(path.is_dir());
+    let fixture = setup_test_repo();
+    assert!(fixture.path().exists());
+    assert!(fixture.path().is_dir());
 }
 
 #[test]
 fn test_git_repo_can_be_opened() {
-    let (_tmp, path) = setup_test_repo();
+    let fixture = setup_test_repo();
 
-    let repo = git2::Repository::discover(&path).expect("failed to open git repo");
+    let repo = git2::Repository::discover(fixture.path()).expect("failed to open git repo");
     let head = repo.head().expect("failed to get HEAD");
     assert!(head.shorthand().is_some());
 }
@@ -119,9 +46,9 @@ fn test_compute_graph_empty() {
 
 #[test]
 fn test_compute_graph_with_real_commits() {
-    let (_tmp, path) = setup_test_repo();
+    let fixture = setup_test_repo();
 
-    let repo = git2::Repository::discover(&path).expect("failed to open repo");
+    let repo = git2::Repository::discover(fixture.path()).expect("failed to open repo");
     let mut revwalk = repo.revwalk().expect("failed to create revwalk");
     revwalk.push_head().expect("failed to push HEAD to revwalk");
 
@@ -186,9 +113,9 @@ fn test_compute_graph_with_real_commits() {
 
 #[test]
 fn test_compute_graph_correct_commit_count() {
-    let (_tmp, path) = setup_test_repo();
+    let fixture = setup_test_repo();
 
-    let repo = git2::Repository::discover(&path).expect("failed to open repo");
+    let repo = git2::Repository::discover(fixture.path()).expect("failed to open repo");
     let mut revwalk = repo.revwalk().expect("failed to create revwalk");
     revwalk.push_head().expect("failed to push HEAD");
 
@@ -198,8 +125,8 @@ fn test_compute_graph_correct_commit_count() {
 
 #[test]
 fn test_repo_has_feature_branch() {
-    let (_tmp, path) = setup_test_repo();
-    let repo = git2::Repository::discover(&path).expect("failed to open repo");
+    let fixture = setup_test_repo();
+    let repo = git2::Repository::discover(fixture.path()).expect("failed to open repo");
 
     let branch = repo
         .find_branch("feature-branch", git2::BranchType::Local)
@@ -262,19 +189,8 @@ fn test_headless_smoke() {
     }
 
     // Create a temp repo to open
-    let tmp = tempfile::tempdir().expect("failed to create temp dir");
-    let repo_path = tmp.path();
-    let mut init_opts = git2::RepositoryInitOptions::new();
-    init_opts.initial_head("main");
-    let repo = git2::Repository::init_opts(repo_path, &init_opts).expect("failed to init repo");
-    let mut config = repo.config().expect("failed to get config");
-    config
-        .set_str("user.name", "Test")
-        .expect("failed to set name");
-    config
-        .set_str("user.email", "test@test.com")
-        .expect("failed to set email");
-    drop(repo);
+    let fixture = TempRepo::init();
+    let repo_path = fixture.path();
 
     // Launch with Lavapipe + Xvfb, give it 5 seconds to start, then terminate
     let mut child = Command::new("/usr/bin/xvfb-run")
@@ -316,7 +232,7 @@ fn test_headless_smoke() {
 
     // Clean up
     child.kill().ok();
-    drop(tmp);
+    drop(fixture);
 }
 
 /// Helper: convert a git commit iterator result into a CommitInfo.
@@ -364,55 +280,15 @@ fn commit_to_commit_info(commit: &git2::Commit) -> rgitui_git::CommitInfo {
 fn test_compute_graph_handles_merge_commit() {
     use git2::BranchType;
 
-    let tmp = tempfile::tempdir().expect("failed to create temp dir");
-    let repo_path = tmp.path().to_path_buf();
-    let mut init_opts = git2::RepositoryInitOptions::new();
-    init_opts.initial_head("main");
-    let repo = git2::Repository::init_opts(&repo_path, &init_opts).expect("failed to init repo");
+    let fixture = TempRepo::init();
+    let repo = fixture.repo();
 
-    let mut config = repo.config().expect("failed to get repo config");
-    config
-        .set_str("user.name", "Test User")
-        .expect("failed to set user.name");
-    config
-        .set_str("user.email", "test@example.com")
-        .expect("failed to set user.email");
-
-    let sig =
-        git2::Signature::now("Test User", "test@example.com").expect("failed to create signature");
-
-    // C4: initial commit
-    let file = repo_path.join("README.md");
-    std::fs::write(&file, "# Test\n").expect("failed to write README");
-    let mut index = repo.index().expect("failed to get index");
-    index
-        .add_path(std::path::Path::new("README.md"))
-        .expect("failed to add");
-    index.write().expect("failed to write index");
-    let tree_oid = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_oid).expect("failed to find tree");
-    let c4 = repo
-        .commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
-        .expect("failed to create c4");
-    let c4 = repo.find_commit(c4).expect("failed to find c4");
-
-    // Create a feature branch from C4
-    repo.branch("feature", &c4, false)
-        .expect("failed to create feature branch");
+    // C4: initial commit, then a feature branch cut from it
+    fixture.commit_file("README.md", "# Test\n", "Initial commit");
+    fixture.branch("feature");
 
     // C3: commit on main (first parent of merge)
-    std::fs::write(&file, "# Test\nMain change\n").expect("failed to update README");
-    let mut index = repo.index().expect("failed to get index");
-    index
-        .add_path(std::path::Path::new("README.md"))
-        .expect("failed to add");
-    index.write().expect("failed to write index");
-    let tree_oid = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_oid).expect("failed to find tree");
-    let c3 = repo
-        .commit(Some("HEAD"), &sig, &sig, "Update on main", &tree, &[&c4])
-        .expect("failed to create c3");
-    let c3 = repo.find_commit(c3).expect("failed to find c3");
+    let c3 = fixture.commit_file("README.md", "# Test\nMain change\n", "Update on main");
 
     // Checkout feature branch and make C2
     let _feature_branch = repo
@@ -422,18 +298,7 @@ fn test_compute_graph_handles_merge_commit() {
         .expect("failed to checkout feature");
     repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
         .expect("failed to checkout feature");
-
-    std::fs::write(&file, "# Test\nFeature change\n").expect("failed to update README");
-    let mut index = repo.index().expect("failed to get index");
-    index
-        .add_path(std::path::Path::new("README.md"))
-        .expect("failed to add");
-    index.write().expect("failed to write index");
-    let tree_oid = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_oid).expect("failed to find tree");
-    let c2 = repo
-        .commit(Some("HEAD"), &sig, &sig, "Update on feature", &tree, &[&c4])
-        .expect("failed to create c2");
+    let c2 = fixture.commit_file("README.md", "# Test\nFeature change\n", "Update on feature");
 
     // Go back to main and make merge commit C1
     repo.set_head("refs/heads/main")
@@ -441,26 +306,23 @@ fn test_compute_graph_handles_merge_commit() {
     repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
         .expect("failed to checkout main");
 
+    let sig = fixture.signature();
+    let c3_commit = repo.find_commit(c3).expect("failed to find c3");
     let c2_commit = repo.find_commit(c2).expect("failed to find c2");
-    let mut index = repo.index().expect("failed to get index");
-    index
-        .add_path(std::path::Path::new("README.md"))
-        .expect("failed to add");
-    index.write().expect("failed to write index");
-    let tree_oid = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_oid).expect("failed to find tree");
+    let tree = repo
+        .find_tree(repo.index().unwrap().write_tree().unwrap())
+        .expect("failed to find tree");
     repo.commit(
         Some("HEAD"),
         &sig,
         &sig,
         "Merge feature into main",
         &tree,
-        &[&c3, &c2_commit],
+        &[&c3_commit, &c2_commit],
     )
     .expect("failed to create merge commit");
 
     // Collect all commits (HEAD = main with merge commit)
-    let repo = git2::Repository::discover(&repo_path).expect("failed to open repo");
     let mut revwalk = repo.revwalk().expect("failed to create revwalk");
     revwalk.push_head().expect("failed to push HEAD");
 
@@ -535,6 +397,4 @@ fn test_compute_graph_handles_merge_commit() {
         "Merge commit should have at least 2 edges (one per parent branch), got {}",
         merge_row.edges.len()
     );
-
-    drop(tmp); // explicitly drop to clean up
 }

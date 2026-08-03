@@ -32,7 +32,8 @@ rust-embed.workspace = true
 git2.workspace = true
 chrono.workspace = true
 rgitui_git.workspace = true
-tempfile = "3.27.0"
+rgitui_test_support.workspace = true
+tempfile.workspace = true
 
 [build-dependencies]
 winresource = "0.1.31"
