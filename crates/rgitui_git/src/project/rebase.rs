@@ -153,8 +153,28 @@ impl GitProject {
                         .output()
                         .with_context(|| "Failed to execute git rebase -i")?;
 
-                    // The plan and any reword messages have been consumed by git.
-                    drop(scratch);
+                    // A rebase that stopped on a conflict is still in progress,
+                    // and its todo list still holds `exec ... --file <path>`
+                    // lines pointing into the scratch directory. Deleting it now
+                    // would make `git rebase --continue` fail to read the reword
+                    // message. Keep the directory in that case and let the OS
+                    // temp sweep reclaim it; otherwise git is done with it.
+                    let rebase_still_in_progress = !output.status.success()
+                        && Repository::open(&repo_path)
+                            .map(|repo| {
+                                matches!(
+                                    repo.state(),
+                                    git2::RepositoryState::Rebase
+                                        | git2::RepositoryState::RebaseInteractive
+                                        | git2::RepositoryState::RebaseMerge
+                                )
+                            })
+                            .unwrap_or(false);
+                    if rebase_still_in_progress {
+                        let _ = scratch.keep();
+                    } else {
+                        drop(scratch);
+                    }
 
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let stderr = String::from_utf8_lossy(&output.stderr);

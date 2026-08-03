@@ -103,11 +103,17 @@ fn head_branch_name(repo: &Repository) -> Result<String> {
 
 /// Whether the working tree or index carries changes to **tracked** files.
 ///
-/// Untracked and ignored files are deliberately excluded. Git only refuses
-/// checkout/pull/merge/rebase when an operation would actually overwrite an
-/// untracked file, and it names the file when it does. Counting every untracked
-/// file as "dirty" instead made a single un-ignored scratch file block branch
+/// Untracked and ignored files are deliberately excluded. Counting every
+/// untracked file as "dirty" made a single un-ignored scratch file block branch
 /// switching entirely, with no way to proceed short of deleting it.
+///
+/// This is only safe because every operation gated on it refuses on its own,
+/// and names the file, when it would actually overwrite an untracked file: the
+/// CLI-backed operations (pull, rebase) do so natively, and the git2-backed
+/// checkout and fast-forward merge paths go through
+/// [`local_ops::checkout_tree_safe`], which never force-checkouts. Any new
+/// caller must hold to that — a forced checkout behind this relaxed guard
+/// silently destroys untracked files.
 fn repo_has_worktree_changes(repo: &Repository) -> Result<bool> {
     let mut opts = StatusOptions::new();
     opts.include_untracked(false)

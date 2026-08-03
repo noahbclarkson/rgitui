@@ -33,6 +33,22 @@ pub(crate) fn run_git_network_command(repo_path: &Path, args: &[&str]) -> Result
     result
 }
 
+/// The stock pack program to pin for a subcommand, if it accepts one.
+///
+/// A repository's own config can name the program git runs on the far side of a
+/// transport (`remote.<name>.uploadpack`, `remote.<name>.receivepack`, and the
+/// `pack.*` equivalents). For a local-path or SSH remote that program runs on
+/// this machine, so cloning an untrusted repository and pressing Fetch is enough
+/// to execute whatever its `.git/config` names. The command-line flags outrank
+/// repository config, so pin them to the stock programs everywhere they exist.
+fn pack_program_pin(subcommand: &str) -> Option<&'static str> {
+    match subcommand {
+        "fetch" | "pull" => Some("--upload-pack=git-upload-pack"),
+        "push" => Some("--receive-pack=git-receive-pack"),
+        _ => None,
+    }
+}
+
 /// Build and execute a single git command.
 /// When `force_https` is true, SSH URLs are rewritten to HTTPS.
 fn run_git_command(
@@ -75,7 +91,15 @@ fn run_git_command(
     for cfg in &config_args {
         cmd.arg("-c").arg(cfg);
     }
-    cmd.args(args);
+    // The pack-program pin has to land after the subcommand, so split rather
+    // than appending `args` wholesale.
+    if let Some((subcommand, rest)) = args.split_first() {
+        cmd.arg(subcommand);
+        if let Some(pin) = pack_program_pin(subcommand) {
+            cmd.arg(pin);
+        }
+        cmd.args(rest);
+    }
 
     let output = cmd
         .output()

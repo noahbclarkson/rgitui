@@ -20,6 +20,60 @@ use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent
 //  - BUG-41: `discard_changes_at` directory handling — verifier judged the current
 //    code correct (untracked dirs take the remove_dir_all branch); left unchanged.
 
+/// Renders up to three paths inline, summarising the rest, for error messages.
+fn format_path_list(paths: &[String]) -> String {
+    const SHOWN: usize = 3;
+    let shown = paths.len().min(SHOWN);
+    let mut list = paths[..shown].join(", ");
+    if paths.len() > shown {
+        list.push_str(&format!(" and {} more", paths.len() - shown));
+    }
+    list
+}
+
+/// Checks out `target` without overwriting local work, naming the files that
+/// stand in the way when it cannot.
+///
+/// libgit2 reports a blocked safe checkout as the bare "1 conflict prevents
+/// checkout", which tells the user nothing they can act on. The notify callback
+/// collects the offending paths so the error can name them, matching what the
+/// `git` CLI does on the same refusal.
+fn checkout_tree_safe(repo: &Repository, target: &git2::Object<'_>, operation: &str) -> Result<()> {
+    let conflicts = std::cell::RefCell::new(Vec::new());
+    let result = {
+        let mut opts = git2::build::CheckoutBuilder::new();
+        opts.safe()
+            .notify_on(git2::CheckoutNotificationType::CONFLICT)
+            .notify(|_kind, path, _baseline, _target, _workdir| {
+                if let Some(path) = path {
+                    conflicts.borrow_mut().push(path.display().to_string());
+                }
+                true
+            });
+        repo.checkout_tree(target, Some(&mut opts))
+    };
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if err.code() == git2::ErrorCode::Conflict => {
+            let paths = conflicts.into_inner();
+            if paths.is_empty() {
+                anyhow::bail!(
+                    "{} would overwrite local changes. Commit, stash, or discard them first.",
+                    operation
+                );
+            }
+            anyhow::bail!(
+                "{} would overwrite {}. Commit, stash, move, or delete {} first.",
+                operation,
+                format_path_list(&paths),
+                if paths.len() == 1 { "it" } else { "them" }
+            );
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 impl GitProject {
     /// Stage specific files.
     pub fn stage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
@@ -688,9 +742,7 @@ impl GitProject {
                         format!("refs/heads/{}", task_name)
                     };
 
-                    let mut checkout_opts = git2::build::CheckoutBuilder::new();
-                    checkout_opts.safe();
-                    repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
+                    checkout_tree_safe(&repo, &obj, "Checkout")?;
                     repo.set_head(&head_ref)?;
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
                     let msg = if is_tracking {
@@ -762,9 +814,7 @@ impl GitProject {
                     ensure_clean_worktree(&repo, "Checkout")?;
                     let commit = repo.find_commit(oid)?;
                     let obj = commit.into_object();
-                    let mut checkout_opts = git2::build::CheckoutBuilder::new();
-                    checkout_opts.safe();
-                    repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
+                    checkout_tree_safe(&repo, &obj, "Checkout")?;
                     repo.set_head_detached(oid)?;
                     gather_refresh_data(&repo_path, commit_limit)
                 })
@@ -830,9 +880,7 @@ impl GitProject {
                     let commit = obj.peel_to_commit()?;
                     let oid = commit.id();
                     let obj = commit.into_object();
-                    let mut checkout_opts = git2::build::CheckoutBuilder::new();
-                    checkout_opts.safe();
-                    repo.checkout_tree(&obj, Some(&mut checkout_opts))?;
+                    checkout_tree_safe(&repo, &obj, "Checkout")?;
                     repo.set_head_detached(oid)?;
                     gather_refresh_data(&repo_path, commit_limit)
                 })
@@ -2416,15 +2464,18 @@ impl GitProject {
                             let head_branch_name =
                                 head.shorthand().unwrap_or("HEAD").to_string();
                             let refname = format!("refs/heads/{}", head_branch_name);
+                            let target = repo.find_object(annotated_commit.id(), None)?;
+                            // Check out before moving the ref. A safe checkout
+                            // refuses rather than clobbering an untracked file,
+                            // and leaving the ref alone until it succeeds keeps
+                            // HEAD and the working tree in step when it refuses.
+                            checkout_tree_safe(&repo, &target, "Merge")?;
                             let mut reference = repo.find_reference(&refname)?;
                             reference.set_target(
                                 annotated_commit.id(),
                                 &format!("Fast-forward merge of '{}'", task_branch_name),
                             )?;
                             repo.set_head(&refname)?;
-                            repo.checkout_head(Some(
-                                git2::build::CheckoutBuilder::new().force(),
-                            ))?;
                             format!("Merged '{}' (fast-forward)", task_branch_name)
                         } else if analysis.is_normal() {
                             repo.merge(&[&annotated_commit], None, None)?;
@@ -3600,6 +3651,106 @@ mod tests {
         repo.set_head("refs/heads/main").unwrap();
 
         (dir, path, oid)
+    }
+
+    /// Make a repo whose `feature` branch adds `path_in_repo`, with HEAD left on
+    /// `main` one commit behind and the file absent from the work tree — the
+    /// shape a fast-forward merge sees.
+    fn make_repo_with_ff_branch(
+        path_in_repo: &str,
+        contents: &str,
+    ) -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let repo = git2::Repository::init(&path).unwrap();
+
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+        // Keep checkout byte-exact so the assertions hold wherever the suite
+        // runs; the machine's global core.autocrlf would otherwise rewrite
+        // line endings on Windows.
+        config.set_bool("core.autocrlf", false).unwrap();
+        drop(config);
+
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_oid = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let base = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+
+        // Build the branch commit straight from a tree so the work tree keeps
+        // looking like `main`.
+        let blob = repo.blob(contents.as_bytes()).unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert(path_in_repo, blob, 0o100644).unwrap();
+        let branch_tree_oid = builder.write().unwrap();
+        let branch_tree = repo.find_tree(branch_tree_oid).unwrap();
+        let parent = repo.find_commit(base).unwrap();
+        repo.commit(
+            Some("refs/heads/feature"),
+            &sig,
+            &sig,
+            "add file",
+            &branch_tree,
+            &[&parent],
+        )
+        .unwrap();
+
+        (dir, path)
+    }
+
+    #[test]
+    fn checkout_tree_safe_refuses_to_clobber_an_untracked_file() {
+        let (dir, path) = make_repo_with_ff_branch("notes.txt", "FROM BRANCH\n");
+        let untracked = dir.path().join("notes.txt");
+        fs::write(&untracked, "PRECIOUS UNTRACKED\n").unwrap();
+
+        let repo = git2::Repository::open(&path).unwrap();
+        let target = repo.revparse_single("refs/heads/feature").unwrap();
+        let err = super::checkout_tree_safe(&repo, &target, "Merge").unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("notes.txt"),
+            "error should name the file: {msg}"
+        );
+        assert!(
+            msg.starts_with("Merge would overwrite"),
+            "error should be actionable: {msg}"
+        );
+        assert_eq!(
+            fs::read_to_string(&untracked).unwrap(),
+            "PRECIOUS UNTRACKED\n",
+            "a refused checkout must leave the untracked file alone"
+        );
+    }
+
+    #[test]
+    fn checkout_tree_safe_applies_when_nothing_collides() {
+        let (dir, path) = make_repo_with_ff_branch("notes.txt", "FROM BRANCH\n");
+
+        let repo = git2::Repository::open(&path).unwrap();
+        let target = repo.revparse_single("refs/heads/feature").unwrap();
+        super::checkout_tree_safe(&repo, &target, "Merge").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+            "FROM BRANCH\n"
+        );
+    }
+
+    #[test]
+    fn format_path_list_summarises_beyond_three() {
+        assert_eq!(super::format_path_list(&["a.txt".to_string()]), "a.txt");
+
+        let many: Vec<String> = (0..5).map(|i| format!("f{i}.txt")).collect();
+        assert_eq!(
+            super::format_path_list(&many),
+            "f0.txt, f1.txt, f2.txt and 2 more"
+        );
     }
 
     /// Make a test repo with n commits, returning (tempdir, repo_path, tip_oid).
