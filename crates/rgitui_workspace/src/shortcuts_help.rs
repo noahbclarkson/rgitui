@@ -27,10 +27,22 @@ const PRIMARY_MODIFIER: &str = if cfg!(target_os = "macos") {
     "Ctrl"
 };
 
+/// Labels that stay on Control everywhere because macOS reserves the Command
+/// equivalent: Cmd+Tab is the application switcher and Cmd+H is Hide
+/// Application, both swallowed by the WindowServer before the app sees them.
+/// `key_handler` binds these to `modifiers.control` rather than the primary
+/// modifier, so the help must not promise Cmd.
+const PLATFORM_FIXED_LABELS: &[&str] = &["Ctrl+H", "Ctrl+Tab / Ctrl+Shift+Tab"];
+
+/// Free-form help copy that names a chord, and so has to track the platform's
+/// primary modifier just like the shortcut table does.
+const PALETTE_TIP: &str = "Tip: plain-letter shortcuts like d, b, h, j, and k depend on which panel is focused. Use Ctrl+Shift+P for less common actions like reflog, submodules, bisect, and stash management.";
+const MORE_ACTIONS_HINT: &str = "More actions: Ctrl+Shift+P";
+
 /// Rewrites the `Ctrl` chords in a shortcut label to the platform's primary
 /// modifier, so macOS shows `Cmd+Shift+P` rather than `Ctrl+Shift+P`.
 fn with_primary_modifier<'a>(label: &'a str, primary: &str) -> Cow<'a, str> {
-    if primary == "Ctrl" || !label.contains("Ctrl+") {
+    if primary == "Ctrl" || !label.contains("Ctrl+") || PLATFORM_FIXED_LABELS.contains(&label) {
         Cow::Borrowed(label)
     } else {
         Cow::Owned(label.replace("Ctrl+", &format!("{primary}+")))
@@ -432,7 +444,8 @@ impl Render for ShortcutsHelp {
                             .py(px(10.))
                             .child(
                                 Label::new(
-                                    "Tip: plain-letter shortcuts like d, b, h, j, and k depend on which panel is focused. Use Ctrl+Shift+P for less common actions like reflog, submodules, bisect, and stash management.",
+                                    with_primary_modifier(PALETTE_TIP, PRIMARY_MODIFIER)
+                                        .into_owned(),
                                 )
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
@@ -458,9 +471,12 @@ impl Render for ShortcutsHelp {
                     )
                     .when(viewport_width >= 520.0, |footer| {
                         footer.child(
-                            Label::new("More actions: Ctrl+Shift+P")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                            Label::new(
+                                with_primary_modifier(MORE_ACTIONS_HINT, PRIMARY_MODIFIER)
+                                    .into_owned(),
+                            )
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                         )
                     }),
             );
@@ -511,18 +527,49 @@ mod tests {
 
     #[test]
     fn every_documented_shortcut_label_is_platform_correct() {
-        for category in ShortcutsHelp::shortcut_categories() {
-            for (label, _) in category.shortcuts {
-                let rendered = with_primary_modifier(label, PRIMARY_MODIFIER);
-                if PRIMARY_MODIFIER == "Cmd" {
-                    assert!(
-                        !rendered.contains("Ctrl+"),
-                        "label {label:?} still advertises Ctrl on a Cmd platform"
-                    );
-                } else {
-                    assert_eq!(rendered, *label);
-                }
+        let categories = ShortcutsHelp::shortcut_categories();
+        let table = categories
+            .iter()
+            .flat_map(|category| category.shortcuts.iter().map(|(label, _)| *label));
+
+        for label in table.chain([PALETTE_TIP, MORE_ACTIONS_HINT]) {
+            let rendered = with_primary_modifier(label, PRIMARY_MODIFIER);
+            if PRIMARY_MODIFIER == "Cmd" && !PLATFORM_FIXED_LABELS.contains(&label) {
+                assert!(
+                    !rendered.contains("Ctrl+"),
+                    "label {label:?} still advertises Ctrl on a Cmd platform"
+                );
+            } else {
+                assert_eq!(rendered, label);
             }
+        }
+    }
+
+    #[test]
+    fn os_reserved_chords_keep_control_on_every_platform() {
+        for label in PLATFORM_FIXED_LABELS {
+            assert_eq!(
+                with_primary_modifier(label, "Cmd"),
+                *label,
+                "{label:?} is bound to Control in key_handler, so the help must not promise Cmd"
+            );
+        }
+    }
+
+    #[test]
+    fn platform_fixed_labels_all_appear_in_the_shortcut_table() {
+        let categories = ShortcutsHelp::shortcut_categories();
+        let documented: Vec<&str> = categories
+            .iter()
+            .flat_map(|category| category.shortcuts.iter().map(|(label, _)| *label))
+            .collect();
+
+        for label in PLATFORM_FIXED_LABELS {
+            assert!(
+                documented.contains(label),
+                "{label:?} is exempted from the Cmd rewrite but no longer appears in the table; \
+                 the exemption is stale"
+            );
         }
     }
 }

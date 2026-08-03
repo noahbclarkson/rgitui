@@ -551,9 +551,7 @@ impl DetailPanel {
         }
 
         // File search toggle: / or Ctrl+F
-        if (key == "/" && !modifiers.control && !modifiers.platform)
-            || ((modifiers.control || modifiers.platform) && key == "f")
-        {
+        if (key == "/" && !modifiers.secondary()) || (modifiers.secondary() && key == "f") {
             self.file_search_active = true;
             cx.notify();
             return;

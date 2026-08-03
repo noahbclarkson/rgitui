@@ -483,8 +483,11 @@ impl Workspace {
             return;
         }
 
-        // Ctrl+Tab to switch to next tab
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "tab" {
+        // Ctrl+Tab to switch to next tab. Deliberately not the primary
+        // modifier: macOS reserves Cmd+Tab for the application switcher, so the
+        // WindowServer swallows it before the app sees it. Ctrl+Tab is also the
+        // native tab-cycling chord there.
+        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "tab" {
             if !self.tabs.is_empty() {
                 self.active_tab = (self.active_tab + 1) % self.tabs.len();
                 cx.notify();
@@ -492,8 +495,9 @@ impl Workspace {
             return;
         }
 
-        // Ctrl+Shift+Tab to switch to previous tab
-        if !any_overlay_active && modifiers.secondary() && modifiers.shift && key == "tab" {
+        // Ctrl+Shift+Tab to switch to previous tab. Ctrl for the same reason as
+        // Ctrl+Tab above.
+        if !any_overlay_active && modifiers.control && modifiers.shift && key == "tab" {
             if !self.tabs.is_empty() {
                 if self.active_tab == 0 {
                     self.active_tab = self.tabs.len() - 1;
@@ -513,8 +517,9 @@ impl Workspace {
             return;
         }
 
-        // Ctrl+H to return to workspace home
-        if !any_overlay_active && modifiers.secondary() && !modifiers.shift && key == "h" {
+        // Ctrl+H to return to workspace home. Deliberately not the primary
+        // modifier: macOS reserves Cmd+H for Hide Application.
+        if !any_overlay_active && modifiers.control && !modifiers.shift && key == "h" {
             self.go_home(cx);
             return;
         }

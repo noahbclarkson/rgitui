@@ -1028,11 +1028,13 @@ impl GraphView {
         }
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
-        let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
+        // The platform's primary modifier: Command on macOS, Control elsewhere.
+        // Treating both as interchangeable made the Windows key act as Control.
+        let primary = keystroke.modifiers.secondary();
 
         let total = self.total_list_items();
         match key {
-            "j" | "down" if !ctrl => {
+            "j" | "down" if !primary => {
                 let next = match self.selected_index {
                     Some(i) if i + 1 < total => i + 1,
                     None if total > 0 => 0,
@@ -1042,7 +1044,7 @@ impl GraphView {
                 self.scroll_handle
                     .scroll_to_item(next, ScrollStrategy::Center);
             }
-            "k" | "up" if !ctrl => {
+            "k" | "up" if !primary => {
                 let next = match self.selected_index {
                     Some(i) if i > 0 => i - 1,
                     None if total > 0 => 0,
@@ -1052,7 +1054,7 @@ impl GraphView {
                 self.scroll_handle
                     .scroll_to_item(next, ScrollStrategy::Center);
             }
-            "g" if !ctrl && !keystroke.modifiers.shift
+            "g" if !primary && !keystroke.modifiers.shift
                 && total > 0 => {
                     self.select_list_index(0, cx);
                     self.scroll_handle
@@ -1078,7 +1080,7 @@ impl GraphView {
                     self.scroll_handle
                         .scroll_to_item(0, ScrollStrategy::Top);
                 }
-            "/" if !ctrl => {
+            "/" if !primary => {
                 self.show_search = true;
                 self.search_editor.update(cx, |e: &mut rgitui_ui::TextInput, cx| e.focus(window, cx));
                 cx.notify();
@@ -1088,7 +1090,7 @@ impl GraphView {
                 if self.context_menu.is_some() => {
                     self.dismiss_context_menu(cx);
                 }
-            "y" | "Y" if !ctrl && !keystroke.modifiers.shift => {
+            "y" | "Y" if !primary && !keystroke.modifiers.shift => {
                 // Copy SHA of selected commit (standard GitKraken shortcut)
                 if let Some(commit) = self.selected_commit() {
                     let sha = format!("{}", commit.oid);
