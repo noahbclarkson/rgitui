@@ -471,6 +471,15 @@ mod tests {
         BindingSpec::user_binding(keystrokes, Some(context), action)
     }
 
+    /// Word-style spelling of what `secondary-` resolves to here: Command on
+    /// macOS, Control everywhere else. Only bindings written as `secondary-`
+    /// follow it — an explicit `ctrl-` binding stays Control on every platform.
+    const PRIMARY_WORD: &str = if cfg!(target_os = "macos") {
+        "Cmd+"
+    } else {
+        "Ctrl+"
+    };
+
     /// The drift that motivated this work: the help used to advertise
     /// `Ctrl+Shift+F` for Fetch while the registry bound `Ctrl+Shift+R`.
     #[test]
@@ -478,7 +487,7 @@ mod tests {
         let summary = defaults();
         assert_eq!(
             summary.display(CommandId::Fetch).as_deref(),
-            Some("Ctrl+Shift+R")
+            Some(format!("{PRIMARY_WORD}Shift+R").as_str())
         );
         assert_eq!(
             summary.display(CommandId::Fetch),
@@ -556,7 +565,7 @@ mod tests {
     fn a_command_with_two_keystrokes_lists_both() {
         assert_eq!(
             defaults().display(CommandId::UnstageAll).as_deref(),
-            Some("Ctrl+Shift+S or Ctrl+U")
+            Some(format!("{PRIMARY_WORD}Shift+S or {PRIMARY_WORD}U").as_str())
         );
     }
 
@@ -605,12 +614,16 @@ mod tests {
         assert!(commit
             .bindings
             .iter()
-            .any(|binding| binding.display == "Ctrl+S" && binding.is_user_defined()));
+            .any(|binding| binding.display == format!("{PRIMARY_WORD}S")
+                && binding.is_user_defined()));
 
         assert_eq!(summary.display(CommandId::StageAll), None);
         let warnings = summary.warnings(CommandId::StageAll);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("Ctrl+S"), "{warnings:?}");
+        assert!(
+            warnings[0].contains(&format!("{PRIMARY_WORD}S")),
+            "{warnings:?}"
+        );
         assert!(warnings[0].contains("keymap.json"), "{warnings:?}");
     }
 
@@ -643,7 +656,7 @@ mod tests {
         // Fetch keeps its own default; only the extra binding was dropped.
         assert_eq!(
             summary.display(CommandId::Fetch).as_deref(),
-            Some("Ctrl+Shift+R")
+            Some(format!("{PRIMARY_WORD}Shift+R").as_str())
         );
         assert_eq!(
             summary.display(CommandId::Pull).as_deref(),
@@ -665,7 +678,7 @@ mod tests {
         // The default comes first: defaults are applied before user bindings.
         assert_eq!(
             summary.display(CommandId::OpenRepo).as_deref(),
-            Some("Ctrl+O or Ctrl+Alt+K Ctrl+Alt+O")
+            Some(format!("{PRIMARY_WORD}O or Ctrl+Alt+K Ctrl+Alt+O").as_str())
         );
     }
 

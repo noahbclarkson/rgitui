@@ -1379,9 +1379,15 @@ mod tests {
                 command.id
             );
         }
+        // Fetch is bound `secondary-shift-r`, which is Command on macOS.
+        let primary = if cfg!(target_os = "macos") {
+            "Cmd+"
+        } else {
+            "Ctrl+"
+        };
         assert_eq!(
             summary.display(CommandId::Fetch).as_deref(),
-            Some("Ctrl+Shift+R")
+            Some(format!("{primary}Shift+R").as_str())
         );
     }
 

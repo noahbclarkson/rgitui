@@ -101,7 +101,9 @@ fn render(modifiers: &Modifiers, key: &str, style: KeystrokeStyle) -> String {
                 out.push_str("Alt+");
             }
             if modifiers.platform {
-                out.push_str(if cfg!(target_os = "windows") {
+                out.push_str(if cfg!(target_os = "macos") {
+                    "Cmd+"
+                } else if cfg!(target_os = "windows") {
                     "Win+"
                 } else {
                     "Super+"
@@ -282,6 +284,8 @@ fn named_key(key: &str, style: KeystrokeStyle) -> Option<&'static str> {
         "platform" => {
             if symbols {
                 "⌘"
+            } else if cfg!(target_os = "macos") {
+                "Cmd"
             } else if cfg!(target_os = "windows") {
                 "Win"
             } else {
@@ -312,11 +316,20 @@ fn title_case(value: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Word-style spelling of what `secondary-` resolves to here: Command on
+    /// macOS, Control everywhere else. Tests that hard-coded `Ctrl+` passed on
+    /// Windows and Linux while asserting the wrong thing on macOS.
+    const PRIMARY_WORD: &str = if cfg!(target_os = "macos") {
+        "Cmd+"
+    } else {
+        "Ctrl+"
+    };
+
     #[test]
     fn the_primary_modifier_follows_the_platform() {
         assert_eq!(
             humanize_keystroke("secondary-shift-r", KeystrokeStyle::Words).as_deref(),
-            Some("Ctrl+Shift+R")
+            Some(format!("{PRIMARY_WORD}Shift+R").as_str())
         );
         assert_eq!(
             humanize_keystroke("secondary-shift-r", KeystrokeStyle::Symbols).as_deref(),
@@ -340,20 +353,20 @@ mod tests {
     #[test]
     fn named_keys_get_conventional_names() {
         for (source, words) in [
-            ("secondary-enter", "Ctrl+Enter"),
-            ("escape", "Esc"),
-            ("f5", "F5"),
-            ("shift-tab", "Shift+Tab"),
-            ("secondary-up", "Ctrl+Up"),
-            ("alt-5", "Alt+5"),
-            ("space", "Space"),
-            ("delete", "Delete"),
-            ("secondary-,", "Ctrl+,"),
-            ("secondary-[", "Ctrl+["),
+            ("secondary-enter", format!("{PRIMARY_WORD}Enter")),
+            ("escape", "Esc".to_owned()),
+            ("f5", "F5".to_owned()),
+            ("shift-tab", "Shift+Tab".to_owned()),
+            ("secondary-up", format!("{PRIMARY_WORD}Up")),
+            ("alt-5", "Alt+5".to_owned()),
+            ("space", "Space".to_owned()),
+            ("delete", "Delete".to_owned()),
+            ("secondary-,", format!("{PRIMARY_WORD},")),
+            ("secondary-[", format!("{PRIMARY_WORD}[")),
         ] {
             assert_eq!(
                 humanize_keystroke(source, KeystrokeStyle::Words).as_deref(),
-                Some(words),
+                Some(words.as_str()),
                 "{source}"
             );
         }
