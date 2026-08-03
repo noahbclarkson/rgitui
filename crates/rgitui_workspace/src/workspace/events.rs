@@ -7,7 +7,7 @@ use std::time::Instant;
 use futures::StreamExt;
 use gpui::{AppContext, Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator};
-use rgitui_diff::{DiffSource, DiffViewer, DiffViewerEvent, StagingAction};
+use rgitui_diff::{DiffOperation, DiffSource, DiffViewer, DiffViewerEvent};
 use rgitui_git::{
     CommitInfo, GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
     RebaseEntryAction, RebasePlanEntry, Signature,
@@ -866,6 +866,17 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     tb.set_ahead_behind(ahead, behind, cx);
                 });
             }
+            GitProjectEvent::WorktreePatchApplied { label, snapshots } => {
+                // No git command reverses a working-tree rewrite, so the
+                // pre-operation bytes are what goes on the undo stack.
+                this.push_undo(
+                    label.clone(),
+                    UndoAction::RestoreWorktreeFiles {
+                        snapshots: snapshots.clone(),
+                    },
+                    cx,
+                );
+            }
             GitProjectEvent::RepositoryChanged
             | GitProjectEvent::StatusChanged
             | GitProjectEvent::HeadChanged
@@ -957,8 +968,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     if dv.has_three_way_diff() || dv.source().is_historical() {
                         None
                     } else {
-                        let is_staged =
-                            dv.source().staging_action() == Some(StagingAction::Unstage);
+                        let is_staged = dv.source().offers(DiffOperation::Unstage);
                         dv.file_path().map(|p| (p.to_string(), is_staged))
                     }
                 };
@@ -2326,20 +2336,24 @@ pub(super) fn subscribe_diff_viewer(
                 .map(std::path::PathBuf::from);
 
             if let Some(path) = file_path {
-                // Backstop: never apply a staging request against content the
-                // viewer is not showing as mutable. `stage_hunk_at` and friends
-                // resolve the hunk index against the *working tree*, so honouring
-                // a request raised over a commit or stash diff would silently
-                // stage unrelated uncommitted changes.
+                // Backstop: never honour a request the displayed source does not
+                // offer. `stage_hunk_at` and friends resolve the hunk index
+                // against the *working tree*, and apply/revert rewrite files on
+                // disk, so a request that outlived the content it was raised over
+                // would hit changes the user is not looking at.
                 let requested = match event {
                     DiffViewerEvent::HunkStageRequested(_)
-                    | DiffViewerEvent::LineStageRequested(_) => Some(StagingAction::Stage),
+                    | DiffViewerEvent::LineStageRequested(_) => Some(DiffOperation::Stage),
                     DiffViewerEvent::HunkUnstageRequested(_)
-                    | DiffViewerEvent::LineUnstageRequested(_) => Some(StagingAction::Unstage),
+                    | DiffViewerEvent::LineUnstageRequested(_) => Some(DiffOperation::Unstage),
+                    DiffViewerEvent::WorktreePatchRequested { operation, .. } => Some(*operation),
                     DiffViewerEvent::DiffChanged { .. } => None,
                 };
                 if let Some(requested) = requested {
-                    let rejection = diff_viewer_ref.read(cx).source().reject_staging(requested);
+                    let rejection = diff_viewer_ref
+                        .read(cx)
+                        .source()
+                        .reject_operation(requested);
                     if let Some(message) = rejection {
                         this.show_toast(message, ToastKind::Warning, cx);
                         return;
@@ -2377,6 +2391,36 @@ pub(super) fn subscribe_diff_viewer(
                         project.update(cx, |proj, cx| {
                             proj.unstage_lines_at(&path, &pairs, &worktree_path, cx)
                                 .detach();
+                        });
+                    }
+                    DiffViewerEvent::WorktreePatchRequested { operation, scope } => {
+                        // The patch is generated from the displayed source's tree
+                        // pair, so applying a hunk of a comparison brings the
+                        // other revision's content in rather than the index's.
+                        let source = diff_viewer_ref.read(cx).source().patch_source();
+                        let Some(source) = source else {
+                            this.show_toast(
+                                "This diff has no revision to apply from — select a commit, a \
+                                 stash entry or a comparison first.",
+                                ToastKind::Warning,
+                                cx,
+                            );
+                            return;
+                        };
+                        let Some(direction) = operation.patch_direction() else {
+                            return;
+                        };
+                        let scope = scope.clone();
+                        project.update(cx, |proj, cx| {
+                            proj.patch_worktree_at(
+                                &path,
+                                source,
+                                scope,
+                                direction,
+                                &worktree_path,
+                                cx,
+                            )
+                            .detach();
                         });
                     }
                     DiffViewerEvent::DiffChanged { .. } => {}

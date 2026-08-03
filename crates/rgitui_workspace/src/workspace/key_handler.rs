@@ -1,9 +1,9 @@
 //! How the workspace window resolves keystrokes.
 //!
-//! There is no keyboard handler here any more. Every shortcut is declared by
-//! `commands!` in [`crate::keymap::registry`], bound to a gpui action scoped to a
-//! key context, and handled by an `on_action` listener on the element that owns
-//! the behaviour. Two mechanisms replace what used to be hand-rolled here:
+//! Every shortcut is declared by `commands!` in [`crate::keymap::registry`],
+//! bound to a gpui action scoped to a key context, and handled by an
+//! `on_action` listener on the element that owns the behaviour. Two mechanisms
+//! carry the cases that are not a plain one-view binding:
 //!
 //! * **Esc and Enter.** `menu::Cancel` and `menu::Confirm` are each bound once.
 //!   gpui dispatches an action outwards from the focused element and the first

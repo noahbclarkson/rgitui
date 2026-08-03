@@ -331,6 +331,10 @@ pub enum GitOperationKind {
     ResolveConflict,
     Clean,
     Clone,
+    /// Writing diff content from another revision into the working tree.
+    ApplyToWorktree,
+    /// Removing diff content from another revision out of the working tree.
+    RevertInWorktree,
 }
 
 impl GitOperationKind {
@@ -358,6 +362,8 @@ impl GitOperationKind {
             GitOperationKind::ResolveConflict => "Resolve conflict",
             GitOperationKind::Clean => "Clean",
             GitOperationKind::Clone => "Clone",
+            GitOperationKind::ApplyToWorktree => "Apply to working tree",
+            GitOperationKind::RevertInWorktree => "Revert in working tree",
         }
     }
 }

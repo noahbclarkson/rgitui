@@ -13,6 +13,7 @@ mod refresh;
 mod search;
 mod submodule;
 mod watcher;
+mod worktree_patch;
 
 use anyhow::{Context as _, Result};
 use git2::{Repository, StatusOptions};
@@ -78,6 +79,11 @@ pub use search::git_grep;
 pub use submodule::{
     compute_submodules, submodule_init, submodule_init_all, submodule_update, submodule_update_all,
     SubmoduleInfo,
+};
+pub use worktree_patch::{
+    apply_worktree_patch, restore_worktree_files, snapshots_fit_undo_stack, WorktreeFileSnapshot,
+    WorktreePatchDirection, WorktreePatchOutcome, WorktreePatchScope, WorktreePatchSource,
+    MAX_UNDO_SNAPSHOT_BYTES,
 };
 
 fn parse_remote_tracking_ref(name: &str) -> Option<(String, String)> {
@@ -256,6 +262,14 @@ pub enum GitProjectEvent {
     /// Emitted after ahead/behind for all branches has been recomputed in the background.
     AheadBehindRefreshed,
     OperationUpdated(GitOperationUpdate),
+    /// An apply/revert rewrote working-tree files on disk. Carries what those
+    /// files held beforehand, which is the only record of it: the previous
+    /// contents are not recoverable from git state.
+    WorktreePatchApplied {
+        /// Undo label, e.g. "Applied hunk 2 of src/main.rs from a1b2c3d".
+        label: String,
+        snapshots: Vec<worktree_patch::WorktreeFileSnapshot>,
+    },
 }
 
 /// The core Git project state holder.
