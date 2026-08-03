@@ -1091,6 +1091,22 @@ pub fn init(cx: &mut App) {
     cx.set_global(state);
 }
 
+/// Install default settings for a test app.
+///
+/// Any view that reads `cx.global::<SettingsState>()` in `render` needs this
+/// before a headless test window draws it. Unlike [`init`], nothing is read
+/// from or written to the user's config directory and the OS keychain is left
+/// alone, so tests cannot disturb (or be disturbed by) real user state. The
+/// config path points into the temp directory purely so a stray `save()` in a
+/// view under test cannot land on the real file.
+pub fn init_test(cx: &mut App) {
+    cx.set_global(SettingsState {
+        settings: AppSettings::default(),
+        config_path: std::env::temp_dir().join("rgitui-test-settings.json"),
+        load_warnings: Vec::new(),
+    });
+}
+
 pub fn current_auth_runtime() -> AuthRuntimeState {
     auth_runtime()
         .read()
