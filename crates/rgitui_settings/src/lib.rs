@@ -11,6 +11,8 @@ use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender};
 use std::sync::{Mutex, OnceLock, RwLock};
 use uuid::Uuid;
 
+pub mod shortcuts;
+
 /// Controls the compactness of the UI layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -254,6 +256,9 @@ pub struct AppSettings {
     pub commit_limit: usize,
     #[serde(default)]
     pub watch_all_worktrees: bool,
+    /// Keyboard shortcut overrides.
+    #[serde(default)]
+    pub shortcuts: crate::shortcuts::CustomShortcuts,
     /// Last known position/size of the standalone Settings window. Restored
     /// on next open if the saved origin still falls within a connected display.
     #[serde(default)]
@@ -541,6 +546,7 @@ impl Default for AppSettings {
             last_update_check_at: None,
             commit_limit: default_commit_limit(),
             watch_all_worktrees: false,
+            shortcuts: crate::shortcuts::CustomShortcuts::default(),
             settings_window_bounds: None,
         }
     }
