@@ -1,46 +1,37 @@
 //! Applying and reverting diff content in the working tree.
 //!
-//! Staging moves content between the working tree and the index, so it can be
-//! expressed as `repo.apply(.., ApplyLocation::Index, ..)` over a patch sliced
-//! out of the index→workdir diff. Applying *historical* content is a different
-//! operation: the patch comes from a pair of trees that need not include the
-//! working tree at all — a past commit against its parent, a stash entry, or
-//! two arbitrary branches — and the result is written to files on disk.
+//! The patch comes from a pair of trees that need not include the working tree
+//! at all — a past commit against its parent, a stash entry, or two arbitrary
+//! branches — and the result is written to files on disk. A dirty working tree is
+//! the normal case: you compare against another revision precisely because you
+//! are mid-change.
 //!
-//! ## Why not `repo.apply(.., ApplyLocation::WorkDir, ..)`
+//! ## Constraints on the two obvious appliers
 //!
-//! libgit2's apply is a plain patch applier: it matches each hunk's context
-//! against the target and fails outright when the context does not line up. It
-//! has no three-way fallback. The working tree being dirty is the *normal* case
-//! for this feature — you compare against another branch precisely because you
-//! are mid-change — and an uncommitted edit anywhere inside a hunk's context
-//! window (three lines either side) is enough to make a context match fail.
+//! Neither off-the-shelf applier tolerates that dirty working tree:
 //!
-//! ## Why not `git apply --3way`
+//! * `repo.apply(.., ApplyLocation::WorkDir, ..)` matches each hunk's context
+//!   against the target and fails outright when it does not line up, with no
+//!   three-way fallback. An uncommitted edit anywhere inside a hunk's context
+//!   window (three lines either side) defeats it.
+//! * `git apply --3way` merges into the *index*, and refuses with
+//!   `error: <path>: does not match index` whenever the working-tree file differs
+//!   from its index entry. On failure it also leaves conflict markers and an
+//!   unmerged index entry behind.
 //!
-//! `git apply --3way` is the CLI's answer to that, and it is what a patch-file
-//! workflow effectively gets. But it merges into the *index*: it refuses with
-//! `error: <path>: does not match index` whenever the working-tree file differs
-//! from its index entry. That is exactly the dirty working tree we need to
-//! support, so the one case the fallback exists for is the case it rejects.
-//! It also leaves conflict markers plus an unmerged index entry behind on
-//! failure, which is a worse state to hand back than a refusal.
+//! ## What this module does
 //!
-//! ## What this does instead
-//!
-//! Reconstruct the two sides ourselves and let libgit2 merge them:
+//! Reconstructs the two sides and lets libgit2 merge them:
 //!
 //! * `base`   — the file as it is on the side the patch starts from.
 //! * `target` — `base` rewritten with exactly the selected hunk or lines
-//!   applied (or reverted). Computed from the diff, not by matching context, so
-//!   it is exact by construction.
+//!   applied (or reverted). Computed from the diff rather than by matching
+//!   context, so it is exact by construction.
 //! * `ours`   — the file as it is in the working tree right now.
 //!
-//! Then a three-way merge of (base, ours, target). Because base→target differs
-//! only inside the selected region, unrelated local edits merge cleanly and an
-//! overlapping edit conflicts — which is the behaviour `--3way` promises,
-//! obtained without touching the index and without needing the working tree to
-//! match it.
+//! A three-way merge of (base, ours, target) then keeps unrelated local edits
+//! and conflicts only where an edit overlaps the selected region. The index is
+//! never touched and never has to match the working tree.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -126,11 +117,8 @@ impl WorktreePatchScope {
 
 /// The pair of revisions whose difference is being applied or reverted.
 ///
-/// `Commit` is not special-cased into the apply machinery: it resolves to the
-/// same `from`/`to` tree pair as any other comparison, so a cross-branch diff
-/// and a historical commit diff travel identical code. That is what makes
-/// "apply the difference between two branches into my working tree" work rather
-/// than being a no-op bolted onto a commit-only feature.
+/// Both variants resolve to a `from`/`to` tree pair, so a commit diff and a
+/// cross-branch comparison travel identical code from there on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreePatchSource {
     /// The change one commit (or stash entry) introduced: its first parent →
@@ -198,10 +186,8 @@ pub(crate) fn short_oid(oid_hex: &str) -> String {
 
 /// The contents of one working-tree file before an apply or revert rewrote it.
 ///
-/// Apply and revert edit files on disk, unlike staging, so every operation
-/// snapshots what it is about to overwrite. Undo restores these bytes verbatim
-/// rather than re-deriving a reverse patch, so it is exact even when the forward
-/// operation went through a three-way merge.
+/// Undo restores these bytes verbatim rather than deriving a reverse patch, which
+/// would not be exact when the forward operation went through a three-way merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeFileSnapshot {
     /// Path relative to the worktree root.
@@ -1772,8 +1758,8 @@ mod worktree_patch_integration_tests {
 
     #[test]
     fn libgit2s_own_apply_refuses_the_case_the_merge_handles() {
-        // The evidence behind not using `repo.apply(.., WorkDir, ..)`: the same
-        // hunk, as a patch, against the same working tree that
+        // Pins the libgit2 constraint the module docs state: the same hunk, as a
+        // patch, against the same working tree that
         // `applying_over_an_unrelated_local_edit_keeps_both_changes` handles.
         let (fixture, _) = two_hunk_commit();
         fixture.write("f.txt", &numbered_lines(&[(5, "LOCAL5")]));
