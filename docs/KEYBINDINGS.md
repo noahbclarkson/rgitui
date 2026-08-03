@@ -154,6 +154,10 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | `u` or `shift-u` | `DiffViewer && !modal && !TextInput` | `diff::UnstageSelection` | Unstage the hunks or lines under the diff selection. |
 | `alt-s` | `DiffViewer && !modal && !TextInput` | `diff::StageCurrentHunk` | Stage the hunk under the diff cursor. |
 | `alt-u` | `DiffViewer && !modal && !TextInput` | `diff::UnstageCurrentHunk` | Unstage the hunk under the diff cursor. |
+| `a` or `shift-a` | `DiffViewer && !modal && !TextInput` | `diff::ApplySelection` | Apply the hunks or lines under the diff selection to the working tree. |
+| `r` or `shift-r` | `DiffViewer && !modal && !TextInput` | `diff::RevertSelection` | Revert the hunks or lines under the diff selection in the working tree. |
+| `alt-a` | `DiffViewer && !modal && !TextInput` | `diff::ApplyFile` | Apply the whole file to the working tree. |
+| `alt-r` | `DiffViewer && !modal && !TextInput` | `diff::RevertFile` | Revert the whole file in the working tree. |
 | `secondary-c` | `DiffViewer && !modal && !TextInput` | `diff::CopyDiffSelection` | Copy the selected diff lines to the clipboard. |
 | `secondary-a` | `DiffViewer && !modal && !TextInput` | `diff::SelectAllDiffLines` | Select every line in the diff. |
 

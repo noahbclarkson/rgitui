@@ -185,6 +185,10 @@ impl Workspace {
             CommandId::UnstageSelection => diff.unstage_selection(cx),
             CommandId::StageCurrentHunk => diff.stage_current_hunk(cx),
             CommandId::UnstageCurrentHunk => diff.unstage_current_hunk(cx),
+            CommandId::ApplySelection => diff.apply_selection(cx),
+            CommandId::RevertSelection => diff.revert_selection(cx),
+            CommandId::ApplyFile => diff.apply_file(cx),
+            CommandId::RevertFile => diff.revert_file(cx),
             CommandId::CopyDiffSelection => diff.copy_selection(cx),
             CommandId::SelectAllDiffLines => diff.select_all_lines(cx),
             _ => cx.propagate(),
@@ -818,6 +822,10 @@ impl Workspace {
             | CommandId::UnstageSelection
             | CommandId::StageCurrentHunk
             | CommandId::UnstageCurrentHunk
+            | CommandId::ApplySelection
+            | CommandId::RevertSelection
+            | CommandId::ApplyFile
+            | CommandId::RevertFile
             | CommandId::CopyDiffSelection
             | CommandId::SelectAllDiffLines
             | CommandId::ToggleFileTree
