@@ -457,6 +457,22 @@
           "description": "Unstage the hunk under the diff cursor. Command id: `unstage_current_hunk`."
         },
         {
+          "const": "diff::ApplySelection",
+          "description": "Apply the hunks or lines under the diff selection to the working tree. Command id: `apply_selection`."
+        },
+        {
+          "const": "diff::RevertSelection",
+          "description": "Revert the hunks or lines under the diff selection in the working tree. Command id: `revert_selection`."
+        },
+        {
+          "const": "diff::ApplyFile",
+          "description": "Apply the whole file to the working tree. Command id: `apply_file`."
+        },
+        {
+          "const": "diff::RevertFile",
+          "description": "Revert the whole file in the working tree. Command id: `revert_file`."
+        },
+        {
           "const": "diff::CopyDiffSelection",
           "description": "Copy the selected diff lines to the clipboard. Command id: `copy_diff_selection`."
         },

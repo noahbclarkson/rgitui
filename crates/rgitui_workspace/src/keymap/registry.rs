@@ -291,6 +291,21 @@ commands! {
         StageCurrentHunk "alt-s" [hidden];
         /// Unstage the hunk under the diff cursor.
         UnstageCurrentHunk "alt-u" [hidden];
+        // Bare `a` and `r`, live only for content from outside the working tree,
+        // which is where `s`/`u` above are inert. The diff viewer's own `a` is
+        // `secondary-a`, and the rebase editor's `r` sits behind `modal`, so
+        // neither collides.
+        /// Apply the hunks or lines under the diff selection to the working tree.
+        ApplySelection ["a", "shift-a"] [hidden];
+        /// Revert the hunks or lines under the diff selection in the working tree.
+        RevertSelection ["r", "shift-r"] [hidden];
+        // Alt for the fixed-scope variant, as with `alt-s`/`alt-u`: the selection
+        // is ignored and the whole file is rewritten. Both record the overwritten
+        // bytes on the undo stack.
+        /// Apply the whole file to the working tree.
+        ApplyFile "alt-a" [hidden];
+        /// Revert the whole file in the working tree.
+        RevertFile "alt-r" [hidden];
         /// Copy the selected diff lines to the clipboard.
         CopyDiffSelection "secondary-c" [hidden];
         /// Select every line in the diff.
@@ -883,7 +898,9 @@ mod tests {
     /// context — otherwise one of them is dead.
     #[test]
     fn ambiguous_letters_resolve_to_one_action_per_context() {
-        for keystrokes in ["d", "s", "p", "b", "h", "j", "k", "g", "y", "/", "[", "]"] {
+        for keystrokes in [
+            "d", "s", "p", "b", "h", "j", "k", "g", "y", "r", "/", "[", "]",
+        ] {
             let bindings = bindings_for(keystrokes);
             assert!(
                 !bindings.is_empty(),
@@ -933,6 +950,10 @@ mod tests {
             ("p", &["diff::TogglePartialSelection", "rebase::RebasePick"]),
             ("b", &["history::HistoryShowBlame"]),
             ("h", &["blame::BlameShowHistory"]),
+            // The rebase editor's `r` sits behind `modal`, so it never meets a
+            // `DiffViewer && !modal` binding.
+            ("a", &["diff::ApplySelection"]),
+            ("r", &["diff::RevertSelection", "rebase::RebaseReword"]),
         ];
 
         for (keystrokes, actions) in expected {
