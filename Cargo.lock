@@ -5165,6 +5165,7 @@ dependencies = [
  "log",
  "rgitui_git",
  "rgitui_settings",
+ "rgitui_test_support",
  "rgitui_theme",
  "rgitui_ui",
  "similar",

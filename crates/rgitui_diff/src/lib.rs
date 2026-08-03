@@ -4959,3 +4959,203 @@ mod tests {
         assert_eq!(line.highlights[3].1.background_color, None);
     }
 }
+
+/// View-level regression tests for diff provenance.
+///
+/// The pure tests above prove `DiffSource` classifies content correctly. These
+/// drive a real `DiffViewer` in a headless GPUI window and press the actual
+/// staging keys, which is the only way to show the *hazard* is closed rather
+/// than just the label corrected: before the fix, `s` on a commit diff emitted
+/// `HunkStageRequested`, and the workspace resolved that hunk index against the
+/// working tree — silently staging unrelated uncommitted edits.
+#[cfg(test)]
+mod view_tests {
+    use gpui::prelude::*;
+    use gpui::{div, Context, Entity, Render, Window};
+    use rgitui_git::{DiffHunk, DiffLine, FileChangeKind, FileDiff};
+    use rgitui_test_support::ViewTest;
+
+    use super::{DiffSource, DiffViewer, DiffViewerEvent};
+
+    const OID: &str = "9f2c1ab4d5e6f708192a3b4c5d6e7f8091a2b3c4";
+    const PATH: &str = "src/main.rs";
+
+    /// Hosts a real `DiffViewer` and records everything it emits, so a test can
+    /// assert that a keystroke produced no staging request at all.
+    struct StagingProbe {
+        viewer: Entity<DiffViewer>,
+        events: Vec<DiffViewerEvent>,
+    }
+
+    impl StagingProbe {
+        fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+            // The viewer reads settings while rendering; install defaults
+            // without touching the user's config file or the OS keychain.
+            rgitui_settings::init_test(cx);
+            let viewer = cx.new(DiffViewer::new);
+            cx.subscribe(
+                &viewer,
+                |probe: &mut Self, _viewer, event: &DiffViewerEvent, _cx| {
+                    probe.events.push(event.clone());
+                },
+            )
+            .detach();
+            viewer.update(cx, |viewer, cx| viewer.focus(window, cx));
+            Self {
+                viewer,
+                events: Vec::new(),
+            }
+        }
+
+        /// Emitted stage/unstage requests, ignoring the `DiffChanged`
+        /// notification that every `set_diff` produces.
+        fn staging_requests(&self) -> Vec<String> {
+            self.events
+                .iter()
+                .filter(|event| !matches!(event, DiffViewerEvent::DiffChanged { .. }))
+                .map(|event| format!("{event:?}"))
+                .collect()
+        }
+    }
+
+    impl Render for StagingProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.viewer.clone())
+        }
+    }
+
+    fn one_hunk_diff() -> FileDiff {
+        FileDiff {
+            path: std::path::PathBuf::from(PATH),
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                old_lines: 2,
+                new_start: 1,
+                new_lines: 3,
+                header: "@@ -1,2 +1,3 @@ fn main()".to_string(),
+                lines: vec![
+                    DiffLine::Context("fn main() {".to_string()),
+                    DiffLine::Addition("    println!(\"hello\");".to_string()),
+                    DiffLine::Context("}".to_string()),
+                ],
+            }],
+            additions: 1,
+            deletions: 0,
+            kind: FileChangeKind::Modified,
+        }
+    }
+
+    /// Shows `source` in a focused viewer, selects every row so a staging
+    /// request would have a target, presses `s` then `u`, and returns whatever
+    /// staging requests came back.
+    fn staging_requests_after_pressing_s_and_u(source: DiffSource) -> Vec<String> {
+        let mut probe = ViewTest::open(StagingProbe::new);
+
+        probe.update(|probe, window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_diff(one_hunk_diff(), PATH.to_string(), source, cx);
+                viewer.focus(window, cx);
+            });
+        });
+
+        // Guard against a vacuous test: the rows must actually exist, or `s`
+        // would find no hunk under the selection regardless of provenance.
+        probe.read(|probe, cx| {
+            let viewer = probe.viewer.read(cx);
+            assert!(
+                viewer.row_count() > 0,
+                "display rows should be prepared before keys are pressed"
+            );
+        });
+
+        // ctrl-a selects every row, so `s`/`u` resolve to the whole hunk.
+        probe.simulate_keystroke("ctrl-a");
+        probe.simulate_keystroke("s");
+        probe.simulate_keystroke("u");
+
+        probe.read(|probe, _| probe.staging_requests())
+    }
+
+    #[test]
+    fn pressing_s_or_u_on_a_commit_diff_requests_no_staging() {
+        let requests = staging_requests_after_pressing_s_and_u(DiffSource::Commit(OID.to_string()));
+        assert!(
+            requests.is_empty(),
+            "a committed diff must not be stageable, but the viewer emitted {requests:?}"
+        );
+    }
+
+    #[test]
+    fn pressing_s_or_u_on_a_stash_diff_requests_no_staging() {
+        let requests = staging_requests_after_pressing_s_and_u(DiffSource::Stash(OID.to_string()));
+        assert!(
+            requests.is_empty(),
+            "a stashed diff must not be stageable, but the viewer emitted {requests:?}"
+        );
+    }
+
+    /// The control case. Without it the two tests above would still pass if the
+    /// keys had simply stopped working everywhere.
+    #[test]
+    fn pressing_s_on_a_worktree_diff_still_requests_staging() {
+        let requests = staging_requests_after_pressing_s_and_u(DiffSource::Worktree);
+        assert_eq!(
+            requests,
+            vec!["HunkStageRequested(0)".to_string()],
+            "an unstaged working-tree diff must still stage on `s` (and ignore `u`)"
+        );
+    }
+
+    /// The mirror control case: the index unstages on `u` and ignores `s`.
+    #[test]
+    fn pressing_u_on_an_index_diff_still_requests_unstaging() {
+        let requests = staging_requests_after_pressing_s_and_u(DiffSource::Index);
+        assert_eq!(
+            requests,
+            vec!["HunkUnstageRequested(0)".to_string()],
+            "a staged diff must still unstage on `u` (and ignore `s`)"
+        );
+    }
+
+    #[test]
+    fn partial_staging_mode_cannot_be_entered_on_a_commit_diff() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+
+        probe.update(|probe, window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_diff(
+                    one_hunk_diff(),
+                    PATH.to_string(),
+                    DiffSource::Commit(OID.to_string()),
+                    cx,
+                );
+                viewer.focus(window, cx);
+            });
+        });
+
+        probe.simulate_keystroke("p");
+        probe.read(|probe, cx| {
+            assert!(
+                !probe.viewer.read(cx).partial_mode,
+                "line-level staging must stay unavailable for committed content"
+            );
+        });
+    }
+
+    #[test]
+    fn partial_staging_mode_still_toggles_on_a_worktree_diff() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+
+        probe.update(|probe, window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_diff(one_hunk_diff(), PATH.to_string(), DiffSource::Worktree, cx);
+                viewer.focus(window, cx);
+            });
+        });
+
+        probe.simulate_keystroke("p");
+        probe.read(|probe, cx| assert!(probe.viewer.read(cx).partial_mode));
+        probe.simulate_keystroke("p");
+        probe.read(|probe, cx| assert!(!probe.viewer.read(cx).partial_mode));
+    }
+}

@@ -17,3 +17,9 @@ rgitui_settings.workspace = true
 anyhow.workspace = true
 log.workspace = true
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+
+[dev-dependencies]
+# `test-support` unlocks gpui's headless test harness (TestApp, TestAppWindow,
+# keystroke/mouse simulation). Test builds only; normal builds are unaffected.
+gpui = { workspace = true, features = ["test-support"] }
+rgitui_test_support.workspace = true
