@@ -263,8 +263,8 @@ pub enum GitProjectEvent {
     AheadBehindRefreshed,
     OperationUpdated(GitOperationUpdate),
     /// An apply/revert rewrote working-tree files on disk. Carries what those
-    /// files held beforehand so the workspace can offer an exact undo; unlike
-    /// staging, these operations are not recoverable from git state alone.
+    /// files held beforehand, which is the only record of it: the previous
+    /// contents are not recoverable from git state.
     WorktreePatchApplied {
         /// Undo label, e.g. "Applied hunk 2 of src/main.rs from a1b2c3d".
         label: String,
