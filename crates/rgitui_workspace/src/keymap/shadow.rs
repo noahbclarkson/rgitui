@@ -2,9 +2,8 @@
 //!
 //! [`super::conflict`] compares two bindings' context predicates for textual or
 //! [`is_superset`] overlap, which cannot see that `GraphView && !TextInput` sits
-//! *inside* `Workspace && !modal` at dispatch time. So a binding scoped to a
-//! panel taking a keystroke away from a global binding used to go completely
-//! unreported.
+//! *inside* `Workspace && !modal` at dispatch time — so that comparison alone
+//! never catches a panel binding taking a keystroke away from a global one.
 //!
 //! It is reported here, and deliberately at a lower severity than a conflict:
 //! deeper-wins scoping is usually the whole point — the shipped defaults rely on
@@ -205,10 +204,9 @@ mod tests {
             .collect()
     }
 
-    /// The case that motivated this: `SquashSelected` used to default to
-    /// `secondary-shift-s`, which the graph dispatched ahead of the workspace's
-    /// `UnstageAll` — invisible to conflict detection, because neither predicate
-    /// is a superset of the other.
+    /// A panel binding on the same keystroke as a global one: the graph
+    /// dispatches ahead of the workspace, and conflict detection cannot see it
+    /// because neither predicate is a superset of the other.
     #[test]
     fn a_panel_binding_masking_a_global_one_is_reported() {
         let bindings = [
