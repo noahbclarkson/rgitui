@@ -54,6 +54,125 @@ pub enum DiffDisplayMode {
     ThreeWay,
 }
 
+/// The staging operation a mutable diff supports.
+///
+/// A diff of the working tree can only be staged; a diff of the index can only
+/// be unstaged. Historical content supports neither, which is why this is
+/// returned as an `Option` from [`DiffSource::staging_action`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StagingAction {
+    Stage,
+    Unstage,
+}
+
+impl StagingAction {
+    /// Label for the per-hunk button in the diff viewer's hunk headers.
+    pub fn hunk_button_label(self) -> &'static str {
+        match self {
+            StagingAction::Stage => "Stage Hunk",
+            StagingAction::Unstage => "Unstage Hunk",
+        }
+    }
+}
+
+/// Where the content currently shown in the diff viewer came from.
+///
+/// This replaces an earlier `staged: bool` + `commit_id: Option<&str>` pair.
+/// That pair could express the nonsensical state "a commit diff that is also
+/// unstaged", and every historical call site did exactly that — which is what
+/// made commit diffs render an "Unstaged" badge and offer live "Stage Hunk"
+/// buttons. Modelling provenance as one enum makes that state unrepresentable:
+/// staged/unstaged is only a property of the two mutable sources, and a commit
+/// or stash carries its OID instead.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DiffSource {
+    /// Unstaged working-tree changes (index → workdir). Can be staged.
+    Worktree,
+    /// Staged changes (HEAD → index). Can be unstaged.
+    Index,
+    /// A file inside a commit, identified by its hex OID. Immutable.
+    Commit(String),
+    /// A file inside a stash entry, identified by the stash commit's hex OID.
+    /// Immutable.
+    Stash(String),
+}
+
+impl DiffSource {
+    /// Build the matching mutable source from the sidebar's `staged` flag.
+    pub fn working_tree(staged: bool) -> Self {
+        if staged {
+            DiffSource::Index
+        } else {
+            DiffSource::Worktree
+        }
+    }
+
+    /// The staging operation this content supports, or `None` when the content
+    /// is an immutable historical snapshot.
+    pub fn staging_action(&self) -> Option<StagingAction> {
+        match self {
+            DiffSource::Worktree => Some(StagingAction::Stage),
+            DiffSource::Index => Some(StagingAction::Unstage),
+            DiffSource::Commit(_) | DiffSource::Stash(_) => None,
+        }
+    }
+
+    /// True when the content is already committed or stashed, so it has no
+    /// staged/unstaged distinction and cannot be staged or unstaged.
+    pub fn is_historical(&self) -> bool {
+        self.staging_action().is_none()
+    }
+
+    /// The commit-like OID backing this content, if any. Used for the display
+    /// cache key, the `DiffChanged` payload, and blame/history view caching.
+    pub fn commit_id(&self) -> Option<&str> {
+        match self {
+            DiffSource::Worktree | DiffSource::Index => None,
+            DiffSource::Commit(oid) | DiffSource::Stash(oid) => Some(oid),
+        }
+    }
+
+    /// Why `requested` cannot be applied to this content, as an actionable
+    /// sentence, or `None` when the request is valid.
+    ///
+    /// The viewer already hides the affordances that would produce an invalid
+    /// request, so this is a backstop for the case where the displayed content
+    /// changes between a click being painted and being delivered.
+    pub fn reject_staging(&self, requested: StagingAction) -> Option<String> {
+        match (self, requested) {
+            (DiffSource::Worktree, StagingAction::Stage)
+            | (DiffSource::Index, StagingAction::Unstage) => None,
+            (DiffSource::Worktree, StagingAction::Unstage) => {
+                Some("These changes are not staged yet — press s to stage them first.".to_string())
+            }
+            (DiffSource::Index, StagingAction::Stage) => {
+                Some("These changes are already staged — press u to unstage them.".to_string())
+            }
+            (DiffSource::Commit(oid), _) => Some(format!(
+                "Commit {} is already committed and cannot be staged — select the file under \
+                 Staged or Unstaged in the sidebar to change its working-tree state.",
+                &oid[..7.min(oid.len())]
+            )),
+            (DiffSource::Stash(_), _) => Some(
+                "Stashed changes cannot be staged directly — apply or pop the stash first, then \
+                 stage it from the sidebar."
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Badge shown in the diff viewer header. Historical content is labelled by
+    /// its origin rather than by a staged/unstaged state it does not have.
+    pub fn badge(&self) -> (&'static str, Color) {
+        match self {
+            DiffSource::Worktree => ("Unstaged", Color::Modified),
+            DiffSource::Index => ("Staged", Color::Added),
+            DiffSource::Commit(_) => ("Committed", Color::Muted),
+            DiffSource::Stash(_) => ("Stashed", Color::Muted),
+        }
+    }
+}
+
 #[derive(Clone)]
 enum DisplayRow {
     HunkHeader {
@@ -257,31 +376,23 @@ enum SyntaxLineHighlighter {
     },
 }
 
-/// Cache key for pre-computed display rows. `commit_id` is empty for mutable
-/// working-tree diffs, so those entries also include staged/unstaged identity
-/// and a fingerprint of the full `FileDiff` content.
+/// Cache key for pre-computed display rows. The `source` distinguishes the two
+/// mutable working-tree variants from each other and from any commit or stash;
+/// mutable content additionally carries a fingerprint of the full `FileDiff`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct DisplayCacheKey {
     file_path: String,
     is_dark: bool,
-    commit_id: String,
-    is_staged: bool,
+    source: DiffSource,
     content_fingerprint: u64,
 }
 
 impl DisplayCacheKey {
-    fn new(
-        file_path: String,
-        is_dark: bool,
-        commit_id: String,
-        is_staged: bool,
-        diff: &FileDiff,
-    ) -> Self {
+    fn new(file_path: String, is_dark: bool, source: DiffSource, diff: &FileDiff) -> Self {
         Self {
             file_path,
             is_dark,
-            commit_id,
-            is_staged,
+            source,
             content_fingerprint: file_diff_fingerprint(diff),
         }
     }
@@ -425,7 +536,8 @@ pub struct DiffViewer {
     diff: Option<Arc<FileDiff>>,
     display_mode: DiffDisplayMode,
     file_path: Option<String>,
-    is_staged: bool,
+    /// Provenance of the displayed content. Gates every staging affordance.
+    source: DiffSource,
     display_rows: Arc<Vec<DisplayRow>>,
     sbs_rows: Arc<Vec<SideBySideRow>>,
     three_way_rows: Arc<Vec<ThreeWayRow>>,
@@ -443,8 +555,6 @@ pub struct DiffViewer {
     partial_mode: bool,
     selection_anchor: Option<usize>,
     mouse_selecting: bool,
-    /// The commit OID for the current diff (empty for working-tree diffs).
-    commit_id: String,
     /// Tracks the current theme appearance to drive syntax highlighting.
     current_appearance: Appearance,
     /// Top item index to restore after a display mode switch.
@@ -494,7 +604,7 @@ impl DiffViewer {
             diff: None,
             display_mode: DiffDisplayMode::Unified,
             file_path: None,
-            is_staged: false,
+            source: DiffSource::Worktree,
             display_rows: Arc::new(Vec::new()),
             sbs_rows: Arc::new(Vec::new()),
             three_way_rows: Arc::new(Vec::new()),
@@ -508,7 +618,6 @@ impl DiffViewer {
             partial_mode: false,
             selection_anchor: None,
             mouse_selecting: false,
-            commit_id: String::new(),
             current_appearance: Appearance::Dark,
             pending_scroll_top: None,
             loading: false,
@@ -556,8 +665,7 @@ impl DiffViewer {
             let cache_key = DisplayCacheKey::new(
                 path.clone(),
                 appearance == Appearance::Dark,
-                self.commit_id.clone(),
-                self.is_staged,
+                self.source.clone(),
                 &diff,
             );
             self.spawn_display_preparation(
@@ -639,11 +747,10 @@ impl DiffViewer {
         &mut self,
         diff: FileDiff,
         path: String,
-        staged: bool,
-        commit_id: Option<&str>,
+        source: DiffSource,
         cx: &mut Context<Self>,
     ) {
-        log::debug!("DiffViewer::set_diff: path={} staged={}", path, staged);
+        log::debug!("DiffViewer::set_diff: path={} source={:?}", path, source);
         self.generation = self.generation.wrapping_add(1);
         self.preparation_generation = self.preparation_generation.wrapping_add(1);
         self.error = None;
@@ -660,15 +767,13 @@ impl DiffViewer {
         }
         let appearance = cx.theme().appearance;
         let is_dark = appearance == Appearance::Dark;
-        let cid = commit_id.unwrap_or("").to_string();
         let diff = Arc::new(diff);
-        let cache_key = DisplayCacheKey::new(path.clone(), is_dark, cid.clone(), staged, &diff);
+        let cache_key = DisplayCacheKey::new(path.clone(), is_dark, source.clone(), &diff);
 
         self.current_appearance = appearance;
         self.diff = Some(Arc::clone(&diff));
         self.file_path = Some(path.clone());
-        self.is_staged = staged;
-        self.commit_id = cid;
+        self.source = source;
         self.highlighted_row = None;
         self.selected_lines = None;
         self.partial_mode = false;
@@ -677,7 +782,7 @@ impl DiffViewer {
 
         cx.emit(DiffViewerEvent::DiffChanged {
             path: path.clone(),
-            commit_id: (!self.commit_id.is_empty()).then(|| self.commit_id.clone()),
+            commit_id: self.source.commit_id().map(str::to_string),
             generation: self.generation,
         });
 
@@ -734,8 +839,7 @@ impl DiffViewer {
         self.error = None;
         self.diff = None;
         self.file_path = None;
-        self.is_staged = false;
-        self.commit_id = String::new();
+        self.source = DiffSource::Worktree;
         self.display_rows = Arc::new(Vec::new());
         self.sbs_rows = Arc::new(Vec::new());
         self.three_way_rows = Arc::new(Vec::new());
@@ -761,8 +865,10 @@ impl DiffViewer {
         self.current_appearance = appearance;
         self.diff = None; // No standard FileDiff when showing 3-way
         self.file_path = Some(diff.path.display().to_string());
-        self.is_staged = false;
-        self.commit_id = String::new();
+        // A conflicted file lives in the working tree; the three-way renderer
+        // has no per-hunk staging of its own, but the source must not claim
+        // the content is historical.
+        self.source = DiffSource::Worktree;
         let diff = Arc::new(diff);
         self.three_way_diff = Some(Arc::clone(&diff));
         self.three_way_rows = Arc::new(Vec::new());
@@ -1139,7 +1245,12 @@ impl DiffViewer {
                 cx.notify();
             }
             "p" if !ctrl && !event.keystroke.modifiers.alt && !event.keystroke.modifiers.shift => {
-                // p: toggle partial line-selection mode
+                // p: toggle partial line-selection mode. Meaningless for
+                // committed or stashed content, which cannot be staged at all.
+                if self.source.is_historical() {
+                    cx.stop_propagation();
+                    return;
+                }
                 self.partial_mode = !self.partial_mode;
                 if !self.partial_mode {
                     self.selected_lines = None;
@@ -1149,8 +1260,10 @@ impl DiffViewer {
                 cx.stop_propagation();
             }
             "s" | "S" if !event.keystroke.modifiers.alt && !ctrl => {
-                // s: stage hunks under selection (or cursor hunk if no selection)
-                if !self.is_staged {
+                // s: stage hunks under selection (or cursor hunk if no selection).
+                // Only the working tree can be staged; committed and stashed
+                // content is historical and has nothing to stage.
+                if self.source.staging_action() == Some(StagingAction::Stage) {
                     if self.partial_mode {
                         // Line-level staging: emit the selected change lines (additions
                         // and deletions). Each pair carries its old/new line number; the
@@ -1187,8 +1300,9 @@ impl DiffViewer {
                 cx.stop_propagation();
             }
             "u" | "U" if !event.keystroke.modifiers.alt && !ctrl => {
-                // u: unstage hunks under selection (or cursor hunk if no selection)
-                if self.is_staged {
+                // u: unstage hunks under selection (or cursor hunk if no selection).
+                // Only the index can be unstaged.
+                if self.source.staging_action() == Some(StagingAction::Unstage) {
                     if self.partial_mode {
                         // Line-level unstaging: emit the selected change lines (additions
                         // and deletions). Deletions must flow through so the git layer can
@@ -1222,7 +1336,7 @@ impl DiffViewer {
             }
             "s" | "S" if event.keystroke.modifiers.alt && !ctrl => {
                 // Alt+S: stage the current hunk
-                if !self.is_staged {
+                if self.source.staging_action() == Some(StagingAction::Stage) {
                     if let Some(idx) = self.current_hunk_index() {
                         cx.emit(DiffViewerEvent::HunkStageRequested(idx));
                     }
@@ -1231,7 +1345,7 @@ impl DiffViewer {
             }
             "u" | "U" if event.keystroke.modifiers.alt && !ctrl => {
                 // Alt+U: unstage the current hunk
-                if self.is_staged {
+                if self.source.staging_action() == Some(StagingAction::Unstage) {
                     if let Some(idx) = self.current_hunk_index() {
                         cx.emit(DiffViewerEvent::HunkUnstageRequested(idx));
                     }
@@ -1486,13 +1600,16 @@ impl DiffViewer {
         self.file_path.as_deref()
     }
 
-    pub fn is_staged(&self) -> bool {
-        self.is_staged
+    /// Provenance of the displayed content. Callers use this to decide whether
+    /// staging is meaningful and to recover the backing commit/stash OID.
+    pub fn source(&self) -> &DiffSource {
+        &self.source
     }
 
-    /// Empty for working-tree diffs; non-empty hex OID for commit diffs.
-    pub fn commit_id(&self) -> &str {
-        &self.commit_id
+    /// `None` for working-tree and index diffs; the hex OID for commit and
+    /// stash diffs.
+    pub fn commit_id(&self) -> Option<&str> {
+        self.source.commit_id()
     }
 
     /// Monotonic counter bumped whenever the displayed content changes
@@ -1509,23 +1626,14 @@ impl DiffViewer {
     /// True iff `set_diff` with these inputs would produce identical content to
     /// what's already shown. Lets callers skip a refresh that would only churn
     /// state (cleared selection / scroll reset) without visible benefit.
-    pub fn matches_current_diff(
-        &self,
-        path: &str,
-        is_staged: bool,
-        commit_id: Option<&str>,
-        diff: &FileDiff,
-    ) -> bool {
+    pub fn matches_current_diff(&self, path: &str, source: &DiffSource, diff: &FileDiff) -> bool {
         if self.has_three_way_diff() {
             return false;
         }
         let Some(existing_path) = self.file_path.as_deref() else {
             return false;
         };
-        if existing_path != path
-            || self.is_staged != is_staged
-            || self.commit_id != commit_id.unwrap_or("")
-        {
+        if existing_path != path || &self.source != source {
             return false;
         }
         let Some(existing) = self.diff.as_deref() else {
@@ -2557,7 +2665,9 @@ impl Render for DiffViewer {
         let display_rows = self.display_rows.clone();
         let sbs_rows = self.sbs_rows.clone();
         let three_way_rows = self.three_way_rows.clone();
-        let is_staged = self.is_staged;
+        // `None` for committed/stashed content, which suppresses every per-hunk
+        // staging affordance below.
+        let staging_action = self.source.staging_action();
         let display_mode = self.display_mode;
         let view: WeakEntity<DiffViewer> = cx.weak_entity();
 
@@ -2669,11 +2779,6 @@ impl Render for DiffViewer {
                                         Self::extract_line_range(header).into();
                                     let ctx_name: SharedString = context_name.clone().into();
                                     let has_context = !context_name.is_empty();
-                                    let stage_label = if is_staged {
-                                        "Unstage Hunk"
-                                    } else {
-                                        "Stage Hunk"
-                                    };
                                     let idx = *hunk_index;
                                     let view_clone = view.clone();
                                     let view_hunk = view.clone();
@@ -2748,15 +2853,18 @@ impl Render for DiffViewer {
                                         );
                                     }
 
-                                    hunk_row
-                                        .child(div().flex_1())
-                                        .child(
+                                    hunk_row = hunk_row.child(div().flex_1());
+
+                                    // Committed and stashed content is immutable —
+                                    // offer no staging button at all.
+                                    if let Some(action) = staging_action {
+                                        hunk_row = hunk_row.child(
                                             Button::new(
                                                 SharedString::from(format!(
                                                     "hunk-stage-{}",
                                                     idx
                                                 )),
-                                                stage_label,
+                                                action.hunk_button_label(),
                                             )
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Subtle)
@@ -2766,25 +2874,18 @@ impl Render for DiffViewer {
                                                       cx: &mut App| {
                                                     view_clone
                                                         .update(cx, |_this, cx| {
-                                                            if is_staged {
-                                                                cx.emit(
-                                                                DiffViewerEvent::HunkUnstageRequested(
-                                                                    idx,
-                                                                ),
-                                                            );
-                                                            } else {
-                                                                cx.emit(
-                                                                DiffViewerEvent::HunkStageRequested(
-                                                                    idx,
-                                                                ),
-                                                            );
-                                                            }
+                                                            cx.emit(match action {
+                                                                StagingAction::Stage => DiffViewerEvent::HunkStageRequested(idx),
+                                                                StagingAction::Unstage => DiffViewerEvent::HunkUnstageRequested(idx),
+                                                            });
                                                         })
                                                         .ok();
                                                 },
                                             ),
-                                        )
-                                        .into_any_element()
+                                        );
+                                    }
+
+                                    hunk_row.into_any_element()
                                 }
                                 DisplayRow::Line {
                                     old_num,
@@ -3023,11 +3124,6 @@ impl Render for DiffViewer {
                                         Self::extract_line_range(header).into();
                                     let ctx_name: SharedString = context_name.clone().into();
                                     let has_context = !context_name.is_empty();
-                                    let stage_label = if is_staged {
-                                        "Unstage Hunk"
-                                    } else {
-                                        "Stage Hunk"
-                                    };
                                     let idx = *hunk_index;
                                     let view_clone = view.clone();
                                     let view_sbs_hunk = view.clone();
@@ -3102,15 +3198,18 @@ impl Render for DiffViewer {
                                         );
                                     }
 
-                                    hunk_row
-                                        .child(div().flex_1())
-                                        .child(
+                                    hunk_row = hunk_row.child(div().flex_1());
+
+                                    // Committed and stashed content is immutable —
+                                    // offer no staging button at all.
+                                    if let Some(action) = staging_action {
+                                        hunk_row = hunk_row.child(
                                             Button::new(
                                                 SharedString::from(format!(
                                                     "sbs-hunk-stage-{}",
                                                     idx
                                                 )),
-                                                stage_label,
+                                                action.hunk_button_label(),
                                             )
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Subtle)
@@ -3120,25 +3219,18 @@ impl Render for DiffViewer {
                                                       cx: &mut App| {
                                                     view_clone
                                                         .update(cx, |_this, cx| {
-                                                            if is_staged {
-                                                                cx.emit(
-                                                                DiffViewerEvent::HunkUnstageRequested(
-                                                                    idx,
-                                                                ),
-                                                            );
-                                                            } else {
-                                                                cx.emit(
-                                                                DiffViewerEvent::HunkStageRequested(
-                                                                    idx,
-                                                                ),
-                                                            );
-                                                            }
+                                                            cx.emit(match action {
+                                                                StagingAction::Stage => DiffViewerEvent::HunkStageRequested(idx),
+                                                                StagingAction::Unstage => DiffViewerEvent::HunkUnstageRequested(idx),
+                                                            });
                                                         })
                                                         .ok();
                                                 },
                                             ),
-                                        )
-                                        .into_any_element()
+                                        );
+                                    }
+
+                                    hunk_row.into_any_element()
                                 }
                                 SideBySideRow::Pair {
                                     left_num,
@@ -3836,24 +3928,17 @@ impl Render for DiffViewer {
                             .weight(FontWeight::MEDIUM)
                             .truncate(),
                     )
-                    .child(
-                        Badge::new(if self.display_mode == DiffDisplayMode::ThreeWay {
-                            "Conflict"
-                        } else if is_staged {
-                            "Staged"
-                        } else {
-                            "Unstaged"
-                        })
-                        .color(
+                    .child({
+                        // A commit or stash diff has no staged/unstaged state —
+                        // label it by where it came from instead.
+                        let (badge_label, badge_color) =
                             if self.display_mode == DiffDisplayMode::ThreeWay {
-                                Color::Conflict
-                            } else if is_staged {
-                                Color::Added
+                                ("Conflict", Color::Conflict)
                             } else {
-                                Color::Modified
-                            },
-                        ),
-                    )
+                                self.source.badge()
+                            };
+                        Badge::new(badge_label).color(badge_color)
+                    })
                     .child(div().flex_1())
                     .child(
                         div()
@@ -3886,7 +3971,8 @@ impl Render for DiffViewer {
                         // Always-present partial-mode affordance so the line-level
                         // staging entry point is discoverable: emphasized while active,
                         // a muted "Partial (p)" hint otherwise. Hidden for the
-                        // three-way conflict view, which has no line-level staging.
+                        // three-way conflict view, which has no line-level staging,
+                        // and for committed/stashed content, which cannot be staged.
                         let partial_tooltip = if self.partial_mode {
                             "Line-level staging: select lines, then s / u. Press p to exit."
                         } else {
@@ -3897,7 +3983,9 @@ impl Render for DiffViewer {
                         } else {
                             ("Partial (p)", text_placeholder_color)
                         };
-                        if self.display_mode == DiffDisplayMode::ThreeWay {
+                        if self.display_mode == DiffDisplayMode::ThreeWay
+                            || self.source.is_historical()
+                        {
                             div().into_any_element()
                         } else {
                             div()
@@ -4015,8 +4103,7 @@ mod tests {
         DisplayCacheKey::new(
             diff.path.display().to_string(),
             true,
-            String::new(),
-            staged,
+            DiffSource::working_tree(staged),
             diff,
         )
     }
@@ -4055,6 +4142,169 @@ mod tests {
         assert!(should_apply_prepared(7, 7));
         assert!(!should_apply_prepared(8, 7));
         assert!(!should_apply_prepared(7, 8));
+    }
+
+    // ── DiffSource provenance ─────────────────────────────────────
+    //
+    // Regression guards for the bug where selecting a past commit showed the
+    // diff as unstaged working-tree content. The viewer used a `staged: bool`
+    // that every commit call site set to `false`, so a commit diff rendered an
+    // "Unstaged" badge, a live "Stage Hunk" button on every hunk, and the
+    // "Partial (p)" staging hint — and `s` really did emit a stage request,
+    // which the workspace resolved against the *working tree*.
+
+    const OID: &str = "9f2c1ab4d5e6f708192a3b4c5d6e7f8091a2b3c4";
+
+    #[test]
+    fn commit_diff_is_never_labelled_staged_or_unstaged() {
+        let (label, _) = DiffSource::Commit(OID.to_string()).badge();
+        assert_ne!(
+            label, "Unstaged",
+            "a commit diff must not claim to be unstaged"
+        );
+        assert_ne!(label, "Staged");
+        assert_eq!(label, "Committed");
+    }
+
+    #[test]
+    fn stash_diff_is_never_labelled_staged_or_unstaged() {
+        let (label, _) = DiffSource::Stash(OID.to_string()).badge();
+        assert_ne!(label, "Unstaged");
+        assert_ne!(label, "Staged");
+        assert_eq!(label, "Stashed");
+    }
+
+    #[test]
+    fn working_tree_badges_keep_their_staged_unstaged_labels() {
+        assert_eq!(DiffSource::Worktree.badge().0, "Unstaged");
+        assert_eq!(DiffSource::Index.badge().0, "Staged");
+    }
+
+    #[test]
+    fn historical_sources_offer_no_staging_affordance() {
+        for source in [
+            DiffSource::Commit(OID.to_string()),
+            DiffSource::Stash(OID.to_string()),
+        ] {
+            assert!(source.is_historical(), "{source:?} should be historical");
+            assert_eq!(
+                source.staging_action(),
+                None,
+                "{source:?} must offer no stage/unstage button or key binding"
+            );
+        }
+    }
+
+    #[test]
+    fn mutable_sources_offer_exactly_one_staging_action() {
+        assert!(!DiffSource::Worktree.is_historical());
+        assert!(!DiffSource::Index.is_historical());
+        assert_eq!(
+            DiffSource::Worktree.staging_action(),
+            Some(StagingAction::Stage)
+        );
+        assert_eq!(
+            DiffSource::Index.staging_action(),
+            Some(StagingAction::Unstage)
+        );
+    }
+
+    #[test]
+    fn working_tree_constructor_maps_the_staged_flag() {
+        assert_eq!(DiffSource::working_tree(false), DiffSource::Worktree);
+        assert_eq!(DiffSource::working_tree(true), DiffSource::Index);
+    }
+
+    #[test]
+    fn commit_id_is_carried_only_by_historical_sources() {
+        assert_eq!(DiffSource::Commit(OID.to_string()).commit_id(), Some(OID));
+        assert_eq!(DiffSource::Stash(OID.to_string()).commit_id(), Some(OID));
+        assert_eq!(DiffSource::Worktree.commit_id(), None);
+        assert_eq!(DiffSource::Index.commit_id(), None);
+    }
+
+    #[test]
+    fn hunk_button_labels_match_the_action() {
+        assert_eq!(StagingAction::Stage.hunk_button_label(), "Stage Hunk");
+        assert_eq!(StagingAction::Unstage.hunk_button_label(), "Unstage Hunk");
+    }
+
+    #[test]
+    fn staging_a_commit_diff_is_rejected_with_an_actionable_message() {
+        // The pre-fix hazard: `s` over a commit diff reached
+        // `GitProject::stage_hunk_at`, which resolves the hunk index against
+        // the working tree — silently staging unrelated uncommitted edits.
+        for action in [StagingAction::Stage, StagingAction::Unstage] {
+            let message = DiffSource::Commit(OID.to_string())
+                .reject_staging(action)
+                .expect("staging a commit diff must be rejected");
+            assert!(
+                message.contains("9f2c1ab"),
+                "message names the commit: {message}"
+            );
+            assert!(
+                message.contains("sidebar"),
+                "message tells the user where to go instead: {message}"
+            );
+            assert!(message.ends_with('.'), "message is a sentence: {message}");
+        }
+    }
+
+    #[test]
+    fn staging_a_stash_diff_is_rejected_with_an_actionable_message() {
+        for action in [StagingAction::Stage, StagingAction::Unstage] {
+            let message = DiffSource::Stash(OID.to_string())
+                .reject_staging(action)
+                .expect("staging a stash diff must be rejected");
+            assert!(
+                message.contains("apply or pop"),
+                "message names the way forward: {message}"
+            );
+            assert!(message.ends_with('.'));
+        }
+    }
+
+    #[test]
+    fn valid_staging_requests_are_not_rejected() {
+        assert_eq!(
+            DiffSource::Worktree.reject_staging(StagingAction::Stage),
+            None
+        );
+        assert_eq!(
+            DiffSource::Index.reject_staging(StagingAction::Unstage),
+            None
+        );
+    }
+
+    #[test]
+    fn mismatched_working_tree_requests_are_rejected() {
+        assert!(DiffSource::Worktree
+            .reject_staging(StagingAction::Unstage)
+            .is_some());
+        assert!(DiffSource::Index
+            .reject_staging(StagingAction::Stage)
+            .is_some());
+    }
+
+    #[test]
+    fn display_cache_distinguishes_a_commit_from_identical_worktree_content() {
+        // The same path with byte-identical hunks can legitimately be shown as
+        // both a commit diff and a working-tree diff. Provenance is part of the
+        // cache key so the two never share prepared rows (and therefore never
+        // share a stale badge or button set).
+        let diff = test_file_diff(vec![test_hunk(DiffLine::Addition("hello".into()))], 1, 0);
+        let commit_key = DisplayCacheKey::new(
+            "foo.txt".to_string(),
+            true,
+            DiffSource::Commit(OID.to_string()),
+            &diff,
+        );
+        let worktree_key =
+            DisplayCacheKey::new("foo.txt".to_string(), true, DiffSource::Worktree, &diff);
+        let index_key = DisplayCacheKey::new("foo.txt".to_string(), true, DiffSource::Index, &diff);
+        assert_ne!(commit_key, worktree_key);
+        assert_ne!(commit_key, index_key);
+        assert_ne!(worktree_key, index_key);
     }
 
     #[test]

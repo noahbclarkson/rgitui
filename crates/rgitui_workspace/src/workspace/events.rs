@@ -7,7 +7,7 @@ use std::time::Instant;
 use futures::StreamExt;
 use gpui::{AppContext, Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator};
-use rgitui_diff::{DiffViewer, DiffViewerEvent};
+use rgitui_diff::{DiffSource, DiffViewer, DiffViewerEvent, StagingAction};
 use rgitui_git::{
     CommitInfo, GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
     RebaseEntryAction, RebasePlanEntry, Signature,
@@ -787,7 +787,7 @@ pub(super) fn subscribe_global_search(
                             let path_str_owned = path_str.clone();
                             let line_owned = line_for_toast;
                             dv.update(cx, move |dv, cx| {
-                                dv.set_diff(diff, path_str_owned, false, None, cx);
+                                dv.set_diff(diff, path_str_owned, DiffSource::Worktree, cx);
                                 dv.scroll_to_line(line_owned, cx);
                             });
                             dp.update(cx, |dp, cx| dp.clear(cx));
@@ -941,19 +941,20 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                 update_sidebar_for_active_worktree(this, cx);
 
                 // Refresh diff viewer if currently displaying a working-tree
-                // diff. Commit diffs are immutable (don't refresh) and
-                // three-way conflict diffs are owned by the merge flow.
+                // diff. Commit and stash diffs are immutable (don't refresh)
+                // and three-way conflict diffs are owned by the merge flow.
                 // Without this gate, the refresh would replace whatever was
                 // shown with an unstaged working-tree diff of the same path —
                 // emptying the panel when the path has no working-tree
                 // changes (e.g. while viewing a commit diff).
                 let refresh_state = {
                     let dv = diff_viewer.read(cx);
-                    let is_commit_diff = !dv.commit_id().is_empty();
-                    if is_commit_diff || dv.has_three_way_diff() {
+                    if dv.has_three_way_diff() || dv.source().is_historical() {
                         None
                     } else {
-                        dv.file_path().map(|p| (p.to_string(), dv.is_staged()))
+                        let is_staged =
+                            dv.source().staging_action() == Some(StagingAction::Unstage);
+                        dv.file_path().map(|p| (p.to_string(), is_staged))
                     }
                 };
                 if let Some((path_str, is_staged)) = refresh_state {
@@ -994,15 +995,15 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                                     dp.update(cx, |dp, cx| dp.clear(cx));
                                 } else {
                                     dv.update(cx, |dv, cx| {
+                                        let source = DiffSource::working_tree(is_staged);
                                         if dv.matches_current_diff(
                                             &path_str_for_update,
-                                            is_staged,
-                                            None,
+                                            &source,
                                             &diff,
                                         ) {
                                             return;
                                         }
-                                        dv.set_diff(diff, path_str_for_update, is_staged, None, cx);
+                                        dv.set_diff(diff, path_str_for_update, source, cx);
                                     });
                                     // The detail panel only ever shows commit/stash
                                     // details, never the working tree. Keep it
@@ -1181,7 +1182,9 @@ pub(super) fn subscribe_sidebar(
                         .await;
                     cx.update(|cx| match result {
                         Ok(diff) => {
-                            dv.update(cx, |dv, cx| dv.set_diff(diff, p, is_staged, None, cx));
+                            dv.update(cx, |dv, cx| {
+                                dv.set_diff(diff, p, DiffSource::working_tree(is_staged), cx)
+                            });
                             dp.update(cx, |dp, cx| dp.clear(cx));
                         }
                         Err(e) => log::error!("Failed to get diff: {}", e),
@@ -1316,12 +1319,31 @@ pub(super) fn subscribe_sidebar(
                         .await;
                     cx.update(|cx| match result {
                         Ok(commit_diff) => {
-                            // Show first file in diff viewer immediately
-                            if let Some(first_file) = commit_diff.files.first() {
-                                let path = first_file.path.display().to_string();
-                                dv.update(cx, |dv, cx| {
-                                    dv.set_diff(first_file.clone(), path, false, None, cx)
-                                });
+                            // Show first file in diff viewer immediately. A stash is
+                            // an immutable snapshot, so it must carry `Stash`
+                            // provenance — otherwise the viewer treats it as an
+                            // unstaged working-tree diff and the StatusChanged
+                            // refresh above would clobber it. Without the stash's
+                            // identity there is no honest provenance to attach, so
+                            // show nothing rather than something mislabelled; the
+                            // detail panel is cleared below for the same reason.
+                            match (commit_diff.files.first(), stash_info.as_ref()) {
+                                (Some(first_file), Some((_, oid))) => {
+                                    let path = first_file.path.display().to_string();
+                                    let source = DiffSource::Stash(oid.to_string());
+                                    dv.update(cx, |dv, cx| {
+                                        dv.set_diff(first_file.clone(), path, source, cx)
+                                    });
+                                }
+                                (Some(_), None) => {
+                                    log::warn!(
+                                        "stash {} is missing from the cached stash list; \
+                                         skipping its diff",
+                                        idx
+                                    );
+                                    dv.update(cx, |dv, cx| dv.clear(cx));
+                                }
+                                (None, _) => {}
                             }
                             // Populate detail panel with the full stash file list so users
                             // can click any file in the stash to view its diff.
@@ -1347,7 +1369,7 @@ pub(super) fn subscribe_sidebar(
                                     refs: vec![],
                                     is_signed: false,
                                 };
-                                dp.update(cx, |dp, cx| dp.set_commit(synthetic, commit_diff, cx));
+                                dp.update(cx, |dp, cx| dp.set_stash(synthetic, commit_diff, cx));
                             } else {
                                 dp.update(cx, |dp, cx| dp.clear(cx));
                             }
@@ -1719,7 +1741,12 @@ pub(super) fn subscribe_graph(
                             let path = first_file.path.display().to_string();
                             let oid_str = commit_oid.to_string();
                             dv.update(cx, |dv, cx| {
-                                dv.set_diff(first_file.clone(), path, false, Some(&oid_str), cx)
+                                dv.set_diff(
+                                    first_file.clone(),
+                                    path,
+                                    DiffSource::Commit(oid_str),
+                                    cx,
+                                )
                             });
                         }
                         // Enrich commit info (is_signed, co_authors) in background
@@ -1789,7 +1816,7 @@ pub(super) fn subscribe_graph(
                                     if let Some(first_file) = diff_arc.files.first() {
                                         let path = first_file.path.display().to_string();
                                         dv.update(cx, |dv, cx| {
-                                            dv.set_diff(first_file.clone(), path, false, Some(&oid_str), cx)
+                                            dv.set_diff(first_file.clone(), path, DiffSource::Commit(oid_str), cx)
                                         });
                                     }
                                 }
@@ -2121,12 +2148,12 @@ pub(super) fn subscribe_detail_panel(
 
     cx.subscribe(detail_panel, {
         move |this, _dp, event: &DetailPanelEvent, cx| match event {
-            DetailPanelEvent::FileSelected(file_diff, path) => {
+            DetailPanelEvent::FileSelected(file_diff, path, source) => {
                 let p = path.clone();
                 let fd = file_diff.clone();
-                let oid_str = _dp.read(cx).commit().map(|c| c.oid.to_string());
+                let source = source.clone();
                 diff_viewer.update(cx, |dv, cx| {
-                    dv.set_diff(fd, p, false, oid_str.as_deref(), cx);
+                    dv.set_diff(fd, p, source, cx);
                 });
             }
             DetailPanelEvent::CopySha(sha) => {
@@ -2215,8 +2242,7 @@ pub(super) fn subscribe_detail_panel(
                                         dv.set_diff(
                                             first_file.clone(),
                                             path,
-                                            false,
-                                            Some(&oid_str),
+                                            DiffSource::Commit(oid_str),
                                             cx,
                                         )
                                     });
@@ -2285,6 +2311,26 @@ pub(super) fn subscribe_diff_viewer(
                 .map(std::path::PathBuf::from);
 
             if let Some(path) = file_path {
+                // Backstop: never apply a staging request against content the
+                // viewer is not showing as mutable. `stage_hunk_at` and friends
+                // resolve the hunk index against the *working tree*, so honouring
+                // a request raised over a commit or stash diff would silently
+                // stage unrelated uncommitted changes.
+                let requested = match event {
+                    DiffViewerEvent::HunkStageRequested(_)
+                    | DiffViewerEvent::LineStageRequested(_) => Some(StagingAction::Stage),
+                    DiffViewerEvent::HunkUnstageRequested(_)
+                    | DiffViewerEvent::LineUnstageRequested(_) => Some(StagingAction::Unstage),
+                    DiffViewerEvent::DiffChanged { .. } => None,
+                };
+                if let Some(requested) = requested {
+                    let rejection = diff_viewer_ref.read(cx).source().reject_staging(requested);
+                    if let Some(message) = rejection {
+                        this.show_toast(message, ToastKind::Warning, cx);
+                        return;
+                    }
+                }
+
                 // Hunk/line staging must target the inspected worktree's index, not
                 // the main repo's. Route every op through the `_at` variant with the
                 // active tab's effective worktree (the main repo path when no

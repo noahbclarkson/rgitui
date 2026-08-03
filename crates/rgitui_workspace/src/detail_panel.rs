@@ -8,6 +8,7 @@ use gpui::{
     FocusHandle, KeyDownEvent, ListSizingBehavior, ObjectFit, Render, SharedString, WeakEntity,
     Window,
 };
+use rgitui_diff::DiffSource;
 use rgitui_git::{
     BranchInfo, CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel, Signature,
 };
@@ -123,7 +124,10 @@ fn format_absolute_date(timestamp: i64) -> String {
 
 #[derive(Debug, Clone)]
 pub enum DetailPanelEvent {
-    FileSelected(FileDiff, String),
+    /// A file in the changed-files list was picked. Carries the provenance of
+    /// the content so the diff viewer never has to infer it — the panel only
+    /// ever lists files from a commit or a stash, never from the working tree.
+    FileSelected(FileDiff, String, DiffSource),
     CopySha(String),
     CherryPick(String),
     NavigatePrevCommit,
@@ -432,6 +436,9 @@ impl FilteredFiles {
 pub struct DetailPanel {
     commit: Option<CommitInfo>,
     commit_diff: Option<Arc<CommitDiff>>,
+    /// Provenance of `commit_diff`'s files — a commit or a stash. Set alongside
+    /// the diff so file selections can report it without guessing.
+    diff_source: Option<DiffSource>,
     cached_file_tree: Option<CachedFileDiffTree>,
     /// Collapse-filtered tree indices for the common no-search render path.
     /// Recomputed only when the commit or collapse state changes.
@@ -455,6 +462,7 @@ impl DetailPanel {
         Self {
             commit: None,
             commit_diff: None,
+            diff_source: None,
             cached_file_tree: None,
             visible_tree_rows: Arc::new(Vec::new()),
             selected_file_index: None,
@@ -668,11 +676,16 @@ impl DetailPanel {
     }
 
     fn emit_file_selected(&self, cx: &mut Context<Self>) {
-        if let (Some(idx), Some(diff)) = (self.selected_file_index, &self.commit_diff) {
+        if let (Some(idx), Some(diff), Some(source)) = (
+            self.selected_file_index,
+            &self.commit_diff,
+            &self.diff_source,
+        ) {
             if let Some(file) = diff.files.get(idx) {
                 cx.emit(DetailPanelEvent::FileSelected(
                     file.clone(),
                     file.path.to_string_lossy().to_string(),
+                    source.clone(),
                 ));
             }
         }
@@ -682,10 +695,29 @@ impl DetailPanel {
         self.set_commit_arc(commit, Arc::new(diff), cx);
     }
 
+    /// Show a stash entry's file list. Identical to [`Self::set_commit`] except
+    /// that selected files report `Stash` provenance, so the diff viewer labels
+    /// them "Stashed" rather than "Committed".
+    pub fn set_stash(&mut self, stash: CommitInfo, diff: CommitDiff, cx: &mut Context<Self>) {
+        let source = DiffSource::Stash(stash.oid.to_string());
+        self.set_history_arc(stash, Arc::new(diff), source, cx);
+    }
+
     pub(crate) fn set_commit_arc(
         &mut self,
         commit: CommitInfo,
         diff: Arc<CommitDiff>,
+        cx: &mut Context<Self>,
+    ) {
+        let source = DiffSource::Commit(commit.oid.to_string());
+        self.set_history_arc(commit, diff, source, cx);
+    }
+
+    fn set_history_arc(
+        &mut self,
+        commit: CommitInfo,
+        diff: Arc<CommitDiff>,
+        source: DiffSource,
         cx: &mut Context<Self>,
     ) {
         log::debug!(
@@ -707,6 +739,7 @@ impl DetailPanel {
         self.cached_file_tree = Some(cached_file_tree);
         self.commit = Some(commit);
         self.commit_diff = Some(diff);
+        self.diff_source = Some(source);
         self.selected_file_index = None;
         self.file_search_query = None;
         self.file_search_active = false;
@@ -722,6 +755,7 @@ impl DetailPanel {
         log::debug!("DetailPanel::clear");
         self.commit = None;
         self.commit_diff = None;
+        self.diff_source = None;
         self.cached_file_tree = None;
         self.visible_tree_rows = Arc::new(Vec::new());
         self.selected_file_index = None;

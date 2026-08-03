@@ -199,8 +199,7 @@ impl ProjectTab {
     pub(super) fn current_view_cache_key(&self, cx: &gpui::App) -> Option<ViewCacheKey> {
         let diff_viewer = self.diff_viewer.read(cx);
         let file_path = diff_viewer.file_path()?.to_string();
-        let commit_id =
-            (!diff_viewer.commit_id().is_empty()).then(|| diff_viewer.commit_id().to_string());
+        let commit_id = diff_viewer.commit_id().map(str::to_string);
         Some(ViewCacheKey {
             repo_path: self.effective_repo_path(cx),
             file_path,
