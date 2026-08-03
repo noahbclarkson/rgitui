@@ -5125,6 +5125,7 @@ name = "rgitui_diff"
 version = "0.3.2"
 dependencies = [
  "anyhow",
+ "git2",
  "gpui",
  "log",
  "rgitui_git",

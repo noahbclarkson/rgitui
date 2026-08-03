@@ -14,7 +14,10 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Render, ScrollStrategy, SharedString, StyledText,
     UniformListScrollHandle, WeakEntity, Window,
 };
-use rgitui_git::{DiffLine, FileDiff, ThreeWayFileDiff};
+use rgitui_git::{
+    DiffLine, FileDiff, ThreeWayFileDiff, WorktreePatchDirection, WorktreePatchScope,
+    WorktreePatchSource,
+};
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, EstimatedListScroll, Icon, IconName, IconSize, Label,
@@ -28,7 +31,7 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 /// old_file_line is None for additions (new lines), new_file_line is None for deletions.
 pub type LineSelection = Vec<(Option<usize>, Option<usize>)>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffViewerEvent {
     /// The displayed file changed. Workspace listeners use this to start
     /// blame/history prefetching for every path into the diff viewer.
@@ -44,6 +47,36 @@ pub enum DiffViewerEvent {
     LineStageRequested(Vec<(Option<usize>, Option<usize>)>),
     /// Request to unstage only the given lines within the current staged diff.
     LineUnstageRequested(Vec<(Option<usize>, Option<usize>)>),
+    /// Request to write the displayed source's content into the working tree
+    /// (`Apply`) or take it back out (`Revert`), over `scope`.
+    ///
+    /// `scope` carries all three granularities — hunk, line selection, whole
+    /// file — because the handler treats them alike: resolve the source to a
+    /// tree pair and hand the scope to the git layer.
+    WorktreePatchRequested {
+        /// Always [`DiffOperation::Apply`] or [`DiffOperation::Revert`].
+        operation: DiffOperation,
+        scope: WorktreePatchScope,
+    },
+}
+
+impl DiffViewerEvent {
+    /// The request `operation` raises against hunk `index`.
+    ///
+    /// The single mapping from operation to event, so a hunk-header button and a
+    /// key binding for the same operation cannot disagree.
+    pub fn for_hunk(operation: DiffOperation, index: usize) -> Self {
+        match operation {
+            DiffOperation::Stage => DiffViewerEvent::HunkStageRequested(index),
+            DiffOperation::Unstage => DiffViewerEvent::HunkUnstageRequested(index),
+            DiffOperation::Apply | DiffOperation::Revert => {
+                DiffViewerEvent::WorktreePatchRequested {
+                    operation,
+                    scope: WorktreePatchScope::Hunk(index),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -54,23 +87,81 @@ pub enum DiffDisplayMode {
     ThreeWay,
 }
 
-/// The staging operation a mutable diff supports.
+/// An operation the diff viewer can offer over the content it is showing.
 ///
-/// A diff of the working tree can only be staged; a diff of the index can only
-/// be unstaged. Historical content supports neither, which is why this is
-/// returned as an `Option` from [`DiffSource::staging_action`].
+/// Which of these are available is a property of the content's provenance
+/// alone, and [`DiffSource::operations`] is the single place that decides it.
+/// A mutable working-tree source can be staged or unstaged; content from
+/// anywhere else — a commit, a stash, a comparison of two revisions — cannot,
+/// but its changes can be applied to or reverted in the working tree, which are
+/// the hunk-level equivalents of a cherry-pick and a revert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StagingAction {
+pub enum DiffOperation {
+    /// Move working-tree content into the index.
     Stage,
+    /// Move index content back out to the working tree.
     Unstage,
+    /// Write this source's version of the content into the working tree.
+    Apply,
+    /// Take this source's change back out of the working tree.
+    Revert,
 }
 
-impl StagingAction {
+impl DiffOperation {
     /// Label for the per-hunk button in the diff viewer's hunk headers.
     pub fn hunk_button_label(self) -> &'static str {
         match self {
-            StagingAction::Stage => "Stage Hunk",
-            StagingAction::Unstage => "Unstage Hunk",
+            DiffOperation::Stage => "Stage Hunk",
+            DiffOperation::Unstage => "Unstage Hunk",
+            DiffOperation::Apply => "Apply Hunk",
+            DiffOperation::Revert => "Revert Hunk",
+        }
+    }
+
+    /// Label for the whole-file entry in the diff viewer's file menu.
+    pub fn file_menu_label(self) -> &'static str {
+        match self {
+            DiffOperation::Stage => "Stage File",
+            DiffOperation::Unstage => "Unstage File",
+            DiffOperation::Apply => "Apply File to Working Tree",
+            DiffOperation::Revert => "Revert File in Working Tree",
+        }
+    }
+
+    /// The *default* key that invokes this operation while the diff viewer has
+    /// focus, for hints and element ids.
+    ///
+    /// A hint rather than a lookup: the binding lives in the `commands!` registry
+    /// in `rgitui_workspace`, which sits above this crate and so cannot be named
+    /// from here, and the user may have rebound it.
+    pub fn key(self) -> &'static str {
+        match self {
+            DiffOperation::Stage => "s",
+            DiffOperation::Unstage => "u",
+            DiffOperation::Apply => "a",
+            DiffOperation::Revert => "r",
+        }
+    }
+
+    /// True for the two operations that move content between the working tree
+    /// and the index without editing any file.
+    pub fn is_staging(self) -> bool {
+        matches!(self, DiffOperation::Stage | DiffOperation::Unstage)
+    }
+
+    /// True for the two operations that rewrite files on disk. Callers must put
+    /// these on the undo stack, since nothing else records the previous contents.
+    pub fn writes_files(self) -> bool {
+        matches!(self, DiffOperation::Apply | DiffOperation::Revert)
+    }
+
+    /// The git-layer direction this operation runs in, or `None` for the two
+    /// staging operations, which do not go through the patch machinery.
+    pub fn patch_direction(self) -> Option<WorktreePatchDirection> {
+        match self {
+            DiffOperation::Stage | DiffOperation::Unstage => None,
+            DiffOperation::Apply => Some(WorktreePatchDirection::Apply),
+            DiffOperation::Revert => Some(WorktreePatchDirection::Revert),
         }
     }
 }
@@ -78,19 +169,27 @@ impl StagingAction {
 /// Where the content currently shown in the diff viewer came from.
 ///
 /// Staged versus unstaged is a property of the two mutable sources only. A
-/// commit or stash has no such distinction — its content is already recorded —
-/// so it carries its OID instead, and offers no staging.
+/// commit, stash or revision pair has no such distinction — its content is
+/// already recorded — so it carries the revision it came from instead, and
+/// offers no staging.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DiffSource {
     /// Unstaged working-tree changes (index → workdir). Can be staged.
     Worktree,
     /// Staged changes (HEAD → index). Can be unstaged.
     Index,
-    /// A file inside a commit, identified by its hex OID. Immutable.
+    /// A file inside a commit, identified by its hex OID.
     Commit(String),
     /// A file inside a stash entry, identified by the stash commit's hex OID.
-    /// Immutable.
     Stash(String),
+    /// The difference between two arbitrary revisions, `from` → `to`, as any
+    /// branch-comparison view would produce. Applying brings `to`'s content
+    /// into the working tree; reverting restores `from`'s.
+    ///
+    /// A commit diff carries [`Self::Commit`] rather than this, so that it can be
+    /// identified by OID for caching and blame; both resolve to a tree pair in
+    /// [`Self::patch_source`], so apply and revert treat them identically.
+    Compare { from: String, to: String },
 }
 
 impl DiffSource {
@@ -103,68 +202,130 @@ impl DiffSource {
         }
     }
 
-    /// The staging operation this content supports, or `None` when the content
-    /// is an immutable historical snapshot.
-    pub fn staging_action(&self) -> Option<StagingAction> {
+    /// Every operation this content supports, in the order the UI offers them.
+    pub fn operations(&self) -> &'static [DiffOperation] {
         match self {
-            DiffSource::Worktree => Some(StagingAction::Stage),
-            DiffSource::Index => Some(StagingAction::Unstage),
-            DiffSource::Commit(_) | DiffSource::Stash(_) => None,
+            DiffSource::Worktree => &[DiffOperation::Stage],
+            DiffSource::Index => &[DiffOperation::Unstage],
+            DiffSource::Commit(_) | DiffSource::Stash(_) | DiffSource::Compare { .. } => {
+                &[DiffOperation::Apply, DiffOperation::Revert]
+            }
         }
     }
 
-    /// True when the content is already committed or stashed, so it has no
-    /// staged/unstaged distinction and cannot be staged or unstaged.
+    /// Whether `operation` is available for this content.
+    pub fn offers(&self, operation: DiffOperation) -> bool {
+        self.operations().contains(&operation)
+    }
+
+    /// The staging operation this content supports, or `None` when it is not
+    /// mutable working-tree content.
+    pub fn staging_action(&self) -> Option<DiffOperation> {
+        self.operations()
+            .iter()
+            .copied()
+            .find(|operation| operation.is_staging())
+    }
+
+    /// True when the content is a snapshot from outside the working tree, so it
+    /// has no staged/unstaged distinction and cannot be staged or unstaged.
     pub fn is_historical(&self) -> bool {
         self.staging_action().is_none()
     }
 
     /// The commit-like OID backing this content, if any. Used for the display
     /// cache key, the `DiffChanged` payload, and blame/history view caching.
+    ///
+    /// A comparison has no single commit to attribute lines to — its endpoints
+    /// may be branch names rather than OIDs — so it reports `None` and is
+    /// treated like working-tree content by the blame/history prefetch.
     pub fn commit_id(&self) -> Option<&str> {
         match self {
-            DiffSource::Worktree | DiffSource::Index => None,
+            DiffSource::Worktree | DiffSource::Index | DiffSource::Compare { .. } => None,
             DiffSource::Commit(oid) | DiffSource::Stash(oid) => Some(oid),
         }
     }
 
-    /// Why `requested` cannot be applied to this content, as an actionable
+    /// Short label naming the revision (or pair) this content came from, for
+    /// menu entries and tooltips. `None` for working-tree content, which has no
+    /// revision to name.
+    pub fn revision_label(&self) -> Option<String> {
+        match self {
+            DiffSource::Worktree | DiffSource::Index => None,
+            DiffSource::Commit(oid) | DiffSource::Stash(oid) => {
+                Some(oid[..7.min(oid.len())].to_string())
+            }
+            DiffSource::Compare { from, to } => Some(format!("{from}...{to}")),
+        }
+    }
+
+    /// The tree pair an apply or revert should be generated from, or `None` for
+    /// working-tree content, which supports staging instead.
+    pub fn patch_source(&self) -> Option<WorktreePatchSource> {
+        match self {
+            DiffSource::Worktree | DiffSource::Index => None,
+            DiffSource::Commit(oid) | DiffSource::Stash(oid) => git2::Oid::from_str(oid)
+                .ok()
+                .map(WorktreePatchSource::Commit),
+            DiffSource::Compare { from, to } => Some(WorktreePatchSource::Compare {
+                from: from.clone(),
+                to: to.clone(),
+            }),
+        }
+    }
+
+    /// Why `requested` cannot be performed on this content, as an actionable
     /// sentence, or `None` when the request is valid.
     ///
     /// The viewer already hides the affordances that would produce an invalid
     /// request, so this is a backstop for the case where the displayed content
     /// changes between a click being painted and being delivered.
-    pub fn reject_staging(&self, requested: StagingAction) -> Option<String> {
+    pub fn reject_operation(&self, requested: DiffOperation) -> Option<String> {
+        if self.offers(requested) {
+            return None;
+        }
         match (self, requested) {
-            (DiffSource::Worktree, StagingAction::Stage)
-            | (DiffSource::Index, StagingAction::Unstage) => None,
-            (DiffSource::Worktree, StagingAction::Unstage) => {
+            (DiffSource::Worktree, DiffOperation::Unstage) => {
                 Some("These changes are not staged yet — press s to stage them first.".to_string())
             }
-            (DiffSource::Index, StagingAction::Stage) => {
+            (DiffSource::Index, DiffOperation::Stage) => {
                 Some("These changes are already staged — press u to unstage them.".to_string())
             }
+            // A mutable source asked to apply or revert: that content is
+            // already in the working tree, so there is nothing to bring in.
+            (DiffSource::Worktree | DiffSource::Index, _) => Some(
+                "These changes are already in your working tree — use s or u to move them \
+                 between the index and the working tree."
+                    .to_string(),
+            ),
             (DiffSource::Commit(oid), _) => Some(format!(
-                "Commit {} is already committed and cannot be staged — select the file under \
-                 Staged or Unstaged in the sidebar to change its working-tree state.",
+                "Commit {} is already committed and cannot be staged — press a to apply its \
+                 changes to your working tree, or select the file under Staged or Unstaged in \
+                 the sidebar.",
                 &oid[..7.min(oid.len())]
             )),
             (DiffSource::Stash(_), _) => Some(
-                "Stashed changes cannot be staged directly — apply or pop the stash first, then \
-                 stage it from the sidebar."
+                "Stashed changes cannot be staged directly — press a to apply them to your \
+                 working tree, or pop the stash and stage it from the sidebar."
                     .to_string(),
             ),
+            (DiffSource::Compare { from, to }, _) => Some(format!(
+                "{from}...{to} is a comparison of two revisions and cannot be staged — press a \
+                 to apply its changes to your working tree instead."
+            )),
         }
     }
 
-    /// Badge shown in the diff viewer header. Historical content is labelled by
-    /// its origin rather than by a staged/unstaged state it does not have.
+    /// Badge shown in the diff viewer header. Content from outside the working
+    /// tree is labelled by its origin rather than by a staged/unstaged state it
+    /// does not have.
     pub fn badge(&self) -> (&'static str, Color) {
         match self {
             DiffSource::Worktree => ("Unstaged", Color::Modified),
             DiffSource::Index => ("Staged", Color::Added),
             DiffSource::Commit(_) => ("Committed", Color::Muted),
             DiffSource::Stash(_) => ("Stashed", Color::Muted),
+            DiffSource::Compare { .. } => ("Compared", Color::Muted),
         }
     }
 }
@@ -563,6 +724,10 @@ pub struct DiffViewer {
     error: Option<String>,
     /// Bounded LRU cache for computed display rows.
     display_cache: DisplayCache,
+    /// Whether the header's file-level operations menu is open. It is the mouse
+    /// route to whole-file apply/revert, the granularity neither the hunk headers
+    /// nor a line selection can express.
+    file_menu_open: bool,
     /// Bumped when the selected diff content changes. Workspace-level diff
     /// refreshes use this to reject stale repository results.
     generation: u64,
@@ -619,6 +784,7 @@ impl DiffViewer {
             loading: false,
             error: None,
             display_cache: DisplayCache::default(),
+            file_menu_open: false,
             generation: 0,
             preparation_generation: 0,
         }
@@ -775,6 +941,7 @@ impl DiffViewer {
         self.partial_mode = false;
         self.selection_anchor = None;
         self.mouse_selecting = false;
+        self.file_menu_open = false;
 
         cx.emit(DiffViewerEvent::DiffChanged {
             path: path.clone(),
@@ -846,6 +1013,7 @@ impl DiffViewer {
         self.partial_mode = false;
         self.selection_anchor = None;
         self.mouse_selecting = false;
+        self.file_menu_open = false;
         self.sync_wrap_list_state();
         cx.notify();
     }
@@ -876,6 +1044,7 @@ impl DiffViewer {
         self.partial_mode = false;
         self.selection_anchor = None;
         self.mouse_selecting = false;
+        self.file_menu_open = false;
         cx.emit(DiffViewerEvent::DiffChanged {
             path: self.file_path.clone().unwrap_or_default(),
             commit_id: None,
@@ -1220,9 +1389,11 @@ impl DiffViewer {
 
     /// Toggles line-level selection, clearing any selection when leaving it.
     pub fn toggle_partial_mode(&mut self, cx: &mut Context<Self>) {
-        // Meaningless for committed or stashed content, which cannot be staged
-        // at all.
-        if self.source.is_historical() {
+        // Partial mode exists to scope the source's line-level operation —
+        // staging for the working tree, apply/revert for anything else. The
+        // three-way conflict view has no line-level operation, so there is
+        // nothing for a line selection to act on.
+        if self.display_mode == DiffDisplayMode::ThreeWay {
             return;
         }
         self.partial_mode = !self.partial_mode;
@@ -1254,7 +1425,7 @@ impl DiffViewer {
     pub fn stage_selection(&mut self, cx: &mut Context<Self>) {
         // Only the working tree can be staged; committed and stashed content is
         // historical and has nothing to stage.
-        if self.source.staging_action() != Some(StagingAction::Stage) {
+        if !self.source.offers(DiffOperation::Stage) {
             return;
         }
         if self.partial_mode {
@@ -1280,7 +1451,7 @@ impl DiffViewer {
     /// Requests unstaging of the hunks — or lines — under the current selection.
     pub fn unstage_selection(&mut self, cx: &mut Context<Self>) {
         // Only the index can be unstaged.
-        if self.source.staging_action() != Some(StagingAction::Unstage) {
+        if !self.source.offers(DiffOperation::Unstage) {
             return;
         }
         if self.partial_mode {
@@ -1300,7 +1471,7 @@ impl DiffViewer {
 
     /// Requests staging of just the hunk under the cursor.
     pub fn stage_current_hunk(&mut self, cx: &mut Context<Self>) {
-        if self.source.staging_action() != Some(StagingAction::Stage) {
+        if !self.source.offers(DiffOperation::Stage) {
             return;
         }
         if let Some(idx) = self.current_hunk_index() {
@@ -1310,12 +1481,40 @@ impl DiffViewer {
 
     /// Requests unstaging of just the hunk under the cursor.
     pub fn unstage_current_hunk(&mut self, cx: &mut Context<Self>) {
-        if self.source.staging_action() != Some(StagingAction::Unstage) {
+        if !self.source.offers(DiffOperation::Unstage) {
             return;
         }
         if let Some(idx) = self.current_hunk_index() {
             cx.emit(DiffViewerEvent::HunkUnstageRequested(idx));
         }
+    }
+
+    /// Requests that the displayed source's version of the hunks — or, in partial
+    /// mode, the lines — under the current selection be written into the working
+    /// tree.
+    ///
+    /// The counterpart of [`Self::stage_selection`] for content that has no
+    /// staging route: a commit, a stash entry, or a comparison of two revisions.
+    pub fn apply_selection(&mut self, cx: &mut Context<Self>) {
+        self.request_worktree_patch(DiffOperation::Apply, cx);
+    }
+
+    /// Requests that the displayed source's change be taken back out of the
+    /// working tree, over the same granularity [`Self::apply_selection`] uses.
+    pub fn revert_selection(&mut self, cx: &mut Context<Self>) {
+        self.request_worktree_patch(DiffOperation::Revert, cx);
+    }
+
+    /// Requests that the whole file be brought to the displayed source's version,
+    /// ignoring the current selection.
+    pub fn apply_file(&mut self, cx: &mut Context<Self>) {
+        self.request_whole_file_patch(DiffOperation::Apply, cx);
+    }
+
+    /// Requests that the displayed source's change be taken out of the whole
+    /// file, ignoring the current selection.
+    pub fn revert_file(&mut self, cx: &mut Context<Self>) {
+        self.request_whole_file_patch(DiffOperation::Revert, cx);
     }
 
     /// The change lines under the selection, or the cursor hunk's if there is none.
@@ -1338,6 +1537,94 @@ impl DiffViewer {
                 .current_hunk_index()
                 .map(|i| vec![i])
                 .unwrap_or_default(),
+        }
+    }
+
+    /// The operations the file-level menu offers: the ones that act on the whole
+    /// file rather than on a hunk or a line selection.
+    ///
+    /// Whole-file staging is reached from the sidebar's Staged/Unstaged lists, so
+    /// the menu carries apply/revert only.
+    fn file_menu_operations(&self) -> Vec<DiffOperation> {
+        if self.display_mode == DiffDisplayMode::ThreeWay {
+            return Vec::new();
+        }
+        self.source
+            .operations()
+            .iter()
+            .copied()
+            .filter(|operation| operation.writes_files())
+            .collect()
+    }
+
+    /// Ask the workspace to apply or revert `operation` over the whole file.
+    fn request_whole_file_patch(&mut self, operation: DiffOperation, cx: &mut Context<Self>) {
+        self.file_menu_open = false;
+        if !self.source.offers(operation) {
+            cx.notify();
+            return;
+        }
+        cx.emit(DiffViewerEvent::WorktreePatchRequested {
+            operation,
+            scope: WorktreePatchScope::File,
+        });
+        cx.notify();
+    }
+
+    /// Ask the workspace to apply or revert `operation` over the granularity the
+    /// current selection implies. Silently does nothing when the displayed
+    /// content does not support the operation, so the key is inert rather than
+    /// wrong on a working-tree diff.
+    fn request_worktree_patch(&mut self, operation: DiffOperation, cx: &mut Context<Self>) {
+        if !self.source.offers(operation) {
+            return;
+        }
+        if let Some(scope) = self.selected_patch_scope() {
+            cx.emit(DiffViewerEvent::WorktreePatchRequested { operation, scope });
+        }
+    }
+
+    /// The scope an apply/revert should cover: line-level when the user has turned
+    /// on partial mode, otherwise the hunk under the cursor, or the hunks the row
+    /// selection spans.
+    ///
+    /// Several selected hunks collapse into one `Lines` scope. These operations
+    /// read the file off disk and write it back, so two requests in flight over
+    /// the same file would race; one request covering every selected line cannot.
+    fn selected_patch_scope(&self) -> Option<WorktreePatchScope> {
+        if self.partial_mode {
+            let lines = match &self.selected_lines {
+                Some(selection) => self
+                    .lines_under_selection(selection.clone())
+                    .into_iter()
+                    .filter(Self::is_change_line)
+                    .collect(),
+                None => self.current_hunk_changes(),
+            };
+            if lines.is_empty() {
+                return None;
+            }
+            return Some(WorktreePatchScope::Lines(lines));
+        }
+
+        let hunks = match &self.selected_lines {
+            Some(selection) => self.hunks_under_selection(selection.clone()),
+            None => self
+                .current_hunk_index()
+                .map(|i| vec![i])
+                .unwrap_or_default(),
+        };
+        match hunks.as_slice() {
+            [] => None,
+            [only] => Some(WorktreePatchScope::Hunk(*only)),
+            several => {
+                let lines = self.changes_in_hunks(several);
+                if lines.is_empty() {
+                    None
+                } else {
+                    Some(WorktreePatchScope::Lines(lines))
+                }
+            }
         }
     }
 
@@ -1502,39 +1789,42 @@ impl DiffViewer {
     /// (old_num, new_num) pairs. Deletions are emitted as (Some, None) and
     /// additions as (None, Some) so the git layer can stage either side.
     fn current_hunk_changes(&self) -> Vec<(Option<usize>, Option<usize>)> {
-        let hunk_idx = match self.current_hunk_index() {
-            Some(i) => i,
-            None => return Vec::new(),
-        };
+        match self.current_hunk_index() {
+            Some(index) => self.changes_in_hunks(&[index]),
+            None => Vec::new(),
+        }
+    }
 
+    /// The change lines of every hunk in `hunks`, as (old_num, new_num) pairs in
+    /// file order. Used to express a multi-hunk selection as a single line-scoped
+    /// request.
+    fn changes_in_hunks(&self, hunks: &[usize]) -> Vec<(Option<usize>, Option<usize>)> {
+        // Line numbers only come off the unified rows; the side-by-side rows
+        // split a modification across two columns.
+        if self.display_mode == DiffDisplayMode::ThreeWay {
+            return Vec::new();
+        }
+        let wanted: HashSet<usize> = hunks.iter().copied().collect();
         let mut lines = Vec::new();
-        if self.display_mode == DiffDisplayMode::Unified {
-            let rows: &Vec<DisplayRow> = &self.display_rows;
-            let mut in_hunk = false;
-            for row in rows.iter() {
-                match row {
-                    DisplayRow::HunkHeader { hunk_index, .. } => {
-                        if *hunk_index == hunk_idx {
-                            in_hunk = true;
-                        } else if in_hunk {
-                            break; // past our hunk
-                        }
-                    }
-                    DisplayRow::Line {
-                        old_num,
-                        new_num,
-                        kind,
-                        ..
-                    } => {
-                        if in_hunk
-                            && matches!(kind, DisplayLineKind::Addition | DisplayLineKind::Deletion)
-                        {
-                            lines.push((*old_num, *new_num));
-                        }
+        let mut current_hunk: Option<usize> = None;
+        for row in self.display_rows.iter() {
+            match row {
+                DisplayRow::HunkHeader { hunk_index, .. } => current_hunk = Some(*hunk_index),
+                DisplayRow::Line {
+                    old_num,
+                    new_num,
+                    kind,
+                    ..
+                } => {
+                    let in_wanted_hunk = current_hunk.is_some_and(|hunk| wanted.contains(&hunk));
+                    if in_wanted_hunk
+                        && matches!(kind, DisplayLineKind::Addition | DisplayLineKind::Deletion)
+                    {
+                        lines.push((*old_num, *new_num));
                     }
                 }
             }
-        };
+        }
         lines
     }
 
@@ -2553,6 +2843,149 @@ impl DiffViewer {
     }
 }
 
+/// Height of one row in the diff viewer's file-operations menu, in pixels.
+const FILE_MENU_ITEM_HEIGHT: f32 = 28.0;
+/// Minimum width of the file-operations menu, in pixels.
+const FILE_MENU_WIDTH: f32 = 220.0;
+/// Where the menu's dismiss backdrop starts, in pixels from the top of the
+/// viewer. Must clear the header so the toggle button stays clickable.
+const FILE_MENU_BACKDROP_TOP: f32 = 26.0;
+
+impl DiffViewer {
+    /// The header's file-operations toggle. Renders nothing when the displayed
+    /// content has no whole-file operation.
+    fn render_file_menu_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.file_menu_operations().is_empty() {
+            return div().into_any_element();
+        }
+        let tooltip: SharedString = match self.source.revision_label() {
+            Some(revision) => format!("Apply or revert this whole file from {revision}").into(),
+            None => "Whole-file operations".into(),
+        };
+        Button::new("diff-file-menu", "File")
+            .size(ButtonSize::Compact)
+            .style(ButtonStyle::Subtle)
+            .tooltip(tooltip)
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.file_menu_open = !this.file_menu_open;
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// True when the file-operations menu is open and has something to show.
+    ///
+    /// Both the menu and its dismiss backdrop are gated on this, so the backdrop
+    /// can never outlive the menu and swallow clicks over the diff body.
+    fn file_menu_visible(&self) -> bool {
+        self.file_menu_open && !self.file_menu_operations().is_empty()
+    }
+
+    /// A backdrop over the diff body that dismisses the open file menu.
+    ///
+    /// Starts below the header so the toggle button stays uncovered: a backdrop
+    /// over the button would eat its mouse-down, and the button would reopen the
+    /// menu it had just closed.
+    fn render_file_menu_backdrop(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.file_menu_visible() {
+            return None;
+        }
+        Some(
+            div()
+                .id("diff-file-menu-backdrop")
+                .absolute()
+                .top(px(FILE_MENU_BACKDROP_TOP))
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        this.file_menu_open = false;
+                        cx.notify();
+                        cx.stop_propagation();
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The open file-operations menu, positioned under the header's toggle.
+    fn render_file_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.file_menu_visible() {
+            return None;
+        }
+        let operations = self.file_menu_operations();
+        let colors = cx.colors();
+        let revision = self.source.revision_label();
+
+        let mut menu = div()
+            .id("diff-file-menu-popover")
+            .absolute()
+            .top(px(28.))
+            .right(px(8.))
+            .v_flex()
+            .min_w(px(FILE_MENU_WIDTH))
+            .py(px(4.))
+            .bg(colors.elevated_surface_background)
+            .border_1()
+            .border_color(colors.border)
+            .rounded(px(6.))
+            .elevation_3(cx)
+            // Clicking inside the menu must not reach the viewer's own click
+            // handler, which would steal focus and re-render underneath.
+            .on_mouse_down(
+                MouseButton::Left,
+                |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                },
+            );
+
+        if let Some(revision) = &revision {
+            menu = menu.child(
+                div().px(px(10.)).pb(px(2.)).child(
+                    Label::new(SharedString::from(revision.clone()))
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                ),
+            );
+        }
+
+        for operation in operations {
+            let hover_bg = colors.ghost_element_hover;
+            let active_bg = colors.ghost_element_active;
+            let accent = colors.text_accent;
+            menu = menu.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "diff-file-menu-{}",
+                        operation.key()
+                    )))
+                    .h_flex()
+                    .w_full()
+                    .h(px(FILE_MENU_ITEM_HEIGHT))
+                    .px(px(10.))
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover_bg).border_l_2().border_color(accent))
+                    .active(move |s| s.bg(active_bg))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.request_whole_file_patch(operation, cx);
+                    }))
+                    .child(
+                        Label::new(operation.file_menu_label())
+                            .size(LabelSize::Small)
+                            .color(Color::Default),
+                    ),
+            );
+        }
+
+        Some(menu.into_any_element())
+    }
+}
+
 impl Render for DiffViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log::trace!(
@@ -2652,9 +3085,9 @@ impl Render for DiffViewer {
         let display_rows = self.display_rows.clone();
         let sbs_rows = self.sbs_rows.clone();
         let three_way_rows = self.three_way_rows.clone();
-        // `None` for committed/stashed content, which suppresses every per-hunk
-        // staging affordance below.
-        let staging_action = self.source.staging_action();
+        // Stage/unstage for working-tree content, apply/revert for everything
+        // else; the hunk headers below render one button per entry.
+        let hunk_operations = self.source.operations();
         let display_mode = self.display_mode;
         let view: WeakEntity<DiffViewer> = cx.weak_entity();
 
@@ -2767,12 +3200,10 @@ impl Render for DiffViewer {
                                     let ctx_name: SharedString = context_name.clone().into();
                                     let has_context = !context_name.is_empty();
                                     let idx = *hunk_index;
-                                    let view_clone = view.clone();
                                     let view_hunk = view.clone();
                                     let view_hunk_drag = view.clone();
-                                    let is_hunk_selected = selected_lines
-                                        .as_ref()
-                                        .is_some_and(|r| r.contains(&i));
+                                    let is_hunk_selected =
+                                        selected_lines.as_ref().is_some_and(|r| r.contains(&i));
                                     let hunk_bg = if is_hunk_selected {
                                         selection_bg
                                     } else {
@@ -2842,16 +3273,21 @@ impl Render for DiffViewer {
 
                                     hunk_row = hunk_row.child(div().flex_1());
 
-                                    // Committed and stashed content is immutable —
-                                    // offer no staging button at all.
-                                    if let Some(action) = staging_action {
+                                    // One button per operation the source
+                                    // supports: Stage/Unstage for working-tree
+                                    // content, Apply/Revert for a commit, a
+                                    // stash, or a comparison.
+                                    for operation in hunk_operations {
+                                        let operation = *operation;
+                                        let button_view = view.clone();
                                         hunk_row = hunk_row.child(
                                             Button::new(
                                                 SharedString::from(format!(
-                                                    "hunk-stage-{}",
+                                                    "hunk-{}-{}",
+                                                    operation.key(),
                                                     idx
                                                 )),
-                                                action.hunk_button_label(),
+                                                operation.hunk_button_label(),
                                             )
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Subtle)
@@ -2859,12 +3295,11 @@ impl Render for DiffViewer {
                                                 move |_: &ClickEvent,
                                                       _: &mut Window,
                                                       cx: &mut App| {
-                                                    view_clone
+                                                    button_view
                                                         .update(cx, |_this, cx| {
-                                                            cx.emit(match action {
-                                                                StagingAction::Stage => DiffViewerEvent::HunkStageRequested(idx),
-                                                                StagingAction::Unstage => DiffViewerEvent::HunkUnstageRequested(idx),
-                                                            });
+                                                            cx.emit(DiffViewerEvent::for_hunk(
+                                                                operation, idx,
+                                                            ));
                                                         })
                                                         .ok();
                                                 },
@@ -2880,8 +3315,7 @@ impl Render for DiffViewer {
                                     styled,
                                     kind,
                                 } => {
-                                    let (prefix, text_col, line_bg, gutter_accent) = match kind
-                                    {
+                                    let (prefix, text_col, line_bg, gutter_accent) = match kind {
                                         DisplayLineKind::Context => {
                                             (" ", text_color, editor_bg, gutter_bg)
                                         }
@@ -2903,9 +3337,8 @@ impl Render for DiffViewer {
                                         .into();
                                     let prefix_str: SharedString = prefix.into();
                                     let is_highlighted = highlighted_row == Some(i);
-                                    let is_selected = selected_lines
-                                        .as_ref()
-                                        .is_some_and(|r| r.contains(&i));
+                                    let is_selected =
+                                        selected_lines.as_ref().is_some_and(|r| r.contains(&i));
                                     let effective_bg = if is_selected {
                                         selection_bg
                                     } else if is_highlighted {
@@ -3016,11 +3449,7 @@ impl Render for DiffViewer {
                                             .font_family("Lilex")
                                             .text_color(text_col)
                                             .child(Self::render_styled_text(
-                                                window,
-                                                styled,
-                                                text_col,
-                                                row_height,
-                                                true,
+                                                window, styled, text_col, row_height, true,
                                             ))
                                             .into_any_element()
                                     } else {
@@ -3033,11 +3462,7 @@ impl Render for DiffViewer {
                                             .font_family("Lilex")
                                             .text_color(text_col)
                                             .child(Self::render_styled_text(
-                                                window,
-                                                styled,
-                                                text_col,
-                                                row_height,
-                                                false,
+                                                window, styled, text_col, row_height, false,
                                             ))
                                             .into_any_element()
                                     };
@@ -3112,12 +3537,10 @@ impl Render for DiffViewer {
                                     let ctx_name: SharedString = context_name.clone().into();
                                     let has_context = !context_name.is_empty();
                                     let idx = *hunk_index;
-                                    let view_clone = view.clone();
                                     let view_sbs_hunk = view.clone();
                                     let view_sbs_hunk_drag = view.clone();
-                                    let is_sbs_hunk_selected = selected_lines
-                                        .as_ref()
-                                        .is_some_and(|r| r.contains(&i));
+                                    let is_sbs_hunk_selected =
+                                        selected_lines.as_ref().is_some_and(|r| r.contains(&i));
                                     let sbs_hunk_bg = if is_sbs_hunk_selected {
                                         selection_bg
                                     } else {
@@ -3187,16 +3610,19 @@ impl Render for DiffViewer {
 
                                     hunk_row = hunk_row.child(div().flex_1());
 
-                                    // Committed and stashed content is immutable —
-                                    // offer no staging button at all.
-                                    if let Some(action) = staging_action {
+                                    // Same operations as the unified header, from
+                                    // the same source decision.
+                                    for operation in hunk_operations {
+                                        let operation = *operation;
+                                        let button_view = view.clone();
                                         hunk_row = hunk_row.child(
                                             Button::new(
                                                 SharedString::from(format!(
-                                                    "sbs-hunk-stage-{}",
+                                                    "sbs-hunk-{}-{}",
+                                                    operation.key(),
                                                     idx
                                                 )),
-                                                action.hunk_button_label(),
+                                                operation.hunk_button_label(),
                                             )
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Subtle)
@@ -3204,12 +3630,11 @@ impl Render for DiffViewer {
                                                 move |_: &ClickEvent,
                                                       _: &mut Window,
                                                       cx: &mut App| {
-                                                    view_clone
+                                                    button_view
                                                         .update(cx, |_this, cx| {
-                                                            cx.emit(match action {
-                                                                StagingAction::Stage => DiffViewerEvent::HunkStageRequested(idx),
-                                                                StagingAction::Unstage => DiffViewerEvent::HunkUnstageRequested(idx),
-                                                            });
+                                                            cx.emit(DiffViewerEvent::for_hunk(
+                                                                operation, idx,
+                                                            ));
                                                         })
                                                         .ok();
                                                 },
@@ -3227,21 +3652,20 @@ impl Render for DiffViewer {
                                     right_styled,
                                     right_kind,
                                 } => {
-                                    let (left_bg, left_gutter_bg, left_text_col) =
-                                        match left_kind {
-                                            SideBySideLineKind::Context => {
-                                                (editor_bg, gutter_bg, text_color)
-                                            }
-                                            SideBySideLineKind::Deletion => {
-                                                (deleted_line_bg, deleted_gutter_bg, vc_deleted)
-                                            }
-                                            SideBySideLineKind::Addition => {
-                                                (added_line_bg, added_gutter_bg, vc_added)
-                                            }
-                                            SideBySideLineKind::Empty => {
-                                                (empty_fill_bg, gutter_bg, text_placeholder_color)
-                                            }
-                                        };
+                                    let (left_bg, left_gutter_bg, left_text_col) = match left_kind {
+                                        SideBySideLineKind::Context => {
+                                            (editor_bg, gutter_bg, text_color)
+                                        }
+                                        SideBySideLineKind::Deletion => {
+                                            (deleted_line_bg, deleted_gutter_bg, vc_deleted)
+                                        }
+                                        SideBySideLineKind::Addition => {
+                                            (added_line_bg, added_gutter_bg, vc_added)
+                                        }
+                                        SideBySideLineKind::Empty => {
+                                            (empty_fill_bg, gutter_bg, text_placeholder_color)
+                                        }
+                                    };
                                     let (right_bg, right_gutter_bg, right_text_col) =
                                         match right_kind {
                                             SideBySideLineKind::Context => {
@@ -3267,9 +3691,8 @@ impl Render for DiffViewer {
                                         .unwrap_or_else(|| "    ".to_string())
                                         .into();
                                     let is_highlighted = highlighted_row == Some(i);
-                                    let is_sbs_selected = selected_lines
-                                        .as_ref()
-                                        .is_some_and(|r| r.contains(&i));
+                                    let is_sbs_selected =
+                                        selected_lines.as_ref().is_some_and(|r| r.contains(&i));
                                     let effective_left_bg = if is_sbs_selected {
                                         selection_bg
                                     } else if is_highlighted {
@@ -3436,10 +3859,8 @@ impl Render for DiffViewer {
                                         }
                                     };
 
-                                    let mut divider = div()
-                                        .w(px(2.))
-                                        .flex_shrink_0()
-                                        .bg(border_variant);
+                                    let mut divider =
+                                        div().w(px(2.)).flex_shrink_0().bg(border_variant);
                                     divider = if wrap_enabled {
                                         divider.min_h(px(row_height))
                                     } else {
@@ -3869,6 +4290,9 @@ impl Render for DiffViewer {
             .v_flex()
             .size_full()
             .overflow_hidden()
+            // `relative` so the file-operations menu can be positioned against
+            // this container rather than the window.
+            .relative()
             // Focus ring so j/k navigation is discoverable: an accent border when the
             // pane holds keyboard focus, a transparent border of the same width
             // otherwise so toggling focus never shifts layout or adds chrome.
@@ -3958,23 +4382,32 @@ impl Render for DiffViewer {
                     )
                     .child({
                         // Always-present partial-mode affordance so the line-level
-                        // staging entry point is discoverable: emphasized while active,
-                        // a muted "Partial (p)" hint otherwise. Hidden for the
-                        // three-way conflict view, which has no line-level staging,
-                        // and for committed/stashed content, which cannot be staged.
-                        let partial_tooltip = if self.partial_mode {
-                            "Line-level staging: select lines, then s / u. Press p to exit."
+                        // entry point is discoverable: emphasized while active, a
+                        // muted "Partial (p)" hint otherwise. The keys it points at
+                        // depend on the source — s/u for working-tree content, a/r
+                        // for anything else. Hidden only for the three-way conflict
+                        // view, which has no line-level operation at all.
+                        let keys = self
+                            .source
+                            .operations()
+                            .iter()
+                            .map(|operation| operation.key())
+                            .collect::<Vec<_>>()
+                            .join(" / ");
+                        let partial_tooltip: SharedString = if self.partial_mode {
+                            format!(
+                                "Line-level changes: select lines, then {keys}. Press p to exit."
+                            )
                         } else {
-                            "Partial line-level staging — press p to toggle."
-                        };
+                            format!("Partial line-level changes ({keys}) — press p to toggle.")
+                        }
+                        .into();
                         let (partial_label, partial_color) = if self.partial_mode {
                             ("Partial", Color::Warning.color(cx))
                         } else {
                             ("Partial (p)", text_placeholder_color)
                         };
-                        if self.display_mode == DiffDisplayMode::ThreeWay
-                            || self.source.is_historical()
-                        {
+                        if self.display_mode == DiffDisplayMode::ThreeWay {
                             div().into_any_element()
                         } else {
                             div()
@@ -3987,6 +4420,7 @@ impl Render for DiffViewer {
                                 .into_any_element()
                         }
                     })
+                    .child(self.render_file_menu_button(cx))
                     .child({
                         let toggle_tooltip = match self.display_mode {
                             DiffDisplayMode::Unified => "Switch to side-by-side view (d)",
@@ -4047,6 +4481,13 @@ impl Render for DiffViewer {
             body = body.child(Scrollbar::horizontal("diff-hscroll", h_handle));
         }
         container = container.child(body);
+        // Backdrop first so the menu paints on top of it.
+        if let Some(backdrop) = self.render_file_menu_backdrop(cx) {
+            container = container.child(backdrop);
+        }
+        if let Some(menu) = self.render_file_menu(cx) {
+            container = container.child(menu);
+        }
 
         container.into_any_element()
     }
@@ -4174,12 +4615,42 @@ mod tests {
         for source in [
             DiffSource::Commit(OID.to_string()),
             DiffSource::Stash(OID.to_string()),
+            DiffSource::Compare {
+                from: "main".to_string(),
+                to: "feature".to_string(),
+            },
         ] {
             assert!(source.is_historical(), "{source:?} should be historical");
             assert_eq!(
                 source.staging_action(),
                 None,
                 "{source:?} must offer no stage/unstage button or key binding"
+            );
+            assert!(
+                !source.offers(DiffOperation::Stage) && !source.offers(DiffOperation::Unstage),
+                "{source:?} must offer neither staging operation"
+            );
+        }
+    }
+
+    #[test]
+    fn historical_sources_offer_apply_and_revert_instead() {
+        for source in [
+            DiffSource::Commit(OID.to_string()),
+            DiffSource::Stash(OID.to_string()),
+            DiffSource::Compare {
+                from: "main".to_string(),
+                to: "feature".to_string(),
+            },
+        ] {
+            assert_eq!(
+                source.operations(),
+                &[DiffOperation::Apply, DiffOperation::Revert],
+                "{source:?} must offer both working-tree operations"
+            );
+            assert!(
+                source.patch_source().is_some(),
+                "{source:?} must resolve to a tree pair to generate the patch from"
             );
         }
     }
@@ -4190,11 +4661,11 @@ mod tests {
         assert!(!DiffSource::Index.is_historical());
         assert_eq!(
             DiffSource::Worktree.staging_action(),
-            Some(StagingAction::Stage)
+            Some(DiffOperation::Stage)
         );
         assert_eq!(
             DiffSource::Index.staging_action(),
-            Some(StagingAction::Unstage)
+            Some(DiffOperation::Unstage)
         );
     }
 
@@ -4214,8 +4685,8 @@ mod tests {
 
     #[test]
     fn hunk_button_labels_match_the_action() {
-        assert_eq!(StagingAction::Stage.hunk_button_label(), "Stage Hunk");
-        assert_eq!(StagingAction::Unstage.hunk_button_label(), "Unstage Hunk");
+        assert_eq!(DiffOperation::Stage.hunk_button_label(), "Stage Hunk");
+        assert_eq!(DiffOperation::Unstage.hunk_button_label(), "Unstage Hunk");
     }
 
     #[test]
@@ -4223,9 +4694,9 @@ mod tests {
         // A staging request from a commit diff would reach
         // `GitProject::stage_hunk_at`, which resolves the hunk index against the
         // working tree — staging unrelated uncommitted edits.
-        for action in [StagingAction::Stage, StagingAction::Unstage] {
+        for action in [DiffOperation::Stage, DiffOperation::Unstage] {
             let message = DiffSource::Commit(OID.to_string())
-                .reject_staging(action)
+                .reject_operation(action)
                 .expect("staging a commit diff must be rejected");
             assert!(
                 message.contains("9f2c1ab"),
@@ -4241,12 +4712,12 @@ mod tests {
 
     #[test]
     fn staging_a_stash_diff_is_rejected_with_an_actionable_message() {
-        for action in [StagingAction::Stage, StagingAction::Unstage] {
+        for action in [DiffOperation::Stage, DiffOperation::Unstage] {
             let message = DiffSource::Stash(OID.to_string())
-                .reject_staging(action)
+                .reject_operation(action)
                 .expect("staging a stash diff must be rejected");
             assert!(
-                message.contains("apply or pop"),
+                message.contains("pop the stash"),
                 "message names the way forward: {message}"
             );
             assert!(message.ends_with('.'));
@@ -4254,13 +4725,158 @@ mod tests {
     }
 
     #[test]
+    fn a_comparison_cannot_be_staged_but_says_what_to_do_instead() {
+        let source = DiffSource::Compare {
+            from: "main".to_string(),
+            to: "feature".to_string(),
+        };
+        for action in [DiffOperation::Stage, DiffOperation::Unstage] {
+            let message = source
+                .reject_operation(action)
+                .expect("a comparison must not be staged");
+            assert!(
+                message.contains("main...feature"),
+                "message names the comparison: {message}"
+            );
+            assert!(
+                message.contains("press a to apply"),
+                "message points at the operation that does work: {message}"
+            );
+            assert!(message.ends_with('.'));
+        }
+    }
+
+    #[test]
+    fn mutable_sources_cannot_apply_or_revert() {
+        // Working-tree content is already in the working tree, so there is
+        // nothing to bring in — and `patch_source` has no tree pair for it.
+        for source in [DiffSource::Worktree, DiffSource::Index] {
+            for action in [DiffOperation::Apply, DiffOperation::Revert] {
+                assert!(
+                    !source.offers(action),
+                    "{source:?} must not offer {action:?}"
+                );
+                let message = source
+                    .reject_operation(action)
+                    .expect("the request must be rejected");
+                assert!(
+                    message.contains("already in your working tree"),
+                    "got: {message}"
+                );
+            }
+            assert!(source.patch_source().is_none());
+        }
+    }
+
+    #[test]
+    fn every_source_offers_at_least_one_operation() {
+        // No displayable source may be inert: each one has an affordance to render.
+        for source in [
+            DiffSource::Worktree,
+            DiffSource::Index,
+            DiffSource::Commit(OID.to_string()),
+            DiffSource::Stash(OID.to_string()),
+            DiffSource::Compare {
+                from: "main".to_string(),
+                to: "feature".to_string(),
+            },
+        ] {
+            assert!(
+                !source.operations().is_empty(),
+                "{source:?} offers nothing at all"
+            );
+            for operation in source.operations() {
+                assert_eq!(
+                    source.reject_operation(*operation),
+                    None,
+                    "{source:?} offers {operation:?} but rejects it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_commit_source_resolves_to_its_own_change() {
+        let source = DiffSource::Commit(OID.to_string());
+        assert_eq!(
+            source.patch_source(),
+            Some(WorktreePatchSource::Commit(
+                git2::Oid::from_str(OID).unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_comparison_resolves_to_both_of_its_endpoints() {
+        let source = DiffSource::Compare {
+            from: "main".to_string(),
+            to: "origin/feature".to_string(),
+        };
+        assert_eq!(
+            source.patch_source(),
+            Some(WorktreePatchSource::Compare {
+                from: "main".to_string(),
+                to: "origin/feature".to_string(),
+            }),
+            "the endpoints must survive verbatim: their order decides which \
+             side an apply pulls in"
+        );
+    }
+
+    #[test]
+    fn revision_labels_name_the_source() {
+        assert_eq!(DiffSource::Worktree.revision_label(), None);
+        assert_eq!(DiffSource::Index.revision_label(), None);
+        assert_eq!(
+            DiffSource::Commit(OID.to_string())
+                .revision_label()
+                .unwrap(),
+            "9f2c1ab"
+        );
+        assert_eq!(
+            DiffSource::Compare {
+                from: "main".to_string(),
+                to: "feature".to_string(),
+            }
+            .revision_label()
+            .unwrap(),
+            "main...feature"
+        );
+    }
+
+    #[test]
+    fn operation_labels_and_keys_are_distinct_per_operation() {
+        let operations = [
+            DiffOperation::Stage,
+            DiffOperation::Unstage,
+            DiffOperation::Apply,
+            DiffOperation::Revert,
+        ];
+        let keys: Vec<&str> = operations.iter().map(|o| o.key()).collect();
+        let unique: HashSet<&&str> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len(), "keys collide: {keys:?}");
+        for operation in operations {
+            assert!(!operation.hunk_button_label().is_empty());
+            assert!(!operation.file_menu_label().is_empty());
+        }
+        assert!(DiffOperation::Stage.is_staging());
+        assert!(DiffOperation::Unstage.is_staging());
+        assert!(!DiffOperation::Apply.is_staging());
+        assert!(!DiffOperation::Revert.is_staging());
+        assert!(DiffOperation::Apply.writes_files());
+        assert!(DiffOperation::Revert.writes_files());
+        assert!(!DiffOperation::Stage.writes_files());
+        assert!(!DiffOperation::Unstage.writes_files());
+    }
+
+    #[test]
     fn valid_staging_requests_are_not_rejected() {
         assert_eq!(
-            DiffSource::Worktree.reject_staging(StagingAction::Stage),
+            DiffSource::Worktree.reject_operation(DiffOperation::Stage),
             None
         );
         assert_eq!(
-            DiffSource::Index.reject_staging(StagingAction::Unstage),
+            DiffSource::Index.reject_operation(DiffOperation::Unstage),
             None
         );
     }
@@ -4268,10 +4884,10 @@ mod tests {
     #[test]
     fn mismatched_working_tree_requests_are_rejected() {
         assert!(DiffSource::Worktree
-            .reject_staging(StagingAction::Unstage)
+            .reject_operation(DiffOperation::Unstage)
             .is_some());
         assert!(DiffSource::Index
-            .reject_staging(StagingAction::Stage)
+            .reject_operation(DiffOperation::Stage)
             .is_some());
     }
 
@@ -4964,7 +5580,7 @@ mod view_tests {
     use rgitui_git::{DiffHunk, DiffLine, FileChangeKind, FileDiff};
     use rgitui_test_support::ViewTest;
 
-    use super::{DiffSource, DiffViewer, DiffViewerEvent};
+    use super::{DiffOperation, DiffSource, DiffViewer, DiffViewerEvent, WorktreePatchScope};
 
     const OID: &str = "9f2c1ab4d5e6f708192a3b4c5d6e7f8091a2b3c4";
     const PATH: &str = "src/main.rs";
@@ -4996,15 +5612,34 @@ mod view_tests {
             }
         }
 
-        /// Emitted stage/unstage requests, ignoring the `DiffChanged`
-        /// notification that every `set_diff` produces.
-        fn staging_requests(&self) -> Vec<String> {
+        /// Emitted requests, ignoring the `DiffChanged` notification that every
+        /// `set_diff` produces.
+        fn request_events(&self) -> Vec<DiffViewerEvent> {
             self.events
                 .iter()
                 .filter(|event| !matches!(event, DiffViewerEvent::DiffChanged { .. }))
+                .cloned()
+                .collect()
+        }
+
+        /// [`Self::request_events`] as debug strings, for assertions that only
+        /// care that nothing (or one named thing) came out.
+        fn requests(&self) -> Vec<String> {
+            self.request_events()
+                .iter()
                 .map(|event| format!("{event:?}"))
                 .collect()
         }
+    }
+
+    /// Shows `diff` from `source` in the probe's viewer and focuses it.
+    fn show(probe: &mut ViewTest<StagingProbe>, diff: FileDiff, source: DiffSource) {
+        probe.update(|probe, window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_diff(diff, PATH.to_string(), source, cx);
+                viewer.focus(window, cx);
+            });
+        });
     }
 
     impl Render for StagingProbe {
@@ -5045,13 +5680,7 @@ mod view_tests {
     /// the entry points the actions call refuse on historical content.
     fn staging_requests_after_stage_then_unstage(source: DiffSource) -> Vec<String> {
         let mut probe = ViewTest::open(StagingProbe::new);
-
-        probe.update(|probe, window, cx| {
-            probe.viewer.update(cx, |viewer, cx| {
-                viewer.set_diff(one_hunk_diff(), PATH.to_string(), source, cx);
-                viewer.focus(window, cx);
-            });
-        });
+        show(&mut probe, one_hunk_diff(), source);
 
         // Guard against a vacuous test: the rows must actually exist, or the
         // selection would find no hunk regardless of provenance.
@@ -5072,7 +5701,7 @@ mod view_tests {
             });
         });
 
-        probe.read(|probe, _| probe.staging_requests())
+        probe.read(|probe, _| probe.requests())
     }
 
     #[test]
@@ -5118,21 +5747,17 @@ mod view_tests {
         );
     }
 
+    /// Partial mode is available on committed content, whose line-level operation
+    /// is applying or reverting those lines in the working tree. Staging is not,
+    /// in partial mode either.
     #[test]
-    fn partial_staging_mode_cannot_be_entered_on_a_commit_diff() {
+    fn partial_mode_on_a_commit_diff_still_refuses_to_stage() {
         let mut probe = ViewTest::open(StagingProbe::new);
-
-        probe.update(|probe, window, cx| {
-            probe.viewer.update(cx, |viewer, cx| {
-                viewer.set_diff(
-                    one_hunk_diff(),
-                    PATH.to_string(),
-                    DiffSource::Commit(OID.to_string()),
-                    cx,
-                );
-                viewer.focus(window, cx);
-            });
-        });
+        show(
+            &mut probe,
+            one_hunk_diff(),
+            DiffSource::Commit(OID.to_string()),
+        );
 
         probe.update(|probe, _window, cx| {
             probe
@@ -5141,8 +5766,23 @@ mod view_tests {
         });
         probe.read(|probe, cx| {
             assert!(
-                !probe.viewer.read(cx).partial_mode,
-                "line-level staging must stay unavailable for committed content"
+                probe.viewer.read(cx).partial_mode,
+                "line-level apply/revert needs partial mode, so `p` must work here"
+            );
+        });
+
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.select_all_lines(cx);
+                viewer.stage_selection(cx);
+                viewer.unstage_selection(cx);
+            });
+        });
+        probe.read(|probe, _| {
+            assert!(
+                probe.requests().is_empty(),
+                "partial mode must not open a staging route for committed content: {:?}",
+                probe.requests()
             );
         });
     }
@@ -5150,13 +5790,7 @@ mod view_tests {
     #[test]
     fn partial_staging_mode_still_toggles_on_a_worktree_diff() {
         let mut probe = ViewTest::open(StagingProbe::new);
-
-        probe.update(|probe, window, cx| {
-            probe.viewer.update(cx, |viewer, cx| {
-                viewer.set_diff(one_hunk_diff(), PATH.to_string(), DiffSource::Worktree, cx);
-                viewer.focus(window, cx);
-            });
-        });
+        show(&mut probe, one_hunk_diff(), DiffSource::Worktree);
 
         probe.update(|probe, _window, cx| {
             probe
@@ -5170,5 +5804,261 @@ mod view_tests {
                 .update(cx, |viewer, cx| viewer.toggle_partial_mode(cx));
         });
         probe.read(|probe, cx| assert!(!probe.viewer.read(cx).partial_mode));
+    }
+
+    // ── apply / revert affordances ────────────────────────────────
+
+    /// Shows `source` in a focused viewer, selects every row, then runs `act`
+    /// against the viewer and returns the requests that came back.
+    ///
+    /// `act` calls the same public methods the `diff::*` actions dispatch to
+    /// rather than simulating keystrokes: those bindings are gpui actions declared
+    /// in `rgitui_workspace`, which sits above this crate, so a keystroke pressed
+    /// here reaches no handler. The keystrokes are pinned by the keymap registry's
+    /// own tests.
+    fn requests_after(
+        source: DiffSource,
+        act: impl FnOnce(&mut DiffViewer, &mut Context<DiffViewer>),
+    ) -> Vec<DiffViewerEvent> {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        show(&mut probe, one_hunk_diff(), source);
+        probe.read(|probe, cx| {
+            assert!(
+                probe.viewer.read(cx).row_count() > 0,
+                "display rows should be prepared before the command is invoked"
+            );
+        });
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.select_all_lines(cx);
+                act(viewer, cx);
+            });
+        });
+        probe.read(|probe, _| probe.request_events())
+    }
+
+    fn historical_sources() -> Vec<DiffSource> {
+        vec![
+            DiffSource::Commit(OID.to_string()),
+            DiffSource::Stash(OID.to_string()),
+            DiffSource::Compare {
+                from: "main".to_string(),
+                to: "feature".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn applying_content_from_outside_the_working_tree_requests_an_apply() {
+        for source in historical_sources() {
+            let requests = requests_after(source.clone(), |viewer, cx| viewer.apply_selection(cx));
+            assert_eq!(
+                requests,
+                vec![DiffViewerEvent::WorktreePatchRequested {
+                    operation: DiffOperation::Apply,
+                    scope: WorktreePatchScope::Hunk(0),
+                }],
+                "{source:?} should offer to apply its hunk"
+            );
+        }
+    }
+
+    #[test]
+    fn reverting_content_from_outside_the_working_tree_requests_a_revert() {
+        for source in historical_sources() {
+            let requests = requests_after(source.clone(), |viewer, cx| viewer.revert_selection(cx));
+            assert_eq!(
+                requests,
+                vec![DiffViewerEvent::WorktreePatchRequested {
+                    operation: DiffOperation::Revert,
+                    scope: WorktreePatchScope::Hunk(0),
+                }],
+                "{source:?} should offer to revert its hunk"
+            );
+        }
+    }
+
+    /// Working-tree content must not offer to apply or revert itself: it is
+    /// already in the working tree, and the git layer has no tree pair to
+    /// generate a patch from.
+    #[test]
+    fn applying_or_reverting_a_working_tree_diff_requests_nothing() {
+        for source in [DiffSource::Worktree, DiffSource::Index] {
+            let requests = requests_after(source.clone(), |viewer, cx| {
+                viewer.apply_selection(cx);
+                viewer.revert_selection(cx);
+                viewer.apply_file(cx);
+                viewer.revert_file(cx);
+            });
+            assert!(
+                requests.is_empty(),
+                "{source:?} must not emit a working-tree patch request, got {requests:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_selection_scopes_the_apply_to_those_lines() {
+        // Partial mode plus a whole-diff row selection; the one change line in
+        // the fixture is the addition at new line 2.
+        let requests = requests_after(DiffSource::Commit(OID.to_string()), |viewer, cx| {
+            viewer.toggle_partial_mode(cx);
+            viewer.select_all_lines(cx);
+            viewer.apply_selection(cx);
+        });
+        assert_eq!(
+            requests,
+            vec![DiffViewerEvent::WorktreePatchRequested {
+                operation: DiffOperation::Apply,
+                scope: WorktreePatchScope::Lines(vec![(None, Some(2))]),
+            }],
+            "a manual line selection must narrow the scope to those lines"
+        );
+    }
+
+    #[test]
+    fn the_file_menu_carries_apply_and_revert_only_for_content_from_elsewhere() {
+        for source in historical_sources() {
+            let mut probe = ViewTest::open(StagingProbe::new);
+            show(&mut probe, one_hunk_diff(), source.clone());
+            probe.read(|probe, cx| {
+                assert_eq!(
+                    probe.viewer.read(cx).file_menu_operations(),
+                    vec![DiffOperation::Apply, DiffOperation::Revert],
+                    "{source:?} needs a whole-file route; the hunk headers cannot express one"
+                );
+            });
+        }
+
+        for source in [DiffSource::Worktree, DiffSource::Index] {
+            let mut probe = ViewTest::open(StagingProbe::new);
+            show(&mut probe, one_hunk_diff(), source.clone());
+            probe.read(|probe, cx| {
+                assert!(
+                    probe.viewer.read(cx).file_menu_operations().is_empty(),
+                    "{source:?} stages whole files from the sidebar, so it gets no menu"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_dismiss_backdrop_only_exists_while_the_menu_does() {
+        // The backdrop covers the diff body to catch outside clicks, so it must
+        // never outlive the menu — otherwise it silently swallows clicks on the
+        // diff itself. `file_menu_open` alone is not enough: a source with no
+        // whole-file operations renders no menu even when the flag is set.
+        let mut probe = ViewTest::open(StagingProbe::new);
+        show(&mut probe, one_hunk_diff(), DiffSource::Worktree);
+        probe.update(|probe, _, cx| {
+            probe
+                .viewer
+                .update(cx, |viewer, _| viewer.file_menu_open = true);
+        });
+        probe.read(|probe, cx| {
+            assert!(
+                !probe.viewer.read(cx).file_menu_visible(),
+                "the worktree has no menu to dismiss, so it must have no backdrop"
+            );
+        });
+
+        let mut probe = ViewTest::open(StagingProbe::new);
+        show(
+            &mut probe,
+            one_hunk_diff(),
+            DiffSource::Commit(OID.to_string()),
+        );
+        probe.read(|probe, cx| {
+            assert!(
+                !probe.viewer.read(cx).file_menu_visible(),
+                "the menu starts closed"
+            );
+        });
+        probe.update(|probe, _, cx| {
+            probe
+                .viewer
+                .update(cx, |viewer, _| viewer.file_menu_open = true);
+        });
+        probe.read(|probe, cx| {
+            assert!(probe.viewer.read(cx).file_menu_visible());
+        });
+    }
+
+    #[test]
+    fn choosing_apply_from_the_file_menu_requests_the_whole_file() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        show(
+            &mut probe,
+            one_hunk_diff(),
+            DiffSource::Commit(OID.to_string()),
+        );
+
+        probe.update(|probe, _, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.file_menu_open = true;
+                viewer.request_whole_file_patch(DiffOperation::Apply, cx);
+            });
+        });
+
+        probe.read(|probe, cx| {
+            assert_eq!(
+                probe.request_events(),
+                vec![DiffViewerEvent::WorktreePatchRequested {
+                    operation: DiffOperation::Apply,
+                    scope: WorktreePatchScope::File,
+                }]
+            );
+            assert!(
+                !probe.viewer.read(cx).file_menu_open,
+                "choosing an entry should dismiss the menu"
+            );
+        });
+    }
+
+    /// The whole-file commands ignore the row selection entirely, so the menu and
+    /// the keystroke reach the same scope from opposite starting states.
+    #[test]
+    fn the_whole_file_commands_request_file_scope_whatever_is_selected() {
+        for (operation, act) in [
+            (
+                DiffOperation::Apply,
+                &DiffViewer::apply_file as &dyn Fn(&mut DiffViewer, &mut Context<DiffViewer>),
+            ),
+            (DiffOperation::Revert, &DiffViewer::revert_file),
+        ] {
+            let requests = requests_after(DiffSource::Commit(OID.to_string()), |viewer, cx| {
+                act(viewer, cx)
+            });
+            assert_eq!(
+                requests,
+                vec![DiffViewerEvent::WorktreePatchRequested {
+                    operation,
+                    scope: WorktreePatchScope::File,
+                }],
+                "{operation:?} over the whole file must not be narrowed by the selection"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hunk_header_button_and_the_key_raise_the_same_request() {
+        // Both routes go through `for_hunk`, so neither can drift from the other.
+        for operation in [DiffOperation::Apply, DiffOperation::Revert] {
+            assert_eq!(
+                DiffViewerEvent::for_hunk(operation, 3),
+                DiffViewerEvent::WorktreePatchRequested {
+                    operation,
+                    scope: WorktreePatchScope::Hunk(3),
+                }
+            );
+        }
+        assert_eq!(
+            DiffViewerEvent::for_hunk(DiffOperation::Stage, 3),
+            DiffViewerEvent::HunkStageRequested(3)
+        );
+        assert_eq!(
+            DiffViewerEvent::for_hunk(DiffOperation::Unstage, 3),
+            DiffViewerEvent::HunkUnstageRequested(3)
+        );
     }
 }
