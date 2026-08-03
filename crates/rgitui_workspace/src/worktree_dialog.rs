@@ -27,6 +27,11 @@ pub struct WorktreeDialog {
     branch_editor: Entity<TextInput>,
     error_message: Option<String>,
     visible: bool,
+    /// Set when the dialog is opened without a `Window`, so the next render can
+    /// take focus. Without it the dialog never enters the focus path, and gpui
+    /// dispatches actions — including `menu::Cancel` — only along that path, so
+    /// Esc would not dismiss it.
+    pending_focus: bool,
     focus_handle: FocusHandle,
 }
 
@@ -88,6 +93,7 @@ impl WorktreeDialog {
             branch_editor,
             error_message: None,
             visible: false,
+            pending_focus: false,
             focus_handle,
         }
     }
@@ -106,9 +112,10 @@ impl WorktreeDialog {
         cx.notify();
     }
 
-    /// Show the dialog without focusing.
+    /// Show the dialog, taking focus on the next render.
     pub fn show_visible(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
         self.visible = true;
+        self.pending_focus = true;
         self.name_editor.update(cx, |e, cx| e.clear(cx));
         self.path_editor.update(cx, |e, cx| e.clear(cx));
         self.branch_editor.update(cx, |e, cx| e.clear(cx));
@@ -202,9 +209,14 @@ impl WorktreeDialog {
 }
 
 impl Render for WorktreeDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("worktree-dialog").into_any_element();
+        }
+
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.name_editor.update(cx, |e, cx| e.focus(window, cx));
         }
 
         let colors = cx.colors().clone();

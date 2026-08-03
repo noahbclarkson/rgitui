@@ -40,6 +40,10 @@ pub struct CreatePrDialog {
     github_token: Option<String>,
     github_owner: String,
     github_repo: String,
+    /// Set when the dialog is opened without a `Window`, so the next render can
+    /// take focus. gpui dispatches actions only along the focus path, so a
+    /// dialog that never focuses cannot receive `menu::Cancel` (Esc).
+    pending_focus: bool,
     focus_handle: FocusHandle,
 }
 
@@ -81,6 +85,7 @@ impl CreatePrDialog {
             base_branch: String::new(),
             draft: false,
             visible: false,
+            pending_focus: false,
             is_loading: false,
             error_message: None,
             github_token: None,
@@ -132,6 +137,7 @@ impl CreatePrDialog {
         cx: &mut Context<Self>,
     ) {
         self.visible = true;
+        self.pending_focus = true;
         self.head_branch = head_branch;
         self.base_branch = base_branch;
         self.is_loading = false;
@@ -244,9 +250,14 @@ impl CreatePrDialog {
 }
 
 impl Render for CreatePrDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("create-pr-dialog").into_any_element();
+        }
+
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.title_input.update(cx, |e, cx| e.focus(window, cx));
         }
 
         let colors = cx.colors().clone();

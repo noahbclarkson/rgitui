@@ -85,6 +85,12 @@ pub struct InteractiveRebase {
     editing_reword: Option<usize>,
     /// Text field backing reword editing.
     reword_editor: Entity<TextInput>,
+    /// Set when the dialog is opened without a `Window`, so the next render can
+    /// take focus. gpui dispatches actions only along the focus path, so until
+    /// this dialog focuses, neither `menu::Cancel` (Esc) nor its own
+    /// `p`/`r`/`s`/`f`/`d` action bindings reach it — and the graph underneath
+    /// keeps consuming those keys instead.
+    pending_focus: bool,
     focus_handle: FocusHandle,
 
     // Drag-to-reorder state
@@ -114,6 +120,7 @@ impl InteractiveRebase {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             visible: false,
+            pending_focus: false,
             entries: Vec::new(),
             target_ref: String::new(),
             selected_index: 0,
@@ -152,7 +159,8 @@ impl InteractiveRebase {
         cx.notify();
     }
 
-    /// Show without focusing (for contexts where Window is unavailable).
+    /// Show the dialog, taking focus on the next render (for contexts where
+    /// `Window` is unavailable).
     pub fn show_visible(
         &mut self,
         entries: Vec<RebaseEntry>,
@@ -166,6 +174,7 @@ impl InteractiveRebase {
         self.dragging_index = None;
         self.drag_hover_index = None;
         self.visible = true;
+        self.pending_focus = true;
         cx.notify();
     }
 
@@ -457,11 +466,16 @@ impl InteractiveRebase {
 }
 
 impl Render for InteractiveRebase {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
 
         if !self.visible {
             return div().id("interactive-rebase").into_any_element();
+        }
+
+        if self.pending_focus {
+            self.pending_focus = false;
+            self.focus_handle.focus(window, cx);
         }
 
         let entry_count = self.entries.len();

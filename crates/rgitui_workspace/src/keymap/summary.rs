@@ -720,7 +720,8 @@ mod tests {
             .find(|group| group.view == "DiffViewer")
             .expect("the diff viewer is a group");
         assert!(
-            diff.description().contains("DiffViewer && !TextInput"),
+            diff.description()
+                .contains("DiffViewer && !modal && !TextInput"),
             "{}",
             diff.description()
         );

@@ -100,6 +100,17 @@ impl KeymapState {
     pub fn take_problems(&mut self) -> Vec<String> {
         std::mem::take(&mut self.problems)
     }
+
+    /// Whether there is anything left to report.
+    ///
+    /// The workspace observes this global and reports problems by *taking* them,
+    /// but taking goes through `update_global`, which notifies global observers
+    /// again. Checking this first — and doing nothing when it is false — is what
+    /// stops that from being an endless cycle, so
+    /// `take_problems()` must always leave it `false`.
+    pub fn has_problems(&self) -> bool {
+        !self.problems.is_empty()
+    }
 }
 
 /// The bindings in force, for rendering a shortcut anywhere in the UI.
@@ -138,8 +149,9 @@ pub fn command_tooltip(
 
 /// Keeps the `keymap.json` watcher alive for the lifetime of the app.
 struct KeymapWatcher {
-    #[allow(dead_code, reason = "dropping the watcher stops the notifications")]
-    watcher: Box<dyn std::any::Any>,
+    /// Never read: the watcher stops delivering notifications when dropped, so
+    /// this field exists purely to keep it alive as long as the app is.
+    _watcher: Box<dyn std::any::Any>,
 }
 
 impl Global for KeymapWatcher {}
@@ -226,7 +238,7 @@ fn watch_keymap_file(cx: &mut App) {
     }
 
     cx.set_global(KeymapWatcher {
-        watcher: Box::new(watcher),
+        _watcher: Box::new(watcher),
     });
 
     cx.spawn(async move |cx: &mut gpui::AsyncApp| {
@@ -238,4 +250,44 @@ fn watch_keymap_file(cx: &mut App) {
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_problems(problems: &[&str]) -> KeymapState {
+        KeymapState {
+            problems: problems.iter().map(|p| (*p).to_string()).collect(),
+            binding_count: 0,
+            generation: 1,
+            summary: Arc::new(KeymapSummary::default()),
+        }
+    }
+
+    /// The workspace reports keymap problems from inside a global observer, and
+    /// reporting them goes through `update_global`, which notifies that same
+    /// observer again. Convergence rests entirely on taking the problems making
+    /// `has_problems` false, so the next pass returns without touching the
+    /// global. If this ever stops holding, the app spins at 100% CPU on startup
+    /// and on every keymap.json save.
+    #[test]
+    fn taking_the_problems_leaves_nothing_to_report() {
+        let mut state = state_with_problems(&["bad binding", "unknown action"]);
+        assert!(state.has_problems());
+
+        let taken = state.take_problems();
+
+        assert_eq!(taken.len(), 2);
+        assert!(
+            !state.has_problems(),
+            "take_problems must drain the state, or the observer cycle never ends"
+        );
+        assert!(state.take_problems().is_empty());
+    }
+
+    #[test]
+    fn a_clean_load_has_nothing_to_report() {
+        assert!(!state_with_problems(&[]).has_problems());
+    }
 }

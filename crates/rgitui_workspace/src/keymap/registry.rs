@@ -138,8 +138,10 @@ commands! {
         Settings "secondary-," in "Workspace";
         /// Open the repository picker.
         OpenRepo "secondary-o" in "Workspace";
+        // Control rather than the primary modifier: macOS reserves Cmd+H for
+        // Hide Application, so a `secondary-` binding would never fire there.
         /// Close every tab and return to the workspace home screen.
-        WorkspaceHome "secondary-h";
+        WorkspaceHome "ctrl-h";
         /// Reopen the most recently saved workspace.
         RestoreLastWorkspace unbound;
         /// Show the keyboard shortcut reference.
@@ -184,10 +186,13 @@ commands! {
         OpenThemeEditor ["secondary-shift-t", "alt-9"] in "Workspace";
         /// Toggle the command palette.
         CommandPalette "secondary-shift-p" in "Workspace" [hidden];
+        // Control rather than the primary modifier: macOS reserves Cmd+Tab for
+        // the application switcher, and the WindowServer swallows it before the
+        // app sees it. Ctrl+Tab is also the native chord there.
         /// Activate the next repository tab.
-        NextTab "secondary-tab" [hidden];
+        NextTab "ctrl-tab" [hidden];
         /// Activate the previous repository tab.
-        PrevTab "secondary-shift-tab" [hidden];
+        PrevTab "ctrl-shift-tab" [hidden];
         /// Close the active repository tab.
         CloseTab "secondary-w" [hidden];
         /// Move keyboard focus to the sidebar.
@@ -232,15 +237,15 @@ commands! {
         SelectLast ["end", "shift-g" in "List && !TextInput"] [hidden];
     }
 
-    view GraphView in graph context "GraphView && !TextInput" {
+    view GraphView in graph context "GraphView && !modal && !TextInput" {
         /// Select the next commit in the graph.
-        GraphSelectNext ["down" in "GraphView", "j"] [hidden];
+        GraphSelectNext ["down" in "GraphView && !modal", "j"] [hidden];
         /// Select the previous commit in the graph.
-        GraphSelectPrev ["up" in "GraphView", "k"] [hidden];
+        GraphSelectPrev ["up" in "GraphView && !modal", "k"] [hidden];
         /// Select the newest commit in the graph.
-        GraphSelectFirst ["home" in "GraphView", "g"] [hidden];
+        GraphSelectFirst ["home" in "GraphView && !modal", "g"] [hidden];
         /// Select the oldest loaded commit in the graph.
-        GraphSelectLast ["end" in "GraphView", "shift-g"] [hidden];
+        GraphSelectLast ["end" in "GraphView && !modal", "shift-g"] [hidden];
         /// Add the next commit in the graph to the selection.
         GraphExtendSelectionNext ["shift-down", "shift-j"] [hidden];
         /// Add the previous commit in the graph to the selection.
@@ -252,7 +257,7 @@ commands! {
         /// Squash the selected commits into the oldest of them.
         SquashSelected "s" if has_multi_commit_selection [hidden];
         /// Close the graph search, or dismiss the graph context menu.
-        GraphCancel "escape" in "GraphView" [hidden];
+        GraphCancel "escape" in "GraphView && !modal" [hidden];
         /// Copy the selected commit's SHA to the clipboard.
         CopyCommitSha "y" [hidden];
         /// Copy the selected commit's message to the clipboard.
@@ -262,7 +267,7 @@ commands! {
     // The diff viewer hosts no text field, but the bare letters below still carry
     // `!TextInput` so that `bare_character_bindings_stand_down_for_text_input`
     // holds for every binding in the registry without exceptions.
-    view DiffViewer in diff context "DiffViewer && !TextInput" {
+    view DiffViewer in diff context "DiffViewer && !modal && !TextInput" {
         /// Move the diff cursor down one row.
         DiffSelectNext ["down", "j"] [hidden];
         /// Move the diff cursor up one row.
@@ -293,7 +298,7 @@ commands! {
         SelectAllDiffLines "secondary-a" [hidden];
     }
 
-    view DetailPanel in detail context "DetailPanel && !TextInput" {
+    view DetailPanel in detail context "DetailPanel && !modal && !TextInput" {
         /// Switch the changed-files list between the flat and tree layouts.
         ToggleFileTree "v" [hidden];
         /// Show the previous commit's details.
@@ -301,28 +306,28 @@ commands! {
         /// Show the next commit's details.
         NextCommitDetails "]" [hidden];
         /// Filter the changed-files list.
-        FileSearch ["/", "secondary-f" in "DetailPanel"] [hidden];
+        FileSearch ["/", "secondary-f" in "DetailPanel && !modal"] [hidden];
     }
 
-    view Sidebar in sidebar context "Sidebar && !TextInput" {
+    view Sidebar in sidebar context "Sidebar && !modal && !TextInput" {
         /// Stage or unstage the selected file.
         ToggleStageRow "s" [hidden];
         /// Discard the selected change, or delete the selected branch, tag or stash.
-        DiscardRow ["x", "delete" in "Sidebar"] [hidden];
+        DiscardRow ["x", "delete" in "Sidebar && !modal"] [hidden];
         /// Filter the branch list.
-        FilterBranches ["/", "secondary-f" in "Sidebar"] [hidden];
+        FilterBranches ["/", "secondary-f" in "Sidebar && !modal"] [hidden];
     }
 
-    view BlameView in blame context "BlameView && !TextInput" {
+    view BlameView in blame context "BlameView && !modal && !TextInput" {
         /// Leave the blame view and go back to the diff.
-        BlameShowDiff ["escape" in "BlameView", "d"] [hidden];
+        BlameShowDiff ["escape" in "BlameView && !modal", "d"] [hidden];
         /// Show the blamed file's commit history.
         BlameShowHistory "h" [hidden];
     }
 
-    view FileHistoryView in history context "FileHistoryView && !TextInput" {
+    view FileHistoryView in history context "FileHistoryView && !modal && !TextInput" {
         /// Leave the file history and go back to the diff.
-        HistoryShowDiff ["escape" in "FileHistoryView", "d"] [hidden];
+        HistoryShowDiff ["escape" in "FileHistoryView && !modal", "d"] [hidden];
         /// Blame the file whose history is shown.
         HistoryShowBlame "b" [hidden];
     }
@@ -995,11 +1000,14 @@ mod tests {
     fn a_view_context_is_inherited_unless_overridden() {
         assert_eq!(
             CommandId::BlameShowDiff.default_bindings(),
-            &[("escape", "BlameView"), ("d", "BlameView && !TextInput")]
+            &[
+                ("escape", "BlameView && !modal"),
+                ("d", "BlameView && !modal && !TextInput")
+            ]
         );
         assert_eq!(
             CommandId::BlameShowHistory.default_bindings(),
-            &[("h", "BlameView && !TextInput")]
+            &[("h", "BlameView && !modal && !TextInput")]
         );
     }
 

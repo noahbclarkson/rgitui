@@ -5039,9 +5039,15 @@ mod view_tests {
     }
 
     /// Shows `source` in a focused viewer, selects every row so a staging
-    /// request would have a target, presses `s` then `u`, and returns whatever
-    /// staging requests came back.
-    fn staging_requests_after_pressing_s_and_u(source: DiffSource) -> Vec<String> {
+    /// request would have a target, invokes stage-then-unstage, and returns
+    /// whatever staging requests came back.
+    ///
+    /// These go through the methods rather than simulated keystrokes because the
+    /// `s`/`u` bindings are gpui actions declared in `rgitui_workspace`, which
+    /// sits above this crate and so cannot be reached from here. The keystrokes
+    /// are covered by the keymap registry's own tests; what matters here is that
+    /// the entry points the actions call refuse on historical content.
+    fn staging_requests_after_stage_then_unstage(source: DiffSource) -> Vec<String> {
         let mut probe = ViewTest::open(StagingProbe::new);
 
         probe.update(|probe, window, cx| {
@@ -5051,27 +5057,32 @@ mod view_tests {
             });
         });
 
-        // Guard against a vacuous test: the rows must actually exist, or `s`
-        // would find no hunk under the selection regardless of provenance.
+        // Guard against a vacuous test: the rows must actually exist, or the
+        // selection would find no hunk regardless of provenance.
         probe.read(|probe, cx| {
             let viewer = probe.viewer.read(cx);
             assert!(
                 viewer.row_count() > 0,
-                "display rows should be prepared before keys are pressed"
+                "display rows should be prepared before staging is attempted"
             );
         });
 
-        // ctrl-a selects every row, so `s`/`u` resolve to the whole hunk.
-        probe.simulate_keystroke("ctrl-a");
-        probe.simulate_keystroke("s");
-        probe.simulate_keystroke("u");
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                // Select every row, so the request resolves to the whole hunk.
+                viewer.select_all_lines(cx);
+                viewer.stage_selection(cx);
+                viewer.unstage_selection(cx);
+            });
+        });
 
         probe.read(|probe, _| probe.staging_requests())
     }
 
     #[test]
     fn pressing_s_or_u_on_a_commit_diff_requests_no_staging() {
-        let requests = staging_requests_after_pressing_s_and_u(DiffSource::Commit(OID.to_string()));
+        let requests =
+            staging_requests_after_stage_then_unstage(DiffSource::Commit(OID.to_string()));
         assert!(
             requests.is_empty(),
             "a committed diff must not be stageable, but the viewer emitted {requests:?}"
@@ -5080,7 +5091,8 @@ mod view_tests {
 
     #[test]
     fn pressing_s_or_u_on_a_stash_diff_requests_no_staging() {
-        let requests = staging_requests_after_pressing_s_and_u(DiffSource::Stash(OID.to_string()));
+        let requests =
+            staging_requests_after_stage_then_unstage(DiffSource::Stash(OID.to_string()));
         assert!(
             requests.is_empty(),
             "a stashed diff must not be stageable, but the viewer emitted {requests:?}"
@@ -5091,7 +5103,7 @@ mod view_tests {
     /// keys had simply stopped working everywhere.
     #[test]
     fn pressing_s_on_a_worktree_diff_still_requests_staging() {
-        let requests = staging_requests_after_pressing_s_and_u(DiffSource::Worktree);
+        let requests = staging_requests_after_stage_then_unstage(DiffSource::Worktree);
         assert_eq!(
             requests,
             vec!["HunkStageRequested(0)".to_string()],
@@ -5102,7 +5114,7 @@ mod view_tests {
     /// The mirror control case: the index unstages on `u` and ignores `s`.
     #[test]
     fn pressing_u_on_an_index_diff_still_requests_unstaging() {
-        let requests = staging_requests_after_pressing_s_and_u(DiffSource::Index);
+        let requests = staging_requests_after_stage_then_unstage(DiffSource::Index);
         assert_eq!(
             requests,
             vec!["HunkUnstageRequested(0)".to_string()],
@@ -5126,7 +5138,11 @@ mod view_tests {
             });
         });
 
-        probe.simulate_keystroke("p");
+        probe.update(|probe, _window, cx| {
+            probe
+                .viewer
+                .update(cx, |viewer, cx| viewer.toggle_partial_mode(cx));
+        });
         probe.read(|probe, cx| {
             assert!(
                 !probe.viewer.read(cx).partial_mode,
@@ -5146,9 +5162,17 @@ mod view_tests {
             });
         });
 
-        probe.simulate_keystroke("p");
+        probe.update(|probe, _window, cx| {
+            probe
+                .viewer
+                .update(cx, |viewer, cx| viewer.toggle_partial_mode(cx));
+        });
         probe.read(|probe, cx| assert!(probe.viewer.read(cx).partial_mode));
-        probe.simulate_keystroke("p");
+        probe.update(|probe, _window, cx| {
+            probe
+                .viewer
+                .update(cx, |viewer, cx| viewer.toggle_partial_mode(cx));
+        });
         probe.read(|probe, cx| assert!(!probe.viewer.read(cx).partial_mode));
     }
 }

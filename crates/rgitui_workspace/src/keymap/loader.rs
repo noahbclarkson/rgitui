@@ -665,6 +665,53 @@ mod tests {
         assert_eq!(plan.keep.len(), default_specs().len());
     }
 
+    /// The planning tests above substitute [`resolve_known_actions`] for
+    /// `App::build_action`, so they would still pass if a generated action name
+    /// did not match what gpui actually registered — and every binding would
+    /// then fail to load at runtime, leaving the app with no shortcuts and a
+    /// toast per command. This drives the real resolver instead.
+    #[gpui::test]
+    fn the_defaults_load_against_the_real_action_registry(cx: &mut gpui::TestAppContext) {
+        let loaded = cx.update(|cx| load_from_content("", cx));
+
+        assert!(
+            loaded.problems.is_empty(),
+            "the shipped defaults do not load cleanly: {:?}",
+            loaded.problems
+        );
+        assert_eq!(
+            loaded.bindings.len(),
+            default_specs().len(),
+            "some default bindings were dropped on the way to gpui"
+        );
+    }
+
+    /// A user binding naming an action gpui does not know must be reported and
+    /// skipped, not silently dropped along with the rest of the file.
+    #[gpui::test]
+    fn an_unknown_user_action_is_reported_by_the_real_resolver(cx: &mut gpui::TestAppContext) {
+        let loaded = cx.update(|cx| {
+            load_from_content(
+                r#"[{ "context": "Workspace", "bindings": {
+                    "ctrl-alt-1": "rgitui::NoSuchCommand"
+                }}]"#,
+                cx,
+            )
+        });
+
+        assert_eq!(loaded.problems.len(), 1, "{:?}", loaded.problems);
+        assert!(
+            loaded.problems[0].contains("rgitui::NoSuchCommand"),
+            "{:?}",
+            loaded.problems
+        );
+        assert_eq!(
+            loaded.bindings.len(),
+            default_specs().len(),
+            "the defaults must survive one bad user binding"
+        );
+    }
+
     #[test]
     fn an_unknown_action_name_is_reported_and_the_load_continues() {
         let plan = plan(

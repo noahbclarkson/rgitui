@@ -401,7 +401,7 @@ mod tests {
                 .iter()
                 .map(|spec| (spec.keystrokes.as_str(), spec.context.as_deref()))
                 .collect::<Vec<_>>(),
-            [("s", Some("GraphView && !TextInput"))]
+            [("s", Some("GraphView && !modal && !TextInput"))]
         );
 
         for shadow in detect_shadowing(&specs) {

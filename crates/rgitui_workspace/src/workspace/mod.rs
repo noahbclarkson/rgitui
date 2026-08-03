@@ -651,7 +651,15 @@ impl Workspace {
     /// Drains the problems so each is shown once, whether it came from the
     /// startup load or from a later reload triggered by saving the file.
     pub fn show_keymap_problems(&mut self, cx: &mut Context<Self>) {
-        if cx.try_global::<crate::keymap::KeymapState>().is_none() {
+        // Read before writing. This runs as a `KeymapState` global observer, and
+        // `update_global` notifies global observers on release — so taking the
+        // problems unconditionally re-enters this method forever, pinning the UI
+        // thread at 100% CPU on startup and on every keymap.json save. Bailing
+        // out when there is nothing left to report ends the cycle after one pass.
+        let has_problems = cx
+            .try_global::<crate::keymap::KeymapState>()
+            .is_some_and(crate::keymap::KeymapState::has_problems);
+        if !has_problems {
             return;
         }
         let problems =

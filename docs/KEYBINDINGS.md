@@ -74,7 +74,7 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | `f5` | `Workspace && !modal` | `rgitui::Refresh` | Reload the repository state from disk. |
 | `secondary-,` | `Workspace` | `rgitui::Settings` | Open the settings window. |
 | `secondary-o` | `Workspace` | `rgitui::OpenRepo` | Open the repository picker. |
-| `secondary-h` | `Workspace && !modal` | `rgitui::WorkspaceHome` | Close every tab and return to the workspace home screen. |
+| `ctrl-h` | `Workspace && !modal` | `rgitui::WorkspaceHome` | Close every tab and return to the workspace home screen. |
 | _unbound_ | — | `rgitui::RestoreLastWorkspace` | Reopen the most recently saved workspace. |
 | `?` | `Workspace && !TextInput` | `rgitui::Shortcuts` | Show the keyboard shortcut reference. |
 | `secondary-shift-b` | `Workspace && !modal` | `rgitui::SwitchBranch` | Focus the sidebar to switch branches. |
@@ -97,8 +97,8 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | _unbound_ | — | `rgitui::StashBranch` | Create a branch from a stash entry. |
 | `secondary-shift-t` or `alt-9` | `Workspace` | `rgitui::OpenThemeEditor` | Open the theme editor. |
 | `secondary-shift-p` | `Workspace` | `rgitui::CommandPalette` | Toggle the command palette. |
-| `secondary-tab` | `Workspace && !modal` | `rgitui::NextTab` | Activate the next repository tab. |
-| `secondary-shift-tab` | `Workspace && !modal` | `rgitui::PrevTab` | Activate the previous repository tab. |
+| `ctrl-tab` | `Workspace && !modal` | `rgitui::NextTab` | Activate the next repository tab. |
+| `ctrl-shift-tab` | `Workspace && !modal` | `rgitui::PrevTab` | Activate the previous repository tab. |
 | `secondary-w` | `Workspace && !modal` | `rgitui::CloseTab` | Close the active repository tab. |
 | `alt-1` | `Workspace && !modal` | `rgitui::FocusSidebar` | Move keyboard focus to the sidebar. |
 | `alt-2` | `Workspace && !modal` | `rgitui::FocusGraph` | Move keyboard focus to the commit graph. |
@@ -127,66 +127,66 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 
 | Keystroke | Context | Action | Description |
 | --- | --- | --- | --- |
-| `down` or `j` | `GraphView` or `GraphView && !TextInput` | `graph::GraphSelectNext` | Select the next commit in the graph. |
-| `up` or `k` | `GraphView` or `GraphView && !TextInput` | `graph::GraphSelectPrev` | Select the previous commit in the graph. |
-| `home` or `g` | `GraphView` or `GraphView && !TextInput` | `graph::GraphSelectFirst` | Select the newest commit in the graph. |
-| `end` or `shift-g` | `GraphView` or `GraphView && !TextInput` | `graph::GraphSelectLast` | Select the oldest loaded commit in the graph. |
-| `shift-down` or `shift-j` | `GraphView && !TextInput` | `graph::GraphExtendSelectionNext` | Add the next commit in the graph to the selection. |
-| `shift-up` or `shift-k` | `GraphView && !TextInput` | `graph::GraphExtendSelectionPrev` | Add the previous commit in the graph to the selection. |
-| `s` | `GraphView && !TextInput` | `graph::SquashSelected` | Squash the selected commits into the oldest of them. |
-| `escape` | `GraphView` | `graph::GraphCancel` | Close the graph search, or dismiss the graph context menu. |
-| `y` | `GraphView && !TextInput` | `graph::CopyCommitSha` | Copy the selected commit's SHA to the clipboard. |
-| `shift-c` | `GraphView && !TextInput` | `graph::CopyCommitMessage` | Copy the selected commit's message to the clipboard. |
+| `down` or `j` | `GraphView && !modal` or `GraphView && !modal && !TextInput` | `graph::GraphSelectNext` | Select the next commit in the graph. |
+| `up` or `k` | `GraphView && !modal` or `GraphView && !modal && !TextInput` | `graph::GraphSelectPrev` | Select the previous commit in the graph. |
+| `home` or `g` | `GraphView && !modal` or `GraphView && !modal && !TextInput` | `graph::GraphSelectFirst` | Select the newest commit in the graph. |
+| `end` or `shift-g` | `GraphView && !modal` or `GraphView && !modal && !TextInput` | `graph::GraphSelectLast` | Select the oldest loaded commit in the graph. |
+| `shift-down` or `shift-j` | `GraphView && !modal && !TextInput` | `graph::GraphExtendSelectionNext` | Add the next commit in the graph to the selection. |
+| `shift-up` or `shift-k` | `GraphView && !modal && !TextInput` | `graph::GraphExtendSelectionPrev` | Add the previous commit in the graph to the selection. |
+| `s` | `GraphView && !modal && !TextInput` | `graph::SquashSelected` | Squash the selected commits into the oldest of them. |
+| `escape` | `GraphView && !modal` | `graph::GraphCancel` | Close the graph search, or dismiss the graph context menu. |
+| `y` | `GraphView && !modal && !TextInput` | `graph::CopyCommitSha` | Copy the selected commit's SHA to the clipboard. |
+| `shift-c` | `GraphView && !modal && !TextInput` | `graph::CopyCommitMessage` | Copy the selected commit's message to the clipboard. |
 
 ## DiffViewer
 
 | Keystroke | Context | Action | Description |
 | --- | --- | --- | --- |
-| `down` or `j` | `DiffViewer && !TextInput` | `diff::DiffSelectNext` | Move the diff cursor down one row. |
-| `up` or `k` | `DiffViewer && !TextInput` | `diff::DiffSelectPrev` | Move the diff cursor up one row. |
-| `home` or `g` | `DiffViewer && !TextInput` | `diff::DiffSelectFirst` | Move the diff cursor to the first row. |
-| `end` or `shift-g` | `DiffViewer && !TextInput` | `diff::DiffSelectLast` | Move the diff cursor to the last row. |
-| `]` | `DiffViewer && !TextInput` | `diff::NextHunk` | Jump to the next hunk. |
-| `[` | `DiffViewer && !TextInput` | `diff::PrevHunk` | Jump to the previous hunk. |
-| `d` | `DiffViewer && !TextInput` | `diff::ToggleDiffDisplayMode` | Cycle the diff viewer's display mode. |
-| `p` | `DiffViewer && !TextInput` | `diff::TogglePartialSelection` | Toggle line-level selection in the diff viewer. |
-| `s` or `shift-s` | `DiffViewer && !TextInput` | `diff::StageSelection` | Stage the hunks or lines under the diff selection. |
-| `u` or `shift-u` | `DiffViewer && !TextInput` | `diff::UnstageSelection` | Unstage the hunks or lines under the diff selection. |
-| `alt-s` | `DiffViewer && !TextInput` | `diff::StageCurrentHunk` | Stage the hunk under the diff cursor. |
-| `alt-u` | `DiffViewer && !TextInput` | `diff::UnstageCurrentHunk` | Unstage the hunk under the diff cursor. |
-| `secondary-c` | `DiffViewer && !TextInput` | `diff::CopyDiffSelection` | Copy the selected diff lines to the clipboard. |
-| `secondary-a` | `DiffViewer && !TextInput` | `diff::SelectAllDiffLines` | Select every line in the diff. |
+| `down` or `j` | `DiffViewer && !modal && !TextInput` | `diff::DiffSelectNext` | Move the diff cursor down one row. |
+| `up` or `k` | `DiffViewer && !modal && !TextInput` | `diff::DiffSelectPrev` | Move the diff cursor up one row. |
+| `home` or `g` | `DiffViewer && !modal && !TextInput` | `diff::DiffSelectFirst` | Move the diff cursor to the first row. |
+| `end` or `shift-g` | `DiffViewer && !modal && !TextInput` | `diff::DiffSelectLast` | Move the diff cursor to the last row. |
+| `]` | `DiffViewer && !modal && !TextInput` | `diff::NextHunk` | Jump to the next hunk. |
+| `[` | `DiffViewer && !modal && !TextInput` | `diff::PrevHunk` | Jump to the previous hunk. |
+| `d` | `DiffViewer && !modal && !TextInput` | `diff::ToggleDiffDisplayMode` | Cycle the diff viewer's display mode. |
+| `p` | `DiffViewer && !modal && !TextInput` | `diff::TogglePartialSelection` | Toggle line-level selection in the diff viewer. |
+| `s` or `shift-s` | `DiffViewer && !modal && !TextInput` | `diff::StageSelection` | Stage the hunks or lines under the diff selection. |
+| `u` or `shift-u` | `DiffViewer && !modal && !TextInput` | `diff::UnstageSelection` | Unstage the hunks or lines under the diff selection. |
+| `alt-s` | `DiffViewer && !modal && !TextInput` | `diff::StageCurrentHunk` | Stage the hunk under the diff cursor. |
+| `alt-u` | `DiffViewer && !modal && !TextInput` | `diff::UnstageCurrentHunk` | Unstage the hunk under the diff cursor. |
+| `secondary-c` | `DiffViewer && !modal && !TextInput` | `diff::CopyDiffSelection` | Copy the selected diff lines to the clipboard. |
+| `secondary-a` | `DiffViewer && !modal && !TextInput` | `diff::SelectAllDiffLines` | Select every line in the diff. |
 
 ## DetailPanel
 
 | Keystroke | Context | Action | Description |
 | --- | --- | --- | --- |
-| `v` | `DetailPanel && !TextInput` | `detail::ToggleFileTree` | Switch the changed-files list between the flat and tree layouts. |
-| `[` | `DetailPanel && !TextInput` | `detail::PrevCommitDetails` | Show the previous commit's details. |
-| `]` | `DetailPanel && !TextInput` | `detail::NextCommitDetails` | Show the next commit's details. |
-| `/` or `secondary-f` | `DetailPanel && !TextInput` or `DetailPanel` | `detail::FileSearch` | Filter the changed-files list. |
+| `v` | `DetailPanel && !modal && !TextInput` | `detail::ToggleFileTree` | Switch the changed-files list between the flat and tree layouts. |
+| `[` | `DetailPanel && !modal && !TextInput` | `detail::PrevCommitDetails` | Show the previous commit's details. |
+| `]` | `DetailPanel && !modal && !TextInput` | `detail::NextCommitDetails` | Show the next commit's details. |
+| `/` or `secondary-f` | `DetailPanel && !modal && !TextInput` or `DetailPanel && !modal` | `detail::FileSearch` | Filter the changed-files list. |
 
 ## Sidebar
 
 | Keystroke | Context | Action | Description |
 | --- | --- | --- | --- |
-| `s` | `Sidebar && !TextInput` | `sidebar::ToggleStageRow` | Stage or unstage the selected file. |
-| `x` or `delete` | `Sidebar && !TextInput` or `Sidebar` | `sidebar::DiscardRow` | Discard the selected change, or delete the selected branch, tag or stash. |
-| `/` or `secondary-f` | `Sidebar && !TextInput` or `Sidebar` | `sidebar::FilterBranches` | Filter the branch list. |
+| `s` | `Sidebar && !modal && !TextInput` | `sidebar::ToggleStageRow` | Stage or unstage the selected file. |
+| `x` or `delete` | `Sidebar && !modal && !TextInput` or `Sidebar && !modal` | `sidebar::DiscardRow` | Discard the selected change, or delete the selected branch, tag or stash. |
+| `/` or `secondary-f` | `Sidebar && !modal && !TextInput` or `Sidebar && !modal` | `sidebar::FilterBranches` | Filter the branch list. |
 
 ## BlameView
 
 | Keystroke | Context | Action | Description |
 | --- | --- | --- | --- |
-| `escape` or `d` | `BlameView` or `BlameView && !TextInput` | `blame::BlameShowDiff` | Leave the blame view and go back to the diff. |
-| `h` | `BlameView && !TextInput` | `blame::BlameShowHistory` | Show the blamed file's commit history. |
+| `escape` or `d` | `BlameView && !modal` or `BlameView && !modal && !TextInput` | `blame::BlameShowDiff` | Leave the blame view and go back to the diff. |
+| `h` | `BlameView && !modal && !TextInput` | `blame::BlameShowHistory` | Show the blamed file's commit history. |
 
 ## FileHistoryView
 
 | Keystroke | Context | Action | Description |
 | --- | --- | --- | --- |
-| `escape` or `d` | `FileHistoryView` or `FileHistoryView && !TextInput` | `history::HistoryShowDiff` | Leave the file history and go back to the diff. |
-| `b` | `FileHistoryView && !TextInput` | `history::HistoryShowBlame` | Blame the file whose history is shown. |
+| `escape` or `d` | `FileHistoryView && !modal` or `FileHistoryView && !modal && !TextInput` | `history::HistoryShowDiff` | Leave the file history and go back to the diff. |
+| `b` | `FileHistoryView && !modal && !TextInput` | `history::HistoryShowBlame` | Blame the file whose history is shown. |
 
 ## InteractiveRebase
 
