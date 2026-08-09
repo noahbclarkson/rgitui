@@ -131,6 +131,15 @@ impl TempRepo {
     /// Writes `contents` to `relative_path` in the working tree, creating parent
     /// directories. The change is left unstaged.
     pub fn write_file(&self, relative_path: impl AsRef<Path>, contents: &str) {
+        self.write_file_bytes(relative_path, contents.as_bytes());
+    }
+
+    /// Writes exact bytes to `relative_path` in the working tree, creating
+    /// parent directories. The change is left unstaged.
+    ///
+    /// Use this for encoding, binary-content, and invalid-UTF-8 tests; prefer
+    /// [`TempRepo::write_file`] for ordinary text fixtures.
+    pub fn write_file_bytes(&self, relative_path: impl AsRef<Path>, contents: &[u8]) {
         let path = self.path().join(relative_path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("failed to create parent dirs");

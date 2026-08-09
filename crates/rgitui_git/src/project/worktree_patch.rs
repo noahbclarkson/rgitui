@@ -2082,43 +2082,27 @@ mod tests {
 #[cfg(test)]
 mod worktree_patch_integration_tests {
     use super::*;
+    use rgitui_test_support::TempRepo;
     use tempfile::TempDir;
 
     struct Fixture {
-        _dir: TempDir,
+        repo: TempRepo,
         path: PathBuf,
-        repo: Repository,
     }
 
     impl Fixture {
         fn new() -> Self {
-            let dir = TempDir::new().unwrap();
-            let path = dir.path().to_path_buf();
-            let repo = Repository::init(&path).unwrap();
-            let mut config = repo.config().unwrap();
-            config.set_str("user.name", "Test").unwrap();
-            config.set_str("user.email", "t@t.com").unwrap();
-            // Keep line endings byte-exact so content assertions hold on
-            // Windows, where autocrlf would rewrite what we read back.
-            config.set_bool("core.autocrlf", false).unwrap();
-            drop(config);
-            Self {
-                _dir: dir,
-                path,
-                repo,
-            }
+            let repo = TempRepo::init();
+            let path = repo.path().to_path_buf();
+            Self { repo, path }
         }
 
         fn write(&self, name: &str, contents: &str) {
-            self.write_bytes(name, contents.as_bytes());
+            self.repo.write_file(name, contents);
         }
 
         fn write_bytes(&self, name: &str, contents: &[u8]) {
-            let path = self.path.join(name);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(path, contents).unwrap();
+            self.repo.write_file_bytes(name, contents);
         }
 
         fn read(&self, name: &str) -> String {
@@ -2126,48 +2110,40 @@ mod worktree_patch_integration_tests {
         }
 
         fn commit(&self, message: &str, files: &[&str]) -> Oid {
-            let signature = git2::Signature::now("Test", "t@t.com").unwrap();
-            let mut index = self.repo.index().unwrap();
             for file in files {
-                index.add_path(Path::new(file)).unwrap();
+                self.repo.stage(file);
             }
-            index.write().unwrap();
-            let tree = self.repo.find_tree(index.write_tree().unwrap()).unwrap();
-            let parents = match self.repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
-                Some(parent) => vec![parent],
-                None => Vec::new(),
-            };
-            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-            self.repo
-                .commit(
-                    Some("HEAD"),
-                    &signature,
-                    &signature,
-                    message,
-                    &tree,
-                    &parent_refs,
-                )
-                .unwrap()
+            self.repo.commit(message)
         }
 
         fn branch(&self, name: &str) {
-            let head = self.repo.head().unwrap().peel_to_commit().unwrap();
-            self.repo.branch(name, &head, true).unwrap();
+            self.repo.branch(name);
         }
 
         fn checkout(&self, name: &str) {
             let reference = format!("refs/heads/{name}");
-            let object = self.repo.revparse_single(&reference).unwrap();
-            self.repo.checkout_tree(&object, None).unwrap();
-            self.repo.set_head(&reference).unwrap();
+            let object = self.repo.repo().revparse_single(&reference).unwrap();
+            self.repo.repo().checkout_tree(&object, None).unwrap();
+            self.repo.repo().set_head(&reference).unwrap();
         }
 
         fn head_branch_name(&self) -> String {
-            self.repo.head().unwrap().shorthand().unwrap().to_string()
+            self.repo
+                .repo()
+                .head()
+                .unwrap()
+                .shorthand()
+                .unwrap()
+                .to_string()
         }
 
         fn set_config(&self, name: &str, value: &str) {
-            self.repo.config().unwrap().set_str(name, value).unwrap();
+            self.repo
+                .repo()
+                .config()
+                .unwrap()
+                .set_str(name, value)
+                .unwrap();
         }
     }
 
@@ -2397,6 +2373,7 @@ mod worktree_patch_integration_tests {
         let diff = git2::Diff::from_buffer(patch.as_bytes()).unwrap();
         fixture
             .repo
+            .repo()
             .apply(&diff, git2::ApplyLocation::WorkDir, None)
             .expect_err("libgit2 matches context literally, and line 5 no longer matches");
         assert_eq!(
