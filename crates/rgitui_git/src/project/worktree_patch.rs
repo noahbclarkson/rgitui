@@ -538,16 +538,21 @@ fn is_regular_blob_mode(mode: FileMode) -> bool {
 
 /// Read `file_path`'s diff out of `source` as hunks of [`ScopedLine`]s.
 ///
-/// The diff is computed with default options so hunk indices line up with the
-/// `FileDiff` the viewer is displaying, which came from the same tree pair via
-/// `parse_multi_file_diff`.
+/// Textual deltas use the viewer's default diff shape so their hunk indices line
+/// up with `parse_multi_file_diff`. Type changes are kept intact only so an
+/// unsupported symlink or submodule cannot masquerade as a plain deletion.
 fn scoped_hunks(
     repo: &Repository,
     source: &WorktreePatchSource,
     file_path: &Path,
 ) -> Result<FileDiffSides> {
     let (from_tree, to_tree) = source.trees(repo)?;
-    let diff = repo.diff_tree_to_tree(from_tree.as_ref(), to_tree.as_ref(), None)?;
+    // Keep regular-file/symlink/submodule transitions in one delta. With
+    // libgit2's default split form, the first matching delta can look like a
+    // harmless deletion and hide the non-regular addition that follows it.
+    let mut options = git2::DiffOptions::new();
+    options.include_typechange(true);
+    let diff = repo.diff_tree_to_tree(from_tree.as_ref(), to_tree.as_ref(), Some(&mut options))?;
 
     for (delta_index, delta) in diff.deltas().enumerate() {
         let old_path = delta.old_file().path().map(Path::to_path_buf);
@@ -2111,6 +2116,42 @@ mod worktree_patch_integration_tests {
             self.repo.commit(message)
         }
 
+        fn commit_symlink(&self, message: &str, name: &str, target: &Path) -> Oid {
+            let target = target.to_string_lossy();
+            let blob = self.repo.repo().blob(target.as_bytes()).unwrap();
+            let mut index = self.repo.repo().index().unwrap();
+            index
+                .add(&IndexEntry {
+                    ctime: IndexTime::new(0, 0),
+                    mtime: IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: 0o120000,
+                    uid: 0,
+                    gid: 0,
+                    file_size: target.len() as u32,
+                    id: blob,
+                    flags: 0,
+                    flags_extended: 0,
+                    path: name.as_bytes().to_vec(),
+                })
+                .unwrap();
+            index.write().unwrap();
+            let tree = index.write_tree().unwrap();
+            assert_eq!(
+                self.repo
+                    .repo()
+                    .find_tree(tree)
+                    .unwrap()
+                    .get_path(Path::new(name))
+                    .unwrap()
+                    .filemode(),
+                0o120000
+            );
+            self.repo
+                .commit_tree(Some("HEAD"), message, tree, &[self.repo.head_oid()])
+        }
+
         fn branch(&self, name: &str) {
             self.repo.branch(name);
         }
@@ -3175,7 +3216,6 @@ mod worktree_patch_integration_tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_tracked_symlink_diff_is_not_materialized_as_a_regular_file() {
         let fixture = Fixture::new();
@@ -3184,11 +3224,7 @@ mod worktree_patch_integration_tests {
         let outside = TempDir::new().unwrap();
         let target = outside.path().join("target.txt");
         std::fs::write(&target, "outside\n").unwrap();
-        std::fs::remove_file(fixture.path.join("f.txt")).unwrap();
-        std::os::unix::fs::symlink(&target, fixture.path.join("f.txt")).unwrap();
-        let oid = fixture.commit("replace with symlink", &["f.txt"]);
-        std::fs::remove_file(fixture.path.join("f.txt")).unwrap();
-        fixture.write("f.txt", "base\n");
+        let oid = fixture.commit_symlink("replace with symlink", "f.txt", &target);
 
         let error = apply(
             &fixture,
