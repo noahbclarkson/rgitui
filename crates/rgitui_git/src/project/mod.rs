@@ -81,9 +81,9 @@ pub use submodule::{
     SubmoduleInfo,
 };
 pub use worktree_patch::{
-    apply_worktree_patch, restore_worktree_files, snapshots_fit_undo_stack, WorktreeFileSnapshot,
-    WorktreePatchDirection, WorktreePatchOutcome, WorktreePatchScope, WorktreePatchSource,
-    MAX_UNDO_SNAPSHOT_BYTES,
+    apply_worktree_patch, restore_worktree_files, snapshots_fit_undo_stack,
+    WorktreeFilePermissions, WorktreeFileSnapshot, WorktreeFileState, WorktreePatchDirection,
+    WorktreePatchOutcome, WorktreePatchScope, WorktreePatchSource, MAX_UNDO_SNAPSHOT_BYTES,
 };
 
 fn parse_remote_tracking_ref(name: &str) -> Option<(String, String)> {
@@ -269,6 +269,10 @@ pub enum GitProjectEvent {
         /// Undo label, e.g. "Applied hunk 2 of src/main.rs from a1b2c3d".
         label: String,
         snapshots: Vec<worktree_patch::WorktreeFileSnapshot>,
+        /// Repository entity that started the asynchronous mutation.
+        repo_path: PathBuf,
+        /// Effective worktree captured when the operation started.
+        worktree_path: PathBuf,
     },
 }
 

@@ -34,10 +34,19 @@
 //! never touched and never has to match the working tree.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
+use std::io::{Seek as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result};
-use git2::{IndexEntry, IndexTime, Oid, Repository};
+use git2::{FileMode, IndexEntry, IndexTime, Oid, Repository};
+
+/// Serializes every in-process filesystem transaction performed by this
+/// module. The filesystem compare-and-swap checks still defend against edits
+/// from editors and other processes; this lock prevents two background tasks
+/// in rgitui from both accepting the same pre-image.
+static WORKTREE_MUTATION_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Which side of a diff the working tree should be moved toward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,16 +193,39 @@ pub(crate) fn short_oid(oid_hex: &str) -> String {
     oid_hex[..7.min(oid_hex.len())].to_string()
 }
 
-/// The contents of one working-tree file before an apply or revert rewrote it.
+/// A regular working-tree file's exact on-disk state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeFileState {
+    /// Bytes as stored in the working tree, after Git's smudge/encoding/EOL
+    /// conversions rather than the canonical bytes stored in an object.
+    pub contents: Vec<u8>,
+    /// Permissions needed to restore the file without silently changing its
+    /// executable or read-only state.
+    pub permissions: WorktreeFilePermissions,
+}
+
+/// Portable portion of a file's permissions, plus the complete Unix mode when
+/// that platform makes it available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeFilePermissions {
+    pub readonly: bool,
+    #[cfg(unix)]
+    pub mode: u32,
+}
+
+/// The state of one working-tree file around an apply or revert.
 ///
-/// Undo restores these bytes verbatim rather than deriving a reverse patch, which
-/// would not be exact when the forward operation went through a three-way merge.
+/// Undo restores `before` only while the path still equals `expected_after`.
+/// That compare-and-swap contract prevents Undo from destroying edits made
+/// after the operation completed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeFileSnapshot {
     /// Path relative to the worktree root.
     pub path: PathBuf,
-    /// Contents before the operation; `None` when the file did not exist.
-    pub contents: Option<Vec<u8>>,
+    /// State before the operation; `None` when the file did not exist.
+    pub before: Option<WorktreeFileState>,
+    /// State written by the operation; `None` when it deleted the file.
+    pub expected_after: Option<WorktreeFileState>,
 }
 
 /// Largest total snapshot the undo stack will hold for one operation. Past this
@@ -207,7 +239,9 @@ pub const MAX_UNDO_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 pub fn snapshots_fit_undo_stack(snapshots: &[WorktreeFileSnapshot]) -> bool {
     snapshots
         .iter()
-        .filter_map(|s| s.contents.as_ref().map(Vec::len))
+        .flat_map(|snapshot| [snapshot.before.as_ref(), snapshot.expected_after.as_ref()])
+        .flatten()
+        .map(|state| state.contents.len())
         .sum::<usize>()
         <= MAX_UNDO_SNAPSHOT_BYTES
 }
@@ -215,7 +249,7 @@ pub fn snapshots_fit_undo_stack(snapshots: &[WorktreeFileSnapshot]) -> bool {
 /// Outcome of a successful working-tree apply or revert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreePatchOutcome {
-    /// Pre-operation contents of every file the operation rewrote.
+    /// Exact before/after states of every file the operation rewrote.
     pub snapshots: Vec<WorktreeFileSnapshot>,
     /// True when the change could not be dropped in verbatim and was merged
     /// around unrelated local edits. Worth telling the user about: their file
@@ -491,6 +525,15 @@ struct FileDiffSides {
     old_blob: Option<Oid>,
     /// Blob on the diff's new side, `None` when the file was deleted.
     new_blob: Option<Oid>,
+    old_mode: FileMode,
+    new_mode: FileMode,
+}
+
+fn is_regular_blob_mode(mode: FileMode) -> bool {
+    matches!(
+        mode,
+        FileMode::Blob | FileMode::BlobGroupWritable | FileMode::BlobExecutable
+    )
 }
 
 /// Read `file_path`'s diff out of `source` as hunks of [`ScopedLine`]s.
@@ -506,23 +549,41 @@ fn scoped_hunks(
     let (from_tree, to_tree) = source.trees(repo)?;
     let diff = repo.diff_tree_to_tree(from_tree.as_ref(), to_tree.as_ref(), None)?;
 
-    for delta_index in 0..diff.deltas().len() {
-        let patch = match git2::Patch::from_diff(&diff, delta_index) {
-            Ok(Some(patch)) => patch,
-            _ => continue,
-        };
-        let old_path = patch.delta().old_file().path().map(Path::to_path_buf);
-        let new_path = patch.delta().new_file().path().map(Path::to_path_buf);
+    for (delta_index, delta) in diff.deltas().enumerate() {
+        let old_path = delta.old_file().path().map(Path::to_path_buf);
+        let new_path = delta.new_file().path().map(Path::to_path_buf);
         if old_path.as_deref() != Some(file_path) && new_path.as_deref() != Some(file_path) {
             continue;
         }
+
+        let old_blob = delta.old_file().id();
+        let new_blob = delta.new_file().id();
+        let old_blob = (!old_blob.is_zero()).then_some(old_blob);
+        let new_blob = (!new_blob.is_zero()).then_some(new_blob);
+        if old_blob.is_some() && !is_regular_blob_mode(delta.old_file().mode())
+            || new_blob.is_some() && !is_regular_blob_mode(delta.new_file().mode())
+        {
+            anyhow::bail!(
+                "Can't patch {} because one side is not a regular file. Symbolic links and submodules are not supported by working-tree content patches.",
+                file_path.display()
+            );
+        }
+        // Validate both canonical sides before asking libgit2 for line hunks.
+        // Binary/invalid text must never be silently replacement-decoded.
+        blob_text(repo, old_blob, file_path)?;
+        blob_text(repo, new_blob, file_path)?;
+        let patch = git2::Patch::from_diff(&diff, delta_index)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Can't patch {} because Git does not expose it as a textual diff.",
+                file_path.display()
+            )
+        })?;
 
         let mut hunks = Vec::with_capacity(patch.num_hunks());
         for hunk_index in 0..patch.num_hunks() {
             let mut lines = Vec::new();
             for line_index in 0..patch.num_lines_in_hunk(hunk_index)? {
                 let line = patch.line_in_hunk(hunk_index, line_index)?;
-                let text = String::from_utf8_lossy(line.content()).to_string();
                 match line.origin() {
                     ' ' => {
                         if let (Some(old), Some(new)) = (line.old_lineno(), line.new_lineno()) {
@@ -534,6 +595,14 @@ fn scoped_hunks(
                     }
                     '+' => {
                         if let Some(new) = line.new_lineno() {
+                            let text = std::str::from_utf8(line.content())
+                                .with_context(|| {
+                                    format!(
+                                        "Can't patch {} because its canonical Git content is not valid UTF-8.",
+                                        file_path.display()
+                                    )
+                                })?
+                                .to_owned();
                             lines.push(ScopedLine::Addition {
                                 new_lineno: new as usize,
                                 text,
@@ -542,6 +611,14 @@ fn scoped_hunks(
                     }
                     '-' => {
                         if let Some(old) = line.old_lineno() {
+                            let text = std::str::from_utf8(line.content())
+                                .with_context(|| {
+                                    format!(
+                                        "Can't patch {} because its canonical Git content is not valid UTF-8.",
+                                        file_path.display()
+                                    )
+                                })?
+                                .to_owned();
                             lines.push(ScopedLine::Deletion {
                                 old_lineno: old as usize,
                                 text,
@@ -558,12 +635,12 @@ fn scoped_hunks(
             hunks.push(lines);
         }
 
-        let old_blob = patch.delta().old_file().id();
-        let new_blob = patch.delta().new_file().id();
         return Ok(FileDiffSides {
             hunks,
-            old_blob: (!old_blob.is_zero()).then_some(old_blob),
-            new_blob: (!new_blob.is_zero()).then_some(new_blob),
+            old_blob,
+            new_blob,
+            old_mode: delta.old_file().mode(),
+            new_mode: delta.new_file().mode(),
         });
     }
 
@@ -575,14 +652,406 @@ fn scoped_hunks(
     )
 }
 
-fn blob_text(repo: &Repository, blob: Option<Oid>) -> Result<String> {
+fn blob_text(repo: &Repository, blob: Option<Oid>, file_path: &Path) -> Result<String> {
     match blob {
         None => Ok(String::new()),
         Some(oid) => {
             let blob = repo.find_blob(oid)?;
-            Ok(String::from_utf8_lossy(blob.content()).to_string())
+            std::str::from_utf8(blob.content())
+                .map(str::to_owned)
+                .with_context(|| {
+                    format!(
+                        "Can't patch {} because its canonical Git content is not valid UTF-8.",
+                        file_path.display()
+                    )
+                })
         }
     }
+}
+
+fn validate_relative_file_path(path: &Path) -> Result<()> {
+    use std::path::Component;
+
+    let structurally_invalid = path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)));
+    #[cfg(windows)]
+    let structurally_invalid = structurally_invalid
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::Normal(value)
+                    if value.to_str().is_some_and(|value| value.contains(':'))
+            )
+        });
+    if structurally_invalid {
+        anyhow::bail!(
+            "Refusing to modify '{}': the path must contain only normal components relative to the working tree, with no root or parent traversal.",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink() || is_reparse_point(metadata)
+}
+
+/// Verify every existing parent without following a link or Windows reparse
+/// point. Missing parents are optionally created one component at a time and
+/// inspected immediately after creation.
+fn validate_parent_chain(workdir: &Path, path: &Path, create_missing: bool) -> Result<bool> {
+    let mut current = workdir.to_path_buf();
+    let Some(parent) = path.parent() else {
+        return Ok(true);
+    };
+
+    for component in parent.components() {
+        current.push(component.as_os_str());
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_missing => {
+                match std::fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("Failed to create {}", current.display()));
+                    }
+                }
+                std::fs::symlink_metadata(&current)
+                    .with_context(|| format!("Failed to inspect {}", current.display()))?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to inspect {}", current.display()));
+            }
+        };
+
+        if is_link_or_reparse(&metadata) {
+            anyhow::bail!(
+                "Refusing to modify '{}': parent '{}' is a symbolic link or reparse point.",
+                path.display(),
+                current.display()
+            );
+        }
+        if !metadata.is_dir() {
+            anyhow::bail!(
+                "Refusing to modify '{}': parent '{}' is not a directory.",
+                path.display(),
+                current.display()
+            );
+        }
+    }
+
+    // A second, independent containment check catches paths whose parents were
+    // exchanged while they were being inspected.
+    if parent.as_os_str().is_empty() {
+        return Ok(true);
+    }
+    let resolved_parent = workdir
+        .join(parent)
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve {}", workdir.join(parent).display()))?;
+    if !resolved_parent.starts_with(workdir) {
+        anyhow::bail!(
+            "Refusing to modify '{}': its parent resolves outside the working tree.",
+            path.display()
+        );
+    }
+    Ok(true)
+}
+
+fn permissions_from_metadata(metadata: &std::fs::Metadata) -> WorktreeFilePermissions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        WorktreeFilePermissions {
+            readonly: metadata.permissions().readonly(),
+            mode: metadata.permissions().mode() & 0o7777,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        WorktreeFilePermissions {
+            readonly: metadata.permissions().readonly(),
+        }
+    }
+}
+
+fn permissions_for_new_file(mode: FileMode) -> WorktreeFilePermissions {
+    #[cfg(unix)]
+    {
+        WorktreeFilePermissions {
+            readonly: false,
+            mode: match mode {
+                FileMode::BlobExecutable => 0o755,
+                FileMode::BlobGroupWritable => 0o664,
+                _ => 0o644,
+            },
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        WorktreeFilePermissions { readonly: false }
+    }
+}
+
+fn apply_permissions(file: &std::fs::File, permissions: &WorktreeFilePermissions) -> Result<()> {
+    #[cfg(unix)]
+    let fs_permissions = {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::Permissions::from_mode(permissions.mode)
+    };
+    #[cfg(not(unix))]
+    let fs_permissions = {
+        let mut value = file.metadata()?.permissions();
+        value.set_readonly(permissions.readonly);
+        value
+    };
+    file.set_permissions(fs_permissions)
+        .context("Failed to set permissions on the temporary working-tree file")
+}
+
+/// Read a path only after lstat-style validation. `None` means the path or one
+/// of its parents does not exist; links and non-regular files are errors.
+fn read_worktree_file_state(workdir: &Path, path: &Path) -> Result<Option<WorktreeFileState>> {
+    validate_relative_file_path(path)?;
+    if !validate_parent_chain(workdir, path, false)? {
+        return Ok(None);
+    }
+    let absolute = workdir.join(path);
+    let metadata = match std::fs::symlink_metadata(&absolute) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to inspect {}", absolute.display()));
+        }
+    };
+    if is_link_or_reparse(&metadata) {
+        anyhow::bail!(
+            "Refusing to modify '{}': it is a symbolic link or reparse point.",
+            path.display()
+        );
+    }
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "Refusing to modify '{}': it is not a regular file.",
+            path.display()
+        );
+    }
+
+    let contents = std::fs::read(&absolute)
+        .with_context(|| format!("Failed to read {}", absolute.display()))?;
+    let metadata_after = std::fs::symlink_metadata(&absolute)
+        .with_context(|| format!("Failed to revalidate {}", absolute.display()))?;
+    if is_link_or_reparse(&metadata_after) || !metadata_after.is_file() {
+        anyhow::bail!(
+            "Refusing to modify '{}': its filesystem type changed while it was being read.",
+            path.display()
+        );
+    }
+    if metadata_after.len() != contents.len() as u64 {
+        anyhow::bail!(
+            "Refusing to modify '{}': it changed while it was being read. Try again after the other edit finishes.",
+            path.display()
+        );
+    }
+
+    Ok(Some(WorktreeFileState {
+        contents,
+        permissions: permissions_from_metadata(&metadata_after),
+    }))
+}
+
+fn git_path_arg(path: &Path) -> OsString {
+    let mut argument = OsString::from("--path=");
+    argument.push(path.as_os_str());
+    argument
+}
+
+fn run_git_with_input(
+    workdir: &Path,
+    arguments: &[OsString],
+    input: &[u8],
+    description: &str,
+) -> Result<Vec<u8>> {
+    // Feed stdin from a temporary file so a noisy required filter cannot
+    // deadlock us by filling Git's stderr pipe while this process is still
+    // synchronously writing a large input pipe.
+    let mut input_file = tempfile::tempfile()
+        .with_context(|| format!("Failed to prepare input for Git while {description}"))?;
+    input_file
+        .write_all(input)
+        .with_context(|| format!("Failed to prepare content for Git while {description}"))?;
+    input_file
+        .rewind()
+        .with_context(|| format!("Failed to rewind Git input while {description}"))?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(arguments)
+        .stdin(Stdio::from(input_file))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("Failed to run Git while {description}"))?;
+    if !output.status.success() {
+        let details = String::from_utf8(output.stderr)
+            .unwrap_or_else(|_| "Git returned non-UTF-8 error output".to_string());
+        anyhow::bail!("Git failed while {description}: {}", details.trim());
+    }
+    Ok(output.stdout)
+}
+
+fn git_object_bytes(workdir: &Path, oid: &str, description: &str) -> Result<Vec<u8>> {
+    run_git_with_input(
+        workdir,
+        &[
+            OsString::from("cat-file"),
+            OsString::from("blob"),
+            OsString::from(oid),
+        ],
+        &[],
+        description,
+    )
+}
+
+/// Convert exact worktree bytes into canonical Git bytes, honoring text/EOL,
+/// working-tree-encoding, clean filters, and LFS.
+fn clean_worktree_bytes(workdir: &Path, path: &Path, bytes: &[u8]) -> Result<Vec<u8>> {
+    let oid_output = run_git_with_input(
+        workdir,
+        &[
+            OsString::from("hash-object"),
+            OsString::from("-w"),
+            OsString::from("--stdin"),
+            git_path_arg(path),
+        ],
+        bytes,
+        &format!("cleaning {} through Git attributes", path.display()),
+    )?;
+    let oid = std::str::from_utf8(&oid_output)
+        .context("Git returned a non-UTF-8 object ID while cleaning the working-tree file")?
+        .trim();
+    git_object_bytes(
+        workdir,
+        oid,
+        &format!("reading the cleaned content for {}", path.display()),
+    )
+}
+
+/// Convert canonical Git bytes into exact worktree bytes, honoring smudge
+/// filters, working-tree-encoding and configured line endings.
+fn smudge_canonical_bytes(workdir: &Path, path: &Path, bytes: &[u8]) -> Result<Vec<u8>> {
+    let oid_output = run_git_with_input(
+        workdir,
+        &[
+            OsString::from("hash-object"),
+            OsString::from("-w"),
+            OsString::from("--stdin"),
+        ],
+        bytes,
+        &format!("storing the merged content for {}", path.display()),
+    )?;
+    let oid = std::str::from_utf8(&oid_output)
+        .context("Git returned a non-UTF-8 object ID while preparing working-tree content")?
+        .trim();
+    run_git_with_input(
+        workdir,
+        &[
+            OsString::from("cat-file"),
+            OsString::from("--filters"),
+            git_path_arg(path),
+            OsString::from(oid),
+        ],
+        &[],
+        &format!("smudging {} through Git attributes", path.display()),
+    )
+}
+
+fn changed_during_operation(path: &Path, purpose: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Can't {purpose} '{}': it changed after the operation started. No file was overwritten; retry after the other edit finishes.",
+        path.display()
+    )
+}
+
+/// Atomically replace or delete one path only if its exact current bytes and
+/// permissions still match `expected`.
+fn replace_file_if_unchanged(
+    workdir: &Path,
+    path: &Path,
+    expected: &Option<WorktreeFileState>,
+    desired: &Option<WorktreeFileState>,
+    purpose: &str,
+) -> Result<()> {
+    if &read_worktree_file_state(workdir, path)? != expected {
+        return Err(changed_during_operation(path, purpose));
+    }
+
+    let absolute = workdir.join(path);
+    match desired {
+        Some(desired) => {
+            validate_parent_chain(workdir, path, true)?;
+            let parent = absolute
+                .parent()
+                .context("A validated working-tree path had no parent directory")?;
+            let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+                format!("Failed to create a temporary file in {}", parent.display())
+            })?;
+            temporary.write_all(&desired.contents).with_context(|| {
+                format!("Failed to write a temporary copy of {}", path.display())
+            })?;
+            temporary.as_file().sync_all().with_context(|| {
+                format!("Failed to flush a temporary copy of {}", path.display())
+            })?;
+            apply_permissions(temporary.as_file(), &desired.permissions)?;
+
+            // Revalidate immediately before the rename. Renaming replaces a
+            // final symlink rather than following it, while parent validation
+            // protects the directory traversal itself.
+            validate_parent_chain(workdir, path, false)?;
+            if &read_worktree_file_state(workdir, path)? != expected {
+                return Err(changed_during_operation(path, purpose));
+            }
+            temporary
+                .persist(&absolute)
+                .map_err(|error| error.error)
+                .with_context(|| format!("Failed to atomically replace {}", absolute.display()))?;
+        }
+        None => {
+            validate_parent_chain(workdir, path, false)?;
+            if &read_worktree_file_state(workdir, path)? != expected {
+                return Err(changed_during_operation(path, purpose));
+            }
+            std::fs::remove_file(&absolute)
+                .with_context(|| format!("Failed to delete {}", absolute.display()))?;
+        }
+    }
+
+    if &read_worktree_file_state(workdir, path)? != desired {
+        anyhow::bail!(
+            "The filesystem changed '{}' while the atomic update was being published. Check the file before retrying.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Apply or revert part of `source`'s diff for one file in `worktree_path`.
@@ -610,12 +1079,17 @@ pub fn apply_worktree_patch(
                 direction.verb()
             )
         })?
-        .to_path_buf();
+        .canonicalize()
+        .context("Failed to resolve the working-tree root")?;
+
+    validate_relative_file_path(file_path)?;
 
     let FileDiffSides {
         hunks,
         old_blob,
         new_blob,
+        old_mode,
+        new_mode,
     } = scoped_hunks(&repo, source, file_path)?;
 
     let selected_hunks = match scope {
@@ -646,12 +1120,12 @@ pub fn apply_worktree_patch(
         }
     };
 
-    let (base_blob, target_side_blob) = match direction {
-        WorktreePatchDirection::Apply => (old_blob, new_blob),
-        WorktreePatchDirection::Revert => (new_blob, old_blob),
+    let (base_blob, target_side_blob, target_mode) = match direction {
+        WorktreePatchDirection::Apply => (old_blob, new_blob, new_mode),
+        WorktreePatchDirection::Revert => (new_blob, old_blob, old_mode),
     };
 
-    let base_text = blob_text(&repo, base_blob)?;
+    let base_text = blob_text(&repo, base_blob, file_path)?;
     let base_lines = split_keeping_terminators(&base_text);
     let target_text = rewrite_side(
         &base_lines,
@@ -670,28 +1144,30 @@ pub fn apply_worktree_patch(
         );
     }
 
-    let absolute = workdir.join(file_path);
-
     // The whole file moving to a side that does not have it is a deletion, not
     // an empty file. Only the file-level scope can express that.
     let deletes_file = matches!(scope, WorktreePatchScope::File)
         && target_side_blob.is_none()
         && target_text.is_empty();
 
-    let existing = match std::fs::read(&absolute) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(error).with_context(|| format!("Failed to read {}", absolute.display()))
-        }
+    let _mutation_guard = WORKTREE_MUTATION_LOCK.lock();
+    let existing = read_worktree_file_state(&workdir, file_path)?;
+    let existing_canonical = match &existing {
+        Some(state) => Some(clean_worktree_bytes(&workdir, file_path, &state.contents)?),
+        None => None,
     };
-    let existing_text = existing
+    let existing_text = existing_canonical
         .as_deref()
-        .map(|bytes| String::from_utf8_lossy(bytes).to_string());
-    let snapshot = vec![WorktreeFileSnapshot {
-        path: file_path.to_path_buf(),
-        contents: existing.clone(),
-    }];
+        .map(|bytes| {
+            std::str::from_utf8(bytes).map(str::to_owned).with_context(|| {
+                format!(
+                    "Can't {} {} because its canonical working-tree content is not valid UTF-8. No file was changed.",
+                    direction.verb(),
+                    file_path.display()
+                )
+            })
+        })
+        .transpose()?;
 
     if deletes_file {
         let Some(existing_text) = existing_text.as_deref() else {
@@ -709,10 +1185,13 @@ pub fn apply_worktree_patch(
                 file_path.display()
             );
         }
-        std::fs::remove_file(&absolute)
-            .with_context(|| format!("Failed to delete {}", absolute.display()))?;
+        replace_file_if_unchanged(&workdir, file_path, &existing, &None, direction.verb())?;
         return Ok(WorktreePatchOutcome {
-            snapshots: snapshot,
+            snapshots: vec![WorktreeFileSnapshot {
+                path: file_path.to_path_buf(),
+                before: existing,
+                expected_after: None,
+            }],
             merged_with_local_changes: false,
         });
     }
@@ -743,15 +1222,22 @@ pub fn apply_worktree_patch(
         anyhow::bail!(already_applied_message(file_path, scope, source, direction));
     }
 
-    if let Some(parent) = absolute.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    std::fs::write(&absolute, merged_text.as_bytes())
-        .with_context(|| format!("Failed to write {}", absolute.display()))?;
+    let worktree_bytes = smudge_canonical_bytes(&workdir, file_path, merged_text.as_bytes())?;
+    let after = Some(WorktreeFileState {
+        contents: worktree_bytes,
+        permissions: existing
+            .as_ref()
+            .map(|state| state.permissions.clone())
+            .unwrap_or_else(|| permissions_for_new_file(target_mode)),
+    });
+    replace_file_if_unchanged(&workdir, file_path, &existing, &after, direction.verb())?;
 
     Ok(WorktreePatchOutcome {
-        snapshots: snapshot,
+        snapshots: vec![WorktreeFileSnapshot {
+            path: file_path.to_path_buf(),
+            before: existing,
+            expected_after: after,
+        }],
         merged_with_local_changes,
     })
 }
@@ -770,28 +1256,31 @@ pub fn restore_worktree_files(
     let workdir = repo
         .workdir()
         .ok_or_else(|| anyhow::anyhow!("This is a bare repository, so it has no working tree."))?
-        .to_path_buf();
+        .canonicalize()
+        .context("Failed to resolve the working-tree root")?;
+
+    let _mutation_guard = WORKTREE_MUTATION_LOCK.lock();
+
+    // Validate every CAS before making the first mutation. A later external
+    // edit is checked again immediately before each atomic replace.
+    for snapshot in snapshots {
+        validate_relative_file_path(&snapshot.path)?;
+        if read_worktree_file_state(&workdir, &snapshot.path)? != snapshot.expected_after {
+            anyhow::bail!(
+                "Can't undo the change to '{}': the file was edited after the operation. Those later edits were left untouched.",
+                snapshot.path.display()
+            );
+        }
+    }
 
     for snapshot in snapshots {
-        let absolute = workdir.join(&snapshot.path);
-        match &snapshot.contents {
-            Some(bytes) => {
-                if let Some(parent) = absolute.parent() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("Failed to create {}", parent.display()))?;
-                }
-                std::fs::write(&absolute, bytes)
-                    .with_context(|| format!("Failed to restore {}", absolute.display()))?;
-            }
-            None => match std::fs::remove_file(&absolute) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("Failed to remove {}", absolute.display()))
-                }
-            },
-        }
+        replace_file_if_unchanged(
+            &workdir,
+            &snapshot.path,
+            &snapshot.expected_after,
+            &snapshot.before,
+            "undo the change to",
+        )?;
     }
 
     Ok(())
@@ -809,7 +1298,11 @@ fn three_way_merge(
     ours: &str,
     theirs: &str,
 ) -> Result<Option<String>> {
-    let path_bytes = file_path.to_string_lossy().replace('\\', "/").into_bytes();
+    let path_bytes = file_path
+        .to_str()
+        .context("Working-tree patch paths must be valid UTF-8")?
+        .replace('\\', "/")
+        .into_bytes();
     let entry = |text: &str| -> Result<IndexEntry> {
         Ok(IndexEntry {
             ctime: IndexTime::new(0, 0),
@@ -841,7 +1334,16 @@ fn three_way_merge(
     if !result.is_automergeable() {
         return Ok(None);
     }
-    Ok(Some(String::from_utf8_lossy(result.content()).to_string()))
+    Ok(Some(
+        std::str::from_utf8(result.content())
+            .with_context(|| {
+                format!(
+                    "Git produced invalid UTF-8 while merging {}. No working-tree file was changed.",
+                    file_path.display()
+                )
+            })?
+            .to_owned(),
+    ))
 }
 
 // ── Error messages ────────────────────────────────────────────────────────────
@@ -928,6 +1430,14 @@ use super::refresh::gather_refresh_data_lightweight_cached;
 use super::{GitProject, GitProjectEvent, RefreshData};
 use crate::types::GitOperationKind;
 
+fn run_mutation_then_refresh<M, R>(
+    mutation: impl FnOnce() -> Result<M>,
+    refresh: impl FnOnce() -> Result<R>,
+) -> Result<(M, Result<R>)> {
+    let mutation = mutation()?;
+    Ok((mutation, refresh()))
+}
+
 impl GitProject {
     /// Apply or revert part of another revision's diff in `worktree_path`.
     ///
@@ -947,6 +1457,8 @@ impl GitProject {
         let file_path = file_path.to_path_buf();
         let task_file_path = file_path.clone();
         let task_worktree_path = worktree_path.to_path_buf();
+        let origin_worktree_path = task_worktree_path.clone();
+        let origin_repo_path = self.repo_path.clone();
         let refresh_repo_path = self.repo_path.clone();
         let worktree_cache = self.worktree_status_cache.clone();
         let author_filter = self.commit_author_filter.clone();
@@ -975,31 +1487,35 @@ impl GitProject {
         let task_scope = scope.clone();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<(WorktreePatchOutcome, RefreshData)> = cx
+            let result: anyhow::Result<(WorktreePatchOutcome, anyhow::Result<RefreshData>)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let outcome = apply_worktree_patch(
-                        &task_worktree_path,
-                        &task_file_path,
-                        &task_source,
-                        &task_scope,
-                        direction,
-                    )?;
-                    let data = gather_refresh_data_lightweight_cached(
-                        &refresh_repo_path,
-                        commit_limit,
-                        &worktree_cache,
-                        author_filter.as_deref(),
-                    )?;
-                    Ok((outcome, data))
+                    run_mutation_then_refresh(
+                        || {
+                            apply_worktree_patch(
+                                &task_worktree_path,
+                                &task_file_path,
+                                &task_source,
+                                &task_scope,
+                                direction,
+                            )
+                        },
+                        || {
+                            gather_refresh_data_lightweight_cached(
+                                &refresh_repo_path,
+                                commit_limit,
+                                &worktree_cache,
+                                author_filter.as_deref(),
+                            )
+                        },
+                    )
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok((outcome, data)) => {
-                            this.apply_refresh_data(data);
+                        Ok((outcome, refresh_result)) => {
                             let mut summary = format!(
                                 "{} {} of {} from {}",
                                 direction.past_tense(),
@@ -1012,6 +1528,27 @@ impl GitProject {
                                     " — merged around your uncommitted edits to that file",
                                 );
                             }
+                            let undoable = snapshots_fit_undo_stack(&outcome.snapshots);
+                            if !undoable {
+                                summary.push_str(
+                                    "; Undo is unavailable because the before/after snapshot exceeds 4 MiB",
+                                );
+                            }
+                            let refresh_succeeded = match refresh_result {
+                                Ok(data) => {
+                                    this.apply_refresh_data(data);
+                                    true
+                                }
+                                Err(error) => {
+                                    log::warn!(
+                                        "worktree patch succeeded but status refresh failed: {error:#}"
+                                    );
+                                    summary.push_str(
+                                        "; the file changed successfully, but status refresh failed; refresh the repository to update the UI",
+                                    );
+                                    false
+                                }
+                            };
                             this.complete_op(
                                 operation_id,
                                 kind,
@@ -1019,13 +1556,17 @@ impl GitProject {
                                 (None, None, branch_name.clone()),
                                 cx,
                             );
-                            if snapshots_fit_undo_stack(&outcome.snapshots) {
+                            if undoable {
                                 cx.emit(GitProjectEvent::WorktreePatchApplied {
                                     label: summary,
                                     snapshots: outcome.snapshots,
+                                    repo_path: origin_repo_path.clone(),
+                                    worktree_path: origin_worktree_path.clone(),
                                 });
                             }
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            if refresh_succeeded {
+                                cx.emit(GitProjectEvent::StatusChanged);
+                            }
                         }
                         Err(e) => {
                             this.fail_op(
@@ -1072,15 +1613,19 @@ impl GitProject {
         );
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result: anyhow::Result<RefreshData> = cx
+            let result: anyhow::Result<((), anyhow::Result<RefreshData>)> = cx
                 .background_executor()
                 .spawn(async move {
-                    restore_worktree_files(&task_worktree_path, &snapshots)?;
-                    gather_refresh_data_lightweight_cached(
-                        &refresh_repo_path,
-                        commit_limit,
-                        &worktree_cache,
-                        author_filter.as_deref(),
+                    run_mutation_then_refresh(
+                        || restore_worktree_files(&task_worktree_path, &snapshots),
+                        || {
+                            gather_refresh_data_lightweight_cached(
+                                &refresh_repo_path,
+                                commit_limit,
+                                &worktree_cache,
+                                author_filter.as_deref(),
+                            )
+                        },
                     )
                 })
                 .await;
@@ -1088,20 +1633,43 @@ impl GitProject {
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok(data) => {
-                            this.apply_refresh_data(data);
+                        Ok(((), refresh_result)) => {
+                            let (summary, refresh_succeeded) = match refresh_result {
+                                Ok(data) => {
+                                    this.apply_refresh_data(data);
+                                    (
+                                        format!(
+                                            "Restored {} file{}",
+                                            file_count,
+                                            if file_count == 1 { "" } else { "s" }
+                                        ),
+                                        true,
+                                    )
+                                }
+                                Err(error) => {
+                                    log::warn!(
+                                        "worktree restore succeeded but status refresh failed: {error:#}"
+                                    );
+                                    (
+                                        format!(
+                                            "Restored {} file{}; status refresh failed, so refresh the repository to update the UI",
+                                            file_count,
+                                            if file_count == 1 { "" } else { "s" }
+                                        ),
+                                        false,
+                                    )
+                                }
+                            };
                             this.complete_op(
                                 operation_id,
                                 GitOperationKind::Discard,
-                                format!(
-                                    "Restored {} file{}",
-                                    file_count,
-                                    if file_count == 1 { "" } else { "s" }
-                                ),
+                                summary,
                                 (None, None, branch_name.clone()),
                                 cx,
                             );
-                            cx.emit(GitProjectEvent::StatusChanged);
+                            if refresh_succeeded {
+                                cx.emit(GitProjectEvent::StatusChanged);
+                            }
                         }
                         Err(e) => {
                             this.fail_op(
@@ -1125,6 +1693,17 @@ impl GitProject {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state(contents: Vec<u8>) -> WorktreeFileState {
+        WorktreeFileState {
+            contents,
+            permissions: WorktreeFilePermissions {
+                readonly: false,
+                #[cfg(unix)]
+                mode: 0o644,
+            },
+        }
+    }
 
     fn context(old: usize, new: usize) -> ScopedLine {
         ScopedLine::Context {
@@ -1398,7 +1977,8 @@ mod tests {
     fn small_snapshots_fit_the_undo_stack() {
         let snapshots = vec![WorktreeFileSnapshot {
             path: PathBuf::from("a.txt"),
-            contents: Some(vec![0; 1024]),
+            before: Some(state(vec![0; 1024])),
+            expected_after: None,
         }];
         assert!(snapshots_fit_undo_stack(&snapshots));
     }
@@ -1407,7 +1987,8 @@ mod tests {
     fn oversized_snapshots_do_not_fit_the_undo_stack() {
         let snapshots = vec![WorktreeFileSnapshot {
             path: PathBuf::from("a.txt"),
-            contents: Some(vec![0; MAX_UNDO_SNAPSHOT_BYTES + 1]),
+            before: Some(state(vec![0; MAX_UNDO_SNAPSHOT_BYTES + 1])),
+            expected_after: None,
         }];
         assert!(!snapshots_fit_undo_stack(&snapshots));
     }
@@ -1416,7 +1997,8 @@ mod tests {
     fn a_deleted_file_snapshot_costs_nothing() {
         let snapshots = vec![WorktreeFileSnapshot {
             path: PathBuf::from("a.txt"),
-            contents: None,
+            before: None,
+            expected_after: None,
         }];
         assert!(snapshots_fit_undo_stack(&snapshots));
     }
@@ -1463,6 +2045,33 @@ mod tests {
             WorktreePatchDirection::Apply
         );
     }
+
+    #[test]
+    fn a_refresh_failure_does_not_turn_a_successful_mutation_into_a_failure() {
+        let result = run_mutation_then_refresh(
+            || Ok::<_, anyhow::Error>("mutated"),
+            || Err::<(), _>(anyhow::anyhow!("refresh unavailable")),
+        )
+        .expect("the mutation itself succeeded");
+
+        assert_eq!(result.0, "mutated");
+        assert!(result.1.is_err());
+    }
+
+    #[test]
+    fn a_mutation_failure_prevents_the_refresh_from_running() {
+        let refresh_ran = std::cell::Cell::new(false);
+        let result = run_mutation_then_refresh(
+            || Err::<(), _>(anyhow::anyhow!("mutation failed")),
+            || {
+                refresh_ran.set(true);
+                Ok::<_, anyhow::Error>(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!refresh_ran.get());
+    }
 }
 
 // ── Integration tests against real repositories ───────────────────────────────
@@ -1501,7 +2110,15 @@ mod worktree_patch_integration_tests {
         }
 
         fn write(&self, name: &str, contents: &str) {
-            std::fs::write(self.path.join(name), contents).unwrap();
+            self.write_bytes(name, contents.as_bytes());
+        }
+
+        fn write_bytes(&self, name: &str, contents: &[u8]) {
+            let path = self.path.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, contents).unwrap();
         }
 
         fn read(&self, name: &str) -> String {
@@ -1547,6 +2164,10 @@ mod worktree_patch_integration_tests {
 
         fn head_branch_name(&self) -> String {
             self.repo.head().unwrap().shorthand().unwrap().to_string()
+        }
+
+        fn set_config(&self, name: &str, value: &str) {
+            self.repo.config().unwrap().set_str(name, value).unwrap();
         }
     }
 
@@ -2110,8 +2731,18 @@ mod worktree_patch_integration_tests {
         assert_eq!(outcome.snapshots.len(), 1);
         assert_eq!(outcome.snapshots[0].path, PathBuf::from("f.txt"));
         assert_eq!(
-            outcome.snapshots[0].contents.as_deref(),
+            outcome.snapshots[0]
+                .before
+                .as_ref()
+                .map(|state| state.contents.as_slice()),
             Some(before.as_bytes())
+        );
+        assert_eq!(
+            outcome.snapshots[0]
+                .expected_after
+                .as_ref()
+                .map(|state| state.contents.as_slice()),
+            Some(fixture.read("f.txt").as_bytes())
         );
     }
 
@@ -2151,7 +2782,8 @@ mod worktree_patch_integration_tests {
         )
         .unwrap();
         assert!(fixture.path.join("added.txt").exists());
-        assert_eq!(outcome.snapshots[0].contents, None);
+        assert_eq!(outcome.snapshots[0].before, None);
+        assert!(outcome.snapshots[0].expected_after.is_some());
 
         restore_worktree_files(&fixture.path, &outcome.snapshots).unwrap();
         assert!(!fixture.path.join("added.txt").exists());
@@ -2180,6 +2812,424 @@ mod worktree_patch_integration_tests {
     }
 
     // ── stash entries travel the commit path ──────────────────────
+
+    #[test]
+    fn undo_refuses_to_overwrite_an_edit_made_after_apply() {
+        let (fixture, oid) = two_hunk_commit();
+        let outcome = apply(
+            &fixture,
+            "f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .unwrap();
+        fixture.write("f.txt", "a later editor change\n");
+
+        let error = restore_worktree_files(&fixture.path, &outcome.snapshots)
+            .expect_err("undo must preserve the later edit");
+        assert!(error.to_string().contains("edited after"), "got: {error}");
+        assert_eq!(fixture.read("f.txt"), "a later editor change\n");
+    }
+
+    #[test]
+    fn undo_of_a_created_file_refuses_to_delete_later_content() {
+        let fixture = Fixture::new();
+        fixture.write("keep.txt", "x\n");
+        fixture.commit("base", &["keep.txt"]);
+        fixture.write("added.txt", "from commit\n");
+        let oid = fixture.commit("add", &["added.txt"]);
+        std::fs::remove_file(fixture.path.join("added.txt")).unwrap();
+        let outcome = apply(
+            &fixture,
+            "added.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .unwrap();
+        fixture.write("added.txt", "new user content\n");
+
+        assert!(restore_worktree_files(&fixture.path, &outcome.snapshots).is_err());
+        assert_eq!(fixture.read("added.txt"), "new user content\n");
+    }
+
+    #[test]
+    fn undo_of_a_deleted_file_refuses_to_replace_a_new_path() {
+        let fixture = Fixture::new();
+        fixture.write("keep.txt", "x\n");
+        fixture.commit("base", &["keep.txt"]);
+        fixture.write("added.txt", "from commit\n");
+        let oid = fixture.commit("add", &["added.txt"]);
+        let outcome = apply(
+            &fixture,
+            "added.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Revert,
+        )
+        .unwrap();
+        fixture.write("added.txt", "new path\n");
+
+        assert!(restore_worktree_files(&fixture.path, &outcome.snapshots).is_err());
+        assert_eq!(fixture.read("added.txt"), "new path\n");
+    }
+
+    #[test]
+    fn concurrent_restores_accept_the_expected_after_image_only_once() {
+        let (fixture, oid) = two_hunk_commit();
+        let outcome = apply(
+            &fixture,
+            "f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .unwrap();
+        let path = fixture.path.clone();
+        let left_snapshots = outcome.snapshots.clone();
+        let right_snapshots = outcome.snapshots;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let left_barrier = barrier.clone();
+        let left_path = path.clone();
+        let left = std::thread::spawn(move || {
+            left_barrier.wait();
+            restore_worktree_files(&left_path, &left_snapshots)
+        });
+        let right_barrier = barrier.clone();
+        let right = std::thread::spawn(move || {
+            right_barrier.wait();
+            restore_worktree_files(&path, &right_snapshots)
+        });
+        barrier.wait();
+
+        let results = [left.join().unwrap(), right.join().unwrap()];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+    }
+
+    #[test]
+    fn traversal_paths_are_rejected_before_any_filesystem_write() {
+        let (fixture, oid) = two_hunk_commit();
+        let error = apply_worktree_patch(
+            &fixture.path,
+            Path::new("../outside.txt"),
+            &WorktreePatchSource::Commit(oid),
+            &WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .expect_err("parent traversal is never a working-tree file path");
+        assert!(error.to_string().contains("relative"), "got: {error}");
+    }
+
+    #[test]
+    fn invalid_utf8_in_the_worktree_is_refused_without_rewriting_it() {
+        let (fixture, oid) = two_hunk_commit();
+        let invalid = b"valid prefix\n\xff\xfe\n";
+        fixture.write_bytes("f.txt", invalid);
+
+        let error = apply(
+            &fixture,
+            "f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .expect_err("invalid canonical text cannot enter the merge");
+        assert!(error.to_string().contains("valid UTF-8"), "got: {error}");
+        assert_eq!(std::fs::read(fixture.path.join("f.txt")).unwrap(), invalid);
+    }
+
+    #[test]
+    fn invalid_utf8_in_a_source_blob_is_refused_without_rewriting_the_worktree() {
+        let fixture = Fixture::new();
+        fixture.write("f.txt", "base\n");
+        fixture.commit("base", &["f.txt"]);
+        fixture.write_bytes("f.txt", b"target\n\xff\n");
+        let oid = fixture.commit("invalid target", &["f.txt"]);
+        fixture.write("f.txt", "base\n");
+
+        let error = apply(
+            &fixture,
+            "f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .expect_err("invalid canonical source text must be refused");
+        assert!(error.to_string().contains("valid UTF-8"), "got: {error}");
+        assert_eq!(fixture.read("f.txt"), "base\n");
+    }
+
+    #[test]
+    fn git_eol_conversion_round_trips_canonical_and_worktree_bytes() {
+        let fixture = Fixture::new();
+        fixture.write(".gitattributes", "*.txt text eol=crlf\n");
+
+        let canonical = b"one\ntwo\n";
+        let worktree = smudge_canonical_bytes(&fixture.path, Path::new("f.txt"), canonical)
+            .expect("Git should apply the eol attribute");
+        assert_eq!(worktree, b"one\r\ntwo\r\n");
+        assert_eq!(
+            clean_worktree_bytes(&fixture.path, Path::new("f.txt"), &worktree).unwrap(),
+            canonical
+        );
+    }
+
+    #[test]
+    fn a_full_apply_and_undo_preserve_crlf_worktree_form() {
+        let fixture = Fixture::new();
+        fixture.write(".gitattributes", "*.txt text eol=crlf\n");
+        fixture.commit("attributes", &[".gitattributes"]);
+        fixture.write_bytes("f.txt", b"base\r\n");
+        fixture.commit("base", &["f.txt"]);
+        fixture.write_bytes("f.txt", b"target\r\n");
+        let oid = fixture.commit("target", &["f.txt"]);
+        fixture.write_bytes("f.txt", b"base\r\n");
+
+        let outcome = apply(
+            &fixture,
+            "f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(fixture.path.join("f.txt")).unwrap(),
+            b"target\r\n"
+        );
+
+        restore_worktree_files(&fixture.path, &outcome.snapshots).unwrap();
+        assert_eq!(
+            std::fs::read(fixture.path.join("f.txt")).unwrap(),
+            b"base\r\n"
+        );
+    }
+
+    #[test]
+    fn git_working_tree_encoding_round_trips_through_canonical_utf8() {
+        let fixture = Fixture::new();
+        fixture.write(
+            ".gitattributes",
+            "*.utf16 text working-tree-encoding=UTF-16LE\n",
+        );
+        let canonical = b"one\ntwo\n";
+
+        let encoded = smudge_canonical_bytes(&fixture.path, Path::new("f.utf16"), canonical)
+            .expect("Git should encode the working-tree form");
+        assert_ne!(encoded, canonical);
+        assert_eq!(
+            clean_worktree_bytes(&fixture.path, Path::new("f.utf16"), &encoded).unwrap(),
+            canonical
+        );
+    }
+
+    #[test]
+    fn required_clean_and_smudge_filters_are_honoured() {
+        let fixture = Fixture::new();
+        fixture.write(".gitattributes", "*.flt filter=rgitui-test\n");
+        fixture.set_config("filter.rgitui-test.required", "true");
+        fixture.set_config("filter.rgitui-test.clean", "sed s/WORKTREE/CANONICAL/g");
+        fixture.set_config("filter.rgitui-test.smudge", "sed s/CANONICAL/WORKTREE/g");
+
+        assert_eq!(
+            clean_worktree_bytes(&fixture.path, Path::new("f.flt"), b"WORKTREE\n").unwrap(),
+            b"CANONICAL\n"
+        );
+        assert_eq!(
+            smudge_canonical_bytes(&fixture.path, Path::new("f.flt"), b"CANONICAL\n").unwrap(),
+            b"WORKTREE\n"
+        );
+    }
+
+    #[test]
+    fn a_required_filter_failure_writes_nothing() {
+        let (fixture, oid) = two_hunk_commit();
+        fixture.write(".gitattributes", "f.txt filter=broken\n");
+        fixture.set_config("filter.broken.required", "true");
+        fixture.set_config("filter.broken.clean", "false");
+        fixture.set_config("filter.broken.smudge", "false");
+        let before = fixture.read("f.txt");
+
+        assert!(apply(
+            &fixture,
+            "f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .is_err());
+        assert_eq!(fixture.read("f.txt"), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undo_restores_the_recorded_unix_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = Fixture::new();
+        fixture.write("f.txt", "after\n");
+        std::fs::set_permissions(
+            fixture.path.join("f.txt"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let snapshot = WorktreeFileSnapshot {
+            path: PathBuf::from("f.txt"),
+            before: Some(WorktreeFileState {
+                contents: b"before\n".to_vec(),
+                permissions: WorktreeFilePermissions {
+                    readonly: false,
+                    mode: 0o751,
+                },
+            }),
+            expected_after: read_worktree_file_state(&fixture.path, Path::new("f.txt")).unwrap(),
+        };
+
+        restore_worktree_files(&fixture.path, &[snapshot]).unwrap();
+        assert_eq!(fixture.read("f.txt"), "before\n");
+        assert_eq!(
+            std::fs::metadata(fixture.path.join("f.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o751
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn applying_a_new_executable_file_preserves_its_git_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = Fixture::new();
+        fixture.write("keep.txt", "base\n");
+        fixture.commit("base", &["keep.txt"]);
+        fixture.write("script.sh", "#!/bin/sh\nexit 0\n");
+        std::fs::set_permissions(
+            fixture.path.join("script.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let oid = fixture.commit("script", &["script.sh"]);
+        std::fs::remove_file(fixture.path.join("script.sh")).unwrap();
+
+        apply(
+            &fixture,
+            "script.sh",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(fixture.path.join("script.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_symlink_file_is_rejected_without_touching_its_target() {
+        let (fixture, oid) = two_hunk_commit();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("target.txt");
+        std::fs::write(&target, "outside\n").unwrap();
+        std::fs::remove_file(fixture.path.join("f.txt")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, fixture.path.join("f.txt")).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&target, fixture.path.join("f.txt")).is_err() {
+            return;
+        }
+
+        let error = apply(
+            &fixture,
+            "f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .expect_err("a final symlink must never be followed");
+        assert!(
+            error.to_string().contains("symbolic link")
+                || error.to_string().contains("reparse point"),
+            "got: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "outside\n");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_symlink_parent_is_rejected_without_touching_outside_files() {
+        let fixture = Fixture::new();
+        fixture.write("dir/f.txt", "base\n");
+        fixture.commit("base", &["dir/f.txt"]);
+        fixture.write("dir/f.txt", "changed\n");
+        let oid = fixture.commit("change", &["dir/f.txt"]);
+        std::fs::remove_file(fixture.path.join("dir/f.txt")).unwrap();
+        std::fs::remove_dir(fixture.path.join("dir")).unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("f.txt"), "outside\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), fixture.path.join("dir")).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(outside.path(), fixture.path.join("dir")).is_err() {
+            return;
+        }
+
+        let error = apply(
+            &fixture,
+            "dir/f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .expect_err("a linked parent must never be followed");
+        assert!(
+            error.to_string().contains("symbolic link")
+                || error.to_string().contains("reparse point"),
+            "got: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("f.txt")).unwrap(),
+            "outside\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tracked_symlink_diff_is_not_materialized_as_a_regular_file() {
+        let fixture = Fixture::new();
+        fixture.write("f.txt", "base\n");
+        fixture.commit("base", &["f.txt"]);
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("target.txt");
+        std::fs::write(&target, "outside\n").unwrap();
+        std::fs::remove_file(fixture.path.join("f.txt")).unwrap();
+        std::os::unix::fs::symlink(&target, fixture.path.join("f.txt")).unwrap();
+        let oid = fixture.commit("replace with symlink", &["f.txt"]);
+        std::fs::remove_file(fixture.path.join("f.txt")).unwrap();
+        fixture.write("f.txt", "base\n");
+
+        let error = apply(
+            &fixture,
+            "f.txt",
+            &WorktreePatchSource::Commit(oid),
+            WorktreePatchScope::File,
+            WorktreePatchDirection::Apply,
+        )
+        .expect_err("a symlink diff needs link-aware semantics");
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(fixture.read("f.txt"), "base\n");
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "outside\n");
+    }
 
     #[test]
     fn a_stash_entrys_hunk_applies_like_any_other_commit() {

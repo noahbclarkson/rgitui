@@ -866,14 +866,21 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     tb.set_ahead_behind(ahead, behind, cx);
                 });
             }
-            GitProjectEvent::WorktreePatchApplied { label, snapshots } => {
+            GitProjectEvent::WorktreePatchApplied {
+                label,
+                snapshots,
+                repo_path,
+                worktree_path,
+            } => {
                 // No git command reverses a working-tree rewrite, so the
                 // pre-operation bytes are what goes on the undo stack.
-                this.push_undo(
+                this.push_undo_for_paths(
                     label.clone(),
                     UndoAction::RestoreWorktreeFiles {
                         snapshots: snapshots.clone(),
                     },
+                    repo_path.clone(),
+                    worktree_path.clone(),
                     cx,
                 );
             }
