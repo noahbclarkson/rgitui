@@ -1331,14 +1331,9 @@ mod load_more_tests {
         let repo = TempRepo::with_commits(1);
         let git = repo.repo();
         let tree_oid = git.index().unwrap().write_tree().unwrap();
-        let tree = git.find_tree(tree_oid).unwrap();
-        let sig = repo.signature();
-        let stash_only = git
-            .commit(None, &sig, &sig, "stash only", &tree, &[])
-            .unwrap();
+        let stash_only = repo.commit_tree(None, "stash only", tree_oid, &[]);
         git.reference("refs/stash", stash_only, true, "test")
             .unwrap();
-        drop(tree);
 
         let data = gather_refresh_data_internal(repo.path(), false, 10, None, None).unwrap();
         assert!(!data
@@ -1407,42 +1402,31 @@ mod is_merged_tests {
         parent: Option<git2::Oid>,
     ) -> git2::Oid {
         let repo = fixture.repo();
-        let sig = fixture.signature();
         let tree_oid = empty_tree_oid(repo);
-        let tree = repo.find_tree(tree_oid).unwrap();
-        let mut parents: Vec<git2::Commit> = Vec::new();
-        if let Some(p) = parent {
-            parents.push(repo.find_commit(p).unwrap());
-        }
-        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-        repo.commit(Some(refname), &sig, &sig, message, &tree, &parent_refs)
-            .unwrap()
+        fixture.commit_tree(
+            Some(refname),
+            message,
+            tree_oid,
+            &parent.into_iter().collect::<Vec<_>>(),
+        )
     }
 
     fn merge(fixture: &TempRepo, into_ref: &str, from_ref: &str, message: &str) -> git2::Oid {
         let repo = fixture.repo();
-        let sig = fixture.signature();
         let tree_oid = empty_tree_oid(repo);
-        let tree = repo.find_tree(tree_oid).unwrap();
-        let main_commit = repo
+        let main = repo
             .revparse_single(into_ref)
             .unwrap()
             .peel_to_commit()
-            .unwrap();
-        let branch_commit = repo
+            .unwrap()
+            .id();
+        let branch = repo
             .revparse_single(from_ref)
             .unwrap()
             .peel_to_commit()
-            .unwrap();
-        repo.commit(
-            Some(into_ref),
-            &sig,
-            &sig,
-            message,
-            &tree,
-            &[&main_commit, &branch_commit],
-        )
-        .unwrap()
+            .unwrap()
+            .id();
+        fixture.commit_tree(Some(into_ref), message, tree_oid, &[main, branch])
     }
 
     /// Repo structure:

@@ -6,7 +6,7 @@ use std::path::Path;
 use git2::{Commit, Oid, Repository, RepositoryInitOptions, Signature, Time};
 use tempfile::TempDir;
 
-/// Wall clock the first commit is stamped with; each later commit adds a
+/// Wall clock the first signature is stamped with; each later signature adds a
 /// second. Fixed so commit OIDs and ordering never depend on when the suite ran.
 const FIRST_COMMIT_TIME: i64 = 1_700_000_000; // 2023-11-14T22:13:20Z
 
@@ -18,9 +18,10 @@ const FIRST_COMMIT_TIME: i64 = 1_700_000_000; // 2023-11-14T22:13:20Z
 /// deleted before the test body runs. `TempRepo` owns the directory, so there
 /// is nothing to hold on to and nothing to get wrong.
 ///
-/// Commits are authored by [`TempRepo::AUTHOR_NAME`] at a fixed timestamp, so
-/// tests never depend on the machine's git config or clock. `HEAD` starts on
-/// [`TempRepo::DEFAULT_BRANCH`] regardless of `init.defaultBranch`.
+/// Commits are authored by [`TempRepo::AUTHOR_NAME`] on a deterministic,
+/// monotonically increasing clock, so tests never depend on the machine's git
+/// config or clock. `HEAD` starts on [`TempRepo::DEFAULT_BRANCH`] regardless of
+/// `init.defaultBranch`.
 ///
 /// ```no_run
 /// # use rgitui_test_support::TempRepo;
@@ -37,7 +38,7 @@ pub struct TempRepo {
     // directory is removed; Windows will not delete files that are still open.
     repo: Repository,
     dir: TempDir,
-    commits: Cell<i64>,
+    signatures_issued: Cell<i64>,
 }
 
 impl TempRepo {
@@ -78,7 +79,7 @@ impl TempRepo {
         Self {
             repo,
             dir,
-            commits: Cell::new(0),
+            signatures_issued: Cell::new(0),
         }
     }
 
@@ -116,8 +117,13 @@ impl TempRepo {
             .id()
     }
 
-    /// The signature the next commit will use: [`TempRepo::AUTHOR_NAME`] at
-    /// this fixture's deterministic clock.
+    /// Returns a signature at the next tick of this fixture's deterministic
+    /// clock.
+    ///
+    /// Each call advances the clock, including calls used for non-commit Git
+    /// objects such as annotated tags. Prefer [`TempRepo::commit_tree`] when
+    /// constructing commits with custom trees, parents, or refs so the commit
+    /// and clock update cannot get out of sync.
     pub fn signature(&self) -> Signature<'static> {
         self.signature_for(Self::AUTHOR_NAME, Self::AUTHOR_EMAIL)
     }
@@ -144,7 +150,40 @@ impl TempRepo {
 
     /// Commits whatever is staged onto `HEAD` and returns the new commit's OID.
     pub fn commit(&self, message: &str) -> Oid {
-        self.commit_signed_by(&self.signature(), message)
+        let tree_oid = self
+            .repo
+            .index()
+            .expect("failed to open index")
+            .write_tree()
+            .expect("failed to write tree");
+
+        // An unborn HEAD has no commit to parent onto; that is the root commit.
+        let parents = self
+            .repo
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_commit().ok())
+            .map(|parent| vec![parent.id()])
+            .unwrap_or_default();
+
+        self.commit_tree(Some("HEAD"), message, tree_oid, &parents)
+    }
+
+    /// Creates a commit from an existing tree and explicit parent OIDs.
+    ///
+    /// `update_ref` accepts the same values as [`Repository::commit`], including
+    /// `Some("HEAD")`, an explicit ref such as `Some("refs/heads/feature")`,
+    /// or `None` for an unreachable commit. The fixture supplies a fresh
+    /// deterministic signature for every call.
+    pub fn commit_tree(
+        &self,
+        update_ref: Option<&str>,
+        message: &str,
+        tree_oid: Oid,
+        parent_oids: &[Oid],
+    ) -> Oid {
+        let signature = self.signature();
+        self.commit_tree_signed_by(update_ref, &signature, message, tree_oid, parent_oids)
     }
 
     /// Writes, stages, and commits one file in a single step.
@@ -177,7 +216,21 @@ impl TempRepo {
         let relative_path = relative_path.as_ref();
         self.write_file(relative_path, contents);
         self.stage(relative_path);
-        self.commit_signed_by(&self.signature_for(name, email), message)
+        let tree_oid = self
+            .repo
+            .index()
+            .expect("failed to open index")
+            .write_tree()
+            .expect("failed to write tree");
+        let parents = self
+            .repo
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_commit().ok())
+            .map(|parent| vec![parent.id()])
+            .unwrap_or_default();
+        let signature = self.signature_for(name, email);
+        self.commit_tree_signed_by(Some("HEAD"), &signature, message, tree_oid, &parents)
     }
 
     /// Creates a branch called `name` at `HEAD`, leaving `HEAD` where it is.
@@ -194,33 +247,37 @@ impl TempRepo {
     }
 
     fn signature_for(&self, name: &str, email: &str) -> Signature<'static> {
-        let when = Time::new(FIRST_COMMIT_TIME + self.commits.get(), 0);
+        let tick = self.signatures_issued.get();
+        self.signatures_issued.set(tick + 1);
+        let when = Time::new(FIRST_COMMIT_TIME + tick, 0);
         Signature::new(name, email, &when).expect("failed to create signature")
     }
 
-    fn commit_signed_by(&self, signature: &Signature, message: &str) -> Oid {
-        let tree_oid = self
-            .repo
-            .index()
-            .expect("failed to open index")
-            .write_tree()
-            .expect("failed to write tree");
+    fn commit_tree_signed_by(
+        &self,
+        update_ref: Option<&str>,
+        signature: &Signature,
+        message: &str,
+        tree_oid: Oid,
+        parent_oids: &[Oid],
+    ) -> Oid {
         let tree = self.repo.find_tree(tree_oid).expect("failed to find tree");
+        let parents: Vec<Commit> = parent_oids
+            .iter()
+            .map(|oid| self.repo.find_commit(*oid).expect("failed to find parent"))
+            .collect();
+        let parent_refs: Vec<&Commit> = parents.iter().collect();
 
-        // An unborn HEAD has no commit to parent onto; that is the root commit.
-        let parent = self
-            .repo
-            .head()
-            .ok()
-            .and_then(|head| head.peel_to_commit().ok());
-        let parents: Vec<&Commit> = parent.iter().collect();
-
-        let oid = self
-            .repo
-            .commit(Some("HEAD"), signature, signature, message, &tree, &parents)
-            .expect("failed to commit");
-        self.commits.set(self.commits.get() + 1);
-        oid
+        self.repo
+            .commit(
+                update_ref,
+                signature,
+                signature,
+                message,
+                &tree,
+                &parent_refs,
+            )
+            .expect("failed to commit")
     }
 }
 
@@ -263,6 +320,30 @@ mod tests {
             first.commit_file("a.txt", "a\n", "add a"),
             second.commit_file("a.txt", "a\n", "add a"),
         );
+    }
+
+    #[test]
+    fn custom_tree_commits_use_successive_clock_ticks() {
+        let repo = TempRepo::init();
+        let tree_oid = repo.repo().index().unwrap().write_tree().unwrap();
+        let first = repo.commit_tree(Some("refs/heads/side"), "first", tree_oid, &[]);
+        let second = repo.commit_tree(Some("refs/heads/side"), "second", tree_oid, &[first]);
+
+        let first = repo.repo().find_commit(first).unwrap();
+        let second = repo.repo().find_commit(second).unwrap();
+        assert_eq!(first.time().seconds(), FIRST_COMMIT_TIME);
+        assert_eq!(second.time().seconds(), FIRST_COMMIT_TIME + 1);
+    }
+
+    #[test]
+    fn requesting_a_signature_advances_the_fixture_clock() {
+        let first = TempRepo::init();
+        let reserved = first.signature();
+        let commit = first.commit("after reserved signature");
+        let commit = first.repo().find_commit(commit).unwrap();
+
+        assert_eq!(reserved.when().seconds(), FIRST_COMMIT_TIME);
+        assert_eq!(commit.time().seconds(), FIRST_COMMIT_TIME + 1);
     }
 
     #[test]

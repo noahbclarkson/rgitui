@@ -5102,7 +5102,6 @@ dependencies = [
  "rgitui_ui",
  "rgitui_workspace",
  "rust-embed",
- "tempfile",
  "winresource",
 ]
 

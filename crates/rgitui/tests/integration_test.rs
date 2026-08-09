@@ -306,21 +306,8 @@ fn test_compute_graph_handles_merge_commit() {
     repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
         .expect("failed to checkout main");
 
-    let sig = fixture.signature();
-    let c3_commit = repo.find_commit(c3).expect("failed to find c3");
-    let c2_commit = repo.find_commit(c2).expect("failed to find c2");
-    let tree = repo
-        .find_tree(repo.index().unwrap().write_tree().unwrap())
-        .expect("failed to find tree");
-    repo.commit(
-        Some("HEAD"),
-        &sig,
-        &sig,
-        "Merge feature into main",
-        &tree,
-        &[&c3_commit, &c2_commit],
-    )
-    .expect("failed to create merge commit");
+    let tree_oid = repo.index().unwrap().write_tree().unwrap();
+    fixture.commit_tree(Some("HEAD"), "Merge feature into main", tree_oid, &[c3, c2]);
 
     // Collect all commits (HEAD = main with merge commit)
     let mut revwalk = repo.revwalk().expect("failed to create revwalk");

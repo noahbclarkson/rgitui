@@ -3639,25 +3639,18 @@ mod tests {
         // `Drop` that keeps one alive — is released before the fixture moves out.
         {
             let repo = fixture.repo();
-            let sig = fixture.signature();
-
             // Build the branch commit straight from a tree so the work tree
             // keeps looking like `main`.
             let blob = repo.blob(contents.as_bytes()).unwrap();
             let mut builder = repo.treebuilder(None).unwrap();
             builder.insert(path_in_repo, blob, 0o100644).unwrap();
             let branch_tree_oid = builder.write().unwrap();
-            let branch_tree = repo.find_tree(branch_tree_oid).unwrap();
-            let parent = repo.find_commit(base).unwrap();
-            repo.commit(
+            fixture.commit_tree(
                 Some("refs/heads/feature"),
-                &sig,
-                &sig,
                 "add file",
-                &branch_tree,
-                &[&parent],
-            )
-            .unwrap();
+                branch_tree_oid,
+                &[base],
+            );
         }
 
         fixture
@@ -3932,21 +3925,14 @@ mod tests {
         repo.index().unwrap().write().unwrap();
 
         // Commit the re-staged change
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
         let new_head_oid = repo.head().unwrap().target().unwrap();
-        let new_parent = repo.find_commit(new_head_oid).unwrap();
         let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
-        let _new_commit_oid = repo
-            .commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                "reset soft with re-staged change",
-                &tree,
-                &[&new_parent],
-            )
-            .unwrap();
+        fixture.commit_tree(
+            Some("HEAD"),
+            "reset soft with re-staged change",
+            tree_oid,
+            &[new_head_oid],
+        );
 
         // The new commit should have the "extra" file in its tree
         let new_tree = repo
@@ -4010,22 +3996,16 @@ mod tests {
         let path = fixture.path();
         let repo = git2::Repository::open(path).unwrap();
 
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
         let head_oid = repo.head().unwrap().target().unwrap();
-        let head = repo.find_commit(head_oid).unwrap();
 
         fs::write(path.join("file.txt"), "branch changes").unwrap();
         let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
-        repo.commit(
+        fixture.commit_tree(
             Some("refs/heads/feature"),
-            &sig,
-            &sig,
             "feature commit",
-            &tree,
-            &[&head],
-        )
-        .unwrap();
+            tree_oid,
+            &[head_oid],
+        );
 
         let feature_branch = repo
             .find_branch("feature", git2::BranchType::Local)
@@ -4050,8 +4030,6 @@ mod tests {
         let path = fixture.path();
         let repo = git2::Repository::open(path).unwrap();
 
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-
         // Commit on main with a single-line file
         fs::write(path.join("file.txt"), "line one\n").unwrap();
         {
@@ -4060,18 +4038,13 @@ mod tests {
             idx.write().unwrap();
         }
         let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
         let head_oid = repo.head().unwrap().target().unwrap();
-        let head = repo.find_commit(head_oid).unwrap();
-        repo.commit(
+        fixture.commit_tree(
             Some("refs/heads/main"),
-            &sig,
-            &sig,
             "main change",
-            &tree,
-            &[&head],
-        )
-        .unwrap();
+            tree_oid,
+            &[head_oid],
+        );
 
         // Feature branch: modify the SAME LINE differently (creates real conflict)
         fs::write(path.join("file.txt"), "main one\n").unwrap();
@@ -4081,18 +4054,13 @@ mod tests {
             idx.write().unwrap();
         }
         let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
         let head_oid = repo.head().unwrap().target().unwrap();
-        let head = repo.find_commit(head_oid).unwrap();
-        repo.commit(
+        fixture.commit_tree(
             Some("refs/heads/feature"),
-            &sig,
-            &sig,
             "feature change",
-            &tree,
-            &[&head],
-        )
-        .unwrap();
+            tree_oid,
+            &[head_oid],
+        );
 
         // Switch back to main (force checkout)
         {
@@ -4130,8 +4098,6 @@ mod tests {
         let path = fixture.path();
         let repo = git2::Repository::open(path).unwrap();
 
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
-
         // Commit on main with single-line file
         fs::write(path.join("file.txt"), "line one\n").unwrap();
         {
@@ -4140,18 +4106,13 @@ mod tests {
             idx.write().unwrap();
         }
         let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
         let head_oid = repo.head().unwrap().target().unwrap();
-        let head = repo.find_commit(head_oid).unwrap();
-        repo.commit(
+        fixture.commit_tree(
             Some("refs/heads/main"),
-            &sig,
-            &sig,
             "main change",
-            &tree,
-            &[&head],
-        )
-        .unwrap();
+            tree_oid,
+            &[head_oid],
+        );
 
         // Feature branch: modify the SAME LINE differently (creates real conflict)
         fs::write(path.join("file.txt"), "other one\n").unwrap();
@@ -4161,18 +4122,13 @@ mod tests {
             idx.write().unwrap();
         }
         let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
         let head_oid = repo.head().unwrap().target().unwrap();
-        let head = repo.find_commit(head_oid).unwrap();
-        repo.commit(
+        fixture.commit_tree(
             Some("refs/heads/feature"),
-            &sig,
-            &sig,
             "feature change",
-            &tree,
-            &[&head],
-        )
-        .unwrap();
+            tree_oid,
+            &[head_oid],
+        );
 
         // Switch back to main (force checkout)
         {
@@ -4466,9 +4422,7 @@ mod tests {
         let path = fixture.path();
         let repo = git2::Repository::open(path).unwrap();
 
-        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
         let head_oid = repo.head().unwrap().target().unwrap();
-        let head = repo.find_commit(head_oid).unwrap();
 
         fs::write(path.join("file.txt"), "feature").unwrap();
         {
@@ -4477,16 +4431,12 @@ mod tests {
             idx.write().unwrap();
         }
         let tree_oid = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
-        repo.commit(
+        fixture.commit_tree(
             Some("refs/heads/feature"),
-            &sig,
-            &sig,
             "feature commit",
-            &tree,
-            &[&head],
-        )
-        .unwrap();
+            tree_oid,
+            &[head_oid],
+        );
 
         // Note: repo.commit does NOT update the working tree, so working tree still
         // has "feature" while HEAD (main) has no file.txt. safe() would refuse this
