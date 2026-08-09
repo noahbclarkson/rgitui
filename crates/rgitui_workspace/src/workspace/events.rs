@@ -2367,11 +2367,15 @@ pub(super) fn subscribe_diff_viewer(
                     }
                 }
 
-                // Hunk/line staging must target the inspected worktree's index, not
-                // the main repo's. Route every op through the `_at` variant with the
-                // active tab's effective worktree (the main repo path when no
-                // worktree is being inspected).
-                let worktree_path = this.effective_worktree_path(cx);
+                // Route the request through the tab that owns the emitting diff
+                // viewer. Using the active tab here can target another worktree if
+                // focus changes while an input event is being delivered.
+                let worktree_path = this
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.diff_viewer == diff_viewer_ref)
+                    .map(|tab| tab.effective_repo_path(cx))
+                    .unwrap_or_else(|| this.effective_worktree_path(cx));
                 match event {
                     DiffViewerEvent::HunkStageRequested(hunk_idx) => {
                         let idx = *hunk_idx;
