@@ -476,11 +476,8 @@ mod tests {
             .collect()
     }
 
-    /// The `Ctrl+Shift+F`-for-Fetch drift happened because a shortcut label was a
-    /// literal in a list nobody re-checked. Deleting the literals fixed it once;
-    /// this test is what stops the next one being written, by failing the build if
-    /// a user-facing surface spells a chord out again instead of asking the
-    /// keymap.
+    /// User-facing surfaces must derive shortcut labels from the keymap. This
+    /// test fails if a surface spells out a chord instead.
     ///
     /// Doc comments and the test modules are skipped — prose may name a chord,
     /// and an assertion has to spell out what it expects.
@@ -512,15 +509,15 @@ mod tests {
     /// The scanner must catch a real hardcoded chord in each of the shapes one
     /// can take, otherwise it is a test that can never fail.
     #[test]
-    fn the_chord_scanner_catches_the_label_that_drifted() {
+    fn chord_scanner_catches_supported_hardcoded_forms() {
         let needles = chord_needles();
         for offender in [
             // A shortcut-help table entry.
-            r#"("Ctrl+Shift+F", "Fetch"),"#,
+            r#"("Ctrl+Shift+F", "Example command"),"#,
             // The palette's hint field.
             r#"Some("Ctrl+Shift+F"),"#,
             // A chord tucked inside a longer sentence.
-            r#"tooltip_text: "Fetch from remote (Ctrl+Shift+R)","#,
+            r#"tooltip_text: "Run command (Ctrl+Shift+R)","#,
             // The macOS spelling.
             r#"Label::new("⌘⇧R")"#,
         ] {

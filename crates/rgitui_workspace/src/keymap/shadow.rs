@@ -2,8 +2,9 @@
 //!
 //! [`super::conflict`] compares two bindings' context predicates for textual or
 //! [`is_superset`] overlap, which cannot see that `GraphView && !TextInput` sits
-//! *inside* `Workspace && !modal` at dispatch time — so that comparison alone
-//! never catches a panel binding taking a keystroke away from a global one.
+//! *inside* `Workspace && !modal` at dispatch time. That comparison does not
+//! catch this nesting relationship when a panel binding takes a keystroke away
+//! from a global one.
 //!
 //! It is reported here, and deliberately at a lower severity than a conflict:
 //! deeper-wins scoping is usually the whole point — the shipped defaults rely on
