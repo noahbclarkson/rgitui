@@ -1408,16 +1408,11 @@ fn conflict_message(
         // because the file itself has moved on since that revision.
         format!(
             "Can't {} {} of {}: the surrounding lines have changed since {}, so the patch no \
-             longer fits. {} the whole file from the file menu to take that revision's version \
-             wholesale.",
+             longer fits cleanly. Select a closer revision or make the change manually.",
             direction.verb(),
             scope.describe(),
             file_path.display(),
-            source.label(),
-            match direction {
-                WorktreePatchDirection::Apply => "Apply",
-                WorktreePatchDirection::Revert => "Revert",
-            }
+            source.label()
         )
     }
 }
