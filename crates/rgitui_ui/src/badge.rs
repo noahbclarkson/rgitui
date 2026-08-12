@@ -12,6 +12,7 @@ pub struct Badge {
     italic: bool,
     bold: bool,
     prefix: Option<SharedString>,
+    compact: bool,
 }
 
 impl Badge {
@@ -22,6 +23,7 @@ impl Badge {
             italic: false,
             bold: false,
             prefix: None,
+            compact: false,
         }
     }
 
@@ -42,6 +44,12 @@ impl Badge {
 
     pub fn prefix(mut self, prefix: impl Into<SharedString>) -> Self {
         self.prefix = Some(prefix.into());
+        self
+    }
+
+    /// Reduce chip height and horizontal padding for dense ref-label rows.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 }
@@ -77,11 +85,11 @@ impl RenderOnce for Badge {
         let container = div()
             .h_flex()
             .gap(px(2.))
-            .px(px(6.))
-            .py(px(1.))
-            .h(px(20.))
+            .px(if self.compact { px(4.) } else { px(6.) })
+            .py(if self.compact { px(0.) } else { px(1.) })
+            .h(if self.compact { px(16.) } else { px(20.) })
             .items_center()
-            .rounded(px(10.))
+            .rounded(if self.compact { px(8.) } else { px(10.) })
             .bg(bg)
             .border_1()
             .border_color(border)

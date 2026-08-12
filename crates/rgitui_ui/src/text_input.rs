@@ -31,6 +31,7 @@ pub struct TextInput {
     multiline: bool,
     masked: bool,
     font_size: Option<Pixels>,
+    compact: bool,
     disabled: bool,
     read_only: bool,
 }
@@ -48,6 +49,7 @@ impl TextInput {
             multiline: false,
             masked: false,
             font_size: None,
+            compact: false,
             disabled: false,
             read_only: false,
         }
@@ -85,6 +87,11 @@ impl TextInput {
 
     pub fn set_font_size(&mut self, size: Pixels) {
         self.font_size = Some(size);
+    }
+
+    /// Use the compact single-line treatment for dense toolbar and filter rows.
+    pub fn set_compact(&mut self, compact: bool) {
+        self.compact = compact;
     }
 
     pub fn set_disabled(&mut self, disabled: bool) {
@@ -594,7 +601,13 @@ impl Render for TextInput {
         .absolute()
         .size_full();
 
-        let min_h = if self.multiline { px(60.0) } else { px(32.0) };
+        let min_h = if self.multiline {
+            px(60.0)
+        } else if self.compact {
+            px(24.0)
+        } else {
+            px(32.0)
+        };
 
         let mut container = div()
             .id(if self.multiline {
@@ -614,8 +627,8 @@ impl Render for TextInput {
             .relative()
             .w_full()
             .min_h(min_h)
-            .px(px(10.))
-            .py(px(5.))
+            .px(if self.compact { px(8.) } else { px(10.) })
+            .py(if self.compact { px(2.) } else { px(5.) })
             .rounded(px(6.))
             .border_1()
             .border_color(border_color)

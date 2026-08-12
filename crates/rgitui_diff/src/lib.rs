@@ -118,6 +118,16 @@ impl DiffOperation {
         }
     }
 
+    /// Short label used inside the already-scoped hunk header.
+    pub fn compact_hunk_button_label(self) -> &'static str {
+        match self {
+            DiffOperation::Stage => "Stage",
+            DiffOperation::Unstage => "Unstage",
+            DiffOperation::Apply => "Apply",
+            DiffOperation::Revert => "Revert",
+        }
+    }
+
     /// Label for the whole-file entry in the diff viewer's file menu.
     pub fn file_menu_label(self) -> &'static str {
         match self {
@@ -3218,10 +3228,12 @@ impl Render for DiffViewer {
                                         .h_flex()
                                         .h(px(hunk_header_height))
                                         .w_full()
+                                        .min_w_0()
+                                        .overflow_hidden()
                                         .px(px(8.))
                                         .py(px(4.))
                                         .items_center()
-                                        .gap(px(8.))
+                                        .gap(px(6.))
                                         .bg(hunk_bg)
                                         .border_t_1()
                                         .border_b_1()
@@ -3255,6 +3267,7 @@ impl Render for DiffViewer {
                                         )
                                         .child(
                                             div()
+                                                .flex_shrink_0()
                                                 .text_xs()
                                                 .font_family("Lilex")
                                                 .text_color(text_muted)
@@ -3264,33 +3277,45 @@ impl Render for DiffViewer {
                                     if has_context {
                                         hunk_row = hunk_row.child(
                                             div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
                                                 .text_xs()
                                                 .text_color(text_placeholder_color)
                                                 .italic()
-                                                .child(ctx_name),
+                                                .child(
+                                                    Label::new(ctx_name)
+                                                        .size(LabelSize::XSmall)
+                                                        .color(Color::Placeholder)
+                                                        .italic()
+                                                        .truncate(),
+                                                ),
                                         );
+                                    } else {
+                                        hunk_row = hunk_row.child(div().flex_1().min_w_0());
                                     }
-
-                                    hunk_row = hunk_row.child(div().flex_1());
 
                                     // One button per operation the source
                                     // supports: Stage/Unstage for working-tree
                                     // content, Apply/Revert for a commit, a
                                     // stash, or a comparison.
+                                    let mut hunk_actions =
+                                        div().h_flex().gap_1().flex_shrink_0().items_center();
                                     for operation in hunk_operations {
                                         let operation = *operation;
                                         let button_view = view.clone();
-                                        hunk_row = hunk_row.child(
+                                        hunk_actions = hunk_actions.child(
                                             Button::new(
                                                 SharedString::from(format!(
                                                     "hunk-{}-{}",
                                                     operation.key(),
                                                     idx
                                                 )),
-                                                operation.hunk_button_label(),
+                                                operation.compact_hunk_button_label(),
                                             )
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Subtle)
+                                            .tooltip(operation.hunk_button_label())
                                             .on_click(
                                                 move |_: &ClickEvent,
                                                       _: &mut Window,
@@ -3306,6 +3331,7 @@ impl Render for DiffViewer {
                                             ),
                                         );
                                     }
+                                    hunk_row = hunk_row.child(hunk_actions);
 
                                     hunk_row.into_any_element()
                                 }
@@ -3555,10 +3581,12 @@ impl Render for DiffViewer {
                                         .h_flex()
                                         .h(px(hunk_header_height))
                                         .w_full()
+                                        .min_w_0()
+                                        .overflow_hidden()
                                         .px(px(8.))
                                         .py(px(4.))
                                         .items_center()
-                                        .gap(px(8.))
+                                        .gap(px(6.))
                                         .bg(sbs_hunk_bg)
                                         .border_t_1()
                                         .border_b_1()
@@ -3592,6 +3620,7 @@ impl Render for DiffViewer {
                                         )
                                         .child(
                                             div()
+                                                .flex_shrink_0()
                                                 .text_xs()
                                                 .font_family("Lilex")
                                                 .text_color(text_muted)
@@ -3601,31 +3630,43 @@ impl Render for DiffViewer {
                                     if has_context {
                                         hunk_row = hunk_row.child(
                                             div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
                                                 .text_xs()
                                                 .text_color(text_placeholder_color)
                                                 .italic()
-                                                .child(ctx_name),
+                                                .child(
+                                                    Label::new(ctx_name)
+                                                        .size(LabelSize::XSmall)
+                                                        .color(Color::Placeholder)
+                                                        .italic()
+                                                        .truncate(),
+                                                ),
                                         );
+                                    } else {
+                                        hunk_row = hunk_row.child(div().flex_1().min_w_0());
                                     }
-
-                                    hunk_row = hunk_row.child(div().flex_1());
 
                                     // Same operations as the unified header, from
                                     // the same source decision.
+                                    let mut hunk_actions =
+                                        div().h_flex().gap_1().flex_shrink_0().items_center();
                                     for operation in hunk_operations {
                                         let operation = *operation;
                                         let button_view = view.clone();
-                                        hunk_row = hunk_row.child(
+                                        hunk_actions = hunk_actions.child(
                                             Button::new(
                                                 SharedString::from(format!(
                                                     "sbs-hunk-{}-{}",
                                                     operation.key(),
                                                     idx
                                                 )),
-                                                operation.hunk_button_label(),
+                                                operation.compact_hunk_button_label(),
                                             )
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Subtle)
+                                            .tooltip(operation.hunk_button_label())
                                             .on_click(
                                                 move |_: &ClickEvent,
                                                       _: &mut Window,
@@ -3641,6 +3682,7 @@ impl Render for DiffViewer {
                                             ),
                                         );
                                     }
+                                    hunk_row = hunk_row.child(hunk_actions);
 
                                     hunk_row.into_any_element()
                                 }
@@ -4687,6 +4729,15 @@ mod tests {
     fn hunk_button_labels_match_the_action() {
         assert_eq!(DiffOperation::Stage.hunk_button_label(), "Stage Hunk");
         assert_eq!(DiffOperation::Unstage.hunk_button_label(), "Unstage Hunk");
+        assert_eq!(DiffOperation::Apply.hunk_button_label(), "Apply Hunk");
+        assert_eq!(DiffOperation::Revert.hunk_button_label(), "Revert Hunk");
+        assert_eq!(DiffOperation::Stage.compact_hunk_button_label(), "Stage");
+        assert_eq!(
+            DiffOperation::Unstage.compact_hunk_button_label(),
+            "Unstage"
+        );
+        assert_eq!(DiffOperation::Apply.compact_hunk_button_label(), "Apply");
+        assert_eq!(DiffOperation::Revert.compact_hunk_button_label(), "Revert");
     }
 
     #[test]

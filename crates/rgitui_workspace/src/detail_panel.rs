@@ -5,18 +5,19 @@ use std::time::{Duration, Instant};
 use gpui::prelude::*;
 use gpui::{
     div, img, px, uniform_list, App, ClickEvent, ClipboardItem, Context, ElementId, Entity,
-    EventEmitter, FocusHandle, ListSizingBehavior, ObjectFit, Render, SharedString, WeakEntity,
-    Window,
+    EventEmitter, FocusHandle, ListSizingBehavior, ObjectFit, Render, ScrollStrategy, SharedString,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_diff::DiffSource;
 use rgitui_git::{
-    BranchInfo, CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel, Signature,
+    compact_ref_labels, BranchInfo, CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel,
+    Signature,
 };
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     AvatarCache, Badge, ButtonSize, ButtonStyle, DiffStat, Icon, IconButton, IconName, IconSize,
-    Label, LabelSize, TextInput, TextInputEvent,
+    Label, LabelSize, Scrollbar, TextInput, TextInputEvent, Tooltip,
 };
 
 use crate::keymap;
@@ -27,6 +28,7 @@ use crate::CommandId;
 /// little room. Once it is this short the panel scrolls as one region instead.
 const FILE_LIST_MIN_VISIBLE_ROWS: f32 = 4.0;
 const FILE_LIST_BOTTOM_PADDING: f32 = 8.0;
+const FILE_LIST_SCROLLBAR_THRESHOLD: usize = FILE_LIST_MIN_VISIBLE_ROWS as usize;
 
 /// Height the changed-files list would like: every row plus the bottom padding.
 ///
@@ -458,6 +460,7 @@ pub struct DetailPanel {
     file_search_active: bool,
     file_view_mode: FileViewMode,
     collapsed_dirs: HashSet<String>,
+    file_scroll: UniformListScrollHandle,
     description_expanded: bool,
     contained_in: Vec<BranchInfo>,
     contained_in_loading: bool,
@@ -470,6 +473,7 @@ impl DetailPanel {
         let file_search_editor = cx.new(|cx| {
             let mut input = TextInput::new(cx);
             input.set_placeholder("Filter files...");
+            input.set_compact(true);
             input
         });
         cx.subscribe(
@@ -497,6 +501,7 @@ impl DetailPanel {
             file_search_active: false,
             file_view_mode: FileViewMode::default(),
             collapsed_dirs: HashSet::new(),
+            file_scroll: UniformListScrollHandle::new(),
             description_expanded: false,
             contained_in: Vec::new(),
             contained_in_loading: false,
@@ -727,6 +732,7 @@ impl DetailPanel {
         self.file_search_query = None;
         self.file_search_active = false;
         self.collapsed_dirs.clear();
+        self.file_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.rebuild_visible_tree_rows();
         self.description_expanded = false;
         self.contained_in.clear();
@@ -815,7 +821,13 @@ impl DetailPanel {
             .gap(px(4.))
             .child(self.render_section_header("Co-authors"));
 
-        for co_author in co_authors {
+        let mut seen = HashSet::new();
+        for co_author in co_authors.iter().filter(|co_author| {
+            seen.insert((
+                co_author.name.trim().to_lowercase(),
+                co_author.email.trim().to_lowercase(),
+            ))
+        }) {
             let initials: SharedString = co_author
                 .name
                 .split_whitespace()
@@ -945,7 +957,7 @@ impl DetailPanel {
         let border_transparent = colors.border_transparent;
         let ghost_element_hover = colors.ghost_element_hover;
 
-        uniform_list(
+        let list = uniform_list(
             self.file_view_mode.list_element_id(),
             row_count,
             move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
@@ -966,8 +978,8 @@ impl DetailPanel {
                             .h_flex()
                             .w_full()
                             .h(px(row_h))
-                            .pl(px(12.))
-                            .pr(px(12.))
+                            .pl(px(8.))
+                            .pr(px(8.))
                             .gap(px(6.))
                             .items_center()
                             .flex_shrink_0()
@@ -1033,10 +1045,24 @@ impl DetailPanel {
             },
         )
         .pb_2()
-        .h(px(list_height))
-        .min_h(px(list_min_height))
+        .h_full()
         .with_sizing_behavior(ListSizingBehavior::Auto)
-        .into_any_element()
+        .track_scroll(&self.file_scroll);
+
+        div()
+            .flex()
+            .flex_row()
+            .w_full()
+            .h(px(list_height))
+            .min_h(px(list_min_height))
+            .child(div().flex_1().min_w_0().h_full().child(list))
+            .when(row_count > FILE_LIST_SCROLLBAR_THRESHOLD, |el| {
+                el.child(Scrollbar::vertical(
+                    "detail-files-scrollbar",
+                    self.file_scroll.clone(),
+                ))
+            })
+            .into_any_element()
     }
 
     /// Renders the directory tree: collapsible directory nodes and file leaves
@@ -1069,18 +1095,18 @@ impl DetailPanel {
         let border_transparent = colors.border_transparent;
         let ghost_element_hover = colors.ghost_element_hover;
 
-        uniform_list(
+        let list = uniform_list(
             self.file_view_mode.list_element_id(),
             row_count,
             move |range: std::ops::Range<usize>, _window: &mut Window, _cx: &mut App| {
                 range
                     .map(|ix| {
                         let row = &tree_rows[visible[ix]];
-                        // 12px base + 14px per depth level. Directory rows lead with
+                        // 8px base + 14px per depth level. Directory rows lead with
                         // a chevron; file rows lead with a chevron-width spacer so
                         // their icon aligns under the folder icon rather than just
                         // shifting right.
-                        let indent = px(12.0 + row.depth as f32 * 14.0);
+                        let indent = px(8.0 + row.depth as f32 * 14.0);
                         let weak = weak.clone();
                         match &row.kind {
                             CachedTreeRowKind::Dir { key } => {
@@ -1095,7 +1121,7 @@ impl DetailPanel {
                                     .w_full()
                                     .h(px(row_h))
                                     .pl(indent)
-                                    .pr(px(12.))
+                                    .pr(px(8.))
                                     .gap(px(4.))
                                     .items_center()
                                     .flex_shrink_0()
@@ -1143,7 +1169,7 @@ impl DetailPanel {
                                     .w_full()
                                     .h(px(row_h))
                                     .pl(indent)
-                                    .pr(px(12.))
+                                    .pr(px(8.))
                                     .gap(px(6.))
                                     .items_center()
                                     .flex_shrink_0()
@@ -1201,10 +1227,24 @@ impl DetailPanel {
             },
         )
         .pb_2()
-        .h(px(list_height))
-        .min_h(px(list_min_height))
+        .h_full()
         .with_sizing_behavior(ListSizingBehavior::Auto)
-        .into_any_element()
+        .track_scroll(&self.file_scroll);
+
+        div()
+            .flex()
+            .flex_row()
+            .w_full()
+            .h(px(list_height))
+            .min_h(px(list_min_height))
+            .child(div().flex_1().min_w_0().h_full().child(list))
+            .when(row_count > FILE_LIST_SCROLLBAR_THRESHOLD, |el| {
+                el.child(Scrollbar::vertical(
+                    "detail-files-tree-scrollbar",
+                    self.file_scroll.clone(),
+                ))
+            })
+            .into_any_element()
     }
 }
 
@@ -1214,10 +1254,10 @@ impl Render for DetailPanel {
         let compact = &cx.global::<SettingsState>().settings().compactness;
 
         // Compactness-scaled spacing values for header and message cards
-        let header_pad_h = px(compact.spacing(16.0));
+        let header_pad_h = px(compact.spacing(12.0));
         let header_pad_v = px(compact.spacing(14.0));
         let header_gap = px(compact.spacing(10.0));
-        let msg_pad_h = px(compact.spacing(12.0));
+        let msg_pad_h = px(compact.spacing(10.0));
         let msg_pad_v = px(compact.spacing(10.0));
         let msg_gap = px(compact.spacing(6.0));
         let avatar_size = px(compact.spacing(24.0));
@@ -1293,7 +1333,7 @@ impl Render for DetailPanel {
         let relative_time = crate::time::format_relative_time_full(commit.time.timestamp());
         let absolute_date = format_absolute_date(commit.time.timestamp());
         let date: SharedString = format!("{} ({})", absolute_date, relative_time).into();
-        let refs = commit.refs.clone();
+        let refs = compact_ref_labels(&commit.refs);
 
         let (summary, description) = {
             let msg = &commit.message;
@@ -1339,7 +1379,7 @@ impl Render for DetailPanel {
                 .h_flex()
                 .w_full()
                 .h(px(32.))
-                .px(px(10.))
+                .px(px(8.))
                 .gap(px(4.))
                 .items_center()
                 .bg(colors.surface_background)
@@ -1379,9 +1419,22 @@ impl Render for DetailPanel {
             .id("detail-content")
             .v_flex()
             .flex_1()
-            .overflow_y_scroll()
-            .p_3()
+            .min_h_0()
+            .overflow_hidden()
+            .px_2()
+            .py_3()
             .gap_3();
+
+        // Metadata has its own bounded scroll region. This prevents wheel input
+        // over the changed-files list from also moving the commit details above.
+        let mut metadata = div()
+            .id("detail-metadata")
+            .v_flex()
+            .w_full()
+            .max_h(gpui::relative(0.62))
+            .overflow_y_scroll()
+            .gap_3()
+            .flex_shrink_0();
 
         // -- Header Card: Author + SHA + Refs --
         // Everything above the file list keeps its full height; the list is the
@@ -1480,6 +1533,19 @@ impl Render for DetailPanel {
                                     .truncate(),
                             ),
                         )
+                        .when(commit.is_signed, |el| {
+                            el.child(
+                                div()
+                                    .id("signed-commit")
+                                    .flex_shrink_0()
+                                    .tooltip(Tooltip::text("GPG-signed commit"))
+                                    .child(
+                                        Icon::new(IconName::Lock)
+                                            .size(IconSize::XSmall)
+                                            .color(Color::Success),
+                                    ),
+                            )
+                        })
                         .child(sha_button),
                 )
                 .child(
@@ -1507,30 +1573,11 @@ impl Render for DetailPanel {
                 ),
         );
 
-        // GPG signed badge
-        if commit.is_signed {
-            header_card = header_card.child(
-                div()
-                    .h_flex()
-                    .gap(px(6.))
-                    .items_center()
-                    .child(
-                        Icon::new(IconName::Lock)
-                            .size(IconSize::XSmall)
-                            .color(Color::Success),
-                    )
-                    .child(
-                        Badge::new(SharedString::from("Signed"))
-                            .color(Color::Success)
-                            .bold(),
-                    ),
-            );
-        }
-
         // Ref badges: branches and tags
         if !refs.is_empty() {
             let mut refs_row = div().h_flex().gap(px(4.)).flex_wrap();
-            for ref_label in &refs {
+            for (ref_index, compact_ref) in refs.iter().enumerate() {
+                let ref_label = &compact_ref.label;
                 let badge_color = match ref_label {
                     RefLabel::Head => Color::Warning,
                     RefLabel::LocalBranch(_) => Color::Success,
@@ -1539,7 +1586,13 @@ impl Render for DetailPanel {
                 };
                 let name: SharedString = ref_label.display_name().to_string().into();
                 let is_tag = matches!(ref_label, RefLabel::Tag(_));
-                let badge = Badge::new(name).color(badge_color).bold();
+                let badge = Badge::new(name)
+                    .color(badge_color)
+                    .bold()
+                    .compact()
+                    .when(!compact_ref.remotes.is_empty(), |badge| badge.prefix("↑"));
+                let remote_tooltip = (!compact_ref.remotes.is_empty())
+                    .then(|| Tooltip::text(format!("Also on {}", compact_ref.remotes.join(", "))));
                 if is_tag {
                     refs_row = refs_row.child(
                         div()
@@ -1554,7 +1607,16 @@ impl Render for DetailPanel {
                             .child(badge),
                     );
                 } else {
-                    refs_row = refs_row.child(badge);
+                    refs_row = refs_row.child(
+                        div()
+                            .id(ElementId::NamedInteger(
+                                "detail-ref-badge".into(),
+                                ref_index as u64,
+                            ))
+                            .flex_shrink_0()
+                            .when_some(remote_tooltip, |el, tooltip| el.tooltip(tooltip))
+                            .child(badge),
+                    );
                 }
             }
             header_card = header_card.child(refs_row);
@@ -1627,7 +1689,7 @@ impl Render for DetailPanel {
             header_card = header_card.child(contained_row);
         }
 
-        content = content.child(header_card);
+        metadata = metadata.child(header_card);
 
         // -- Commit Message Section --
         let mut message_card = div()
@@ -1765,7 +1827,8 @@ impl Render for DetailPanel {
             }
         }
 
-        content = content.child(message_card);
+        metadata = metadata.child(message_card);
+        content = content.child(metadata);
 
         // -- Changed Files Section --
         if let (Some(diff), Some(cached)) = (&self.commit_diff, &self.cached_file_tree) {
@@ -1821,7 +1884,14 @@ impl Render for DetailPanel {
                                 .size(IconSize::XSmall)
                                 .color(Color::Muted),
                         )
-                        .child(div().flex_1().child(self.file_search_editor.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h(px(24.))
+                                .overflow_hidden()
+                                .child(self.file_search_editor.clone()),
+                        )
                         .child(
                             IconButton::new("clear-search", IconName::X)
                                 .size(ButtonSize::Compact)
@@ -1872,7 +1942,7 @@ impl Render for DetailPanel {
                         .w_full()
                         .flex_shrink_0()
                         .h(px(22.))
-                        .px_3()
+                        .px_2()
                         .items_center()
                         .gap_1()
                         .child(

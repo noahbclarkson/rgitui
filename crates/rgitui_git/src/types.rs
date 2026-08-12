@@ -40,6 +40,65 @@ impl RefLabel {
     }
 }
 
+/// A ref label prepared for compact UI display. A local branch absorbs matching
+/// remote-tracking refs so `topic` and `origin/topic` can be shown as one chip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactRefLabel {
+    pub label: RefLabel,
+    pub remotes: Vec<String>,
+}
+
+/// Combine a local branch with remote-tracking refs that point at the same
+/// commit and have the same branch path after the remote name.
+pub fn compact_ref_labels(refs: &[RefLabel]) -> Vec<CompactRefLabel> {
+    let local_names: std::collections::HashSet<&str> = refs
+        .iter()
+        .filter_map(|label| match label {
+            RefLabel::LocalBranch(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut remotes_by_local: std::collections::HashMap<&str, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for label in refs {
+        let RefLabel::RemoteBranch(name) = label else {
+            continue;
+        };
+        let Some((remote, branch_path)) = name.split_once('/') else {
+            continue;
+        };
+        if local_names.contains(branch_path) {
+            remotes_by_local
+                .entry(branch_path)
+                .or_default()
+                .push(remote.to_string());
+        }
+    }
+
+    refs.iter()
+        .filter_map(|label| match label {
+            RefLabel::RemoteBranch(name) => {
+                let paired = name
+                    .split_once('/')
+                    .is_some_and(|(_, branch_path)| local_names.contains(branch_path));
+                (!paired).then(|| CompactRefLabel {
+                    label: label.clone(),
+                    remotes: Vec::new(),
+                })
+            }
+            RefLabel::LocalBranch(name) => Some(CompactRefLabel {
+                label: label.clone(),
+                remotes: remotes_by_local.remove(name.as_str()).unwrap_or_default(),
+            }),
+            _ => Some(CompactRefLabel {
+                label: label.clone(),
+                remotes: Vec::new(),
+            }),
+        })
+        .collect()
+}
+
 /// Information about a single commit.
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
@@ -400,6 +459,34 @@ mod tests {
             "origin/main"
         );
         assert_eq!(RefLabel::Tag("v1.0.0".into()).display_name(), "v1.0.0");
+    }
+
+    #[test]
+    fn compact_refs_merge_matching_local_and_remote_branches() {
+        let refs = vec![
+            RefLabel::Head,
+            RefLabel::LocalBranch("codex/topic".into()),
+            RefLabel::RemoteBranch("origin/codex/topic".into()),
+            RefLabel::RemoteBranch("upstream/other".into()),
+        ];
+
+        assert_eq!(
+            compact_ref_labels(&refs),
+            vec![
+                CompactRefLabel {
+                    label: RefLabel::Head,
+                    remotes: vec![],
+                },
+                CompactRefLabel {
+                    label: RefLabel::LocalBranch("codex/topic".into()),
+                    remotes: vec!["origin".into()],
+                },
+                CompactRefLabel {
+                    label: RefLabel::RemoteBranch("upstream/other".into()),
+                    remotes: vec![],
+                },
+            ]
+        );
     }
 
     #[test]

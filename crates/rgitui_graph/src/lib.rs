@@ -11,7 +11,9 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, Point, Render,
     ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity, Window,
 };
-use rgitui_git::{compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel};
+use rgitui_git::{
+    compact_ref_labels, compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel,
+};
 use rgitui_settings::{GraphStyle, SettingsState};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
@@ -2165,9 +2167,11 @@ impl Render for GraphView {
                             .into();
 
                         // Ref badges — distinct styling per ref type
-                        let mut ref_badges: Vec<Badge> = Vec::new();
-                        for r in &commit.refs {
-                            let badge = match r {
+                        let mut ref_badges: Vec<gpui::AnyElement> = Vec::new();
+                        for (ref_index, compact_ref) in
+                            compact_ref_labels(&commit.refs).into_iter().enumerate()
+                        {
+                            let badge = match &compact_ref.label {
                                 RefLabel::Head => Badge::new("HEAD").color(Color::Warning).bold(),
                                 RefLabel::LocalBranch(name) => {
                                     Badge::new(name.clone()).color(Color::Success)
@@ -2178,8 +2182,26 @@ impl Render for GraphView {
                                 RefLabel::Tag(name) => {
                                     Badge::new(name.clone()).color(Color::Accent).prefix("tag")
                                 }
-                            };
-                            ref_badges.push(badge);
+                            }
+                            .compact()
+                            .when(!compact_ref.remotes.is_empty(), |badge| badge.prefix("↑"));
+                            let remote_tooltip = (!compact_ref.remotes.is_empty()).then(|| {
+                                Tooltip::text(format!(
+                                    "Also on {}",
+                                    compact_ref.remotes.join(", ")
+                                ))
+                            });
+                            ref_badges.push(
+                                div()
+                                    .id(ElementId::NamedInteger(
+                                        "graph-ref-badge".into(),
+                                        ref_index as u64,
+                                    ))
+                                    .flex_shrink_0()
+                                    .when_some(remote_tooltip, |el, tooltip| el.tooltip(tooltip))
+                                    .child(badge)
+                                    .into_any_element(),
+                            );
                         }
 
                         let hash_display: SharedString = match sha_display_length {
@@ -2624,9 +2646,7 @@ impl Render for GraphView {
 
                             if show_ref_badges {
                                 for badge in ref_badges {
-                                    message_col = message_col.child(
-                                        div().flex_shrink_0().child(badge),
-                                    );
+                                    message_col = message_col.child(badge);
                                 }
                             }
 

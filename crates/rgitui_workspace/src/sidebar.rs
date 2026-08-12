@@ -6,6 +6,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, uniform_list, App, Bounds, ClickEvent, Context, ElementId, Entity,
@@ -16,11 +17,11 @@ use gpui::{
 use rgitui_git::{
     BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
 };
-use rgitui_settings::SettingsState;
+use rgitui_settings::{Compactness, SettingsState};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Badge, Button, ButtonSize, ButtonStyle, IconButton, IconName, Label, LabelSize, TextInput,
-    TextInputEvent, Tooltip,
+    Badge, Button, ButtonSize, ButtonStyle, IconButton, IconName, Label, LabelSize, Scrollbar,
+    TextInput, TextInputEvent, Tooltip,
 };
 
 use crate::keymap;
@@ -152,11 +153,64 @@ const SIDEBAR_LIST_MIN_VISIBLE_ROWS: f32 = 3.0;
 const SIDEBAR_UNMEASURED_VIEWPORT_HEIGHT: f32 = 640.0;
 /// Height of the "No tags"/"Working tree clean"-style placeholder rows.
 const SIDEBAR_EMPTY_ROW_HEIGHT: f32 = 28.0;
-/// Height of the branch filter input row.
-const SIDEBAR_FILTER_ROW_HEIGHT: f32 = 24.0;
 /// Height of the rule between the ref sections and the file-change sections:
 /// a 1px line plus 4px of margin above and below.
 const SIDEBAR_SEPARATOR_HEIGHT: f32 = 9.0;
+const BRANCH_FILTER_POPOVER_WIDTH: f32 = 248.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BranchAgeFilter {
+    #[default]
+    Any,
+    SevenDays,
+    ThirtyDays,
+    NinetyDays,
+    OneYear,
+}
+
+impl BranchAgeFilter {
+    const OPTIONS: [Self; 5] = [
+        Self::Any,
+        Self::SevenDays,
+        Self::ThirtyDays,
+        Self::NinetyDays,
+        Self::OneYear,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Any => "Any time",
+            Self::SevenDays => "Last 7 days",
+            Self::ThirtyDays => "Last 30 days",
+            Self::NinetyDays => "Last 90 days",
+            Self::OneYear => "Last year",
+        }
+    }
+
+    fn max_age_seconds(self) -> Option<i64> {
+        match self {
+            Self::Any => None,
+            Self::SevenDays => Some(7 * 24 * 60 * 60),
+            Self::ThirtyDays => Some(30 * 24 * 60 * 60),
+            Self::NinetyDays => Some(90 * 24 * 60 * 60),
+            Self::OneYear => Some(365 * 24 * 60 * 60),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchFilterTarget {
+    Local,
+    Remote,
+}
+
+fn branch_viewport_rows(compactness: Compactness) -> usize {
+    match compactness {
+        Compactness::Compact => 12,
+        Compactness::Default => 10,
+        Compactness::Comfortable => 8,
+    }
+}
 
 /// Heights of the virtualized section lists, in render order.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -295,8 +349,14 @@ pub struct Sidebar {
     branch_filter: String,
     /// Editor entity backing the branch filter input.
     branch_filter_editor: Entity<TextInput>,
-    /// Whether the branch filter input is currently visible/active.
-    branch_filter_active: bool,
+    /// Name filter and editor for remote-tracking branches.
+    remote_branch_filter: String,
+    remote_branch_filter_editor: Entity<TextInput>,
+    /// Date ranges use each branch tip's last commit time.
+    local_branch_age_filter: BranchAgeFilter,
+    remote_branch_age_filter: BranchAgeFilter,
+    /// The filter popover currently shown, if any.
+    branch_filter_popover: Option<BranchFilterTarget>,
     /// Whether "My Branches" filter is active (show only branches authored by current user).
     my_branches_active: bool,
     /// Current user email for "My Branches" filtering.
@@ -318,11 +378,30 @@ pub struct Sidebar {
 /// Pure filtering function: returns indices into `branches` whose names contain
 /// `filter` (case-insensitive substring) and, if `current_user_email` is `Some`
 /// and `my_branches` is true, also have a matching author email.
+#[cfg(test)]
 pub(crate) fn filter_local_branch_indices(
     branches: &[BranchInfo],
     filter: &str,
     my_branches: bool,
     current_user_email: Option<&str>,
+) -> Vec<usize> {
+    filter_branch_indices(
+        branches,
+        filter,
+        BranchAgeFilter::Any,
+        my_branches,
+        current_user_email,
+        Utc::now().timestamp(),
+    )
+}
+
+fn filter_branch_indices(
+    branches: &[BranchInfo],
+    filter: &str,
+    age_filter: BranchAgeFilter,
+    my_branches: bool,
+    current_user_email: Option<&str>,
+    now: i64,
 ) -> Vec<usize> {
     let filter_lc = filter.to_lowercase();
     branches
@@ -338,7 +417,11 @@ pub(crate) fn filter_local_branch_indices(
                     _ => false,
                 }
             };
-            name_match && author_match
+            let age_match = age_filter.max_age_seconds().is_none_or(|max_age| {
+                b.last_commit_time
+                    .is_some_and(|time| now.saturating_sub(time) <= max_age)
+            });
+            name_match && author_match && age_match
         })
         .map(|(i, _)| i)
         .collect()
@@ -368,6 +451,13 @@ impl Sidebar {
         let branch_filter_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
             ti.set_placeholder("Filter branches...");
+            ti.set_compact(true);
+            ti
+        });
+        let remote_branch_filter_editor = cx.new(|cx| {
+            let mut ti = TextInput::new(cx);
+            ti.set_placeholder("Filter remote branches...");
+            ti.set_compact(true);
             ti
         });
 
@@ -376,6 +466,19 @@ impl Sidebar {
             |this: &mut Self, _, event: &TextInputEvent, cx| {
                 if let TextInputEvent::Changed(text) = event {
                     this.branch_filter = text.to_string();
+                    this.rebuild_flattened_branches();
+                    this.rebuild_nav_items();
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &remote_branch_filter_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(text) = event {
+                    this.remote_branch_filter = text.to_string();
                     this.rebuild_flattened_branches();
                     this.rebuild_nav_items();
                     cx.notify();
@@ -417,7 +520,11 @@ impl Sidebar {
             cached_nav_items,
             branch_filter: String::new(),
             branch_filter_editor,
-            branch_filter_active: false,
+            remote_branch_filter: String::new(),
+            remote_branch_filter_editor,
+            local_branch_age_filter: BranchAgeFilter::Any,
+            remote_branch_age_filter: BranchAgeFilter::Any,
+            branch_filter_popover: None,
             my_branches_active: false,
             current_user_email: None,
             stash_context_menu: None,
@@ -457,12 +564,80 @@ impl Sidebar {
 
     /// Returns the branch indices that pass the current branch filter and "My Branches" toggle.
     fn filtered_local_indices(&self, current_user_email: Option<&str>) -> Vec<usize> {
-        filter_local_branch_indices(
+        filter_branch_indices(
             &self.local_branches,
             &self.branch_filter,
+            self.local_branch_age_filter,
             self.my_branches_active,
             current_user_email,
+            Utc::now().timestamp(),
         )
+    }
+
+    fn filtered_remote_indices(&self) -> Vec<usize> {
+        filter_branch_indices(
+            &self.remote_branches,
+            &self.remote_branch_filter,
+            self.remote_branch_age_filter,
+            false,
+            None,
+            Utc::now().timestamp(),
+        )
+    }
+
+    fn toggle_branch_filter_popover(
+        &mut self,
+        target: BranchFilterTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.branch_filter_popover == Some(target) {
+            self.branch_filter_popover = None;
+        } else {
+            self.branch_filter_popover = Some(target);
+            let editor = match target {
+                BranchFilterTarget::Local => &self.branch_filter_editor,
+                BranchFilterTarget::Remote => &self.remote_branch_filter_editor,
+            };
+            editor.update(cx, |editor, cx| editor.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn set_branch_age_filter(
+        &mut self,
+        target: BranchFilterTarget,
+        filter: BranchAgeFilter,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            BranchFilterTarget::Local => self.local_branch_age_filter = filter,
+            BranchFilterTarget::Remote => self.remote_branch_age_filter = filter,
+        }
+        self.rebuild_flattened_branches();
+        self.rebuild_nav_items();
+        cx.notify();
+    }
+
+    fn clear_branch_filters(&mut self, target: BranchFilterTarget, cx: &mut Context<Self>) {
+        match target {
+            BranchFilterTarget::Local => {
+                self.branch_filter.clear();
+                self.local_branch_age_filter = BranchAgeFilter::Any;
+                self.my_branches_active = false;
+                self.branch_filter_editor
+                    .update(cx, |editor, cx| editor.clear(cx));
+            }
+            BranchFilterTarget::Remote => {
+                self.remote_branch_filter.clear();
+                self.remote_branch_age_filter = BranchAgeFilter::Any;
+                self.remote_branch_filter_editor
+                    .update(cx, |editor, cx| editor.clear(cx));
+            }
+        }
+        self.rebuild_flattened_branches();
+        self.rebuild_nav_items();
+        cx.notify();
     }
 
     /// Rebuild the cached navigable items list from current state.
@@ -488,7 +663,7 @@ impl Sidebar {
 
         items.push(SidebarItem::SectionHeader(SidebarSection::RemoteBranches));
         if is_expanded(SidebarSection::RemoteBranches, &self.expanded_sections) {
-            for i in 0..self.remote_branches.len() {
+            for &i in &self.flattened_remote_branches {
                 items.push(SidebarItem::RemoteBranch(i));
             }
         }
@@ -651,10 +826,7 @@ impl Sidebar {
     /// Runs a keyboard command scoped to `Sidebar` or to the shared `List` group.
     fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
         if cmd == CommandId::FilterBranches {
-            self.branch_filter_active = true;
-            self.branch_filter_editor
-                .update(cx, |editor, cx| editor.focus(window, cx));
-            cx.notify();
+            self.toggle_branch_filter_popover(BranchFilterTarget::Local, window, cx);
             return;
         }
 
@@ -665,7 +837,13 @@ impl Sidebar {
 
         let last = self.cached_nav_items.len().saturating_sub(1);
         match cmd {
-            CommandId::Cancel => self.clear_branch_filter(cx),
+            CommandId::Cancel => {
+                if self.branch_filter_popover.take().is_some() {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }
             // Bounded section lists follow keyboard selection through their own
             // scroll handles; the outer sidebar still owns movement between
             // section viewports.
@@ -690,20 +868,6 @@ impl Sidebar {
     fn select_row(&mut self, row: usize, cx: &mut Context<Self>) {
         self.keyboard_index = Some(row);
         self.scroll_keyboard_row_into_view();
-        cx.notify();
-    }
-
-    /// Closes the branch filter and restores the unfiltered lists.
-    fn clear_branch_filter(&mut self, cx: &mut Context<Self>) {
-        if !self.branch_filter_active && self.branch_filter.is_empty() {
-            return;
-        }
-        self.branch_filter_active = false;
-        self.branch_filter.clear();
-        self.branch_filter_editor
-            .update(cx, |editor, cx| editor.clear(cx));
-        self.rebuild_flattened_branches();
-        self.rebuild_nav_items();
         cx.notify();
     }
 
@@ -792,12 +956,15 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// Rebuild flattened local branches (used after filter changes).
+    /// Rebuild flattened local and remote branches after filter or data changes.
     fn rebuild_flattened_branches(&mut self) {
         self.flattened_local_branches.clear();
         let visible_branch_indices =
             self.filtered_local_indices(self.current_user_email.as_deref());
         self.flattened_local_branches.extend(visible_branch_indices);
+        self.flattened_remote_branches.clear();
+        self.flattened_remote_branches
+            .extend(self.filtered_remote_indices());
     }
 
     pub fn update_branches(&mut self, mut branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
@@ -817,16 +984,7 @@ impl Sidebar {
         self.local_branches = local;
         self.remote_branches = remote;
 
-        // Rebuild flattened local branches for virtualized rendering.
-        self.flattened_local_branches.clear();
-        let visible_branch_indices =
-            self.filtered_local_indices(self.current_user_email.as_deref());
-        self.flattened_local_branches.extend(visible_branch_indices);
-
-        // Rebuild flattened remote branches for virtualized rendering.
-        self.flattened_remote_branches.clear();
-        self.flattened_remote_branches
-            .extend(0..self.remote_branches.len());
+        self.rebuild_flattened_branches();
 
         self.rebuild_nav_items();
         cx.notify();
@@ -930,11 +1088,7 @@ impl Sidebar {
         self.unstaged = unstaged;
         self.rebuild_change_trees();
 
-        // Rebuild flattened local branches for virtualized rendering.
-        self.flattened_local_branches.clear();
-        let visible_branch_indices =
-            self.filtered_local_indices(self.current_user_email.as_deref());
-        self.flattened_local_branches.extend(visible_branch_indices);
+        self.rebuild_flattened_branches();
 
         self.rebuild_nav_items();
         cx.notify();
@@ -1323,14 +1477,10 @@ impl Sidebar {
     }
 
     /// Height of everything in the sidebar that is not a virtualized list:
-    /// the repo header, the eight section headers, the branch filter row, the
-    /// placeholder rows of expanded-but-empty sections, and the separator.
+    /// the repo header, the eight section headers, placeholder rows of
+    /// expanded-but-empty sections, and the separator.
     fn chrome_height(&self, item_h: f32, header_h: f32) -> f32 {
         let mut chrome = header_h + 8.0 * item_h + SIDEBAR_SEPARATOR_HEIGHT;
-
-        if self.branch_filter_active || !self.branch_filter.is_empty() {
-            chrome += SIDEBAR_FILTER_ROW_HEIGHT;
-        }
 
         let placeholders = [
             (
@@ -1338,6 +1488,10 @@ impl Sidebar {
                 self.flattened_local_branches.is_empty(),
             ),
             (SidebarSection::Remotes, self.remotes.is_empty()),
+            (
+                SidebarSection::RemoteBranches,
+                self.flattened_remote_branches.is_empty(),
+            ),
             (SidebarSection::Tags, self.tags.is_empty()),
             (SidebarSection::Stashes, self.stashes.is_empty()),
             (SidebarSection::Worktrees, self.worktrees.is_empty()),
@@ -1357,7 +1511,12 @@ impl Sidebar {
     /// sidebar viewport. Without this the last expanded section would stop at a
     /// fixed row count and leave dead space below it, hiding rows that are only
     /// reachable by scrolling inside the section.
-    fn plan_list_heights(&self, item_h: f32, header_h: f32) -> SidebarListHeights {
+    fn plan_list_heights(
+        &self,
+        item_h: f32,
+        header_h: f32,
+        branch_row_cap: usize,
+    ) -> SidebarListHeights {
         let rows = |expanded: SidebarSection, count: usize| -> f32 {
             if self.is_expanded(expanded) {
                 count as f32 * item_h
@@ -1369,12 +1528,12 @@ impl Sidebar {
         let desired = [
             rows(
                 SidebarSection::LocalBranches,
-                self.flattened_local_branches.len(),
+                self.flattened_local_branches.len().min(branch_row_cap),
             ),
             rows(SidebarSection::Remotes, self.flattened_remotes.len()),
             rows(
                 SidebarSection::RemoteBranches,
-                self.flattened_remote_branches.len(),
+                self.flattened_remote_branches.len().min(branch_row_cap),
             ),
             rows(SidebarSection::Tags, self.flattened_tags.len()),
             rows(SidebarSection::Stashes, self.stashes.len()),
@@ -1422,7 +1581,8 @@ impl Render for Sidebar {
         let compactness = cx.global::<SettingsState>().settings().compactness;
         let item_h = compactness.spacing(24.0);
         let header_h = compactness.spacing(26.0);
-        let list_heights = self.plan_list_heights(item_h, header_h);
+        let branch_row_cap = branch_viewport_rows(compactness);
+        let list_heights = self.plan_list_heights(item_h, header_h, branch_row_cap);
         let sidebar_weak: WeakEntity<Sidebar> = cx.weak_entity();
 
         // Compute navigable items for keyboard highlight matching
@@ -1454,6 +1614,8 @@ impl Render for Sidebar {
         // Dismiss context menu on left-click outside the menu bounds.
         let stash_dismiss = cx.weak_entity();
         let has_stash_menu = self.stash_context_menu.is_some();
+        let branch_filter_dismiss = cx.weak_entity();
+        let has_branch_filter_popover = self.branch_filter_popover.is_some();
 
         let panel = div()
             .id("sidebar-panel")
@@ -1491,6 +1653,20 @@ impl Render for Sidebar {
                                     });
                                 if !click_inside_menu {
                                     this.dismiss_stash_context_menu(cx);
+                                }
+                            })
+                            .ok();
+                    }
+                })
+            })
+            .when(has_branch_filter_popover, |el| {
+                el.on_mouse_down(MouseButton::Left, {
+                    let dismiss = branch_filter_dismiss.clone();
+                    move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        dismiss
+                            .update(cx, |this: &mut Sidebar, cx| {
+                                if this.branch_filter_popover.take().is_some() {
+                                    cx.notify();
                                 }
                             })
                             .ok();
@@ -1561,6 +1737,9 @@ impl Render for Sidebar {
         // sync with the filter text and "My Branches" toggle), so use its length
         // directly rather than re-running the per-branch filter every frame.
         let filtered_count = self.flattened_local_branches.len();
+        let local_filters_active = !branch_filter.is_empty()
+            || self.my_branches_active
+            || self.local_branch_age_filter != BranchAgeFilter::Any;
 
         let local_expanded = self.is_expanded(SidebarSection::LocalBranches);
         let icon = if local_expanded {
@@ -1609,6 +1788,34 @@ impl Render for Sidebar {
                 .child(div().flex_1())
                 .child(
                     div()
+                        .id("local-branch-filter-trigger")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                                cx.stop_propagation();
+                            },
+                        )
+                        .child(
+                            IconButton::new("local-branch-filters", IconName::MoreHorizontal)
+                                .size(ButtonSize::Compact)
+                                .color(if local_filters_active {
+                                    Color::Accent
+                                } else {
+                                    Color::Muted
+                                })
+                                .tooltip("Filter branches by name or last used")
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_branch_filter_popover(
+                                        BranchFilterTarget::Local,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        ),
+                )
+                .child(
+                    div()
                         .h_flex()
                         .h(px(15.))
                         .min_w(px(18.))
@@ -1618,7 +1825,7 @@ impl Render for Sidebar {
                         .items_center()
                         .justify_center()
                         .child(
-                            Label::new(if !self.my_branches_active && branch_filter.is_empty() {
+                            Label::new(if !local_filters_active {
                                 SharedString::from(format!("{}", local_branch_count))
                             } else {
                                 SharedString::from(format!(
@@ -1627,64 +1834,18 @@ impl Render for Sidebar {
                                 ))
                             })
                             .size(LabelSize::XSmall)
-                            .color(
-                                if !self.my_branches_active && !branch_filter.is_empty() {
-                                    Color::Accent
-                                } else {
-                                    Color::Muted
-                                },
-                            ),
+                            .color(if local_filters_active {
+                                Color::Accent
+                            } else {
+                                Color::Muted
+                            }),
                         ),
                 ),
         );
 
-        // Branch filter input (shown when active or filter is non-empty)
-        let branch_filter_active = self.branch_filter_active;
-        if branch_filter_active || !branch_filter.is_empty() {
-            content = content.child(
-                div()
-                    .id("branch-filter-row")
-                    .h_flex()
-                    .w_full()
-                    .h(px(24.))
-                    .px(px(8.))
-                    .gap(px(4.))
-                    .items_center()
-                    .bg(colors.editor_background)
-                    .border_b_1()
-                    .border_color(colors.border_focused)
-                    .child(
-                        rgitui_ui::Icon::new(IconName::Search)
-                            .size(rgitui_ui::IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .child(div().flex_1().child(self.branch_filter_editor.clone()))
-                    .child(
-                        IconButton::new("my-branches-filter", IconName::User)
-                            .size(ButtonSize::Compact)
-                            .color(if self.my_branches_active {
-                                Color::Accent
-                            } else {
-                                Color::Muted
-                            })
-                            .tooltip(if self.my_branches_active {
-                                "Show all branches"
-                            } else {
-                                "Show only my branches"
-                            })
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.my_branches_active = !this.my_branches_active;
-                                this.rebuild_flattened_branches();
-                                this.rebuild_nav_items();
-                                cx.notify();
-                            })),
-                    ),
-            );
-        }
-
         if local_expanded {
             if self.flattened_local_branches.is_empty() {
-                let empty_msg = if !branch_filter.is_empty() {
+                let empty_msg = if local_filters_active {
                     "No matching branches"
                 } else {
                     "No local branches"
@@ -1709,6 +1870,7 @@ impl Render for Sidebar {
             nav_idx += self.flattened_local_branches.len();
             let flattened = self.flattened_local_branches.clone();
             let list_height = list_heights.local_branches;
+            let show_local_scrollbar = flattened.len() as f32 * item_h > list_height + 0.5;
             let branches = self.local_branches.clone();
             let w = Rc::new(sidebar_weak.clone());
             let colors = colors.clone();
@@ -1969,10 +2131,23 @@ impl Render for Sidebar {
                     }).collect()
                 },
             )
-            .h(px(list_height))
+            .h_full()
             .with_sizing_behavior(ListSizingBehavior::Auto)
             .track_scroll(&self.local_branches_scroll);
-            content = content.child(list);
+            content = content.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .w_full()
+                    .h(px(list_height))
+                    .child(div().flex_1().min_w_0().h_full().child(list))
+                    .when(show_local_scrollbar, |el| {
+                        el.child(Scrollbar::vertical(
+                            "local-branches-scrollbar",
+                            self.local_branches_scroll.clone(),
+                        ))
+                    }),
+            );
         }
 
         // -- Remotes --
@@ -2237,6 +2412,9 @@ impl Render for Sidebar {
 
         // -- Remote Branches --
         let remote_branch_count = self.remote_branches.len();
+        let remote_filtered_count = self.flattened_remote_branches.len();
+        let remote_filters_active = !self.remote_branch_filter.is_empty()
+            || self.remote_branch_age_filter != BranchAgeFilter::Any;
 
         let remote_expanded = self.is_expanded(SidebarSection::RemoteBranches);
         let icon = if remote_expanded {
@@ -2280,6 +2458,34 @@ impl Render for Sidebar {
                 .child(div().flex_1())
                 .child(
                     div()
+                        .id("remote-branch-filter-trigger")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                                cx.stop_propagation();
+                            },
+                        )
+                        .child(
+                            IconButton::new("remote-branch-filters", IconName::MoreHorizontal)
+                                .size(ButtonSize::Compact)
+                                .color(if remote_filters_active {
+                                    Color::Accent
+                                } else {
+                                    Color::Muted
+                                })
+                                .tooltip("Filter remote branches by name or last used")
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_branch_filter_popover(
+                                        BranchFilterTarget::Remote,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        ),
+                )
+                .child(
+                    div()
                         .h_flex()
                         .h(px(15.))
                         .min_w(px(18.))
@@ -2289,18 +2495,49 @@ impl Render for Sidebar {
                         .items_center()
                         .justify_center()
                         .child(
-                            Label::new(SharedString::from(format!("{}", remote_branch_count)))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                            Label::new(if remote_filters_active {
+                                SharedString::from(format!(
+                                    "{}/{}",
+                                    remote_filtered_count, remote_branch_count
+                                ))
+                            } else {
+                                SharedString::from(format!("{}", remote_branch_count))
+                            })
+                            .size(LabelSize::XSmall)
+                            .color(if remote_filters_active {
+                                Color::Accent
+                            } else {
+                                Color::Muted
+                            }),
                         ),
                 ),
         );
 
         if remote_expanded {
+            if self.flattened_remote_branches.is_empty() {
+                content = content.child(
+                    div()
+                        .h_flex()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(16.))
+                        .items_center()
+                        .child(
+                            Label::new(if remote_filters_active {
+                                "No matching remote branches"
+                            } else {
+                                "No remote branches"
+                            })
+                            .size(LabelSize::XSmall)
+                            .color(Color::Placeholder),
+                        ),
+                );
+            }
             let nav_base = nav_idx;
             nav_idx += self.flattened_remote_branches.len();
             let flattened = self.flattened_remote_branches.clone();
             let list_height = list_heights.remote_branches;
+            let show_remote_scrollbar = flattened.len() as f32 * item_h > list_height + 0.5;
             let remote_branches = self.remote_branches.clone();
             let w = Rc::new(sidebar_weak.clone());
             let colors = colors.clone();
@@ -2375,10 +2612,23 @@ impl Render for Sidebar {
                         .collect()
                 },
             )
-            .h(px(list_height))
+            .h_full()
             .with_sizing_behavior(ListSizingBehavior::Auto)
             .track_scroll(&self.remote_branches_scroll);
-            content = content.child(list);
+            content = content.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .w_full()
+                    .h(px(list_height))
+                    .child(div().flex_1().min_w_0().h_full().child(list))
+                    .when(show_remote_scrollbar, |el| {
+                        el.child(Scrollbar::vertical(
+                            "remote-branches-scrollbar",
+                            self.remote_branches_scroll.clone(),
+                        ))
+                    }),
+            );
         }
 
         // -- Tags --
@@ -3787,6 +4037,8 @@ impl Render for Sidebar {
             .overflow_y_scroll()
             .child(content);
 
+        let mut panel = panel.child(scroll_div);
+
         if let Some(ref menu_state) = self.stash_context_menu {
             let menu_bg = colors.elevated_surface_background;
             let menu_border = colors.border;
@@ -4007,10 +4259,176 @@ impl Render for Sidebar {
                 );
             }
 
-            panel.child(scroll_div).child(menu)
-        } else {
-            panel.child(scroll_div)
+            panel = panel.child(menu);
         }
+
+        if let Some(target) = self.branch_filter_popover {
+            let (title, editor, active_age, filters_active) = match target {
+                BranchFilterTarget::Local => (
+                    "Branch filters",
+                    self.branch_filter_editor.clone(),
+                    self.local_branch_age_filter,
+                    !self.branch_filter.is_empty()
+                        || self.my_branches_active
+                        || self.local_branch_age_filter != BranchAgeFilter::Any,
+                ),
+                BranchFilterTarget::Remote => (
+                    "Remote branch filters",
+                    self.remote_branch_filter_editor.clone(),
+                    self.remote_branch_age_filter,
+                    !self.remote_branch_filter.is_empty()
+                        || self.remote_branch_age_filter != BranchAgeFilter::Any,
+                ),
+            };
+            let weak = cx.weak_entity();
+            let mut popover = div()
+                .id("branch-filter-popover")
+                .absolute()
+                .right(px(4.))
+                .top(px(header_h + item_h + 4.))
+                .w(px(BRANCH_FILTER_POPOVER_WIDTH))
+                .v_flex()
+                .gap(px(6.))
+                .p_2()
+                .bg(colors.elevated_surface_background)
+                .border_1()
+                .border_color(colors.border)
+                .rounded(px(6.))
+                .elevation_3(cx)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    },
+                )
+                .on_mouse_move(|_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                })
+                .child(
+                    Label::new(title)
+                        .size(LabelSize::XSmall)
+                        .weight(gpui::FontWeight::SEMIBOLD)
+                        .color(Color::Default),
+                )
+                .child(
+                    Label::new("Name")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(div().h(px(24.)).w_full().overflow_hidden().child(editor))
+                .child(
+                    Label::new("Last used")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                );
+
+            for (index, age_filter) in BranchAgeFilter::OPTIONS.into_iter().enumerate() {
+                let selected = age_filter == active_age;
+                let weak = weak.clone();
+                popover = popover.child(
+                    div()
+                        .id(ElementId::NamedInteger(
+                            "branch-age-filter".into(),
+                            index as u64,
+                        ))
+                        .h_flex()
+                        .w_full()
+                        .h(px(24.))
+                        .px_2()
+                        .gap_1()
+                        .items_center()
+                        .rounded(px(4.))
+                        .when(selected, |el| el.bg(colors.ghost_element_selected))
+                        .hover(|el| el.bg(colors.ghost_element_hover))
+                        .cursor_pointer()
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            weak.update(cx, |this, cx| {
+                                this.set_branch_age_filter(target, age_filter, cx);
+                            })
+                            .ok();
+                        })
+                        .child(div().w(px(14.)).flex_shrink_0().when(selected, |el| {
+                            el.child(
+                                rgitui_ui::Icon::new(IconName::Check)
+                                    .size(rgitui_ui::IconSize::XSmall)
+                                    .color(Color::Accent),
+                            )
+                        }))
+                        .child(
+                            Label::new(age_filter.label())
+                                .size(LabelSize::XSmall)
+                                .color(if selected {
+                                    Color::Accent
+                                } else {
+                                    Color::Default
+                                }),
+                        ),
+                );
+            }
+
+            if target == BranchFilterTarget::Local {
+                let weak = weak.clone();
+                popover = popover.child(
+                    div()
+                        .id("my-branches-filter")
+                        .h_flex()
+                        .w_full()
+                        .h(px(26.))
+                        .px_2()
+                        .gap_2()
+                        .items_center()
+                        .rounded(px(4.))
+                        .when(self.my_branches_active, |el| {
+                            el.bg(colors.ghost_element_selected)
+                        })
+                        .hover(|el| el.bg(colors.ghost_element_hover))
+                        .cursor_pointer()
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            weak.update(cx, |this, cx| {
+                                this.my_branches_active = !this.my_branches_active;
+                                this.rebuild_flattened_branches();
+                                this.rebuild_nav_items();
+                                cx.notify();
+                            })
+                            .ok();
+                        })
+                        .child(
+                            rgitui_ui::Icon::new(IconName::User)
+                                .size(rgitui_ui::IconSize::XSmall)
+                                .color(if self.my_branches_active {
+                                    Color::Accent
+                                } else {
+                                    Color::Muted
+                                }),
+                        )
+                        .child(
+                            Label::new("Only my branches")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Default),
+                        ),
+                );
+            }
+
+            let weak = weak.clone();
+            popover = popover.child(
+                div().w_full().flex().justify_end().child(
+                    Button::new("clear-branch-filters", "Clear")
+                        .size(ButtonSize::Compact)
+                        .style(ButtonStyle::Subtle)
+                        .disabled(!filters_active)
+                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            weak.update(cx, |this, cx| {
+                                this.clear_branch_filters(target, cx);
+                            })
+                            .ok();
+                        }),
+                ),
+            );
+
+            panel = panel.child(popover);
+        }
+
+        panel
     }
 }
 
@@ -4350,6 +4768,34 @@ mod tests {
         ];
         let result = filter_local_branch_indices(&branches, "", false, None);
         assert_eq!(result, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn branch_viewport_rows_follow_density() {
+        assert_eq!(branch_viewport_rows(Compactness::Compact), 12);
+        assert_eq!(branch_viewport_rows(Compactness::Default), 10);
+        assert_eq!(branch_viewport_rows(Compactness::Comfortable), 8);
+    }
+
+    #[test]
+    fn branch_age_filter_uses_last_commit_time() {
+        let now = 2_000_000_000;
+        let mut recent = make_branch("recent");
+        recent.last_commit_time = Some(now - 6 * 24 * 60 * 60);
+        let mut old = make_branch("old");
+        old.last_commit_time = Some(now - 8 * 24 * 60 * 60);
+        let unknown = make_branch("unknown");
+
+        let result = filter_branch_indices(
+            &[recent, old, unknown],
+            "",
+            BranchAgeFilter::SevenDays,
+            false,
+            None,
+            now,
+        );
+
+        assert_eq!(result, vec![0]);
     }
 
     #[test]

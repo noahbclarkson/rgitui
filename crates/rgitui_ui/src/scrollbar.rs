@@ -5,7 +5,7 @@ use gpui::{
     fill, hsla, point, px, size, Along, App, Axis, Bounds, DispatchPhase, Element, ElementId,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, LayoutId, ListOffset, ListState,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, Style,
-    Window,
+    UniformListScrollHandle, Window,
 };
 use rgitui_theme::ActiveTheme;
 
@@ -63,6 +63,24 @@ impl ScrollableHandle for ScrollHandle {
 
     fn viewport(&self) -> Bounds<Pixels> {
         ScrollHandle::bounds(self)
+    }
+}
+
+impl ScrollableHandle for UniformListScrollHandle {
+    fn max_offset(&self) -> Point<Pixels> {
+        self.0.borrow().base_handle.max_offset()
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        self.0.borrow().base_handle.offset()
+    }
+
+    fn set_offset(&self, point: Point<Pixels>) {
+        self.0.borrow().base_handle.set_offset(point);
+    }
+
+    fn viewport(&self) -> Bounds<Pixels> {
+        self.0.borrow().base_handle.bounds()
     }
 }
 
@@ -411,7 +429,7 @@ impl<H: ScrollableHandle> Element for Scrollbar<H> {
             let hitbox = state.hitbox.clone();
             let handle = handle.clone();
             let offset_for_thumb_start = offset_for_thumb_start.clone();
-            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _cx| {
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
@@ -432,6 +450,8 @@ impl<H: ScrollableHandle> Element for Scrollbar<H> {
                     handle.set_offset(new_offset);
                     drag_state.set(Some(thumb_len / 2.));
                 }
+                window.refresh();
+                cx.stop_propagation();
             });
         }
 
@@ -439,8 +459,13 @@ impl<H: ScrollableHandle> Element for Scrollbar<H> {
             let drag_state = drag_state.clone();
             let handle = handle.clone();
             let offset_for_thumb_start = offset_for_thumb_start.clone();
-            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, _cx| {
-                if phase != DispatchPhase::Bubble {
+            let drag_phase = if drag_state.get().is_some() {
+                DispatchPhase::Capture
+            } else {
+                DispatchPhase::Bubble
+            };
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase != drag_phase {
                     return;
                 }
                 let Some(local) = drag_state.get() else {
@@ -450,14 +475,21 @@ impl<H: ScrollableHandle> Element for Scrollbar<H> {
                 let thumb_start = (pos - track_origin - local).clamp(px(0.), thumb_travel);
                 let new_offset = offset_for_thumb_start(thumb_start);
                 handle.set_offset(new_offset);
+                window.refresh();
+                cx.stop_propagation();
             });
         }
 
         {
             let handle = handle.clone();
             let drag_state = drag_state.clone();
-            window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, _cx| {
-                if phase != DispatchPhase::Bubble {
+            let drag_phase = if drag_state.get().is_some() {
+                DispatchPhase::Capture
+            } else {
+                DispatchPhase::Bubble
+            };
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                if phase != drag_phase {
                     return;
                 }
                 if event.button != MouseButton::Left {
@@ -465,6 +497,8 @@ impl<H: ScrollableHandle> Element for Scrollbar<H> {
                 }
                 if drag_state.take().is_some() {
                     handle.drag_ended();
+                    window.refresh();
+                    cx.stop_propagation();
                 }
             });
         }

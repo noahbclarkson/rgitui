@@ -59,6 +59,7 @@ pub(super) fn clean_co_author_lines(message: &str) -> String {
 pub fn extract_co_authors(message: &str) -> Vec<Signature> {
     let prefix = "co-authored-by:";
     let mut co_authors = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for line in message.lines() {
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
@@ -68,7 +69,8 @@ pub fn extract_co_authors(message: &str) -> Vec<Signature> {
                 if let Some(email_end) = rest.find('>') {
                     let name = rest[..email_start].trim().to_string();
                     let email = rest[email_start + 1..email_end].trim().to_string();
-                    if !name.is_empty() && !email.is_empty() {
+                    let identity = (name.to_lowercase(), email.to_lowercase());
+                    if !name.is_empty() && !email.is_empty() && seen.insert(identity) {
                         co_authors.push(Signature { name, email });
                     }
                 }
@@ -1142,6 +1144,16 @@ mod tests {
         assert_eq!(authors[0].name, "Alice");
         assert_eq!(authors[1].name, "Bob Jones");
         assert_eq!(cleaned, "Refactor module");
+    }
+
+    #[test]
+    fn parse_duplicate_co_authors_once() {
+        let message = "Subject\n\nCo-Authored-By: Claude Fable <noreply@anthropic.com>\nco-authored-by: claude fable <NOREPLY@ANTHROPIC.COM>";
+        let (_, authors) = parse_co_authors(message);
+
+        assert_eq!(authors.len(), 1);
+        assert_eq!(authors[0].name, "Claude Fable");
+        assert_eq!(authors[0].email, "noreply@anthropic.com");
     }
 
     #[test]
