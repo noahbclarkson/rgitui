@@ -4283,6 +4283,7 @@ impl Render for Sidebar {
             let weak = cx.weak_entity();
             let mut popover = div()
                 .id("branch-filter-popover")
+                .occlude()
                 .absolute()
                 .right(px(4.))
                 .top(px(header_h + item_h + 4.))
@@ -4315,7 +4316,7 @@ impl Render for Sidebar {
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
-                .child(div().h(px(24.)).w_full().overflow_hidden().child(editor))
+                .child(div().w_full().child(editor))
                 .child(
                     Label::new("Last used")
                         .size(LabelSize::XSmall)

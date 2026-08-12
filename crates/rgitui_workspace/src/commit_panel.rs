@@ -5,9 +5,19 @@ use gpui::{
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Button, ButtonSize, ButtonStyle, CheckState, Checkbox, IconName, Label, LabelSize, TextInput,
-    TextInputEvent,
+    Button, ButtonSize, ButtonStyle, CheckState, Checkbox, IconButton, IconName, Label, LabelSize,
+    TextInput, TextInputEvent,
 };
+
+const COMMIT_PANEL_HEADER_HEIGHT: f32 = 34.0;
+
+pub(crate) fn commit_panel_height(expanded_height: f32, collapsed: bool) -> f32 {
+    if collapsed {
+        COMMIT_PANEL_HEADER_HEIGHT
+    } else {
+        expanded_height
+    }
+}
 
 /// A co-author entry for the `Co-Authored-By:` trailer.
 #[derive(Debug, Clone)]
@@ -26,6 +36,7 @@ impl CoAuthor {
 pub enum CommitPanelEvent {
     CommitRequested { message: String, amend: bool },
     GenerateAiMessage,
+    CollapsedChanged,
 }
 
 pub struct CommitPanel {
@@ -39,6 +50,7 @@ pub struct CommitPanel {
     adding_co_author: bool,
     new_author_name: Entity<TextInput>,
     new_author_email: Entity<TextInput>,
+    collapsed: bool,
 }
 
 impl EventEmitter<CommitPanelEvent> for CommitPanel {}
@@ -94,7 +106,18 @@ impl CommitPanel {
             adding_co_author: false,
             new_author_name,
             new_author_email,
+            collapsed: false,
         }
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    fn toggle_collapsed(&mut self, cx: &mut Context<Self>) {
+        self.collapsed = !self.collapsed;
+        cx.emit(CommitPanelEvent::CollapsedChanged);
+        cx.notify();
     }
 
     pub fn set_message(&mut self, message: String, cx: &mut Context<Self>) {
@@ -291,12 +314,13 @@ impl Render for CommitPanel {
         div()
             .v_flex()
             .size_full()
+            .overflow_hidden()
             .bg(colors.panel_background)
             .child(
                 div()
                     .h_flex()
                     .w_full()
-                    .h(px(34.))
+                    .h(px(COMMIT_PANEL_HEADER_HEIGHT))
                     .px(px(10.))
                     .items_center()
                     .justify_between()
@@ -304,17 +328,35 @@ impl Render for CommitPanel {
                     .bg(colors.toolbar_background)
                     .border_b_1()
                     .border_color(colors.border_variant)
-                    // Left group: icon + label + badge
+                    // Left group: disclosure + label + badge
                     .child(
                         div()
                             .h_flex()
-                            .gap(px(8.))
+                            .gap(px(4.))
                             .items_center()
                             .flex_shrink_0()
                             .child(
-                                rgitui_ui::Icon::new(IconName::GitCommit)
-                                    .size(rgitui_ui::IconSize::XSmall)
-                                    .color(Color::Muted),
+                                IconButton::new(
+                                    "toggle-commit-panel",
+                                    if self.collapsed {
+                                        IconName::ChevronUp
+                                    } else {
+                                        IconName::ChevronDown
+                                    },
+                                )
+                                .size(ButtonSize::Compact)
+                                .color(Color::Muted)
+                                .tooltip(if self.collapsed {
+                                    "Expand commit panel"
+                                } else {
+                                    "Collapse commit panel"
+                                })
+                                .on_click(cx.listener(
+                                    |this, _: &ClickEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.toggle_collapsed(cx);
+                                    },
+                                )),
                             )
                             .child(
                                 Label::new("Commit")
@@ -344,7 +386,7 @@ impl Render for CommitPanel {
                             ),
                     )
                     // Right group: AI button or generating indicator
-                    .when(self.is_ai_generating, |el| {
+                    .when(!self.collapsed && self.is_ai_generating, |el| {
                         el.child(
                             div()
                                 .h_flex()
@@ -371,24 +413,27 @@ impl Render for CommitPanel {
                                 ),
                         )
                     })
-                    .when(!self.is_ai_generating && ai_enabled, |el| {
-                        let no_staged = self.staged_count == 0;
-                        let is_disabled = no_staged || !has_api_key;
-                        let mut btn = Button::new("ai-btn", "AI Message")
-                            .icon(IconName::Sparkle)
-                            .size(ButtonSize::Compact)
-                            .style(ButtonStyle::Outlined)
-                            .color(Color::Accent)
-                            .disabled(is_disabled);
-                        if !has_api_key {
-                            btn = btn.tooltip("Set an API key in Settings to use AI");
-                        } else if no_staged {
-                            btn = btn.tooltip("Stage changes first to generate an AI message");
-                        }
-                        el.child(btn.on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                            cx.emit(CommitPanelEvent::GenerateAiMessage);
-                        })))
-                    }),
+                    .when(
+                        !self.collapsed && !self.is_ai_generating && ai_enabled,
+                        |el| {
+                            let no_staged = self.staged_count == 0;
+                            let is_disabled = no_staged || !has_api_key;
+                            let mut btn = Button::new("ai-btn", "AI Message")
+                                .icon(IconName::Sparkle)
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Outlined)
+                                .color(Color::Accent)
+                                .disabled(is_disabled);
+                            if !has_api_key {
+                                btn = btn.tooltip("Set an API key in Settings to use AI");
+                            } else if no_staged {
+                                btn = btn.tooltip("Stage changes first to generate an AI message");
+                            }
+                            el.child(btn.on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                cx.emit(CommitPanelEvent::GenerateAiMessage);
+                            })))
+                        },
+                    ),
             )
             .child(
                 div()
@@ -397,6 +442,7 @@ impl Render for CommitPanel {
                     .v_flex()
                     .flex_1()
                     .min_h(px(120.))
+                    .when(self.collapsed, |el| el.h(px(0.)).min_h(px(0.)))
                     .overflow_hidden()
                     .child(
                         div()
@@ -438,7 +484,7 @@ impl Render for CommitPanel {
                                 div()
                                     .v_flex()
                                     .gap(px(4.))
-                                    .flex_1()
+                                    .flex_shrink_0()
                                     .min_h(px(50.))
                                     .child(
                                         div()
@@ -719,6 +765,12 @@ impl Render for CommitPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collapsed_panel_uses_only_header_height() {
+        assert_eq!(commit_panel_height(420.0, true), 34.0);
+        assert_eq!(commit_panel_height(420.0, false), 420.0);
+    }
 
     #[test]
     fn test_co_author_trailer() {

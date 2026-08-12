@@ -2509,6 +2509,7 @@ pub(super) fn subscribe_commit_panel(
                 })
                 .detach();
             }
+            CommitPanelEvent::CollapsedChanged => cx.notify(),
         }
     })
     .detach();

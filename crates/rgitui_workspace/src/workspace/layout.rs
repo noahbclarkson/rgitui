@@ -1066,7 +1066,12 @@ impl Render for Workspace {
                     )
                     // Right panel: detail + resize handle + commit input
                     .child({
-                        let commit_input_height = self.layout.commit_input_height;
+                        let commit_panel_collapsed =
+                            active_tab.commit_panel.read(cx).is_collapsed();
+                        let commit_input_height = crate::commit_panel::commit_panel_height(
+                            self.layout.commit_input_height,
+                            commit_panel_collapsed,
+                        );
                         div()
                             .relative()
                             .w(px(detail_panel_width))
@@ -1305,34 +1310,36 @@ impl Render for Workspace {
                                     ),
                             )
                             // Resize handle between detail and commit input
-                            .child(
-                                div()
-                                    .id("commit-input-resize-handle")
-                                    .w_full()
-                                    .h(px(3.))
-                                    .flex_shrink_0()
-                                    .border_t_1()
-                                    .border_color(colors.border_variant)
-                                    .when(!overlays_active, |el| {
-                                        el.cursor_row_resize()
-                                            .hover(|s| {
-                                                s.bg(gpui::Hsla {
-                                                    a: 0.6,
-                                                    ..colors.border_focused
+                            .when(!commit_panel_collapsed, |el| {
+                                el.child(
+                                    div()
+                                        .id("commit-input-resize-handle")
+                                        .w_full()
+                                        .h(px(3.))
+                                        .flex_shrink_0()
+                                        .border_t_1()
+                                        .border_color(colors.border_variant)
+                                        .when(!overlays_active, |el| {
+                                            el.cursor_row_resize()
+                                                .hover(|s| {
+                                                    s.bg(gpui::Hsla {
+                                                        a: 0.6,
+                                                        ..colors.border_focused
+                                                    })
                                                 })
-                                            })
-                                            .on_drag(CommitInputResize, |val, _, _, cx| {
-                                                cx.stop_propagation();
-                                                cx.new(|_| val.clone())
-                                            })
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                |_: &MouseDownEvent, _, cx| {
+                                                .on_drag(CommitInputResize, |val, _, _, cx| {
                                                     cx.stop_propagation();
-                                                },
-                                            )
-                                    }),
-                            )
+                                                    cx.new(|_| val.clone())
+                                                })
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    |_: &MouseDownEvent, _, cx| {
+                                                        cx.stop_propagation();
+                                                    },
+                                                )
+                                        }),
+                                )
+                            })
                             // Commit panel at bottom
                             .child(
                                 div()
