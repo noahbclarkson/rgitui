@@ -101,8 +101,28 @@ pub struct Scenario {
     /// Corpus tier the scenario expects to run against.
     #[serde(default)]
     pub corpus: Option<crate::corpus::Tier>,
+    /// State the run starts from.
+    #[serde(default)]
+    pub start_from: StartState,
     /// Steps, run in order.
     pub steps: Vec<Step>,
+}
+
+/// Whether a run starts with rgitui's persistent caches populated.
+///
+/// rgitui keeps a history cache on disk and hydrates the commit list from it
+/// before the first refresh, so the same scenario measures two different things
+/// depending on whether that file exists. Left to chance it is whatever the
+/// previous run wrote, which is how a scenario silently stops measuring what it
+/// was written to measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StartState {
+    /// No caches: what somebody opening a repository for the first time gets.
+    #[default]
+    Cold,
+    /// Caches left in place, as on the second and every later launch.
+    Warm,
 }
 
 impl Scenario {
@@ -201,6 +221,7 @@ pub fn trace_to_scenario(name: &str, events: &[TraceEvent], max_gap_ms: u64) -> 
         name: name.to_string(),
         description: format!("Recorded session, {} action(s)", events.len()),
         corpus: None,
+        start_from: StartState::Cold,
         steps,
     }
 }
@@ -227,11 +248,28 @@ mod tests {
     }
 
     #[test]
+    fn a_scenario_that_does_not_say_starts_cold() {
+        // The dangerous default is the other one: a warm start reports the
+        // second-launch cost of a repository under a scenario name that reads
+        // like a first launch, and nothing in the output says which it was.
+        let scenario = Scenario::from_json(r#"{"name":"s","steps":[]}"#).unwrap();
+        assert_eq!(scenario.start_from, StartState::Cold);
+    }
+
+    #[test]
+    fn a_scenario_can_ask_for_the_populated_caches_of_a_second_launch() {
+        let scenario =
+            Scenario::from_json(r#"{"name":"s","start_from":"warm","steps":[]}"#).unwrap();
+        assert_eq!(scenario.start_from, StartState::Warm);
+    }
+
+    #[test]
     fn referenced_actions_lists_only_action_steps() {
         let scenario = Scenario {
             name: "s".into(),
             description: String::new(),
             corpus: None,
+            start_from: StartState::Cold,
             steps: vec![
                 Step::Action {
                     action: "a::B".into(),
@@ -255,6 +293,7 @@ mod tests {
             name: "s".into(),
             description: String::new(),
             corpus: None,
+            start_from: StartState::Cold,
             steps: vec![
                 Step::Mark {
                     mark: "outer".into(),
@@ -279,6 +318,7 @@ mod tests {
             name: "s".into(),
             description: String::new(),
             corpus: None,
+            start_from: StartState::Cold,
             steps: vec![Step::Mark {
                 mark: "open".into(),
             }],
@@ -293,6 +333,7 @@ mod tests {
             name: "s".into(),
             description: String::new(),
             corpus: None,
+            start_from: StartState::Cold,
             steps: vec![Step::EndMark {
                 mark: "stray".into(),
             }],

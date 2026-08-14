@@ -403,15 +403,16 @@ impl PerfSession {
         // including it would report the time it has been alive so far as though
         // that were its cost.
         let all = gpui::profiler::get_all_timings(gpui::TasksIncluded::OnlyCompleted);
-        let foreground_thread = std::thread::current().id();
-        let foreground_names: Vec<_> = all
-            .iter()
-            .filter(|thread| thread.thread_id == foreground_thread)
-            .map(|thread| thread.thread_name.clone())
-            .collect();
+
+        // Matched on thread *id*, not name. Background threads are frequently
+        // unnamed, and so is the main thread on some platforms — comparing
+        // names then makes every unnamed worker look like the frame thread, and
+        // the foreground/background split is the one distinction in this report
+        // that has to be right.
+        let foreground_id = hashed_thread_id(std::thread::current().id());
 
         for delta in self.collector.collect_unseen(all) {
-            let is_foreground = foreground_names.contains(&delta.thread_name);
+            let is_foreground = delta.thread_id == foreground_id;
             for timing in delta.new_timings {
                 self.tasks.record(
                     &timing.location.file,
@@ -619,6 +620,20 @@ fn arm_frame_chain(window: &Window) {
         }
         arm_frame_chain(window);
     });
+}
+
+/// Hashes a [`std::thread::ThreadId`] the way gpui's profiler does.
+///
+/// `ThreadTimingsDelta` identifies its thread by a hash rather than the id
+/// itself, so recognising the frame thread among the deltas means reproducing
+/// that hash. Both sides use `DefaultHasher`, whose output is stable within one
+/// process run — which is all this needs, since both sides are this process.
+fn hashed_thread_id(id: std::thread::ThreadId) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Reads the OS counters twice a second for the life of the run.

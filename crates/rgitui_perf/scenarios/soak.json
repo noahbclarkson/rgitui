@@ -2,52 +2,228 @@
   "name": "soak",
   "description": "Cycles the same browse-and-refresh loop for roughly ten minutes. Nothing here is meant to be slow; the point is that the working set should return to where it started after each cycle. Memory that only ever climbs across identical cycles is a leak, and a short run cannot tell one from a cache still warming up.",
   "corpus": "small",
+  "start_from": "cold",
   "steps": [
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 120000 } },
-    { "snapshot": { "snapshot": "cycle-0" } },
-
-    { "mark": { "mark": "cycle-1" } },
-    { "action": { "action": "rgitui::FocusGraph" } },
-    { "action": { "action": "graph::GraphSelectNext", "repeat": 150, "settle": "frame" } },
-    { "action": { "action": "graph::GraphSelectFirst", "settle": "frame" } },
-    { "action": { "action": "rgitui::Refresh" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 60000 } },
-    { "end_mark": { "mark": "cycle-1" } },
-    { "snapshot": { "snapshot": "cycle-1" } },
-
-    { "mark": { "mark": "cycle-2" } },
-    { "action": { "action": "graph::GraphSelectNext", "repeat": 150, "settle": "frame" } },
-    { "action": { "action": "graph::GraphSelectFirst", "settle": "frame" } },
-    { "action": { "action": "rgitui::Refresh" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 60000 } },
-    { "end_mark": { "mark": "cycle-2" } },
-    { "snapshot": { "snapshot": "cycle-2" } },
-
-    { "mark": { "mark": "cycle-3" } },
-    { "action": { "action": "graph::GraphSelectNext", "repeat": 150, "settle": "frame" } },
-    { "action": { "action": "graph::GraphSelectFirst", "settle": "frame" } },
-    { "action": { "action": "rgitui::Refresh" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 60000 } },
-    { "end_mark": { "mark": "cycle-3" } },
-    { "snapshot": { "snapshot": "cycle-3" } },
-
-    { "mark": { "mark": "cycle-4" } },
-    { "action": { "action": "graph::GraphSelectNext", "repeat": 150, "settle": "frame" } },
-    { "action": { "action": "graph::GraphSelectFirst", "settle": "frame" } },
-    { "action": { "action": "rgitui::Refresh" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 60000 } },
-    { "end_mark": { "mark": "cycle-4" } },
-    { "snapshot": { "snapshot": "cycle-4" } },
-
-    { "mark": { "mark": "cycle-5" } },
-    { "action": { "action": "graph::GraphSelectNext", "repeat": 150, "settle": "frame" } },
-    { "action": { "action": "graph::GraphSelectFirst", "settle": "frame" } },
-    { "action": { "action": "rgitui::Refresh" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 60000 } },
-    { "end_mark": { "mark": "cycle-5" } },
-    { "snapshot": { "snapshot": "cycle-5" } },
-
-    { "wait": { "ms": 5000 } },
-    { "snapshot": { "snapshot": "end" } }
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 120000
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "cycle-0"
+      }
+    },
+    {
+      "mark": {
+        "mark": "cycle-1"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::FocusGraph"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 150,
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectFirst",
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Refresh"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "cycle-1"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "cycle-1"
+      }
+    },
+    {
+      "mark": {
+        "mark": "cycle-2"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 150,
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectFirst",
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Refresh"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "cycle-2"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "cycle-2"
+      }
+    },
+    {
+      "mark": {
+        "mark": "cycle-3"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 150,
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectFirst",
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Refresh"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "cycle-3"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "cycle-3"
+      }
+    },
+    {
+      "mark": {
+        "mark": "cycle-4"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 150,
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectFirst",
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Refresh"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "cycle-4"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "cycle-4"
+      }
+    },
+    {
+      "mark": {
+        "mark": "cycle-5"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 150,
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectFirst",
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Refresh"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "cycle-5"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "cycle-5"
+      }
+    },
+    {
+      "wait": {
+        "ms": 5000
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "end"
+      }
+    }
   ]
 }

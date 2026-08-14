@@ -109,6 +109,69 @@ impl Mode {
     }
 }
 
+/// Environment variable that overrides where an instrumented run keeps its
+/// settings and caches. Set it to compare runs that deliberately share state.
+pub const STATE_ENV: &str = "RGITUI_PERF_STATE";
+
+/// Directory an instrumented run should use for settings and caches, if any.
+///
+/// A measured run must not read or write the installed app's state. Sharing it
+/// makes a run depend on what the previous one left behind — the history cache
+/// is populated by whichever run got there first, and `clean_exit` is false for
+/// every run after the first, so the app offers crash recovery that a genuine
+/// first start would not. It also has the run append its corpus to the user's
+/// recent repositories, which is somebody's real settings file.
+///
+/// Returns `None` when the harness is off, leaving normal launches alone.
+pub fn state_root() -> Option<std::path::PathBuf> {
+    if !is_enabled() || std::env::var_os(MODE_ENV).is_none() {
+        return None;
+    }
+    if let Some(explicit) = std::env::var_os(STATE_ENV) {
+        return Some(std::path::PathBuf::from(explicit));
+    }
+    Some(std::env::temp_dir().join("rgitui-perf-state"))
+}
+
+/// Resolves the state directory and puts it in the state the scenario asked
+/// for, returning the root to redirect to.
+///
+/// Only the `config` and `cache` subdirectories are removed, never the root
+/// itself — [`STATE_ENV`] is caller-supplied, and a harness that recursively
+/// deletes whatever it is pointed at is one typo away from being a disaster.
+pub fn prepare_state_root() -> Option<std::path::PathBuf> {
+    let root = state_root()?;
+    if starts_cold() {
+        for directory in ["config", "cache"] {
+            let path = root.join(directory);
+            if let Err(error) = std::fs::remove_dir_all(&path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("could not clear {} for a cold run: {error}", path.display());
+                }
+            }
+        }
+    }
+    Some(root)
+}
+
+/// Whether this run should begin with no persistent caches.
+///
+/// A scenario that does not say gets a cold start, because that is the case
+/// that is easy to measure by accident and hard to notice: a warm run reports
+/// the second-launch cost of a repository under a name that reads like a first
+/// launch.
+fn starts_cold() -> bool {
+    match Mode::from_env() {
+        Ok(Some(Mode::Replay(path))) => driver::Scenario::load(&path)
+            .map(|scenario| scenario.start_from == driver::StartState::Cold)
+            .unwrap_or(true),
+        // A hand-driven session is a continuing one; wiping its settings
+        // between launches would make it useless for the thing it is for.
+        Ok(Some(Mode::Record)) => false,
+        _ => false,
+    }
+}
+
 /// Whether this build carries the instrumentation at all.
 pub const fn is_enabled() -> bool {
     cfg!(feature = "enabled")

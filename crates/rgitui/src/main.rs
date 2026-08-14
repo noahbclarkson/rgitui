@@ -213,6 +213,28 @@ fn load_embedded_fonts(cx: &App) {
     }
 }
 
+/// Keeps an instrumented run's settings and caches out of the user's
+/// directories, so a measured run neither inherits state from the last one nor
+/// leaves its corpus in somebody's recent-repository list.
+#[cfg(feature = "perf")]
+fn isolate_perf_state() {
+    let Some(root) = rgitui_perf::prepare_state_root() else {
+        return;
+    };
+    if rgitui_settings::redirect_state_to(&root) {
+        log::info!(
+            "perf run: settings and caches redirected to {}",
+            root.display()
+        );
+    } else {
+        log::warn!("perf run: state was already resolved, so this run shares the user's");
+    }
+}
+
+/// A build without the harness has nothing to redirect.
+#[cfg(not(feature = "perf"))]
+fn isolate_perf_state() {}
+
 fn main() {
     env_logger::init();
 
@@ -220,6 +242,9 @@ fn main() {
     // this drops, and anything allocated after that point goes unrecorded.
     #[cfg(feature = "perf-dhat")]
     let _heap_profiler = rgitui_perf::heap_profile::HeapProfiler::start();
+
+    // Before any subsystem resolves a path.
+    isolate_perf_state();
 
     std::panic::set_hook(Box::new(|panic_info| {
         log::error!("panic: {}", panic_info);

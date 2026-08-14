@@ -940,11 +940,55 @@ impl SettingsState {
     }
 }
 
-/// Get the config directory path.
+/// Where settings, the keymap, themes and cached avatars live.
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rgitui")
+    state_root().config.clone()
+}
+
+/// Where regenerable caches live — history, and anything else that is an
+/// optimisation rather than user data.
+pub fn cache_dir() -> PathBuf {
+    state_root().cache.clone()
+}
+
+/// The two directories rgitui persists to, resolved once per process.
+struct StateRoot {
+    config: PathBuf,
+    cache: PathBuf,
+}
+
+static STATE_ROOT: OnceLock<StateRoot> = OnceLock::new();
+
+fn state_root() -> &'static StateRoot {
+    STATE_ROOT.get_or_init(|| StateRoot {
+        config: dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("rgitui"),
+        cache: dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("rgitui"),
+    })
+}
+
+/// Points config and cache at `root` instead of the user's real directories.
+///
+/// This exists for measurement. A benchmark that reads and writes the same
+/// settings file and history cache as the installed app is measuring whatever
+/// the last run happened to leave behind, and leaves its own corpus in the
+/// user's recent-repository list on the way out. Redirecting both to a scratch
+/// directory is what makes a run start from a known state and end without a
+/// trace of itself.
+///
+/// Call before anything reads either path — first read wins, and this returns
+/// `false` if it lost that race rather than pretending to have taken effect.
+#[must_use]
+pub fn redirect_state_to(root: &Path) -> bool {
+    STATE_ROOT
+        .set(StateRoot {
+            config: root.join("config"),
+            cache: root.join("cache"),
+        })
+        .is_ok()
 }
 
 /// File name of the settings file inside [`config_dir`].

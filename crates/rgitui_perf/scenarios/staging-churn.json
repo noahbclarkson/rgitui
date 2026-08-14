@@ -1,36 +1,165 @@
 {
   "name": "staging-churn",
-  "description": "Stages and unstages the whole working tree repeatedly. Every cycle invalidates the status snapshot and every diff derived from it, so this is the scenario that exercises cache invalidation rather than cache hits — and the one where a cache that fails to release evicted entries will show as steady growth.",
+  "description": "Stages and unstages the whole working tree repeatedly. Every cycle invalidates the status snapshot and every diff derived from it, so this is the scenario that exercises cache invalidation rather than cache hits \u2014 and the one where a cache that fails to release evicted entries will show as steady growth.",
   "corpus": "small",
+  "start_from": "cold",
   "steps": [
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 120000 } },
-    { "snapshot": { "snapshot": "clean" } },
-
-    { "mark": { "mark": "stage-unstage-x10" } },
-    { "action": { "action": "rgitui::StageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::UnstageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::StageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::UnstageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::StageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::UnstageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::StageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::UnstageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::StageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "action": { "action": "rgitui::UnstageAll", "settle": "frame" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "end_mark": { "mark": "stage-unstage-x10" } },
-
-    { "action": { "action": "rgitui::Refresh" } },
-    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
-    { "snapshot": { "snapshot": "end" } }
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 120000
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "clean"
+      }
+    },
+    {
+      "mark": {
+        "mark": "stage-unstage-x10"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "stage-unstage-x10"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Refresh"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "end"
+      }
+    }
   ]
 }
