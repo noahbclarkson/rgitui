@@ -29,6 +29,9 @@ COMMANDS:
                                 run. PATH is a report.json or its directory.
     top <PATH> [N]              Print the N worst task locations (default 20).
     heap <PATH> [N]             Print the N largest heap nodes (default 20).
+    dhat <PATH> [N]             Rank the N allocation sites holding the most
+                                memory at peak, from a dhat-heap.json produced
+                                by a `--features perf-dhat` run (default 25).
     compare <BASE> <CANDIDATE>  Diff two runs, regressions first. Exits 1 if
                                 anything regressed, so it can gate a change.
 
@@ -60,6 +63,7 @@ fn main() -> anyhow::Result<()> {
         "summarize" => summarize(&args[1..]),
         "top" => top(&args[1..]),
         "heap" => heap(&args[1..]),
+        "dhat" => dhat(&args[1..]),
         "compare" => run_compare(&args[1..]),
         "trace-to-scenario" => convert_trace(&args[1..]),
         "-h" | "--help" | "help" => {
@@ -309,6 +313,42 @@ fn heap(args: &[String]) -> anyhow::Result<()> {
         bytes_to_mb(report.summary.peak_census_bytes as i64),
         bytes_to_mb(report.summary.final_process.private_bytes as i64),
         bytes_to_mb(report.summary.unaccounted_bytes)
+    );
+    Ok(())
+}
+
+/// Ranks the allocation sites in a `dhat-heap.json`.
+///
+/// The raw file is megabytes of backtraces, one per distinct call path, which
+/// is why this exists rather than pointing everyone at the viewer: the question
+/// is nearly always "what is holding the memory", and that is a ranked list.
+fn dhat(args: &[String]) -> anyhow::Result<()> {
+    let path = args.first().map(String::as_str).unwrap_or("dhat-heap.json");
+    let count = limit(args, 25);
+
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| anyhow::anyhow!("cannot read {path}: {error}"))?;
+    let sites = rgitui_perf::heap_profile::summarize_sites(&source, count)?;
+
+    println!(
+        "{:<74} {:>10} {:>8} {:>12}",
+        "ALLOCATION SITE", "PEAK MB", "BLOCKS", "TOTAL MB"
+    );
+    for site in &sites {
+        println!(
+            "{:<74} {:>10.2} {:>8} {:>12.1}",
+            truncate(&site.frame, 74),
+            bytes_to_mb(site.bytes_at_peak as i64),
+            site.blocks_at_peak,
+            bytes_to_mb(site.total_bytes as i64)
+        );
+    }
+
+    let peak: u64 = sites.iter().map(|site| site.bytes_at_peak).sum();
+    println!(
+        "\n{:.1} MB across the {} site(s) shown",
+        bytes_to_mb(peak as i64),
+        sites.len()
     );
     Ok(())
 }

@@ -81,12 +81,23 @@ pub fn summarize_sites(dhat_json: &str, limit: usize) -> anyhow::Result<Vec<Allo
         std::collections::HashMap::new();
 
     for point in &parsed.pps {
-        let frame = point
+        let names: Vec<&str> = point
             .fs
             .iter()
             .filter_map(|index| parsed.ftbl.get(*index))
             .map(|frame| frame_name(frame))
-            .find(|frame| is_interesting(frame))
+            .collect();
+
+        // Prefer the innermost frame belonging to a crate that identifies a
+        // subsystem. Falling back to "the first non-runtime frame" alone is not
+        // enough: a generic container sits between the allocator and the code
+        // that chose to allocate, so a 20 MB ring buffer would be attributed to
+        // `CircularBuffer::boxed` — true, and no help in deciding what to do.
+        let frame = names
+            .iter()
+            .find(|frame| is_owning_crate(frame))
+            .or_else(|| names.iter().find(|frame| is_interesting(frame)))
+            .copied()
             .unwrap_or("<runtime>")
             .to_string();
 
@@ -132,21 +143,41 @@ fn is_interesting(frame: &str) -> bool {
         .any(|prefix| frame.starts_with(prefix))
 }
 
-/// Strips dhat's `#N: ` prefix, which records the frame's depth in one
-/// particular backtrace rather than anything about the function.
+/// Whether a frame names a crate whose identity explains an allocation.
 ///
-/// Stripping it before it becomes a map key is what lets the same function
-/// merge into one row when it is reached at different depths — otherwise a hot
-/// site called from two places reports as two half-sized ones and neither looks
-/// worth investigating.
-fn frame_name(frame: &str) -> &str {
-    frame
-        .split_once(':')
-        .filter(|(prefix, _)| prefix.starts_with('#'))
-        .map(|(_, rest)| rest.trim())
-        .unwrap_or(frame)
-        .trim()
+/// `gpui` and rgitui's own crates are the two things worth pointing at: one
+/// says the cost belongs to the UI framework, the other says it belongs to the
+/// app. Anything else is plumbing that happens to sit in between.
+fn is_owning_crate(frame: &str) -> bool {
+    frame.starts_with("gpui") || frame.starts_with("rgitui")
 }
+
+/// Reduces one raw backtrace line to a bare symbol.
+///
+/// dhat writes a frame in two shapes depending on whether it resolved symbols:
+/// `#3: symbol` and, as it does on Windows, `0x7ff6…: symbol (file\path.rs:12:0)`.
+/// Both the address and the depth marker describe *this* backtrace rather than
+/// the function, and the source location varies with the build. Stripping all
+/// three before the name becomes a map key is what lets one function merge into
+/// one row — otherwise a hot site reached from several call paths reports as
+/// several small ones and none of them looks worth investigating.
+fn frame_name(frame: &str) -> &str {
+    let symbol = match frame.split_once(PREFIX_END) {
+        Some((prefix, rest)) if prefix.starts_with('#') || prefix.starts_with("0x") => rest,
+        _ => frame,
+    };
+
+    // Drop the trailing ` (file:line:col)`, which changes with the build.
+    let symbol = symbol
+        .rsplit_once(" (")
+        .map(|(name, _)| name)
+        .unwrap_or(symbol);
+
+    symbol.trim()
+}
+
+/// Separator between dhat's per-backtrace prefix and the symbol itself.
+const PREFIX_END: &str = ": ";
 
 /// The subset of dhat's output format this roll-up reads.
 ///
