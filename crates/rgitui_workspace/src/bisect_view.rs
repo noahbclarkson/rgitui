@@ -318,7 +318,7 @@ impl Render for BisectView {
                             "{} — {}\n{}",
                             &entry.sha[..entry.sha.len().min(7)],
                             decision_str,
-                            &subject_str,
+                            subject_str,
                         )
                         .into();
 
@@ -409,7 +409,7 @@ impl Render for BisectView {
             },
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
-        .flex_grow()
+        .flex_grow(1.0)
         .track_scroll(&self.scroll_handle);
 
         div()

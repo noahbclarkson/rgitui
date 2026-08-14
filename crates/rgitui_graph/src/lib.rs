@@ -456,27 +456,27 @@ fn compute_worktree_row_positions(
     }
 
     let mut positions = Vec::with_capacity(anchored.len() + orphan_indices.len());
-    let mut next_orphan_lane = side_lane;
-    for (list_index, worktree_idx) in orphan_indices.into_iter().enumerate() {
+    // A worktree with no commit of its own gets a lane to itself, counting out
+    // from the side lane.
+    for (list_index, (lane, worktree_idx)) in (side_lane..).zip(orphan_indices).enumerate() {
         positions.push(WorktreeRowPosition {
             worktree_idx,
             list_index,
             commit_index: None,
-            node_lane: next_orphan_lane,
+            node_lane: lane,
             parent_lane: None,
-            color_index: next_orphan_lane,
+            color_index: lane,
         });
-        next_orphan_lane += 1;
     }
 
     // Place each virtual row immediately above its HEAD commit. Rows sharing a
     // HEAD stack in input priority order, but remain sibling pseudo-nodes.
-    let mut virtual_rows_before = positions.len();
-    for (commit_index, mut position) in anchored {
+    // Each virtual row shifts every later commit down by one, so a commit's list
+    // index is its own index plus the number of virtual rows placed before it.
+    for (virtual_rows_before, (commit_index, mut position)) in (positions.len()..).zip(anchored) {
         debug_assert!(commit_index < visible_commit_count);
         position.list_index = commit_index + virtual_rows_before;
         positions.push(position);
-        virtual_rows_before += 1;
     }
 
     positions.sort_by_key(|position| position.list_index);
@@ -2736,7 +2736,7 @@ impl Render for GraphView {
             },
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
-        .flex_grow()
+        .flex_grow(1.0)
         .track_scroll(&self.scroll_handle);
 
         // Track container bounds so we can convert window-relative click positions

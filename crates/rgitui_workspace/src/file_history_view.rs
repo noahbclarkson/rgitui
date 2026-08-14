@@ -365,7 +365,7 @@ impl Render for FileHistoryView {
             },
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
-        .flex_grow()
+        .flex_grow(1.0)
         .track_scroll(&self.scroll_handle);
 
         div()

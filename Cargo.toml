@@ -27,10 +27,10 @@ todo = "deny"
 
 [workspace.dependencies]
 # GPUI framework (from Zed repository)
-gpui = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f", features = ["font-kit", "x11", "wayland"] }
-http_client = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
-reqwest_client = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e", features = ["font-kit", "x11", "wayland"] }
+http_client = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
+reqwest_client = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
 
 # Internal crates
 rgitui_theme = { path = "crates/rgitui_theme" }
@@ -81,7 +81,7 @@ tempfile = "3.27"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 md5 = "0.7"
-rust-embed = "8"
+rust-embed = { version = "8", features = ["include-exclude"] }
 semver = "1"
 urlencoding = "2"
 

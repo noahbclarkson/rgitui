@@ -465,8 +465,8 @@ impl Workspace {
 
         let target_id = handle.window_id();
         let weak = cx.entity().downgrade();
-        let subscription = cx.on_window_closed(move |app| {
-            if app.windows().iter().any(|w| w.window_id() == target_id) {
+        let subscription = cx.on_window_closed(move |app, closed_id| {
+            if closed_id != target_id {
                 return;
             }
             // The window can be closed programmatically from within a Workspace

@@ -203,6 +203,12 @@ impl PerfSession {
             verify_actions_exist(scenario, cx)?;
         }
 
+        // gpui's profiler is off behind a runtime flag as well as a cargo
+        // feature, and recording nothing is its whole point when idle: with the
+        // flag clear it retains no timings and grows no buffer. Turning it on
+        // is therefore part of starting a run, not part of building the binary.
+        gpui::profiler::set_trace_enabled(true);
+
         let process = match ProcessSampler::new() {
             Ok(sampler) => Some(sampler),
             Err(error) => {
@@ -363,7 +369,7 @@ impl PerfSession {
     }
 
     /// Reads the OS counters and drains gpui's task timings.
-    fn sample_counters(&mut self, dispatcher: &std::sync::Arc<dyn gpui::PlatformDispatcher>) {
+    fn sample_counters(&mut self) {
         let process = match self.process.as_mut().map(|sampler| sampler.sample()) {
             Some(Ok(sample)) => sample,
             Some(Err(error)) => {
@@ -383,16 +389,20 @@ impl PerfSession {
             census_bytes: None,
         });
 
-        self.drain_task_timings(dispatcher);
+        self.drain_task_timings();
     }
 
     /// Moves gpui's per-thread task timings into the recorder.
     ///
-    /// gpui keeps these in a fixed-size circular buffer per thread, so draining
-    /// on a timer rather than at the end is what keeps a long run from silently
-    /// discarding its earliest — and often most interesting — stalls.
-    fn drain_task_timings(&mut self, dispatcher: &std::sync::Arc<dyn gpui::PlatformDispatcher>) {
-        let all = dispatcher.get_all_timings();
+    /// gpui caps what it retains per thread and drops the oldest entries past
+    /// that, so draining on a timer rather than at the end is what keeps a long
+    /// run from silently discarding its earliest — and often most interesting —
+    /// stalls.
+    fn drain_task_timings(&mut self) {
+        // Completed tasks only. A task still running has no duration yet, and
+        // including it would report the time it has been alive so far as though
+        // that were its cost.
+        let all = gpui::profiler::get_all_timings(gpui::TasksIncluded::OnlyCompleted);
         let foreground_thread = std::thread::current().id();
         let foreground_names: Vec<_> = all
             .iter()
@@ -613,7 +623,6 @@ fn arm_frame_chain(window: &Window) {
 
 /// Reads the OS counters twice a second for the life of the run.
 fn start_counter_timer(cx: &mut App) {
-    let dispatcher = cx.foreground_executor().dispatcher().clone();
     cx.spawn(async move |cx| loop {
         cx.background_executor().timer(COUNTER_INTERVAL).await;
         let still_running = cx.update(|cx| {
@@ -624,7 +633,7 @@ fn start_counter_timer(cx: &mut App) {
                 if session.finished {
                     return false;
                 }
-                session.sample_counters(&dispatcher);
+                session.sample_counters();
                 true
             })
         });

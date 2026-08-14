@@ -1600,7 +1600,7 @@ mod tests {
                 .collect();
             eprintln!(
                 "  row {:2} [{}]: lane={} color={} incoming={} head={} merge={} lanes={} edges=[{}]",
-                i, &commits[i].short_id, r.node_lane, r.node_color,
+                i, commits[i].short_id, r.node_lane, r.node_color,
                 r.has_incoming, r.is_head, r.is_merge, r.lane_count,
                 edges_str.join(", "),
             );

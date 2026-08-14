@@ -327,7 +327,7 @@ impl Report {
             });
         }
 
-        findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+        findings.sort_by_key(|finding| std::cmp::Reverse(finding.severity));
         self.findings = findings;
     }
 

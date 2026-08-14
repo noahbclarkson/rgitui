@@ -398,7 +398,7 @@ impl GlobalSearchView {
             })
             .child({
                 div()
-                    .flex_grow()
+                    .flex_grow(1.0)
                     .h_flex()
                     .items_center()
                     .child(self.query_input.clone())
@@ -585,7 +585,7 @@ impl GlobalSearchView {
                             .text_color(text_muted)
                             .child(Label::new("|").size(LabelSize::XSmall)),
                         div()
-                            .flex_grow()
+                            .flex_grow(1.0)
                             .overflow_hidden()
                             .text_xs()
                             .text_color(text_muted)
@@ -602,7 +602,7 @@ impl GlobalSearchView {
         div()
             .id("global-search-results")
             .v_flex()
-            .flex_grow()
+            .flex_grow(1.0)
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)

@@ -796,7 +796,7 @@ impl DetailPanel {
             })
             .collect();
         // Sort by score descending — higher score = better (earlier char match)
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|entry| std::cmp::Reverse(entry.0));
         FilteredFiles::Matched(scored.into_iter().map(|(_, i)| i).collect())
     }
 
@@ -2549,7 +2549,7 @@ mod tests {
         // best (highest-scoring) match comes first.
         let scored: Vec<(usize, usize)> = vec![(3, 0), (10, 1), (7, 2)];
         let mut sorted = scored.clone();
-        sorted.sort_by(|a, b| b.0.cmp(&a.0));
+        sorted.sort_by_key(|entry| std::cmp::Reverse(entry.0));
         let order: Vec<usize> = sorted.into_iter().map(|(_, i)| i).collect();
         assert_eq!(order, vec![1, 2, 0]);
     }

@@ -3520,14 +3520,14 @@ impl Render for DiffViewer {
                             .expect("build_unified returns exactly one row")
                     })
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
-                    .flex_grow();
+                    .flex_grow(1.0);
                     // v_flex parent so `list_body`'s `flex_grow` actually
                     // gives it a definite height — without it the List is
                     // 0px tall and renders nothing in wrap mode.
                     div()
                         .id("diff-lines-wrap")
                         .v_flex()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .min_h(px(0.))
                         .min_w_0()
                         .overflow_x_hidden()
@@ -3540,7 +3540,7 @@ impl Render for DiffViewer {
                             ListHorizontalSizingBehavior::Unconstrained,
                         )
                         .with_width_from_item(Some(display_longest_row_ix))
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .track_scroll(&self.scroll_handle)
                         .into_any_element()
                 }
@@ -3947,11 +3947,11 @@ impl Render for DiffViewer {
                             .expect("build_sbs returns exactly one row")
                     })
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
-                    .flex_grow();
+                    .flex_grow(1.0);
                     div()
                         .id("diff-lines-sbs-wrap")
                         .v_flex()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .min_h(px(0.))
                         .min_w_0()
                         .overflow_x_hidden()
@@ -3963,7 +3963,7 @@ impl Render for DiffViewer {
                     // (no Unconstrained sizing, no global horizontal scrollbar).
                     uniform_list("diff-lines-sbs", row_count, build_sbs)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .track_scroll(&self.scroll_handle)
                         .into_any_element()
                 }
@@ -4294,11 +4294,11 @@ impl Render for DiffViewer {
                             .expect("build_tw returns exactly one row")
                     })
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
-                    .flex_grow();
+                    .flex_grow(1.0);
                     div()
                         .id("diff-lines-tw-wrap")
                         .v_flex()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .min_h(px(0.))
                         .min_w_0()
                         .overflow_x_hidden()
@@ -4307,7 +4307,7 @@ impl Render for DiffViewer {
                 } else {
                     uniform_list("diff-lines-tw", row_count, build_tw)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .track_scroll(&self.scroll_handle)
                         .into_any_element()
                 }
@@ -4512,14 +4512,14 @@ impl Render for DiffViewer {
         };
 
         let list_row = div()
-            .flex_grow()
+            .flex_grow(1.0)
             .h_flex()
             .items_stretch()
             .min_h(px(0.))
             .child(list)
             .child(vscroll);
 
-        let mut body = div().v_flex().flex_grow().min_h(px(0.)).child(list_row);
+        let mut body = div().v_flex().flex_grow(1.0).min_h(px(0.)).child(list_row);
         let show_hscroll = !wrap_enabled && display_mode == DiffDisplayMode::Unified;
         if show_hscroll {
             let h_handle = self.scroll_handle.0.borrow().base_handle.clone();

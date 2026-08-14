@@ -242,6 +242,7 @@ impl ElevationIndex {
                 offset: point(px(0.), px(1.)),
                 blur_radius: px(2.),
                 spread_radius: px(0.),
+                inset: false,
             }],
             ElevationIndex::ElevatedSurface => vec![
                 BoxShadow {
@@ -249,12 +250,14 @@ impl ElevationIndex {
                     offset: point(px(0.), px(2.)),
                     blur_radius: px(4.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: black(0.04),
                     offset: point(px(0.), px(1.)),
                     blur_radius: px(2.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
             ],
             ElevationIndex::ModalSurface => vec![
@@ -263,18 +266,21 @@ impl ElevationIndex {
                     offset: point(px(0.), px(4.)),
                     blur_radius: px(8.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: black(0.08),
                     offset: point(px(0.), px(2.)),
                     blur_radius: px(4.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: black(0.06),
                     offset: point(px(0.), px(8.)),
                     blur_radius: px(16.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
             ],
         }

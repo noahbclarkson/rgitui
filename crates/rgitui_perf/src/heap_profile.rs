@@ -115,7 +115,7 @@ pub fn summarize_sites(dhat_json: &str, limit: usize) -> anyhow::Result<Vec<Allo
     }
 
     let mut sites: Vec<AllocationSite> = by_frame.into_values().collect();
-    sites.sort_by(|a, b| b.bytes_at_peak.cmp(&a.bytes_at_peak));
+    sites.sort_by_key(|site| std::cmp::Reverse(site.bytes_at_peak));
     sites.truncate(limit);
     Ok(sites)
 }

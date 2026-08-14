@@ -44,13 +44,8 @@ fn parse_bisect_line(line: &str) -> Option<BisectLogEntry> {
         });
     }
 
-    let (decision_str, after_sha) = if let Some(pos) = rest.find(':') {
-        let d = &rest[..pos];
-        let a = rest[pos + 1..].trim();
-        (d, a)
-    } else {
-        return None;
-    };
+    let (decision_str, after_sha) = rest.split_once(':')?;
+    let after_sha = after_sha.trim();
 
     let decision = match decision_str {
         "good" => BisectDecision::Good,

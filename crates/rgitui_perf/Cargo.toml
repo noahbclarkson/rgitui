@@ -15,7 +15,10 @@ path = "src/main.rs"
 # Off by default: with no features the public API is inlined no-ops, so call
 # sites in the app need no `#[cfg]` and the shipped binary carries none of this.
 default = []
-enabled = []
+# Turns on gpui's own task-timing profiler, which is opt-in upstream: without
+# it gpui records nothing and allocates nothing for it. Reached only through
+# `rgitui/perf`, so a normal build leaves it off and pays nothing.
+enabled = ["gpui/profiler"]
 # Allocation-site heap profiling. Costs 2-5x runtime, so a session that enables
 # it refuses to also collect frame timings.
 dhat-heap = ["enabled", "dep:dhat"]

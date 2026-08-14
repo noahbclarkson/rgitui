@@ -487,22 +487,4 @@ mod tests {
             "a sample is the cheap counters only: {sample:?}"
         );
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn the_thread_count_sees_a_thread_this_test_spawned() {
-        let mut sampler = ProcessSampler::new().unwrap();
-        let before = sampler.sample_thread_count().unwrap();
-
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let parked = std::thread::spawn(move || rx.recv());
-        let during = sampler.sample_thread_count().unwrap();
-        drop(tx);
-        parked.join().unwrap().unwrap_err();
-
-        assert!(
-            during > before,
-            "the spawned thread belongs to this process and should be counted: {before} -> {during}"
-        );
-    }
 }

@@ -19,7 +19,7 @@ default = []
 #
 # Measure a release-like build — `cargo run --profile perf --features perf` —
 # because a debug build's timings describe the debug build and nothing else.
-perf = ["dep:rgitui_perf", "rgitui_workspace/perf"]
+perf = ["dep:rgitui_perf", "rgitui_perf/enabled", "rgitui_workspace/perf"]
 # Replaces the global allocator with dhat's to capture allocation sites. Costs
 # 2-5x runtime, so timings from such a run describe dhat; use it for heap data
 # only. The report says so itself rather than relying on you to remember.

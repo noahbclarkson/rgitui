@@ -414,5 +414,6 @@ fn start_perf_harness(window: WindowHandle<AppRoot>, cx: &mut App) {
     // A recorded session has no final step to finish on, so closing the window
     // is what ends it. Without this the run would produce no report at all,
     // which is the one outcome worse than a partial one.
-    cx.on_window_closed(rgitui_workspace::perf::finish).detach();
+    cx.on_window_closed(|cx, _closed_id| rgitui_workspace::perf::finish(cx))
+        .detach();
 }

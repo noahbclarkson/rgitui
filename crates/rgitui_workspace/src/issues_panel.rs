@@ -1714,10 +1714,8 @@ pub fn parse_github_owner_repo(url: &str) -> Option<(String, String)> {
         rest
     } else if url.contains("github.com:") {
         url.split("github.com:").nth(1)?
-    } else if let Some(rest) = url.strip_prefix("ssh://") {
-        rest.split("github.com/").nth(1)?
     } else {
-        return None;
+        url.strip_prefix("ssh://")?.split("github.com/").nth(1)?
     };
 
     let path = path.trim_end_matches(".git").trim_end_matches('/');

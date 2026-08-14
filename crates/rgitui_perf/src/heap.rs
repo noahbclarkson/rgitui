@@ -125,7 +125,7 @@ impl Census {
 
     /// The recorded nodes, largest first.
     pub fn into_nodes(mut self) -> Vec<CensusNode> {
-        self.nodes.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        self.nodes.sort_by_key(|node| std::cmp::Reverse(node.bytes));
         self.nodes
     }
 

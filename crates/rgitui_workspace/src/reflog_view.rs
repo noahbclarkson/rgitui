@@ -244,7 +244,7 @@ impl Render for ReflogView {
 
                         let tooltip_text: SharedString = format!(
                             "{} -> {}\n{}\n{}",
-                            entry.old_short_id, entry.new_short_id, &message_str, entry.committer,
+                            entry.old_short_id, entry.new_short_id, message_str, entry.committer,
                         )
                         .into();
 
@@ -360,7 +360,7 @@ impl Render for ReflogView {
             },
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
-        .flex_grow()
+        .flex_grow(1.0)
         .track_scroll(&self.scroll_handle);
 
         let view_dismiss = view_for_dismiss;
