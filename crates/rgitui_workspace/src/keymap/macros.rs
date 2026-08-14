@@ -272,6 +272,11 @@ macro_rules! commands {
         ///
         /// Every handler forwards its [`CommandId`] to `dispatch`, so the view
         /// keeps a single entry point for keyboard-invoked commands.
+        ///
+        /// Because every command in the app arrives here, this is also where
+        /// the performance harness observes dispatch. Instrumenting the one
+        /// generated handler covers all of them, and covers them by
+        /// construction: a command added later cannot forget to report itself.
         pub fn attach_actions<E, V>(
             element: E,
             view: &str,
@@ -288,6 +293,11 @@ macro_rules! commands {
                     $(
                         element = element.on_action(cx.listener(
                             move |view, _: &actions::$name, window, cx| {
+                                $crate::perf::note_dispatch(
+                                    CommandId::$name.action_name(),
+                                    None,
+                                    cx,
+                                );
                                 dispatch(view, CommandId::$name, window, cx);
                             },
                         ));

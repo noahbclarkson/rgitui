@@ -1,3 +1,5 @@
+#[cfg(feature = "perf")]
+mod census;
 mod commands;
 mod events;
 mod key_handler;

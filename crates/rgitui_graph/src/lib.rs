@@ -1,3 +1,6 @@
+#[cfg(feature = "perf")]
+mod heap_size;
+
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;

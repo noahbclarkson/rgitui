@@ -1,4 +1,6 @@
 mod graph;
+#[cfg(feature = "perf")]
+mod heap_size;
 mod project;
 mod types;
 

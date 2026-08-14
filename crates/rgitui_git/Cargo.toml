@@ -21,6 +21,13 @@ dirs.workspace = true
 smol.workspace = true
 rgitui_settings.workspace = true
 tempfile.workspace = true
+rgitui_perf = { workspace = true, optional = true }
 
 [dev-dependencies]
 rgitui_test_support.workspace = true
+
+[features]
+default = []
+# Enables the `HeapSize` impls the perf harness walks. Off by default, so a
+# normal build does not carry the dependency at all.
+perf = ["dep:rgitui_perf"]

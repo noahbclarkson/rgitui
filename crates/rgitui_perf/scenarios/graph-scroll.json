@@ -1,0 +1,34 @@
+{
+  "name": "graph-scroll",
+  "description": "Moves the graph selection down 500 rows one at a time, settling on a frame each step. Each move re-lays the lane canvas, re-renders the uniform list and triggers a diff compute for the newly selected commit, so this is the scenario that most directly measures whether browsing history feels smooth.",
+  "corpus": "medium",
+  "steps": [
+    { "action": { "action": "rgitui::FocusGraph" } },
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 120000 } },
+    { "snapshot": { "snapshot": "before-scroll" } },
+
+    { "mark": { "mark": "graph-select-500" } },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 500,
+        "settle": "frame"
+      }
+    },
+    { "end_mark": { "mark": "graph-select-500" } },
+
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 60000 } },
+    { "snapshot": { "snapshot": "after-scroll" } },
+
+    { "mark": { "mark": "graph-jump-to-end" } },
+    { "action": { "action": "graph::GraphSelectLast", "settle": "frame" } },
+    { "end_mark": { "mark": "graph-jump-to-end" } },
+
+    { "mark": { "mark": "graph-jump-to-start" } },
+    { "action": { "action": "graph::GraphSelectFirst", "settle": "frame" } },
+    { "end_mark": { "mark": "graph-jump-to-start" } },
+
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 60000 } },
+    { "snapshot": { "snapshot": "end" } }
+  ]
+}

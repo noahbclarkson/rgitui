@@ -134,6 +134,11 @@ impl Render for Workspace {
             self.tabs.len(),
             self.active_tab
         );
+
+        // Distinguishes a vsync tick that redrew from one that only ticked,
+        // which is what makes an idle repaint visible in the perf report.
+        crate::perf::note_render(cx);
+
         if self.focus.pending_focus_restore {
             self.focus.pending_focus_restore = false;
             self.restore_focus(window, cx);

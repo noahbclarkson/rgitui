@@ -20,9 +20,16 @@ anyhow.workspace = true
 git2.workspace = true
 log.workspace = true
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+rgitui_perf = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `test-support` unlocks gpui's headless test harness (TestApp, TestAppWindow,
 # keystroke/mouse simulation). Test builds only; normal builds are unaffected.
 gpui = { workspace = true, features = ["test-support"] }
 rgitui_test_support.workspace = true
+
+[features]
+default = []
+# See `rgitui_git`'s `perf` feature. Propagated so the census can walk the
+# `FileDiff`s this crate renders as well as the rows it derives from them.
+perf = ["dep:rgitui_perf", "rgitui_git/perf"]

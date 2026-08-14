@@ -1,5 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Allocation-site heap profiling, enabled by `--features perf-dhat`. It has to
+// be declared in the binary because a global allocator cannot come from a
+// library. Runs built this way are 2-5x slower, so their timings describe dhat
+// rather than rgitui; the report says as much rather than leaving it to memory.
+#[cfg(feature = "perf-dhat")]
+#[global_allocator]
+static ALLOC: rgitui_perf::heap_profile::Alloc = rgitui_perf::heap_profile::Alloc;
+
 use gpui::*;
 use rust_embed::RustEmbed;
 use std::path::PathBuf;
@@ -207,6 +215,12 @@ fn load_embedded_fonts(cx: &App) {
 
 fn main() {
     env_logger::init();
+
+    // Bound for the whole of `main` because dhat writes `dhat-heap.json` when
+    // this drops, and anything allocated after that point goes unrecorded.
+    #[cfg(feature = "perf-dhat")]
+    let _heap_profiler = rgitui_perf::heap_profile::HeapProfiler::start();
+
     std::panic::set_hook(Box::new(|panic_info| {
         log::error!("panic: {}", panic_info);
     }));
@@ -334,44 +348,71 @@ fn main() {
             ..Default::default()
         };
 
-        cx.open_window(options, |_window, cx| {
-            cx.new(|cx| {
-                let splash = cx.new(rgitui_workspace::SplashScreen::new);
+        let window = cx
+            .open_window(options, |_window, cx| {
+                cx.new(|cx| {
+                    let splash = cx.new(rgitui_workspace::SplashScreen::new);
 
-                let init = WorkspaceInit {
-                    repos_to_open,
-                    startup_workspace,
-                    has_cli_path,
-                    was_clean_exit,
-                };
+                    let init = WorkspaceInit {
+                        repos_to_open,
+                        startup_workspace,
+                        has_cli_path,
+                        was_clean_exit,
+                    };
 
-                // Start loading repos immediately so refresh + diff prewarm
-                // run in parallel with the splash animation.
-                let workspace = AppRoot::init_workspace(init, cx);
+                    // Start loading repos immediately so refresh + diff prewarm
+                    // run in parallel with the splash animation.
+                    let workspace = AppRoot::init_workspace(init, cx);
 
-                // Show the workspace after 1.5s minimum animation time.
-                cx.spawn(
-                    async move |this: gpui::WeakEntity<AppRoot>, cx: &mut gpui::AsyncApp| {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(1500))
-                            .await;
-                        this.update(cx, |this: &mut AppRoot, cx| {
-                            this.show_workspace(cx);
-                        })
-                        .ok();
-                    },
-                )
-                .detach();
+                    // Show the workspace after 1.5s minimum animation time.
+                    cx.spawn(
+                        async move |this: gpui::WeakEntity<AppRoot>, cx: &mut gpui::AsyncApp| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(1500))
+                                .await;
+                            this.update(cx, |this: &mut AppRoot, cx| {
+                                this.show_workspace(cx);
+                            })
+                            .ok();
+                        },
+                    )
+                    .detach();
 
-                AppRoot {
-                    splash: Some(splash),
-                    workspace: Some(workspace),
-                    transitioning: false,
-                    needs_maximize: false,
-                    focus: cx.focus_handle(),
-                }
+                    AppRoot {
+                        splash: Some(splash),
+                        workspace: Some(workspace),
+                        transitioning: false,
+                        needs_maximize: false,
+                        focus: cx.focus_handle(),
+                    }
+                })
             })
-        })
-        .expect("Failed to open window");
+            .expect("Failed to open window");
+
+        start_perf_harness(window, cx);
     });
+}
+
+/// Starts the performance harness if `RGITUI_PERF` asked for one.
+///
+/// Installed here rather than after the splash so that startup itself — repo
+/// load, first refresh, first paint — is inside the measurement. That window is
+/// where a cold-start regression would hide.
+fn start_perf_harness(window: WindowHandle<AppRoot>, cx: &mut App) {
+    let installed = window.update(cx, |root, window, cx| {
+        let Some(workspace) = root.workspace.as_ref() else {
+            return false;
+        };
+        rgitui_workspace::perf::install(workspace.downgrade(), window, cx);
+        rgitui_workspace::perf::is_active(cx)
+    });
+
+    if !matches!(installed, Ok(true)) {
+        return;
+    }
+
+    // A recorded session has no final step to finish on, so closing the window
+    // is what ends it. Without this the run would produce no report at all,
+    // which is the one outcome worse than a partial one.
+    cx.on_window_closed(rgitui_workspace::perf::finish).detach();
 }

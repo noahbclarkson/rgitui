@@ -10,6 +10,7 @@ members = [
     "crates/rgitui_diff",
     "crates/rgitui_ai",
     "crates/rgitui_settings",
+    "crates/rgitui_perf",
     "crates/rgitui_test_support",
 ]
 default-members = ["crates/rgitui"]
@@ -40,6 +41,7 @@ rgitui_graph = { path = "crates/rgitui_graph" }
 rgitui_diff = { path = "crates/rgitui_diff" }
 rgitui_ai = { path = "crates/rgitui_ai" }
 rgitui_settings = { path = "crates/rgitui_settings" }
+rgitui_perf = { path = "crates/rgitui_perf" }
 rgitui_test_support = { path = "crates/rgitui_test_support" }
 
 # Core
@@ -100,3 +102,12 @@ resvg = { opt-level = 3 }
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# Profile for `rgitui_perf` runs. Debug builds optimise so differently that
+# their timings say nothing about the shipped app, so the harness measures a
+# release build and only adds back the line tables that profilers, dhat
+# backtraces and Tracy need to name a frame.
+[profile.perf]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"

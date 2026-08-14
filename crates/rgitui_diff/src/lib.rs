@@ -1,3 +1,6 @@
+#[cfg(feature = "perf")]
+mod heap_size;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;

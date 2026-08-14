@@ -1,0 +1,48 @@
+{
+  "name": "diff-browse",
+  "description": "Walks files within a commit's diff and toggles between unified and side-by-side. The toggle is the interesting part: side-by-side rows are built from the unified rows and hold their own copy of every line's highlight ranges, so this scenario is what shows whether that duplication is worth its cost.",
+  "corpus": "medium",
+  "steps": [
+    { "action": { "action": "rgitui::FocusGraph" } },
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 120000 } },
+
+    { "mark": { "mark": "open-first-diff" } },
+    { "action": { "action": "graph::GraphSelectNext", "settle": "frame" } },
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } },
+    { "action": { "action": "rgitui::FocusDiffViewer", "settle": "frame" } },
+    { "end_mark": { "mark": "open-first-diff" } },
+    { "snapshot": { "snapshot": "first-diff-open" } },
+
+    { "mark": { "mark": "diff-line-scroll" } },
+    {
+      "action": {
+        "action": "diff::DiffSelectNext",
+        "repeat": 400,
+        "settle": "frame"
+      }
+    },
+    { "end_mark": { "mark": "diff-line-scroll" } },
+
+    { "mark": { "mark": "diff-hunk-jump" } },
+    { "action": { "action": "diff::NextHunk", "repeat": 40, "settle": "frame" } },
+    { "end_mark": { "mark": "diff-hunk-jump" } },
+
+    { "mark": { "mark": "toggle-side-by-side" } },
+    { "action": { "action": "diff::ToggleDiffDisplayMode", "settle": "frame" } },
+    { "end_mark": { "mark": "toggle-side-by-side" } },
+    { "snapshot": { "snapshot": "side-by-side" } },
+
+    { "mark": { "mark": "side-by-side-scroll" } },
+    {
+      "action": {
+        "action": "diff::DiffSelectNext",
+        "repeat": 400,
+        "settle": "frame"
+      }
+    },
+    { "end_mark": { "mark": "side-by-side-scroll" } },
+
+    { "action": { "action": "diff::ToggleDiffDisplayMode", "settle": "frame" } },
+    { "snapshot": { "snapshot": "end" } }
+  ]
+}
