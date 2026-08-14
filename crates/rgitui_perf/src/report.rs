@@ -305,7 +305,9 @@ impl Report {
                 code: "memory.unaccounted".into(),
                 message: format!(
                     "{:.1} MB of process memory is not explained by rgitui's own structures — \
-                     allocator slack, a dependency, or a leak",
+                     most of it is the graphics driver, loaded DLLs and thread stacks rather \
+                     than the heap, so confirm with a `--features perf-dhat` run before \
+                     treating it as a leak",
                     bytes_to_mb(self.summary.unaccounted_bytes)
                 ),
                 evidence: serde_json::json!({

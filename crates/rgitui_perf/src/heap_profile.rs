@@ -6,12 +6,21 @@
 //! libgit2's object cache, syntect's parser state. This module covers that gap
 //! by replacing the global allocator and recording a backtrace per allocation.
 //!
-//! # Use it in its own run
+//! # Use it in its own run, and budget for it
 //!
-//! dhat costs 2-5x runtime. Frame timings collected under it describe dhat, so
-//! the report labels any such run as timing-invalid rather than trusting anyone
-//! to remember. Build with `--features perf-dhat`, read the heap output, and
-//! measure timings in a separate `--features perf` run.
+//! dhat takes a backtrace per allocation behind a global lock, which on this
+//! app costs roughly **100x runtime**: a scenario that opens a 100-commit
+//! repository, waits a second and quits takes 6 seconds normally and over nine
+//! minutes under dhat. That cost tracks the number of allocations, and most of
+//! them come from process startup and the frame loop rather than from the
+//! repository — so running against a smaller corpus barely helps, which is the
+//! obvious wrong guess when a run seems to have hung. It has not; it is
+//! spending its time in the allocator, across every thread at once.
+//!
+//! Frame timings collected under it describe dhat, so the report labels any
+//! such run as timing-invalid rather than trusting anyone to remember. Build
+//! with `--features perf-dhat`, read the heap output, and measure timings in a
+//! separate `--features perf` run.
 //!
 //! # Reading the output
 //!
@@ -41,8 +50,8 @@ impl HeapProfiler {
     /// directory when the returned value drops.
     pub fn start() -> Self {
         log::warn!(
-            "dhat heap profiling is active — this run is 2-5x slower than normal and its \
-             timings describe dhat, not rgitui"
+            "dhat heap profiling is active — expect roughly 100x runtime, and the timings \
+             this run reports describe dhat rather than rgitui"
         );
         Self {
             _profiler: dhat::Profiler::new_heap(),

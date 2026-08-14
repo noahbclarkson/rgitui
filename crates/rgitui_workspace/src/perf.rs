@@ -26,25 +26,42 @@ mod enabled {
 
     use crate::workspace::Workspace;
 
+    /// Exit status for a run that was asked for and could not be given.
+    ///
+    /// Distinct from the app's ordinary exit so a script can tell "the harness
+    /// was misconfigured" from "the app ran and stopped".
+    const CONFIG_ERROR: i32 = 78;
+
+    /// Reports a fatal harness misconfiguration and stops.
+    ///
+    /// Returning instead would leave the app running as though nothing had
+    /// been asked of it — no scenario driving it, nothing to end the run, and
+    /// no report at the end of it. Under a replay that is indistinguishable
+    /// from a hang, and it is how an afternoon disappears into a run that was
+    /// never measuring anything. Nothing is in flight this early, so there is
+    /// no shutdown worth sequencing.
+    fn fail(error: &dyn std::fmt::Display) -> ! {
+        log::error!("cannot start perf session: {error}");
+        eprintln!("cannot start perf session: {error}");
+        std::process::exit(CONFIG_ERROR);
+    }
+
     /// Starts a run if `RGITUI_PERF` asked for one.
     ///
     /// A misconfigured harness fails loudly rather than starting the app
     /// without instrumentation: a run that silently produced no report would
     /// look like a run that found nothing wrong.
     pub fn install(workspace: gpui::WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
-        let Some(mode) = rgitui_perf::Mode::from_env().unwrap_or_else(|error| {
-            log::error!("{error}");
-            None
-        }) else {
-            return;
+        let mode = match rgitui_perf::Mode::from_env() {
+            Ok(Some(mode)) => mode,
+            // Nobody asked for a run, so there is nothing to fail.
+            Ok(None) => return,
+            Err(error) => fail(&error),
         };
 
         let config = match rgitui_perf::SessionConfig::from_mode(mode) {
             Ok(config) => config,
-            Err(error) => {
-                log::error!("cannot start perf session: {error}");
-                return;
-            }
+            Err(error) => fail(&error),
         };
 
         let census_handle = workspace.clone();
@@ -67,7 +84,7 @@ mod enabled {
         );
 
         if let Err(error) = result {
-            log::error!("cannot start perf session: {error}");
+            fail(&error);
         }
     }
 

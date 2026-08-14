@@ -19,7 +19,7 @@ default = []
 # it gpui records nothing and allocates nothing for it. Reached only through
 # `rgitui/perf`, so a normal build leaves it off and pays nothing.
 enabled = ["gpui/profiler"]
-# Allocation-site heap profiling. Costs 2-5x runtime, so a session that enables
+# Allocation-site heap profiling. Costs roughly 100x runtime, so a session that enables
 # it refuses to also collect frame timings.
 dhat-heap = ["enabled", "dep:dhat"]
 # Routes gpui's existing `#[profiling::function]` instrumentation on

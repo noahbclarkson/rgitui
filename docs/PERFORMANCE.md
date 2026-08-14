@@ -122,12 +122,23 @@ foreground location is a direct explanation for dropped frames.
   snapshot held by two views is charged once.
 - *dhat* (`--features perf-dhat`) records a backtrace per allocation and catches
   what the census cannot see: gpui's element arena, libgit2's object cache,
-  syntect's parser state. It costs 2-5x runtime, so use it in its own run — the
-  report marks any dhat run's timings as invalid rather than trusting you to
-  remember.
+  syntect's parser state. It costs roughly **100x runtime** — a scenario that
+  opens a 100-commit repository, waits a second and quits takes 6 seconds
+  normally and over nine minutes under dhat — so use it in its own run, and
+  budget for it. The report marks any dhat run's timings as invalid rather than
+  trusting you to remember.
 
-The gap between the two — `unaccounted_bytes` — is itself a finding when it gets
-large. It is allocator slack, a dependency, or a leak.
+  The cost tracks allocation *count*, and most allocations come from process
+  startup and the frame loop rather than from the repository, so a smaller
+  corpus barely helps. A dhat run that looks hung usually is not: check whether
+  it is burning several cores, which is what the allocator lock looks like from
+  outside.
+
+The gap between the two — `unaccounted_bytes` — is worth understanding before
+acting on. Measured on the medium corpus it is around 209 MB, while a dhat run
+puts the whole Rust heap at a peak of 13.8 MB: almost none of that gap is heap
+at all. It is the graphics driver, loaded DLLs and thread stacks. Treat a large
+`unaccounted_bytes` as a leak only once a dhat run says the heap agrees.
 
 **GPU** data is per-process VRAM (via DXGI) and engine utilisation (via the same
 PDH counters Task Manager reads), sampled about once a second on Windows. That

@@ -2,8 +2,9 @@
 
 // Allocation-site heap profiling, enabled by `--features perf-dhat`. It has to
 // be declared in the binary because a global allocator cannot come from a
-// library. Runs built this way are 2-5x slower, so their timings describe dhat
-// rather than rgitui; the report says as much rather than leaving it to memory.
+// library. Runs built this way are around 100x slower, so their timings
+// describe dhat rather than rgitui; the report says as much rather than
+// leaving it to memory.
 #[cfg(feature = "perf-dhat")]
 #[global_allocator]
 static ALLOC: rgitui_perf::heap_profile::Alloc = rgitui_perf::heap_profile::Alloc;

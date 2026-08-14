@@ -352,10 +352,10 @@ fn compute_working_tree_status(
         }
     }
 
-    // TODO(audit): QUAL-06 — run this fan-out on the GPUI BackgroundExecutor
-    // instead of raw OS threads. Blocked by the two-file edit scope: the gather
-    // functions are synchronous and have no executor handle; threading one in
-    // requires async signatures plus touching every external call site.
+    // Scoped OS threads rather than the executor: this whole function already
+    // runs on a background thread and borrows `repo_path`, so a scope keeps the
+    // borrow and costs two thread spawns, where routing through the executor
+    // would make every gather function async up to its call sites.
     let (staged_stats, unstaged_stats) = std::thread::scope(|s| {
         let staged_handle = s.spawn(|| {
             let repo = Repository::open(repo_path).ok();
@@ -690,11 +690,9 @@ fn gather_refresh_data_internal(
         }
     }
 
-    // Run status, stashes, worktrees in parallel.
-    // Status and stashes open their own repos; worktrees and revwalk use &repo.
-    // TODO(audit): QUAL-06 — dispatch this fan-out through the GPUI
-    // BackgroundExecutor instead of raw OS threads (see the note at the inner
-    // scope in compute_working_tree_status). Same two-file-scope blocker.
+    // Run status, stashes, worktrees in parallel; scoped threads for the same
+    // reason as in `compute_working_tree_status`. Status and stashes open their
+    // own repos, while worktrees and the revwalk share `&repo`.
     let (status, stashes, worktrees) = std::thread::scope(|s| {
         let status_handle = s.spawn(|| compute_working_tree_status(repo_path, worktree_cache));
 
