@@ -16,6 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::draw::DrawStats;
 use crate::frame::FrameStats;
 use crate::gpu::GpuSample;
 use crate::heap::CensusNode;
@@ -79,6 +80,8 @@ pub struct RunInfo {
 pub struct Summary {
     /// Frame cadence across the whole run.
     pub frames: FrameStats,
+    /// What each frame cost to produce, and how much of the budget is spare.
+    pub draws: DrawStats,
     /// Longest single task on the frame thread, in milliseconds.
     pub worst_foreground_task_ms: f64,
     /// Process memory at the end of the run.
@@ -102,6 +105,7 @@ pub struct MarkReport {
     pub name: String,
     pub wall_ms: f64,
     pub frames: FrameStats,
+    pub draws: DrawStats,
     /// Working set change across the region. Growth that never comes back is
     /// what distinguishes a cache from a leak.
     pub working_set_delta_bytes: i64,
@@ -159,6 +163,13 @@ pub struct Thresholds {
     pub mark_growth_bytes: i64,
     /// Process memory the census may fail to explain, in bytes.
     pub unaccounted_bytes: i64,
+    /// How much slower a machine may be before p95 draws stop fitting in the
+    /// frame budget. Below this, the app is relying on fast hardware.
+    pub min_cpu_headroom: f64,
+    /// Invalidations coalesced into one frame before it is worth questioning.
+    /// A handful is ordinary; dozens means the app is asking to redraw far
+    /// more often than it has anything new to show.
+    pub invalidations_per_frame: f64,
 }
 
 impl Default for Thresholds {
@@ -170,6 +181,8 @@ impl Default for Thresholds {
             large_census_node_bytes: 100 * 1024 * 1024,
             mark_growth_bytes: 20 * 1024 * 1024,
             unaccounted_bytes: 200 * 1024 * 1024,
+            min_cpu_headroom: 3.0,
+            invalidations_per_frame: 12.0,
         }
     }
 }
@@ -297,6 +310,60 @@ impl Report {
                     "delta_bytes": mark.working_set_delta_bytes,
                 }),
             });
+        }
+
+        let draws = &self.summary.draws;
+        if draws.draws > 0 {
+            // Cadence alone cannot see this. Every frame interval sits on the
+            // refresh period whether a draw took 1ms or 9ms, so an app that has
+            // quietly eaten its whole budget looks exactly like one that has
+            // not — until it runs on slower hardware, where the same work no
+            // longer fits and the cadence collapses all at once.
+            if let Some(headroom) = draws.cpu_slowdown_headroom() {
+                if headroom < thresholds.min_cpu_headroom {
+                    findings.push(Finding {
+                        severity: if headroom < 1.0 {
+                            Severity::Critical
+                        } else {
+                            Severity::Warning
+                        },
+                        code: "frame.cpu_headroom".into(),
+                        message: format!(
+                            "p95 draw takes {:.2}ms of the {:.2}ms frame budget ({:.0}%) — this \
+                             holds 102Hz here but stops fitting on a machine {:.1}x slower",
+                            draws.draw_p95_ms,
+                            draws.refresh_interval_ms,
+                            draws.budget_used_p95_percent(),
+                            headroom
+                        ),
+                        evidence: serde_json::json!({
+                            "draw_p95_ms": draws.draw_p95_ms,
+                            "draw_p50_ms": draws.draw_p50_ms,
+                            "draw_max_ms": draws.draw_max_ms,
+                            "refresh_interval_ms": draws.refresh_interval_ms,
+                            "headroom": headroom,
+                        }),
+                    });
+                }
+            }
+
+            if draws.invalidations_p50 > thresholds.invalidations_per_frame {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    code: "frame.redundant_invalidations".into(),
+                    message: format!(
+                        "the median frame coalesced {:.0} invalidations — the app is asking to \
+                         redraw far more often than it has new state to show",
+                        draws.invalidations_p50
+                    ),
+                    evidence: serde_json::json!({
+                        "invalidations_p50": draws.invalidations_p50,
+                        "invalidations_p95": draws.invalidations_p95,
+                        "invalidations_total": draws.invalidations_total,
+                        "draws": draws.draws,
+                    }),
+                });
+            }
         }
 
         if self.summary.unaccounted_bytes > thresholds.unaccounted_bytes {

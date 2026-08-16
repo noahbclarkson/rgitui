@@ -33,6 +33,7 @@
 
 pub mod compare;
 pub mod corpus;
+pub mod draw;
 pub mod driver;
 pub mod frame;
 pub mod gpu;

@@ -1,0 +1,155 @@
+{
+  "name": "key-repeat-degradation",
+  "description": "Holds the down arrow through 800 commits, timing each block of 100 separately. A user holding a key does not experience an average \u2014 they experience the block they are in, and the question is whether block eight costs what block one did.",
+  "corpus": "medium",
+  "start_from": "cold",
+  "steps": [
+    {
+      "action": {
+        "action": "rgitui::FocusGraph"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 120000
+      }
+    },
+    {
+      "mark": {
+        "mark": "rows-000-100"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 100,
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "rows-000-100"
+      }
+    },
+    {
+      "mark": {
+        "mark": "rows-100-200"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 100,
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "rows-100-200"
+      }
+    },
+    {
+      "mark": {
+        "mark": "rows-200-300"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 100,
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "rows-200-300"
+      }
+    },
+    {
+      "mark": {
+        "mark": "rows-300-400"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 100,
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "rows-300-400"
+      }
+    },
+    {
+      "mark": {
+        "mark": "rows-400-500"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 100,
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "rows-400-500"
+      }
+    },
+    {
+      "mark": {
+        "mark": "rows-500-600"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 100,
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "rows-500-600"
+      }
+    },
+    {
+      "mark": {
+        "mark": "rows-600-700"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 100,
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "rows-600-700"
+      }
+    },
+    {
+      "mark": {
+        "mark": "rows-700-800"
+      }
+    },
+    {
+      "action": {
+        "action": "graph::GraphSelectNext",
+        "repeat": 100,
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "rows-700-800"
+      }
+    }
+  ]
+}

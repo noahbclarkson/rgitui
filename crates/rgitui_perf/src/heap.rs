@@ -24,10 +24,10 @@
 //! pointer identity of every `Arc` it visits and attributes the payload to the
 //! first path that reaches it.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -360,6 +360,71 @@ impl<T: HeapSize, S> HeapSize for HashSet<T, S> {
     }
 }
 
+/// A pair is charged as its halves. Needed because maps of tuples are how
+/// several of the app's caches are keyed — `HashMap<PathBuf, (u64, Status)>` in
+/// the file watcher, for one — and without this impl the payload beside the
+/// fingerprint would silently drop out of the report.
+impl<A: HeapSize, B: HeapSize> HeapSize for (A, B) {
+    fn heap_size(&self, census: &mut Census) -> usize {
+        self.0.heap_size(census) + self.1.heap_size(census)
+    }
+}
+
+/// A `BTreeMap` allocates fixed-size nodes holding up to eleven entries each
+/// rather than one contiguous table, so it is priced per entry at the node
+/// slot's own width. The figure understates by however full the nodes happen to
+/// be — a tree built by ascending insertion packs them, a randomly built one
+/// leaves them around 70% full — which is the right direction for a report
+/// whose job is to name memory it can account for.
+impl<K: HeapSize, V: HeapSize> HeapSize for BTreeMap<K, V> {
+    fn heap_size(&self, census: &mut Census) -> usize {
+        let mut bytes = self.len() * size_of::<(K, V)>();
+        for (key, value) in self {
+            bytes += key.heap_size(census) + value.heap_size(census);
+        }
+        bytes
+    }
+
+    fn heap_count(&self) -> Option<usize> {
+        Some(self.len())
+    }
+}
+
+/// The same tree with no value half.
+impl<T: HeapSize> HeapSize for BTreeSet<T> {
+    fn heap_size(&self, census: &mut Census) -> usize {
+        let mut bytes = self.len() * size_of::<T>();
+        for item in self {
+            bytes += item.heap_size(census);
+        }
+        bytes
+    }
+
+    fn heap_count(&self) -> Option<usize> {
+        Some(self.len())
+    }
+}
+
+/// A `Mutex` holds its payload inline, so only the payload's outward memory is
+/// charged.
+///
+/// A poisoned lock reports nothing: the payload is unreachable without asserting
+/// over a panic that already happened, and a census is not the place to do that.
+/// The count says which case it was, so a skipped node cannot be mistaken for an
+/// empty one.
+impl<T: HeapSize> HeapSize for Mutex<T> {
+    fn heap_size(&self, census: &mut Census) -> usize {
+        match self.lock() {
+            Ok(value) => value.heap_size(census),
+            Err(_) => 0,
+        }
+    }
+
+    fn heap_count(&self) -> Option<usize> {
+        self.lock().ok().and_then(|value| value.heap_count())
+    }
+}
+
 /// A `VecDeque` is a ring buffer over one allocation, so it is priced like a
 /// `Vec`: the whole buffer, then whatever the live elements own.
 impl<T: HeapSize> HeapSize for VecDeque<T> {
@@ -487,6 +552,61 @@ mod tests {
         assert!(entries > 0);
         assert_eq!(refs.heap_size(&mut census), table + entries);
         assert_eq!(refs.heap_count(), Some(1));
+    }
+
+    #[test]
+    fn a_pair_is_charged_for_both_of_its_halves() {
+        let mut census = Census::new();
+        let pair = (7u64, String::with_capacity(96));
+
+        assert_eq!(pair.heap_size(&mut census), 96);
+    }
+
+    #[test]
+    fn an_ordered_map_counts_its_nodes_and_what_they_point_at() {
+        let mut census = Census::new();
+        let mut themes: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+        themes.insert("base16-ocean.dark".to_string(), vec![1, 2]);
+
+        let nodes = size_of::<(String, Vec<u32>)>();
+        let entries = "base16-ocean.dark".len() + 2 * size_of::<u32>();
+
+        assert_eq!(themes.heap_size(&mut census), nodes + entries);
+        assert_eq!(themes.heap_count(), Some(1));
+        assert_eq!(BTreeMap::<u32, u32>::new().heap_size(&mut census), 0);
+    }
+
+    #[test]
+    fn an_ordered_set_is_the_same_tree_without_values() {
+        let mut census = Census::new();
+        let ids: BTreeSet<usize> = (0..4).collect();
+
+        assert_eq!(ids.heap_size(&mut census), 4 * size_of::<usize>());
+        assert_eq!(ids.heap_count(), Some(4));
+    }
+
+    #[test]
+    fn a_mutex_is_charged_for_what_it_guards() {
+        let mut census = Census::new();
+        let guarded = Mutex::new(String::with_capacity(256));
+
+        assert_eq!(guarded.heap_size(&mut census), 256);
+    }
+
+    #[test]
+    fn a_poisoned_mutex_reports_no_count_rather_than_an_empty_one() {
+        let guarded = Arc::new(Mutex::new(vec![String::with_capacity(64)]));
+        let poisoner = Arc::clone(&guarded);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().expect("the lock is not poisoned yet");
+            panic!("poison the lock");
+        })
+        .join();
+
+        let mut census = Census::new();
+        assert!(guarded.lock().is_err());
+        assert_eq!((*guarded).heap_size(&mut census), 0);
+        assert_eq!((*guarded).heap_count(), None);
     }
 
     #[test]

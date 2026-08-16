@@ -10,7 +10,9 @@
 use rgitui_perf::{Census, HeapSize};
 
 use crate::graph::{GraphEdge, GraphRow};
-use crate::project::{BlameEntry, BlameLine};
+use crate::project::{
+    BlameEntry, BlameLine, ReflogEntryInfo, WorktreeFileSnapshot, WorktreeFileState,
+};
 use crate::types::{
     BranchInfo, CommitDiff, CommitInfo, DiffHunk, DiffLine, FileChangeKind, FileDiff, FileStatus,
     RefLabel, RemoteInfo, SearchResult, Signature, StashEntry, TagInfo, WorkingTreeStatus,
@@ -170,6 +172,40 @@ impl HeapSize for BlameEntry {
 impl HeapSize for BlameLine {
     fn heap_size(&self, census: &mut Census) -> usize {
         self.content.heap_size(census) + self.entry.heap_size(census)
+    }
+}
+
+/// A reflog entry holds two short ids, a message and a committer name, all as
+/// owned strings. The reflog of a long-lived checkout runs to thousands of
+/// entries, and the view keeps every one of them.
+impl HeapSize for ReflogEntryInfo {
+    fn heap_size(&self, census: &mut Census) -> usize {
+        self.new_short_id.heap_size(census)
+            + self.old_short_id.heap_size(census)
+            + self.message.heap_size(census)
+            + self.committer.heap_size(census)
+    }
+}
+
+/// A snapshotted working-tree file, held by the undo stack so an apply or
+/// revert can be reversed byte for byte. Both halves are whole file contents,
+/// which makes this the one snapshot type in the app whose size is set by the
+/// files a user touched rather than by the repository.
+impl HeapSize for WorktreeFileState {
+    fn heap_size(&self, _census: &mut Census) -> usize {
+        self.contents.capacity()
+    }
+
+    fn heap_count(&self) -> Option<usize> {
+        Some(self.contents.len())
+    }
+}
+
+impl HeapSize for WorktreeFileSnapshot {
+    fn heap_size(&self, census: &mut Census) -> usize {
+        self.path.heap_size(census)
+            + self.before.heap_size(census)
+            + self.expected_after.heap_size(census)
     }
 }
 

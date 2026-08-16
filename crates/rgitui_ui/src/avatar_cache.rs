@@ -437,3 +437,36 @@ mod tests {
         assert_eq!(cache.order[1], "1@example.com");
     }
 }
+
+/// The avatar cache's share of the heap census.
+///
+/// Process-wide rather than per-tab, and reachable from no other crate, so
+/// without this walk it is memory the report simply does not see. It is bounded
+/// at [`AvatarCache::MAX_ENTRIES`], but each entry is an email and a resolved
+/// URL held twice — once in the map, once in the recency queue — which is what
+/// the split below makes visible.
+#[cfg(feature = "perf")]
+mod census {
+    use rgitui_perf::{Census, HeapSize};
+
+    use super::{AvatarCache, AvatarState};
+
+    impl HeapSize for AvatarState {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            match self {
+                AvatarState::Resolved(url) => url.heap_size(census),
+                AvatarState::NotFound(_) => 0,
+            }
+        }
+    }
+
+    impl AvatarCache {
+        /// Records the resolved entries, the in-flight set and the recency
+        /// queue's second copy of every key.
+        pub fn census(&self, census: &mut Census) -> usize {
+            census.enter("entries", &self.cache)
+                + census.enter("pending", &self.pending)
+                + census.enter("recency", &self.order)
+        }
+    }
+}

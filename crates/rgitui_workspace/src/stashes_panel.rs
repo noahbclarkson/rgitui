@@ -399,6 +399,15 @@ impl StashesPanel {
     }
 }
 
+/// The stashes panel's share of the heap census.
+#[cfg(feature = "perf")]
+impl StashesPanel {
+    /// Records the stash list this panel copied out of the project.
+    pub(crate) fn census(&self, census: &mut rgitui_perf::Census) -> usize {
+        census.enter("stashes", &self.stashes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

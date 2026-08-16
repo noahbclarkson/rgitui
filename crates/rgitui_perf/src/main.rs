@@ -179,6 +179,33 @@ fn summarize(args: &[String]) -> anyhow::Result<()> {
         "         {} dropped, {} idle redraws, {:.2}ms refresh interval",
         frames.dropped_frames, frames.idle_redraws, frames.refresh_interval_ms
     );
+
+    let draws = &report.summary.draws;
+    if draws.draws > 0 {
+        // Cadence says whether it was smooth here; this says how much of the
+        // budget was left, which is the part that predicts a slower machine.
+        println!(
+            "DRAW     p50 {:.2}ms p95 {:.2}ms p99 {:.2}ms max {:.2}ms over {} draws",
+            draws.draw_p50_ms, draws.draw_p95_ms, draws.draw_p99_ms, draws.draw_max_ms, draws.draws
+        );
+        match draws.cpu_slowdown_headroom() {
+            Some(headroom) => println!(
+                "         p95 uses {:.0}% of the frame budget — fits until a {:.1}x slower machine",
+                draws.budget_used_p95_percent(),
+                headroom
+            ),
+            None => println!("         no draw cost recorded"),
+        }
+        println!(
+            "LATENCY  invalidation to drawn: p50 {:.2}ms p95 {:.2}ms max {:.2}ms",
+            draws.dirty_to_draw_p50_ms, draws.dirty_to_draw_p95_ms, draws.dirty_to_draw_max_ms
+        );
+        println!(
+            "         {:.0} invalidations coalesced into the median frame ({} total)",
+            draws.invalidations_p50, draws.invalidations_total
+        );
+    }
+
     println!(
         "MEMORY   working set {:.1} MB (peak {:.1} MB), private {:.1} MB",
         bytes_to_mb(report.summary.final_process.working_set_bytes as i64),

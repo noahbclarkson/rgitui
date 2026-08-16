@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use chrono::{TimeZone, Utc};
 use git2::{Repository, StatusOptions};
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -495,6 +495,35 @@ pub(super) fn gather_refresh_data_lightweight_cached(
     gather_refresh_data_internal(repo_path, false, commit_limit, Some(cache), author_filter)
 }
 
+/// Every commit reachable from `tip`, including `tip` itself.
+///
+/// A branch is merged into `tip` exactly when its own tip appears in this set,
+/// which is the same answer `merge_base(branch_tip, tip) == branch_tip` gives
+/// and costs one walk for all branches instead of one walk each.
+///
+/// A walk that fails partway returns what it had rather than nothing: the
+/// flags this feeds are a visual hint on a sidebar row, and under-reporting one
+/// branch as unmerged is a far better failure than refusing to open the
+/// repository.
+fn reachable_set(repo: &Repository, tip: git2::Oid) -> HashSet<git2::Oid> {
+    let mut reachable = HashSet::new();
+    let Ok(mut walk) = repo.revwalk() else {
+        return reachable;
+    };
+    if walk.push(tip).is_err() {
+        return reachable;
+    }
+    for oid in walk {
+        match oid {
+            Ok(oid) => {
+                reachable.insert(oid);
+            }
+            Err(_) => break,
+        }
+    }
+    reachable
+}
+
 fn gather_refresh_data_internal(
     repo_path: &Path,
     compute_ahead_behind: bool,
@@ -617,8 +646,25 @@ fn gather_refresh_data_internal(
                     .and_then(|b| b.tip_oid)
             });
 
-        // Pass 2: compute is_merged_into_main for local branches
-        if let Some(main_tip_oid) = main_tip {
+        // Both flags ask the same question of every local branch — "is this tip
+        // an ancestor of that one?" — and the obvious way to ask it, one
+        // `merge_base` per branch, is what made opening a repository slow. Each
+        // call is a fresh bidirectional walk that parses commit objects and
+        // ignores the commit-graph file, so 200 branches cost 400 walks and
+        // 2.85 of the 3.04 seconds it took to gather the whole snapshot.
+        //
+        // Asking it the other way round costs two walks total: collect what is
+        // reachable from each target once, then every branch is a set lookup.
+        let reachable_from_main = main_tip.map(|tip| reachable_set(&repo, tip));
+        let reachable_from_head = match (head_tip, main_tip) {
+            // Detached HEAD aside, these are usually the same commit, and the
+            // second walk would rebuild an identical set.
+            (Some(head), Some(main)) if head == main => reachable_from_main.clone(),
+            (Some(head), _) => Some(reachable_set(&repo, head)),
+            (None, _) => None,
+        };
+
+        if let Some(reachable) = &reachable_from_main {
             for branch in branches.iter_mut() {
                 if branch.is_remote {
                     continue;
@@ -628,27 +674,23 @@ fn gather_refresh_data_internal(
                     branch.is_merged_into_main = Some(branch.tip_oid == main_tip);
                     continue;
                 }
-                // A branch is merged into main if the branch tip is an ancestor of main_tip.
-                // Use merge_base: if merge_base(branch_tip, main_tip) == branch_tip,
-                // then branch_tip is an ancestor of main_tip (branch was merged/fast-forwarded).
-                let is_merged = branch.tip_oid.is_some_and(|tip_oid| {
-                    repo.merge_base(tip_oid, main_tip_oid)
-                        .map(|mb| mb == tip_oid)
-                        .unwrap_or(false)
-                });
-                branch.is_merged_into_main = Some(is_merged);
+                branch.is_merged_into_main = Some(
+                    branch
+                        .tip_oid
+                        .is_some_and(|tip_oid| reachable.contains(&tip_oid)),
+                );
             }
         }
 
         // Match `git branch --merged`: compare each local tip with the
         // currently checked-out commit, not only with main/master.
-        if let Some(head_tip_oid) = head_tip {
+        if let Some(reachable) = &reachable_from_head {
             for branch in branches.iter_mut().filter(|branch| !branch.is_remote) {
-                branch.is_merged_into_head = Some(branch.tip_oid.is_some_and(|tip_oid| {
-                    repo.merge_base(tip_oid, head_tip_oid)
-                        .map(|merge_base| merge_base == tip_oid)
-                        .unwrap_or(false)
-                }));
+                branch.is_merged_into_head = Some(
+                    branch
+                        .tip_oid
+                        .is_some_and(|tip_oid| reachable.contains(&tip_oid)),
+                );
             }
         }
     }
@@ -1210,6 +1252,98 @@ mod tests {
 }
 
 // ── load_more_commits_from_repo ──────────────────────────────────
+
+#[cfg(test)]
+mod reachable_tests {
+    use super::*;
+    use rgitui_test_support::TempRepo;
+
+    /// The predicate `reachable_set` replaced, kept as the oracle it has to
+    /// agree with. A branch counted as merged when `merge_base(tip, target)`
+    /// was the tip itself.
+    fn merged_by_merge_base(repo: &Repository, tip: git2::Oid, target: git2::Oid) -> bool {
+        repo.merge_base(tip, target)
+            .map(|base| base == tip)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn a_tip_is_reachable_from_itself() {
+        // The old predicate answered true here — merge_base(x, x) == x — and a
+        // walk that excluded its own starting commit would report the checked
+        // out branch as unmerged from itself.
+        let repo = TempRepo::with_commits(3);
+        let head = repo.head_oid();
+        assert!(reachable_set(repo.repo(), head).contains(&head));
+    }
+
+    #[test]
+    fn an_ancestor_is_reachable_and_a_descendant_is_not() {
+        let repo = TempRepo::with_commits(1);
+        let first = repo.head_oid();
+        repo.commit_file("second.txt", "second", "second");
+        let second = repo.head_oid();
+
+        let from_second = reachable_set(repo.repo(), second);
+        assert!(from_second.contains(&first), "ancestor must be reachable");
+
+        let from_first = reachable_set(repo.repo(), first);
+        assert!(
+            !from_first.contains(&second),
+            "a later commit is not reachable from an earlier one"
+        );
+    }
+
+    #[test]
+    fn set_membership_agrees_with_merge_base_across_a_divergent_history() {
+        // Two branches off a shared base, one of them merged back. This is the
+        // shape the flags exist to describe, and the case where a wrong answer
+        // would mislabel a sidebar row.
+        let repo = TempRepo::with_commits(2);
+        let base = repo.head_oid();
+        repo.branch("merged-branch");
+        repo.commit_file("on-main.txt", "main", "main work");
+        let main_tip = repo.head_oid();
+
+        let merged_tip = repo
+            .repo()
+            .find_branch("merged-branch", git2::BranchType::Local)
+            .expect("branch should exist")
+            .get()
+            .target()
+            .expect("branch should have a tip");
+
+        let reachable = reachable_set(repo.repo(), main_tip);
+        for tip in [base, main_tip, merged_tip] {
+            assert_eq!(
+                reachable.contains(&tip),
+                merged_by_merge_base(repo.repo(), tip, main_tip),
+                "set membership disagreed with merge_base for {tip}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_walk_from_every_commit_agrees_with_merge_base() {
+        // Exhaustive over a small history: whatever the old predicate said for
+        // each (tip, target) pair, the set has to say the same.
+        let repo = TempRepo::with_commits(6);
+        let mut walk = repo.repo().revwalk().unwrap();
+        walk.push_head().unwrap();
+        let commits: Vec<git2::Oid> = walk.filter_map(Result::ok).collect();
+
+        for &target in &commits {
+            let reachable = reachable_set(repo.repo(), target);
+            for &tip in &commits {
+                assert_eq!(
+                    reachable.contains(&tip),
+                    merged_by_merge_base(repo.repo(), tip, target),
+                    "disagreement for tip {tip} against target {target}"
+                );
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod load_more_tests {

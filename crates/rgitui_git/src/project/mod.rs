@@ -2,6 +2,8 @@ mod argsafe;
 mod auth;
 mod bisect;
 mod blame;
+#[cfg(feature = "perf")]
+mod census;
 mod diff;
 mod file_history;
 mod history_cache;

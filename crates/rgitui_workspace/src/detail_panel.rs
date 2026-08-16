@@ -2001,6 +2001,77 @@ impl Render for DetailPanel {
     }
 }
 
+/// The detail panel's share of the heap census.
+///
+/// The panel holds the whole `CommitDiff` for the selected commit — every hunk
+/// of every file — and a render-ready row set derived from it. The diff itself
+/// is the same `Arc` the per-tab diff cache holds, so it reports zero here and
+/// its cost shows up under the cache; the derived rows are the panel's own, and
+/// they are what this walk exists to name.
+#[cfg(feature = "perf")]
+mod census {
+    use rgitui_perf::{Census, HeapSize};
+
+    use super::{
+        CachedFileDiffTree, CachedFlatRow, CachedTreeFile, CachedTreeRow, CachedTreeRowKind,
+        DetailPanel,
+    };
+
+    /// A flat row's numbers and colours are inline; its three shared strings
+    /// are not, and a file path is exactly the length that stops being inline.
+    impl HeapSize for CachedFlatRow {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.file_name.heap_size(census)
+                + self.dir_path.heap_size(census)
+                + self.change_code.heap_size(census)
+        }
+    }
+
+    impl HeapSize for CachedTreeFile {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.change_code.heap_size(census)
+        }
+    }
+
+    impl HeapSize for CachedTreeRowKind {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            match self {
+                CachedTreeRowKind::Dir { key } => key.heap_size(census),
+                CachedTreeRowKind::File(file) => file.heap_size(census),
+            }
+        }
+    }
+
+    impl HeapSize for CachedTreeRow {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.label.heap_size(census) + self.kind.heap_size(census)
+        }
+    }
+
+    impl HeapSize for CachedFileDiffTree {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.flat_rows.heap_size(census) + self.tree_rows.heap_size(census)
+        }
+
+        fn heap_count(&self) -> Option<usize> {
+            Some(self.flat_rows.len() + self.tree_rows.len())
+        }
+    }
+
+    impl DetailPanel {
+        /// Records the panel's retained commit, diff and derived rows under the
+        /// current census path.
+        pub(crate) fn census(&self, census: &mut Census) -> usize {
+            census.enter("commit_diff", &self.commit_diff)
+                + census.enter("commit", &self.commit)
+                + census.enter("file_rows", &self.cached_file_tree)
+                + census.enter("visible_rows", &self.visible_tree_rows)
+                + census.enter("contained_in", &self.contained_in)
+                + census.enter("collapsed_dirs", &self.collapsed_dirs)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

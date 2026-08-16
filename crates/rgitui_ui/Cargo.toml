@@ -7,8 +7,15 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# See `rgitui_git`'s `perf` feature. Turned on so the census can walk the
+# process-wide avatar cache, which no other crate can reach.
+perf = ["dep:rgitui_perf"]
+
 [dependencies]
 gpui.workspace = true
+rgitui_perf = { workspace = true, optional = true }
 rgitui_theme.workspace = true
 rgitui_settings.workspace = true
 smallvec.workspace = true

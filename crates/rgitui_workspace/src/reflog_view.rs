@@ -425,6 +425,15 @@ impl Render for ReflogView {
     }
 }
 
+/// The reflog view's share of the heap census.
+#[cfg(feature = "perf")]
+impl ReflogView {
+    /// Records the reflog entries this view retains.
+    pub(crate) fn census(&self, census: &mut rgitui_perf::Census) -> usize {
+        census.enter("entries", &self.entries)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

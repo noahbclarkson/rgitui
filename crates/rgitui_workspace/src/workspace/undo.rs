@@ -641,3 +641,55 @@ mod tests {
         assert_eq!(entry.worktree_path, PathBuf::from("originating-worktree"));
     }
 }
+
+/// The undo stack's share of the heap census.
+///
+/// Every other node in the report is bounded by the repository or by a cache
+/// with an entry count. This one is bounded by what the user did: an
+/// [`UndoAction::RestoreWorktreeFiles`] entry carries the full before-and-after
+/// bytes of every file an apply or revert touched, capped at
+/// [`rgitui_git::MAX_UNDO_SNAPSHOT_BYTES`] per operation and
+/// [`MAX_UNDO_HISTORY`] operations deep. Naming it separately is what makes
+/// that product visible instead of leaving it as arithmetic nobody performs.
+#[cfg(feature = "perf")]
+mod census {
+    use rgitui_perf::{Census, HeapSize};
+
+    use super::{UndoAction, UndoEntry, UndoStack};
+
+    impl HeapSize for UndoAction {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            match self {
+                UndoAction::PopStash(_) => 0,
+                UndoAction::ResetTo(oid) | UndoAction::SoftResetHead(oid) => oid.heap_size(census),
+                UndoAction::RecreateBranch { name, oid_hex }
+                | UndoAction::RecreateTag { name, oid_hex } => {
+                    name.heap_size(census) + oid_hex.heap_size(census)
+                }
+                UndoAction::UnstageFiles { paths } | UndoAction::StageFiles { paths } => {
+                    paths.heap_size(census)
+                }
+                UndoAction::RestoreWorktreeFiles { snapshots } => snapshots.heap_size(census),
+            }
+        }
+    }
+
+    impl HeapSize for UndoEntry {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.label.heap_size(census)
+                + self.action.heap_size(census)
+                + self.repo_path.heap_size(census)
+                + self.worktree_path.heap_size(census)
+        }
+    }
+
+    impl HeapSize for UndoStack {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.entries.heap_size(census)
+        }
+
+        fn heap_count(&self) -> Option<usize> {
+            Some(self.entries.len())
+        }
+    }
+}

@@ -136,6 +136,7 @@ struct OpenMark {
     name: String,
     started: Instant,
     start_frame: usize,
+    start_draw: usize,
     start_working_set: u64,
 }
 
@@ -149,6 +150,8 @@ pub struct PerfSession {
     idle_fn: Option<IdleFn>,
 
     frames: FrameRecorder,
+    draws: crate::draw::DrawRecorder,
+    frame_timings: gpui::profiler::FrameTimingCollector,
     tasks: TaskRecorder,
     collector: gpui::ProfilingCollector,
     process: Option<ProcessSampler>,
@@ -208,6 +211,11 @@ impl PerfSession {
         // flag clear it retains no timings and grows no buffer. Turning it on
         // is therefore part of starting a run, not part of building the binary.
         gpui::profiler::set_trace_enabled(true);
+        // Separate flag, separate ring buffer: task timings say where dispatched
+        // work went, frame timings say what each draw cost. Only the second one
+        // can see `Render::render`, layout and paint, which are not tasks and so
+        // never appear in the task table however long they take.
+        gpui::profiler::set_frame_trace_enabled(true);
 
         let process = match ProcessSampler::new() {
             Ok(sampler) => Some(sampler),
@@ -227,6 +235,8 @@ impl PerfSession {
             // Recalibrated from observed ticks once the run has data; 60Hz is
             // only the placeholder until then.
             frames: FrameRecorder::new(16.667),
+            draws: crate::draw::DrawRecorder::new(16.667),
+            frame_timings: gpui::profiler::FrameTimingCollector::new(),
             tasks: TaskRecorder::new(),
             collector: gpui::ProfilingCollector::new(started),
             process,
@@ -318,6 +328,7 @@ impl PerfSession {
             name: name.to_string(),
             started: Instant::now(),
             start_frame: self.frames.len(),
+            start_draw: self.draws.len(),
             start_working_set: self.last_process.working_set_bytes,
         });
     }
@@ -333,6 +344,7 @@ impl PerfSession {
             name: mark.name,
             wall_ms: mark.started.elapsed().as_secs_f64() * 1000.0,
             frames: self.frames.stats(mark.start_frame..self.frames.len()),
+            draws: self.draws.stats(mark.start_draw..self.draws.len()),
             working_set_delta_bytes: self.last_process.working_set_bytes as i64
                 - mark.start_working_set as i64,
         });
@@ -390,6 +402,24 @@ impl PerfSession {
         });
 
         self.drain_task_timings();
+        self.drain_frame_timings();
+    }
+
+    /// Moves gpui's per-frame draw records into the recorder.
+    ///
+    /// Drained on the counter timer for the same reason as the task timings:
+    /// gpui keeps a bounded ring of them and drops the oldest once it is full,
+    /// and the frames worth having are usually the early ones.
+    fn drain_frame_timings(&mut self) {
+        for timing in self.frame_timings.collect_unseen() {
+            self.draws.record(crate::draw::DrawSample {
+                draw_ms: timing.draw_duration().as_secs_f64() * 1000.0,
+                dirty_to_draw_ms: timing
+                    .dirty_to_draw_duration()
+                    .map(|duration| duration.as_secs_f64() * 1000.0),
+                invalidations: timing.invalidations,
+            });
+        }
     }
 
     /// Moves gpui's per-thread task timings into the recorder.
@@ -502,12 +532,17 @@ impl PerfSession {
                 name: mark.name,
                 wall_ms: mark.started.elapsed().as_secs_f64() * 1000.0,
                 frames: self.frames.stats(mark.start_frame..self.frames.len()),
+                draws: self.draws.stats(mark.start_draw..self.draws.len()),
                 working_set_delta_bytes: self.last_process.working_set_bytes as i64
                     - mark.start_working_set as i64,
             });
         }
 
         self.frames.calibrate();
+        // Headroom is judged against the display's real interval, not the
+        // 60Hz a run starts out assuming.
+        self.draws
+            .set_refresh_interval_ms(self.frames.refresh_interval_ms());
 
         let peak_census = self.peak_census_bytes.max(census_total);
         let mut actions: Vec<ActionReport> = self
@@ -548,6 +583,7 @@ impl PerfSession {
             },
             summary: Summary {
                 frames: self.frames.stats_all(),
+                draws: self.draws.stats_all(),
                 worst_foreground_task_ms: self.tasks.worst_foreground_ms(),
                 final_process: self.last_process,
                 peak_working_set_bytes: self.peak_working_set,

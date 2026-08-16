@@ -57,11 +57,81 @@ impl HeapSize for TabCensus<'_> {
             },
         );
         total += census.enter("caches", &self.tab.caches);
+
+        // The panels each hold their own copy of whatever the project handed
+        // them — a blame's per-line authorship, a reflog, a search result set —
+        // and until these were walked the census could only see the graph, the
+        // diff viewer and the caches, which is how it came to report about a
+        // tenth of the heap that dhat measured.
+        total += census.enter(
+            "panels",
+            &PanelCensus {
+                tab: self.tab,
+                cx: self.cx,
+            },
+        );
         total += census.enter("name", &self.tab.name);
 
         total
     }
 }
+
+/// The per-tab panels, each charged under its own label.
+struct PanelCensus<'a> {
+    tab: &'a ProjectTab,
+    cx: &'a App,
+}
+
+impl HeapSize for PanelCensus<'_> {
+    fn heap_size(&self, census: &mut Census) -> usize {
+        let mut total = 0;
+
+        total += census.enter("sidebar", &EntityCensus(self.tab.sidebar.read(self.cx)));
+        total += census.enter("detail", &EntityCensus(self.tab.detail_panel.read(self.cx)));
+        total += census.enter("blame", &EntityCensus(self.tab.blame_view.read(self.cx)));
+        total += census.enter(
+            "file_history",
+            &EntityCensus(self.tab.file_history_view.read(self.cx)),
+        );
+        total += census.enter("reflog", &EntityCensus(self.tab.reflog_view.read(self.cx)));
+        total += census.enter(
+            "search",
+            &EntityCensus(self.tab.global_search_view.read(self.cx)),
+        );
+        total += census.enter(
+            "stashes",
+            &EntityCensus(self.tab.stashes_panel.read(self.cx)),
+        );
+
+        total
+    }
+}
+
+/// Bridges a panel's inherent `census` method to [`HeapSize`], so that
+/// `Census::enter` can label it without every panel implementing the trait.
+struct EntityCensus<'a, T>(&'a T);
+
+macro_rules! panel_census {
+    ($($panel:ty),+ $(,)?) => {
+        $(
+            impl HeapSize for EntityCensus<'_, $panel> {
+                fn heap_size(&self, census: &mut Census) -> usize {
+                    self.0.census(census)
+                }
+            }
+        )+
+    };
+}
+
+panel_census!(
+    crate::Sidebar,
+    crate::DetailPanel,
+    crate::BlameView,
+    crate::FileHistoryView,
+    crate::ReflogView,
+    crate::GlobalSearchView,
+    crate::StashesPanel,
+);
 
 /// The graph view's retained rows and commit snapshot.
 struct GraphCensus<'a> {

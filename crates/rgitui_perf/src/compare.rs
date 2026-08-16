@@ -167,7 +167,7 @@ impl Kind {
 pub fn compare(baseline: &Report, candidate: &Report, noise: &NoiseFloor) -> Comparison {
     let mut metrics = Vec::new();
 
-    let pairs: [(&str, Kind, f64, f64); 10] = [
+    let pairs: [(&str, Kind, f64, f64); 14] = [
         (
             "frames.p50_ms",
             Kind::FrameTiming,
@@ -185,6 +185,33 @@ pub fn compare(baseline: &Report, candidate: &Report, noise: &NoiseFloor) -> Com
             Kind::FrameTiming,
             baseline.summary.frames.p99_ms,
             candidate.summary.frames.p99_ms,
+        ),
+        (
+            // What the frame cost to produce, as distinct from how often
+            // frames arrived. Cadence is pinned to the display and hides a
+            // change in draw cost completely until the budget runs out.
+            "draw.p50_ms",
+            Kind::FrameTiming,
+            baseline.summary.draws.draw_p50_ms,
+            candidate.summary.draws.draw_p50_ms,
+        ),
+        (
+            "draw.p95_ms",
+            Kind::FrameTiming,
+            baseline.summary.draws.draw_p95_ms,
+            candidate.summary.draws.draw_p95_ms,
+        ),
+        (
+            "draw.max_ms",
+            Kind::Extremum,
+            baseline.summary.draws.draw_max_ms,
+            candidate.summary.draws.draw_max_ms,
+        ),
+        (
+            "latency.dirty_to_draw_p95_ms",
+            Kind::FrameTiming,
+            baseline.summary.draws.dirty_to_draw_p95_ms,
+            candidate.summary.draws.dirty_to_draw_p95_ms,
         ),
         (
             "frames.max_ms",
@@ -433,6 +460,7 @@ mod tests {
             name: name.to_string(),
             wall_ms,
             frames: crate::frame::FrameStats::default(),
+            draws: crate::draw::DrawStats::default(),
             working_set_delta_bytes: 0,
         }
     }

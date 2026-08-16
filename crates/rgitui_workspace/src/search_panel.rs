@@ -638,6 +638,20 @@ impl GlobalSearchView {
     }
 }
 
+/// The global search view's share of the heap census.
+///
+/// `git grep` over a large repository returns tens of thousands of matches and
+/// every one of them arrives with its own path and matched line as owned
+/// strings. The result set is retained until the next search or a clear, which
+/// makes this the one node here that can outweigh the repository snapshot.
+#[cfg(feature = "perf")]
+impl GlobalSearchView {
+    /// Records the retained result set and the current query.
+    pub(crate) fn census(&self, census: &mut rgitui_perf::Census) -> usize {
+        census.enter("results", &self.results) + census.enter("query", &self.query)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
