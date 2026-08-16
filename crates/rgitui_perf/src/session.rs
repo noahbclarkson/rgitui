@@ -538,7 +538,7 @@ impl PerfSession {
             });
         }
 
-        self.frames.calibrate();
+        self.frames.adopt_refresh_interval();
         // Headroom is judged against the display's real interval, not the
         // 60Hz a run starts out assuming.
         self.draws

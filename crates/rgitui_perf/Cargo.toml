@@ -43,7 +43,7 @@ profiling = "1.0.18"
 tempfile.workspace = true
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Diagnostics_ToolHelp"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi"] }
 
 [target."cfg(not(windows))".dependencies]
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }

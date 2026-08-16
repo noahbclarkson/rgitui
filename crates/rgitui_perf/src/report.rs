@@ -312,6 +312,33 @@ impl Report {
             });
         }
 
+        // An idle window's frame callbacks throttle well below the display's
+        // rate — measured at ~25Hz against a 102Hz panel. Any scenario step
+        // that settles on a frame then waits for that slower tick, so its wall
+        // time is mostly throttle rather than app work. Worth saying out loud:
+        // it reads exactly like the app being slow, and it is not.
+        if frames.frames > 0 && frames.duration_ms > 0.0 && frames.refresh_interval_ms > 0.0 {
+            let observed_hz = frames.frames as f64 / (frames.duration_ms / 1000.0);
+            let display_hz = 1000.0 / frames.refresh_interval_ms;
+            if observed_hz < display_hz * 0.6 {
+                findings.push(Finding {
+                    severity: Severity::Info,
+                    code: "frame.idle_throttled".into(),
+                    message: format!(
+                        "frame callbacks ran at {observed_hz:.0}Hz against a {display_hz:.0}Hz \
+                         display — the window was idle for much of this run, so per-action wall \
+                         times include that throttle and overstate what the app did",
+                    ),
+                    evidence: serde_json::json!({
+                        "observed_hz": observed_hz,
+                        "display_hz": display_hz,
+                        "ticks": frames.frames,
+                        "draws": self.summary.draws.draws,
+                    }),
+                });
+            }
+        }
+
         let draws = &self.summary.draws;
         if draws.draws > 0 {
             // Cadence alone cannot see this. Every frame interval sits on the

@@ -152,15 +152,31 @@ impl FrameRecorder {
         self.refresh_interval_ms
     }
 
+    /// Adopts the display's refresh interval, preferring what the OS reports.
+    ///
+    /// Estimating it from observed ticks is only sound while the window is
+    /// busy. An idle gpui window throttles its frame callbacks well below the
+    /// panel's rate — measured at ~25Hz against a 102Hz display — so a run that
+    /// spends most of its time idle calibrates to the throttle and then judges
+    /// every dropped frame and every headroom figure against a budget four
+    /// times too generous. Asking the OS avoids inferring a constant from data
+    /// that only sometimes carries it.
+    pub fn adopt_refresh_interval(&mut self) {
+        match display_refresh_interval_ms() {
+            Some(interval) => self.refresh_interval_ms = interval,
+            None => self.calibrate(),
+        }
+    }
+
     /// Derives the display's refresh interval from the ticks observed.
     ///
-    /// gpui's Windows backend paces its frame loop off DWM vsync, so a tick
-    /// lands once per refresh whether or not anything drew, and the *most
-    /// common* interval is the refresh interval by construction. Taking the
-    /// mode rather than the mean or median makes the estimate immune to stalls:
-    /// a run that dropped a third of its frames still calibrates correctly,
-    /// which matters because that is exactly the run whose dropped-frame count
-    /// needs to be right.
+    /// The fallback for when the OS will not say. gpui's frame loop is paced
+    /// off vsync while the window is busy, so the *most common* interval is the
+    /// refresh interval — provided the window was busy. Taking the mode rather
+    /// than the mean or median makes the estimate immune to stalls: a run that
+    /// dropped a third of its frames still calibrates correctly, which matters
+    /// because that is exactly the run whose dropped-frame count needs to be
+    /// right.
     ///
     /// Leaves the existing value alone when there are too few samples to be
     /// confident, so a short run keeps its assumed default rather than
@@ -195,6 +211,40 @@ impl FrameRecorder {
 
         self.refresh_interval_ms = (bucket as f64 + 0.5) * BUCKET_MS;
     }
+}
+
+/// The primary display's refresh interval in milliseconds, as the OS reports it.
+///
+/// `dmDisplayFrequency` is a whole number of hertz, so a 102.4Hz panel reports
+/// 102 and the interval is out by half a percent. That is far inside the
+/// tolerance of everything judged against it, and enormously better than the
+/// alternative of inferring the rate from a window that throttles when idle.
+#[cfg(windows)]
+fn display_refresh_interval_ms() -> Option<f64> {
+    use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
+
+    let mut mode = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+
+    // SAFETY: `mode` is a correctly sized DEVMODEW as required by the API, and
+    // a null device name asks for the primary display.
+    let ok = unsafe { EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, &mut mode) };
+    if !ok.as_bool() {
+        return None;
+    }
+
+    // 0 and 1 are the documented "unspecified / hardware default" values.
+    match mode.dmDisplayFrequency {
+        0 | 1 => None,
+        hz => Some(1000.0 / f64::from(hz)),
+    }
+}
+
+#[cfg(not(windows))]
+fn display_refresh_interval_ms() -> Option<f64> {
+    None
 }
 
 /// Linear-interpolated percentile of an already-sorted slice.
