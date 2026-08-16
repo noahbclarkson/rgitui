@@ -214,19 +214,18 @@ fn load_embedded_fonts(cx: &App) {
     }
 }
 
-/// Shortest time the splash stays up.
+/// Shortest time the splash stays up: the whole opening animation.
 ///
-/// Long enough to read as a deliberate opening rather than a flash of something
-/// the user did not have time to see, and short enough that it is not the thing
-/// they are waiting for.
-const SPLASH_MIN: std::time::Duration = std::time::Duration::from_millis(400);
+/// Taken from the splash rather than chosen here, so the animation is never cut
+/// off partway by a number that drifted away from it.
+const SPLASH_MIN: std::time::Duration = rgitui_workspace::SplashScreen::ANIMATION;
 
 /// Longest the splash will wait for a repository to become ready.
 ///
-/// Past this, an empty workspace that is visibly filling in beats a splash that
-/// says nothing. Set to the old fixed delay, so a repository slow enough to hit
-/// this ceiling behaves exactly as it did before.
-const SPLASH_MAX: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Only reached when loading outlasts the animation. Past this an empty
+/// workspace that is visibly filling in beats a splash that has finished
+/// animating and is now just a delay.
+const SPLASH_MAX: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// How often readiness is checked while the splash is up.
 const SPLASH_POLL: std::time::Duration = std::time::Duration::from_millis(25);
@@ -421,14 +420,14 @@ fn main() {
                     // run in parallel with the splash animation.
                     let workspace = AppRoot::init_workspace(init, cx);
 
-                    // Hand over as soon as there is something to show.
+                    // Play the whole opening animation, then hand over as soon
+                    // as there is something to show.
                     //
-                    // This used to be a flat 1.5s wait. Opening a 20,000-commit
-                    // repository now has commits ready at about half a second,
-                    // so the old constant spent the second after that animating
-                    // over a workspace that was already finished — the largest
-                    // remaining part of what a user experiences as startup, and
-                    // none of it work.
+                    // This used to be a flat 1.5s wait with no regard for the
+                    // repository: it handed over to an empty workspace if
+                    // loading was slow, and sat on a finished one if it was
+                    // fast. Waiting on the animation and then on the data fixes
+                    // the first case without shortening the second.
                     let workspace_for_splash = workspace.downgrade();
                     cx.spawn(
                         async move |this: gpui::WeakEntity<AppRoot>, cx: &mut gpui::AsyncApp| {
