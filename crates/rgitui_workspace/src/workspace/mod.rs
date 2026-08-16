@@ -630,6 +630,18 @@ impl Workspace {
         });
     }
 
+    /// Whether the workspace has something worth showing yet.
+    ///
+    /// True once the active tab has commits, or immediately when there is no
+    /// repository to load — a welcome screen is as ready as it will ever be.
+    /// Used to decide when the splash has finished being useful.
+    pub fn has_visible_content(&self, cx: &gpui::App) -> bool {
+        match self.tabs.get(self.active_tab) {
+            Some(tab) => tab.project.read(cx).loaded_commit_count() > 0,
+            None => true,
+        }
+    }
+
     /// Set whether crash recovery is available (previous session didn't exit cleanly).
     pub fn set_crash_recovery_available(&mut self, available: bool) {
         self.focus.crash_recovery_available = available;

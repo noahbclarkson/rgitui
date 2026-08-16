@@ -313,15 +313,21 @@ pub struct SplashScreen {
     start: Instant,
 }
 
+/// How often the splash asks to be redrawn.
+///
+/// Every tick is a full-window repaint of an animation that plays while the
+/// repository is still loading, and the repaint competes with delivering that
+/// load to the UI thread. 30fps is indistinguishable for a fade and a
+/// typewriter, and leaves the thread free for the work the user is waiting on.
+const ANIM_TICK: Duration = Duration::from_millis(33);
+
 const ANIM_DURATION: Duration = Duration::from_millis(1400);
 const FADE_DURATION: Duration = Duration::from_millis(1000);
 
 impl SplashScreen {
     pub fn new(cx: &mut Context<Self>) -> Self {
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(16))
-                .await;
+            cx.background_executor().timer(ANIM_TICK).await;
             let done = this
                 .update(cx, |this: &mut SplashScreen, cx| {
                     let t = this.start.elapsed().as_secs_f32() / ANIM_DURATION.as_secs_f32();

@@ -967,17 +967,32 @@ impl Sidebar {
             .extend(self.filtered_remote_indices());
     }
 
-    pub fn update_branches(&mut self, mut branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
-        branches.sort_by(|a, b| {
+    pub fn update_branches(&mut self, branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
+        // Lowercase once per branch, not twice per comparison. A comparison
+        // sort visits O(n log n) pairs, so the old form allocated two strings
+        // for every one of them — on the order of a hundred thousand
+        // allocations for a repository with a few thousand refs, on the main
+        // thread, every time a refresh landed.
+        let mut keyed: Vec<(BranchInfo, String)> = branches
+            .into_iter()
+            .map(|branch| {
+                let key = branch.name.to_lowercase();
+                (branch, key)
+            })
+            .collect();
+        keyed.sort_by(|(a, a_key), (b, b_key)| {
             if a.is_remote != b.is_remote {
                 return a.is_remote.cmp(&b.is_remote);
             }
             if a.is_head != b.is_head {
                 return b.is_head.cmp(&a.is_head);
             }
-            a.name.to_lowercase().cmp(&b.name.to_lowercase())
+            a_key.cmp(b_key)
         });
-        let (local, remote): (Vec<_>, Vec<_>) = branches.into_iter().partition(|b| !b.is_remote);
+        let (local, remote): (Vec<_>, Vec<_>) = keyed
+            .into_iter()
+            .map(|(branch, _)| branch)
+            .partition(|b| !b.is_remote);
         if self.local_branches == local && self.remote_branches == remote {
             return;
         }

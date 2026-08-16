@@ -26,9 +26,10 @@ use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, EstimatedListScroll, Icon, IconName, IconSize, Label,
     LabelSize, Scrollbar, Spinner,
 };
-use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle as SyntectFontStyle, Theme, ThemeSet};
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::highlighting::{
+    FontStyle as SyntectFontStyle, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet,
+};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 
 /// Line numbers for a single selected line: (old_file_line, new_file_line).
 /// old_file_line is None for additions (new lines), new_file_line is None for deletions.
@@ -542,7 +543,15 @@ enum SyntaxLineHighlighter {
     Syntect {
         syntax_set: &'static SyntaxSet,
         syntax: &'static SyntaxReference,
-        theme: &'static Theme,
+        /// Built once per theme rather than per line.
+        ///
+        /// `HighlightLines::new` looks cheap and is not: it constructs a
+        /// `Highlighter`, which walks every scope selector in the theme into two
+        /// vectors and sorts one of them. Doing that per diff line put a
+        /// 100-200 element sort in front of every line of every diff. The
+        /// `Highlighter` is a pure function of the theme, so it is shared; only
+        /// the parse and highlight state have to be per line.
+        highlighter: &'static Highlighter<'static>,
     },
 }
 
@@ -2148,8 +2157,23 @@ impl DiffViewer {
         SyntaxLineHighlighter::Syntect {
             syntax_set: &assets.syntax_set,
             syntax,
-            theme: Self::syntax_theme(appearance),
+            highlighter: Self::syntax_highlighter(appearance),
         }
+    }
+
+    /// The shared [`Highlighter`] for an appearance.
+    ///
+    /// There are only ever two, and each is derived entirely from a `'static`
+    /// theme, so they are built once and handed out by reference.
+    fn syntax_highlighter(appearance: Appearance) -> &'static Highlighter<'static> {
+        static DARK: OnceLock<Highlighter<'static>> = OnceLock::new();
+        static LIGHT: OnceLock<Highlighter<'static>> = OnceLock::new();
+
+        let cell = match appearance {
+            Appearance::Dark => &DARK,
+            Appearance::Light => &LIGHT,
+        };
+        cell.get_or_init(|| Highlighter::new(Self::syntax_theme(appearance)))
     }
 
     fn syntect_style_to_highlight(style: syntect::highlighting::Style) -> HighlightStyle {
@@ -2185,7 +2209,7 @@ impl DiffViewer {
             SyntaxLineHighlighter::Syntect {
                 syntax_set,
                 syntax,
-                theme,
+                highlighter,
             } => {
                 // Highlight each line with a fresh parse state to prevent
                 // block-comment / multi-line string state from bleeding across
@@ -2193,10 +2217,17 @@ impl DiffViewer {
                 // from different file versions so stateful highlighting
                 // produces incorrect results -- e.g. a `/*` in a deleted line
                 // would color all subsequent additions as comments).
-                let mut fresh = HighlightLines::new(syntax, theme);
-                let Ok(ranges) = fresh.highlight_line(trimmed, syntax_set) else {
+                //
+                // The state is what has to be fresh; the highlighter behind it
+                // does not, so it is shared rather than rebuilt here.
+                let mut parse_state = ParseState::new(syntax);
+                let mut highlight_state = HighlightState::new(highlighter, ScopeStack::new());
+                let Ok(operations) = parse_state.parse_line(trimmed, syntax_set) else {
                     return StyledLine::plain(trimmed.to_string());
                 };
+                let ranges: Vec<(syntect::highlighting::Style, &str)> =
+                    HighlightIterator::new(&mut highlight_state, &operations, trimmed, highlighter)
+                        .collect();
 
                 let text_len = trimmed.len();
                 let mut highlights = Vec::new();

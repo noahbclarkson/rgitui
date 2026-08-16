@@ -505,7 +505,7 @@ pub(super) fn gather_refresh_data_lightweight_cached(
 /// flags this feeds are a visual hint on a sidebar row, and under-reporting one
 /// branch as unmerged is a far better failure than refusing to open the
 /// repository.
-fn reachable_set(repo: &Repository, tip: git2::Oid) -> HashSet<git2::Oid> {
+pub(super) fn reachable_set(repo: &Repository, tip: git2::Oid) -> HashSet<git2::Oid> {
     let mut reachable = HashSet::new();
     let Ok(mut walk) = repo.revwalk() else {
         return reachable;
@@ -542,7 +542,6 @@ fn gather_refresh_data_internal(
         .ok()
         .and_then(|r| r.shorthand().map(String::from));
     let head_detached = repo.head_detached().unwrap_or(false);
-    let head_tip = repo.head().ok().and_then(|reference| reference.target());
     let repo_state = RepoState::from_git2(repo.state());
 
     // Current user email (for "My Branches" / "My Commits" filtering)
@@ -621,78 +620,16 @@ fn gather_refresh_data_internal(
                 .then(a.name.cmp(&b.name))
         });
 
-        // Find the main branch tip OID.
-        // Priority: local main > local master > remote origin/main > remote origin/master
-        let main_tip = branches
-            .iter()
-            .find(|b| !b.is_remote && b.name == "main")
-            .and_then(|b| b.tip_oid)
-            .or_else(|| {
-                branches
-                    .iter()
-                    .find(|b| !b.is_remote && b.name == "master")
-                    .and_then(|b| b.tip_oid)
-            })
-            .or_else(|| {
-                branches
-                    .iter()
-                    .find(|b| b.is_remote && b.name == "origin/main")
-                    .and_then(|b| b.tip_oid)
-            })
-            .or_else(|| {
-                branches
-                    .iter()
-                    .find(|b| b.is_remote && b.name == "origin/master")
-                    .and_then(|b| b.tip_oid)
-            });
-
-        // Both flags ask the same question of every local branch — "is this tip
-        // an ancestor of that one?" — and the obvious way to ask it, one
-        // `merge_base` per branch, is what made opening a repository slow. Each
-        // call is a fresh bidirectional walk that parses commit objects and
-        // ignores the commit-graph file, so 200 branches cost 400 walks and
-        // 2.85 of the 3.04 seconds it took to gather the whole snapshot.
+        // `is_merged_into_main` and `is_merged_into_head` are deliberately left
+        // unset. Both need a walk over the repository's history and decide
+        // nothing more than whether a sidebar row is dimmed, so they are filled
+        // in afterwards by `refresh_branch_graph_state`, once the commits the
+        // user is actually waiting for are on screen. Computing them here cost
+        // 139ms of the ~290ms it took to produce the whole snapshot.
         //
-        // Asking it the other way round costs two walks total: collect what is
-        // reachable from each target once, then every branch is a set lookup.
-        let reachable_from_main = main_tip.map(|tip| reachable_set(&repo, tip));
-        let reachable_from_head = match (head_tip, main_tip) {
-            // Detached HEAD aside, these are usually the same commit, and the
-            // second walk would rebuild an identical set.
-            (Some(head), Some(main)) if head == main => reachable_from_main.clone(),
-            (Some(head), _) => Some(reachable_set(&repo, head)),
-            (None, _) => None,
-        };
-
-        if let Some(reachable) = &reachable_from_main {
-            for branch in branches.iter_mut() {
-                if branch.is_remote {
-                    continue;
-                }
-                if branch.is_head {
-                    // The HEAD branch: merged if it points to the same commit as main
-                    branch.is_merged_into_main = Some(branch.tip_oid == main_tip);
-                    continue;
-                }
-                branch.is_merged_into_main = Some(
-                    branch
-                        .tip_oid
-                        .is_some_and(|tip_oid| reachable.contains(&tip_oid)),
-                );
-            }
-        }
-
-        // Match `git branch --merged`: compare each local tip with the
-        // currently checked-out commit, not only with main/master.
-        if let Some(reachable) = &reachable_from_head {
-            for branch in branches.iter_mut().filter(|branch| !branch.is_remote) {
-                branch.is_merged_into_head = Some(
-                    branch
-                        .tip_oid
-                        .is_some_and(|tip_oid| reachable.contains(&tip_oid)),
-                );
-            }
-        }
+        // `None` means "not computed", which `apply_refresh_data` reads as
+        // "keep what was already known" — so a refresh never blanks a flag it
+        // simply did not recalculate.
     }
 
     // Tags
@@ -975,10 +912,12 @@ impl GitProject {
                     if this.commit_query_generation != query_generation {
                         return Ok::<(), anyhow::Error>(());
                     }
+                    let reached_ui = t.elapsed();
                     this.apply_refresh_data(data);
                     log::info!(
-                        "refresh phase 1 applied in {:?}: {} commits",
+                        "refresh phase 1 applied in {:?} ({:?} waiting for the UI thread): {} commits",
                         t.elapsed(),
+                        reached_ui,
                         this.recent_commits.len()
                     );
                     cx.emit(GitProjectEvent::StatusChanged);
@@ -1702,22 +1641,51 @@ mod is_merged_tests {
         let repo = fixture.repo();
 
         let a = commit(&fixture, "refs/heads/main", "A", None);
-        let _feature_tip = commit(&fixture, "refs/heads/feature", "B", Some(a));
-        let _diverged_tip = commit(&fixture, "refs/heads/diverged", "D", Some(a));
+        let feature_tip = commit(&fixture, "refs/heads/feature", "B", Some(a));
+        let diverged_tip = commit(&fixture, "refs/heads/diverged", "D", Some(a));
         repo.set_head("refs/heads/feature").unwrap();
 
+        let branches = vec![
+            ("main".to_string(), false, false, Some(a)),
+            ("feature".to_string(), false, true, Some(feature_tip)),
+            ("diverged".to_string(), false, false, Some(diverged_tip)),
+        ];
+        let flags = super::super::merged_flags(repo, &branches);
+        let flag = |wanted: &str| {
+            flags
+                .iter()
+                .find(|(name, _, _, _)| name == wanted)
+                .map(|(_, _, _, into_head)| *into_head)
+                .unwrap()
+        };
+
+        assert!(
+            flag("main"),
+            "main is an ancestor of the checked-out feature"
+        );
+        assert!(
+            !flag("diverged"),
+            "a branch that diverged before HEAD is not merged into it"
+        );
+    }
+
+    #[test]
+    fn the_gather_leaves_merged_flags_for_the_deferred_pass() {
+        // The flags are what made opening a repository slow, so the snapshot
+        // must not compute them. `None` is the signal that they are unknown
+        // rather than false, which is what stops `apply_refresh_data` blanking
+        // a previously computed value.
+        let fixture = TempRepo::init();
+        let a = commit(&fixture, "refs/heads/main", "A", None);
+        let _feature = commit(&fixture, "refs/heads/feature", "B", Some(a));
+
         let data = gather_refresh_data_internal(fixture.path(), false, 100, None, None).unwrap();
-        let main = data
-            .branches
-            .iter()
-            .find(|branch| branch.name == "main")
-            .unwrap();
-        let diverged = data
-            .branches
-            .iter()
-            .find(|branch| branch.name == "diverged")
-            .unwrap();
-        assert_eq!(main.is_merged_into_head, Some(true));
-        assert_eq!(diverged.is_merged_into_head, Some(false));
+        assert!(
+            data.branches
+                .iter()
+                .all(|branch| branch.is_merged_into_main.is_none()
+                    && branch.is_merged_into_head.is_none()),
+            "the snapshot must not walk history for these"
+        );
     }
 }

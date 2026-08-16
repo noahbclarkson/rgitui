@@ -82,6 +82,9 @@ pub struct Summary {
     pub frames: FrameStats,
     /// What each frame cost to produce, and how much of the budget is spare.
     pub draws: DrawStats,
+    /// Milliseconds from process start until the app first drew real content.
+    /// `None` when the run never reached that point.
+    pub time_to_first_content_ms: Option<f64>,
     /// Longest single task on the frame thread, in milliseconds.
     pub worst_foreground_task_ms: f64,
     /// Process memory at the end of the run.

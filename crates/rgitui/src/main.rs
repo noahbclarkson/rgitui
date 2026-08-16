@@ -214,6 +214,33 @@ fn load_embedded_fonts(cx: &App) {
     }
 }
 
+/// Shortest time the splash stays up.
+///
+/// Long enough to read as a deliberate opening rather than a flash of something
+/// the user did not have time to see, and short enough that it is not the thing
+/// they are waiting for.
+const SPLASH_MIN: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Longest the splash will wait for a repository to become ready.
+///
+/// Past this, an empty workspace that is visibly filling in beats a splash that
+/// says nothing. Set to the old fixed delay, so a repository slow enough to hit
+/// this ceiling behaves exactly as it did before.
+const SPLASH_MAX: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// How often readiness is checked while the splash is up.
+const SPLASH_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Baselines the clock startup measurements are taken against.
+#[cfg(feature = "perf")]
+fn start_perf_clock() {
+    rgitui_perf::process_start();
+}
+
+/// A build without the harness has no clock to start.
+#[cfg(not(feature = "perf"))]
+fn start_perf_clock() {}
+
 /// Keeps an instrumented run's settings and caches out of the user's
 /// directories, so a measured run neither inherits state from the last one nor
 /// leaves its corpus in somebody's recent-repository list.
@@ -237,6 +264,10 @@ fn isolate_perf_state() {
 fn isolate_perf_state() {}
 
 fn main() {
+    // First statement in the process: everything timed from here, so a startup
+    // measurement includes the platform and window setup a user is also waiting for.
+    start_perf_clock();
+
     env_logger::init();
 
     // Bound for the whole of `main` because dhat writes `dhat-heap.json` when
@@ -390,12 +421,38 @@ fn main() {
                     // run in parallel with the splash animation.
                     let workspace = AppRoot::init_workspace(init, cx);
 
-                    // Show the workspace after 1.5s minimum animation time.
+                    // Hand over as soon as there is something to show.
+                    //
+                    // This used to be a flat 1.5s wait. Opening a 20,000-commit
+                    // repository now has commits ready at about half a second,
+                    // so the old constant spent the second after that animating
+                    // over a workspace that was already finished — the largest
+                    // remaining part of what a user experiences as startup, and
+                    // none of it work.
+                    let workspace_for_splash = workspace.downgrade();
                     cx.spawn(
                         async move |this: gpui::WeakEntity<AppRoot>, cx: &mut gpui::AsyncApp| {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(1500))
-                                .await;
+                            let started = std::time::Instant::now();
+                            loop {
+                                cx.background_executor().timer(SPLASH_POLL).await;
+                                let elapsed = started.elapsed();
+                                if elapsed >= SPLASH_MAX {
+                                    break;
+                                }
+                                if elapsed < SPLASH_MIN {
+                                    continue;
+                                }
+                                let ready = workspace_for_splash
+                                    .read_with(cx, |workspace, cx| {
+                                        workspace.has_visible_content(cx)
+                                    })
+                                    // The workspace is gone, so waiting for it
+                                    // to fill is pointless.
+                                    .unwrap_or(true);
+                                if ready {
+                                    break;
+                                }
+                            }
                             this.update(cx, |this: &mut AppRoot, cx| {
                                 this.show_workspace(cx);
                             })

@@ -180,6 +180,8 @@ pub struct PerfSession {
     peak_census_bytes: usize,
     /// Node breakdown from the census that produced [`Self::peak_census_bytes`].
     peak_census_nodes: Vec<crate::heap::CensusNode>,
+    /// Time from process start until the app first drew real content.
+    first_content: Option<Duration>,
     finished: bool,
 }
 
@@ -255,6 +257,7 @@ impl PerfSession {
             peak_working_set: 0,
             peak_census_bytes: 0,
             peak_census_nodes: Vec::new(),
+            first_content: None,
             finished: false,
         };
 
@@ -299,6 +302,27 @@ impl PerfSession {
         }
         cx.update_global::<Self, _>(|session, _| {
             session.render_count += 1;
+        });
+    }
+
+    /// Records that the app has put real content on screen for the first time.
+    ///
+    /// This is the startup number that matters and the one nothing measured.
+    /// `startup-to-idle` waits on an idle predicate that goes true when no git
+    /// operation is *running*, which on a 20,000-commit repository went true
+    /// 2.8 seconds before any commit was drawn. Measured from process start
+    /// rather than from harness install, because the seconds before the window
+    /// exists are still seconds the user spent waiting.
+    ///
+    /// Only the first call counts; the app calls this from a render path.
+    pub fn note_first_content(cx: &mut App) {
+        if !cx.has_global::<Self>() {
+            return;
+        }
+        cx.update_global::<Self, _>(|session, _| {
+            if session.first_content.is_none() {
+                session.first_content = Some(crate::process_start().elapsed());
+            }
         });
     }
 
@@ -584,6 +608,9 @@ impl PerfSession {
             summary: Summary {
                 frames: self.frames.stats_all(),
                 draws: self.draws.stats_all(),
+                time_to_first_content_ms: self
+                    .first_content
+                    .map(|elapsed| elapsed.as_secs_f64() * 1000.0),
                 worst_foreground_task_ms: self.tasks.worst_foreground_ms(),
                 final_process: self.last_process,
                 peak_working_set_bytes: self.peak_working_set,

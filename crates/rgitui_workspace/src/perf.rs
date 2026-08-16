@@ -94,6 +94,15 @@ mod enabled {
         PerfSession::note_render(cx);
     }
 
+    /// Records that the app has drawn real content for the first time.
+    ///
+    /// The startup number a user would recognise. Called from the graph's
+    /// render path once it has commits to show, so it lands on the first frame
+    /// that actually has something on it rather than the first frame at all.
+    pub fn note_first_content(cx: &mut App) {
+        PerfSession::note_first_content(cx);
+    }
+
     /// Records a dispatched command for latency measurement and for the
     /// recorded trace.
     pub fn note_dispatch(action: &str, tab: Option<usize>, cx: &mut App) {
@@ -133,6 +142,10 @@ mod disabled {
     /// No-op: see [`install`].
     #[inline]
     pub fn note_render(_cx: &mut App) {}
+
+    /// No-op: see [`install`].
+    #[inline]
+    pub fn note_first_content(_cx: &mut App) {}
 
     /// No-op: see [`install`].
     #[inline]

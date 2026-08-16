@@ -139,6 +139,18 @@ impl Render for Workspace {
         // which is what makes an idle repaint visible in the perf report.
         crate::perf::note_render(cx);
 
+        // The first render with commits to show is the moment the app stops
+        // looking empty, and it is the startup number worth quoting. Cheap
+        // enough to test every frame: a length check on the active tab, and the
+        // harness itself ignores every call after the first.
+        if self
+            .tabs
+            .get(self.active_tab)
+            .is_some_and(|tab| tab.project.read(cx).loaded_commit_count() > 0)
+        {
+            crate::perf::note_first_content(cx);
+        }
+
         if self.focus.pending_focus_restore {
             self.focus.pending_focus_restore = false;
             self.restore_focus(window, cx);

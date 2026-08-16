@@ -628,7 +628,7 @@ impl GitProject {
         self.head_branch = data.head_branch;
         self.head_detached = data.head_detached;
         self.repo_state = data.repo_state;
-        self.branches = data.branches;
+        self.branches = carry_forward_branch_graph_state(&self.branches, data.branches);
         self.tags = data.tags;
         self.remotes = data.remotes;
         self.stashes = data.stashes;
@@ -761,75 +761,59 @@ impl GitProject {
     /// task, then update the branches list and emit `AheadBehindRefreshed` so the
     /// UI refreshes. This is called after the initial refresh so that the
     /// expensive graph walks don't block the first render.
+    ///
+    /// The walk itself is delegated to `git for-each-ref`, which reads the
+    /// commit-graph file; libgit2's `graph_ahead_behind` does not, and one call
+    /// per branch made this the second-largest cost in a refresh.
     pub fn refresh_ahead_behind(&mut self, cx: &mut Context<Self>) {
         let repo_path = self.repo_path.clone();
         let query_generation = self.commit_query_generation;
         let refresh_generation = self.refresh_generation;
+        let branch_tips: Vec<(String, bool, bool, Option<git2::Oid>)> = self
+            .branches
+            .iter()
+            .map(|branch| {
+                (
+                    branch.name.clone(),
+                    branch.is_remote,
+                    branch.is_head,
+                    branch.tip_oid,
+                )
+            })
+            .collect();
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let computed = cx
+            let (computed, merged) = cx
                 .background_executor()
                 .spawn(async move {
                     let repo = match git2::Repository::open(&repo_path) {
                         Ok(r) => r,
-                        Err(_) => return Vec::new(),
+                        Err(_) => return (Vec::new(), Vec::new()),
                     };
 
-                    let mut results = Vec::new();
-                    let branches = match repo.branches(None) {
-                        Ok(b) => b,
-                        Err(_) => return Vec::new(),
-                    };
-
-                    for branch_result in branches {
-                        let (branch, branch_type) = match branch_result {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                        if branch_type != git2::BranchType::Local {
-                            continue;
-                        }
-                        let branch_name = match branch.name() {
-                            Ok(Some(n)) => n.to_string(),
-                            _ => continue,
-                        };
-
-                        let upstream = match branch.upstream() {
-                            Ok(u) => u,
-                            Err(_) => continue,
-                        };
-                        let upstream_target = match upstream.get().target() {
-                            Some(t) => t,
-                            None => continue,
-                        };
-                        let local_target = match branch.get().target() {
-                            Some(t) => t,
-                            None => continue,
-                        };
-
-                        if let Ok((ahead, behind)) =
-                            repo.graph_ahead_behind(local_target, upstream_target)
-                        {
-                            results.push((
-                                branch_name,
-                                local_target,
-                                upstream_target,
-                                ahead,
-                                behind,
-                            ));
-                        }
-                    }
-                    results
+                    let ahead_behind = ahead_behind_via_for_each_ref(&repo_path, &repo);
+                    let merged = merged_flags(&repo, &branch_tips);
+                    (ahead_behind, merged)
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    if computed.is_empty()
+                    if (computed.is_empty() && merged.is_empty())
                         || this.commit_query_generation != query_generation
                         || this.refresh_generation != refresh_generation
                     {
                         return;
+                    }
+                    for (name, tip, into_main, into_head) in merged {
+                        if let Some(branch) = this
+                            .branches
+                            .iter_mut()
+                            .find(|b| b.name == name && b.tip_oid == tip)
+                        {
+                            branch.is_merged_into_main = Some(into_main);
+                            branch.is_merged_into_head = Some(into_head);
+                        }
                     }
                     // Update ahead/behind values in place
                     for (name, local_oid, _upstream_oid, ahead, behind) in computed {
@@ -849,6 +833,299 @@ impl GitProject {
             .ok();
         })
         .detach();
+    }
+}
+
+/// Whether each local branch is merged into main, and into HEAD.
+///
+/// Two history walks for the whole repository, rather than one per branch: the
+/// question "is this tip an ancestor of that one" is a set-membership test once
+/// you have walked the target's history, and there are only two targets.
+///
+/// Returns `(name, tip, merged_into_main, merged_into_head)` for local branches
+/// only; a remote branch has neither flag.
+fn merged_flags(
+    repo: &Repository,
+    branches: &[(String, bool, bool, Option<git2::Oid>)],
+) -> Vec<(String, Option<git2::Oid>, bool, bool)> {
+    // Priority: local main > local master > remote origin/main > remote origin/master
+    let tip_named = |wanted: &str, remote: bool| {
+        branches
+            .iter()
+            .find(|(name, is_remote, _, _)| *is_remote == remote && name == wanted)
+            .and_then(|(_, _, _, tip)| *tip)
+    };
+    let main_tip = tip_named("main", false)
+        .or_else(|| tip_named("master", false))
+        .or_else(|| tip_named("origin/main", true))
+        .or_else(|| tip_named("origin/master", true));
+    let head_tip = repo.head().ok().and_then(|reference| reference.target());
+
+    let reachable_from_main = main_tip.map(|tip| refresh::reachable_set(repo, tip));
+    let reachable_from_head = match (head_tip, main_tip) {
+        // Usually the same commit, and the second walk would rebuild an
+        // identical set.
+        (Some(head), Some(main)) if head == main => reachable_from_main.clone(),
+        (Some(head), _) => Some(refresh::reachable_set(repo, head)),
+        (None, _) => None,
+    };
+
+    branches
+        .iter()
+        .filter(|(_, is_remote, _, _)| !is_remote)
+        .map(|(name, _, is_head, tip)| {
+            let into_main = if *is_head {
+                // The checked-out branch is "merged into main" when it is main.
+                *tip == main_tip
+            } else {
+                reachable_from_main
+                    .as_ref()
+                    .zip(*tip)
+                    .is_some_and(|(reachable, tip)| reachable.contains(&tip))
+            };
+            let into_head = reachable_from_head
+                .as_ref()
+                .zip(*tip)
+                .is_some_and(|(reachable, tip)| reachable.contains(&tip));
+            (name.clone(), *tip, into_main, into_head)
+        })
+        .collect()
+}
+
+/// Keeps graph-derived branch state that the incoming snapshot did not compute.
+///
+/// A refresh replaces the branch list wholesale, but the fields that need a
+/// history walk — merged flags, ahead/behind — are computed afterwards, off the
+/// path a user is waiting on. Without this, every refresh would blank them and
+/// the sidebar would flicker between "merged" and "unknown" on every watcher
+/// tick until the follow-up landed.
+///
+/// Carried only when the branch still points at the same commit. A moved tip
+/// invalidates both answers, and showing a stale one is worse than showing none.
+fn carry_forward_branch_graph_state(
+    previous: &[BranchInfo],
+    mut incoming: Vec<BranchInfo>,
+) -> Vec<BranchInfo> {
+    if previous.is_empty() {
+        return incoming;
+    }
+
+    let known: std::collections::HashMap<(&str, Option<git2::Oid>), &BranchInfo> = previous
+        .iter()
+        .map(|branch| ((branch.name.as_str(), branch.tip_oid), branch))
+        .collect();
+
+    for branch in &mut incoming {
+        let Some(before) = known.get(&(branch.name.as_str(), branch.tip_oid)) else {
+            continue;
+        };
+        if branch.is_merged_into_main.is_none() {
+            branch.is_merged_into_main = before.is_merged_into_main;
+        }
+        if branch.is_merged_into_head.is_none() {
+            branch.is_merged_into_head = before.is_merged_into_head;
+        }
+        if branch.ahead == 0 && branch.behind == 0 {
+            branch.ahead = before.ahead;
+            branch.behind = before.behind;
+        }
+    }
+
+    incoming
+}
+
+/// Ahead/behind counts for every local branch that has an upstream.
+///
+/// One `git for-each-ref` rather than one `graph_ahead_behind` per branch.
+/// libgit2's version walks both sides without consulting
+/// `.git/objects/info/commit-graph`, so it costs a full object-parsing traversal
+/// per branch; git's own does consult it. The OIDs still come from libgit2,
+/// because the caller matches on them and parsing them back out of the
+/// subprocess would only add a way to disagree.
+fn ahead_behind_via_for_each_ref(
+    repo_path: &Path,
+    repo: &git2::Repository,
+) -> Vec<(String, git2::Oid, git2::Oid, usize, usize)> {
+    let output = git_command()
+        .current_dir(repo_path)
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)%09%(upstream:track)",
+            "refs/heads",
+        ])
+        .output();
+
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = Vec::new();
+
+    for line in stdout.lines() {
+        let Some((name, track)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some((ahead, behind)) = parse_upstream_track(track) else {
+            continue;
+        };
+        // A branch with no upstream, or a gone one, is not reported at all —
+        // matching what the per-branch version did by skipping it.
+        let Ok(branch) = repo.find_branch(name, git2::BranchType::Local) else {
+            continue;
+        };
+        let (Some(local), Ok(upstream)) = (branch.get().target(), branch.upstream()) else {
+            continue;
+        };
+        let Some(upstream_target) = upstream.get().target() else {
+            continue;
+        };
+        results.push((name.to_string(), local, upstream_target, ahead, behind));
+    }
+
+    results
+}
+
+/// Reads git's `%(upstream:track)` field into ahead/behind counts.
+///
+/// The field is prose, not data: `[ahead 2, behind 1]`, `[ahead 3]`,
+/// `[behind 4]`, `[gone]`, or empty when the branch is level with its upstream.
+/// Returning `None` covers both "no upstream" and "upstream gone", which are the
+/// cases that have no counts to report.
+fn parse_upstream_track(track: &str) -> Option<(usize, usize)> {
+    let track = track.trim();
+    if track.is_empty() {
+        // An upstream that exists and matches exactly prints nothing. Only a
+        // branch that has one is level with it, so this is 0/0 rather than
+        // "not applicable" — but a branch with no upstream also prints nothing,
+        // and the caller filters those out by looking the upstream up.
+        return Some((0, 0));
+    }
+    let inner = track.strip_prefix('[')?.strip_suffix(']')?;
+    if inner == "gone" {
+        return None;
+    }
+
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in inner.split(',') {
+        let part = part.trim();
+        if let Some(count) = part.strip_prefix("ahead ") {
+            ahead = count.trim().parse().ok()?;
+        } else if let Some(count) = part.strip_prefix("behind ") {
+            behind = count.trim().parse().ok()?;
+        }
+    }
+    Some((ahead, behind))
+}
+
+#[cfg(test)]
+mod carry_forward_tests {
+    use super::{carry_forward_branch_graph_state, BranchInfo};
+
+    fn branch(name: &str, tip: Option<git2::Oid>) -> BranchInfo {
+        BranchInfo {
+            name: name.to_string(),
+            is_head: false,
+            is_remote: false,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            tip_oid: tip,
+            author_email: None,
+            last_commit_time: None,
+            is_merged_into_main: None,
+            is_merged_into_head: None,
+        }
+    }
+
+    fn oid(byte: u8) -> git2::Oid {
+        git2::Oid::from_bytes(&[byte; 20]).unwrap()
+    }
+
+    #[test]
+    fn a_flag_the_snapshot_did_not_compute_keeps_its_previous_value() {
+        let mut before = branch("feature", Some(oid(1)));
+        before.is_merged_into_main = Some(true);
+        before.ahead = 3;
+        before.behind = 2;
+
+        let after =
+            carry_forward_branch_graph_state(&[before], vec![branch("feature", Some(oid(1)))]);
+
+        assert_eq!(after[0].is_merged_into_main, Some(true));
+        assert_eq!((after[0].ahead, after[0].behind), (3, 2));
+    }
+
+    #[test]
+    fn a_moved_tip_discards_what_was_known_about_the_old_one() {
+        // The answers described the previous commit. Showing them against a new
+        // one would be worse than showing nothing.
+        let mut before = branch("feature", Some(oid(1)));
+        before.is_merged_into_main = Some(true);
+        before.ahead = 3;
+
+        let after =
+            carry_forward_branch_graph_state(&[before], vec![branch("feature", Some(oid(2)))]);
+
+        assert_eq!(after[0].is_merged_into_main, None);
+        assert_eq!(after[0].ahead, 0);
+    }
+
+    #[test]
+    fn a_freshly_computed_flag_wins_over_the_old_one() {
+        let mut before = branch("feature", Some(oid(1)));
+        before.is_merged_into_main = Some(false);
+
+        let mut incoming = branch("feature", Some(oid(1)));
+        incoming.is_merged_into_main = Some(true);
+
+        let after = carry_forward_branch_graph_state(&[before], vec![incoming]);
+        assert_eq!(after[0].is_merged_into_main, Some(true));
+    }
+
+    #[test]
+    fn a_branch_that_is_new_is_left_alone() {
+        let before = branch("old", Some(oid(1)));
+        let after = carry_forward_branch_graph_state(&[before], vec![branch("new", Some(oid(9)))]);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].is_merged_into_main, None);
+    }
+}
+
+#[cfg(test)]
+mod ahead_behind_tests {
+    use super::parse_upstream_track;
+
+    #[test]
+    fn a_level_branch_prints_nothing_and_is_zero_zero() {
+        assert_eq!(parse_upstream_track(""), Some((0, 0)));
+        assert_eq!(parse_upstream_track("   "), Some((0, 0)));
+    }
+
+    #[test]
+    fn both_directions_are_read() {
+        assert_eq!(parse_upstream_track("[ahead 2, behind 1]"), Some((2, 1)));
+    }
+
+    #[test]
+    fn one_direction_leaves_the_other_at_zero() {
+        assert_eq!(parse_upstream_track("[ahead 3]"), Some((3, 0)));
+        assert_eq!(parse_upstream_track("[behind 4]"), Some((0, 4)));
+    }
+
+    #[test]
+    fn a_gone_upstream_has_no_counts() {
+        assert_eq!(parse_upstream_track("[gone]"), None);
+    }
+
+    #[test]
+    fn unparseable_input_is_rejected_rather_than_guessed() {
+        assert_eq!(parse_upstream_track("[ahead many]"), None);
+        assert_eq!(parse_upstream_track("ahead 2"), None);
     }
 }
 

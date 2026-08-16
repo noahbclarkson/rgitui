@@ -173,6 +173,17 @@ fn starts_cold() -> bool {
     }
 }
 
+/// When the process started, for measurements that begin before the app does.
+///
+/// Anything timed from harness install understates startup by however long the
+/// platform, the window and the font system took, which is exactly the part a
+/// user waiting for the app to appear is counting. First call wins, so calling
+/// it early in `main` sets the baseline for everything after.
+pub fn process_start() -> std::time::Instant {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
+}
+
 /// Whether this build carries the instrumentation at all.
 pub const fn is_enabled() -> bool {
     cfg!(feature = "enabled")

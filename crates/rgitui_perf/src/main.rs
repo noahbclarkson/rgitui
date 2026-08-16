@@ -180,6 +180,10 @@ fn summarize(args: &[String]) -> anyhow::Result<()> {
         frames.dropped_frames, frames.idle_redraws, frames.refresh_interval_ms
     );
 
+    if let Some(ms) = report.summary.time_to_first_content_ms {
+        println!("CONTENT  first frame with commits at {ms:.0}ms from process start");
+    }
+
     let draws = &report.summary.draws;
     if draws.draws > 0 {
         // Cadence says whether it was smooth here; this says how much of the
