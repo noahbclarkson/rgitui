@@ -141,6 +141,15 @@ pub struct Report {
     pub heap: Vec<CensusNode>,
 }
 
+/// Draws needed before p95 and p99 mean anything.
+///
+/// Below this the tail percentiles are simply the worst one or two samples, and
+/// in a short scenario those are the first frames — shader compilation, glyph
+/// rasterisation, atlas population — which describe starting up rather than
+/// running. An app that correctly stops redrawing when idle produces few draws,
+/// so a small sample is a sign of health as often as a gap in the data.
+const MIN_DRAWS_FOR_PERCENTILES: u64 = 100;
+
 /// Rows kept in each detail table, so `report.json` stays readable in one pass.
 pub const MAX_HOT_LOCATIONS: usize = 40;
 /// Census nodes kept. See [`MAX_HOT_LOCATIONS`].
@@ -343,7 +352,28 @@ impl Report {
         }
 
         let draws = &self.summary.draws;
-        if draws.draws > 0 {
+        if draws.draws > 0 && draws.draws < MIN_DRAWS_FOR_PERCENTILES {
+            // Worth saying rather than staying silent: a reader who sees no
+            // draw finding will assume the draws were fine.
+            findings.push(Finding {
+                severity: Severity::Info,
+                code: "frame.too_few_draws".into(),
+                message: format!(
+                    "only {} draws recorded, so p95 and p99 are among the worst two or three \
+                     samples and are dominated by first-frame warm-up — judge draw cost from a \
+                     scenario that redraws continuously",
+                    draws.draws
+                ),
+                evidence: serde_json::json!({
+                    "draws": draws.draws,
+                    "minimum": MIN_DRAWS_FOR_PERCENTILES,
+                    "draw_p50_ms": draws.draw_p50_ms,
+                    "draw_max_ms": draws.draw_max_ms,
+                }),
+            });
+        }
+
+        if draws.draws >= MIN_DRAWS_FOR_PERCENTILES {
             // Cadence alone cannot see this. Every frame interval sits on the
             // refresh period whether a draw took 1ms or 9ms, so an app that has
             // quietly eaten its whole budget looks exactly like one that has
