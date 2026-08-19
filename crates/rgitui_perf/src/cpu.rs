@@ -72,9 +72,6 @@ pub const CPU_OUT_ENV: &str = "RGITUI_PERF_CPU_OUT";
 /// frame timer, a poll loop or a debounce interval.
 pub const DEFAULT_HZ: u32 = 997;
 
-/// How deep a captured stack may go before it is truncated.
-const MAX_FRAMES: usize = 96;
-
 /// How many functions each ranking in [`CpuReport`] carries.
 const RANK_LIMIT: usize = 40;
 
@@ -265,10 +262,7 @@ pub fn write_reports(recording: &Recording, directory: &Path) -> anyhow::Result<
     std::fs::create_dir_all(directory)?;
     let mut symbols = SymbolTable::default();
     let report = summarize(recording, &mut symbols);
-    std::fs::write(
-        directory.join("cpu.folded"),
-        fold(recording, &mut symbols),
-    )?;
+    std::fs::write(directory.join("cpu.folded"), fold(recording, &mut symbols))?;
     std::fs::write(
         directory.join("cpu.json"),
         serde_json::to_string_pretty(&report)?,
@@ -295,27 +289,20 @@ impl SymbolTable {
     /// up one byte earlier is what keeps such a frame attributed to its caller.
     fn name(&mut self, address: u64, is_leaf: bool) -> &str {
         let lookup = if is_leaf { address } else { address - 1 };
-        let key = address;
-        if !self.names.contains_key(&key) {
-            self.names.insert(key, resolve(lookup));
-        }
-        &self.names[&key]
+        self.names.entry(address).or_insert_with(|| resolve(lookup))
     }
 }
 
 /// One address to one function name, through whatever debug info is present.
 fn resolve(address: u64) -> String {
     let mut name = None;
-    // SAFETY: `resolve` only reads the module and symbol tables of this
-    // process. An address that belongs to no module resolves to nothing rather
-    // than faulting.
-    unsafe {
-        backtrace::resolve(address as *mut std::ffi::c_void, |symbol| {
-            if name.is_none() {
-                name = symbol.name().map(|name| name.to_string());
-            }
-        });
-    }
+    // Reads only the module and symbol tables of this process; an address that
+    // belongs to no module resolves to nothing rather than faulting.
+    backtrace::resolve(address as *mut std::ffi::c_void, |symbol| {
+        if name.is_none() {
+            name = symbol.name().map(|name| name.to_string());
+        }
+    });
     name.unwrap_or_else(|| format!("0x{address:x}"))
 }
 
@@ -388,7 +375,7 @@ fn summarize(recording: &Recording, symbols: &mut SymbolTable) -> CpuReport {
         });
     }
 
-    threads.sort_by(|a, b| b.cycles.cmp(&a.cycles));
+    threads.sort_by_key(|thread| std::cmp::Reverse(thread.cycles));
 
     CpuReport {
         requested_hz: recording.requested_hz,
@@ -440,6 +427,9 @@ fn percent(part: u64, whole: u64) -> f64 {
 mod platform {
     //! Suspend, capture, unwind, resume — the Win32 half.
 
+    /// How deep a captured stack may go before it is truncated.
+    const MAX_FRAMES: usize = 96;
+
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -463,7 +453,7 @@ mod platform {
     };
     use windows::Win32::System::WindowsProgramming::QueryThreadCycleTime;
 
-    use super::{Recording, ThreadTrace, MAX_FRAMES};
+    use super::{Recording, ThreadTrace};
 
     /// Rights the sampler needs over a thread it is going to sample.
     const SAMPLE_ACCESS: THREAD_ACCESS_RIGHTS = THREAD_ACCESS_RIGHTS(
@@ -724,14 +714,15 @@ mod platform {
             let mut image_base = 0u64;
             // SAFETY: reads the loaded modules' exception directories for an
             // address in this process; a null result means "no unwind data".
-            let function = unsafe { RtlLookupFunctionEntry(pc, &mut image_base, Some(&mut history)) };
+            let function =
+                unsafe { RtlLookupFunctionEntry(pc, &mut image_base, Some(&mut history)) };
             if function.is_null() {
                 // A function with no unwind data is a leaf: it pushed nothing,
                 // so its return address is exactly at the stack pointer. That
                 // is only a safe assumption at the top of the stack — deeper
                 // down, missing unwind data means the walk has left code this
                 // process knows about, and guessing would fabricate frames.
-                if depth > 0 || context.Rsp == 0 || context.Rsp % 8 != 0 {
+                if depth > 0 || context.Rsp == 0 || !context.Rsp.is_multiple_of(8) {
                     return;
                 }
                 // SAFETY: `Rsp` of a suspended thread points into that thread's
@@ -751,7 +742,7 @@ mod platform {
                     image_base,
                     pc,
                     function,
-                    &mut context.0 as *mut CONTEXT,
+                    context as *mut CONTEXT,
                     &mut handler_data,
                     &mut establisher_frame,
                     None,

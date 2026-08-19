@@ -53,4 +53,5 @@ perf = [
     "rgitui_git/perf",
     "rgitui_graph/perf",
     "rgitui_diff/perf",
+    "rgitui_ui/perf",
 ]

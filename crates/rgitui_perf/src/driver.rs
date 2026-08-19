@@ -58,10 +58,27 @@ pub enum Step {
     EndMark { mark: String },
     /// Force a heap census sample and label it.
     Snapshot { snapshot: String },
+    /// Append a line to `count` tracked files in the working tree.
+    ///
+    /// Without this no scenario can produce a dirty working tree at all: the
+    /// corpus generator finishes with a forced checkout, so the tree it hands
+    /// over is clean, and `staging-churn` was staging an empty change set while
+    /// describing itself as exercising cache invalidation.
+    ///
+    /// Paths are chosen by walking the repository, so a scenario does not have
+    /// to know what the corpus generator named anything.
+    Dirty {
+        /// How many tracked files to touch.
+        #[serde(default = "one")]
+        count: usize,
+    },
 }
 
 /// What to wait for before the next step.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`Settle::Rate`] carries a rate in hertz, and a fractional rate is
+/// the point — 30Hz auto repeat is not an integer number of frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Settle {
     /// Continue immediately.
@@ -70,6 +87,18 @@ pub enum Settle {
     /// Wait for the next presented frame, so per-action latency measures
     /// keypress-to-pixels rather than keypress-to-return.
     Frame,
+    /// Deliver at a fixed rate, whether or not the app kept up.
+    ///
+    /// The only mode that reproduces a held key. An operating system's auto
+    /// repeat fires on its own clock — around 30Hz once the initial delay has
+    /// passed — and does not wait to see whether the last event was handled, so
+    /// events queue up when the app falls behind. That backlog is the entire
+    /// phenomenon: [`Settle::Frame`] lock-steps dispatch to frame completion and
+    /// therefore measures the one case where it cannot happen.
+    Rate {
+        /// Events per second.
+        hz: f64,
+    },
 }
 
 /// A condition [`Step::WaitFor`] can block on.
@@ -397,5 +426,43 @@ mod tests {
             "a minute of the user reading should not become a minute of benchmark: {:?}",
             scenario.steps
         );
+    }
+}
+
+#[cfg(test)]
+mod shipped_scenario_tests {
+    use super::Scenario;
+
+    /// Every scenario in `scenarios/` parses and has balanced marks.
+    ///
+    /// These files are only exercised by a real run, which needs a built app and
+    /// a generated corpus — so without this a typo in a `settle` block, or a
+    /// `mark` left open, is discovered minutes into a measurement rather than in
+    /// a second here.
+    #[test]
+    fn the_shipped_scenarios_parse_and_balance_their_marks() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
+        let mut checked = 0;
+
+        for entry in std::fs::read_dir(&directory).expect("the scenarios directory exists") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+
+            let scenario = Scenario::load(&path)
+                .unwrap_or_else(|error| panic!("{} does not parse: {error}", path.display()));
+            scenario
+                .validate_marks()
+                .unwrap_or_else(|error| panic!("{} has unbalanced marks: {error}", path.display()));
+            assert!(
+                !scenario.steps.is_empty(),
+                "{} has no steps",
+                path.display()
+            );
+            checked += 1;
+        }
+
+        assert!(checked > 0, "no scenarios were found to check");
     }
 }

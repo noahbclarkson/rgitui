@@ -416,6 +416,12 @@ impl DiffViewer {
 
 #[cfg(test)]
 mod tests {
+    /// Comfortably past `SharedString`'s inline threshold, so the text these
+    /// fixtures build genuinely lives on the heap and genuinely is shared
+    /// between clones. A short literal here silently asserts against a buffer
+    /// that was never allocated.
+    const LONG_LINE: &str = "let total = values.iter().copied().sum::<usize>();";
+
     use gpui::SharedString;
     use rgitui_git::{DiffHunk, DiffLine, FileChangeKind};
 
@@ -514,7 +520,7 @@ mod tests {
     #[test]
     fn a_styled_lines_highlights_are_charged_their_capacity() {
         let mut census = Census::new();
-        let text = "let total = 0;";
+        let text = LONG_LINE;
         let mut highlights = Vec::with_capacity(8);
         highlights.push((0..3, HighlightStyle::default()));
 
@@ -532,7 +538,7 @@ mod tests {
 
     #[test]
     fn shared_text_is_charged_once_while_duplicated_highlights_are_charged_twice() {
-        let text = SharedString::from("fn main() {".to_string());
+        let text = SharedString::from(LONG_LINE.to_string());
         let unified = unified_row(&text);
         let side_by_side = side_by_side_row(&text);
 
@@ -560,7 +566,7 @@ mod tests {
     #[test]
     fn a_populated_cache_reports_its_entries_and_a_non_zero_size() {
         let diff = Arc::new(file_diff());
-        let text = SharedString::from("fn main() {".to_string());
+        let text = SharedString::from(LONG_LINE.to_string());
         let display_rows = Arc::new(vec![unified_row(&text)]);
         let sbs_rows = Arc::new(vec![side_by_side_row(&text)]);
         let cache = populated_cache(&diff, &display_rows, &sbs_rows);
@@ -588,7 +594,7 @@ mod tests {
     #[test]
     fn rows_shared_with_the_cache_are_charged_to_the_cache_alone() {
         let diff = Arc::new(file_diff());
-        let text = SharedString::from("fn main() {".to_string());
+        let text = SharedString::from(LONG_LINE.to_string());
         let display_rows = Arc::new(vec![unified_row(&text)]);
         let sbs_rows = Arc::new(vec![side_by_side_row(&text)]);
         let cache = populated_cache(&diff, &display_rows, &sbs_rows);
@@ -621,7 +627,7 @@ mod tests {
 
     #[test]
     fn rows_the_cache_refused_are_charged_to_the_viewer() {
-        let text = SharedString::from("fn main() {".to_string());
+        let text = SharedString::from(LONG_LINE.to_string());
         let three_way_rows = Arc::new(vec![ThreeWayRow::Triple {
             left_num: Some(1),
             left_styled: styled(&text),

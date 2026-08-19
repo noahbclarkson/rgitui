@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-rgitui is a GPU-accelerated **desktop** Git client (not a TUI, despite the name) built on GPUI — Zed's UI framework, pinned to a specific Zed git rev in the root `Cargo.toml`. Rust toolchain is pinned to 1.94.1 via `rust-toolchain.toml`.
+rgitui is a GPU-accelerated **desktop** Git client (not a TUI, despite the name) built on GPUI — Zed's UI framework, pinned to a specific Zed git rev in the root `Cargo.toml`. Rust toolchain is pinned to 1.97.1 via `rust-toolchain.toml`.
 
 ## Commands
 

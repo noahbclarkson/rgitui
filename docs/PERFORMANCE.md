@@ -103,11 +103,17 @@ while frames were still being dropped — the cost of drawing and the rate of
 presenting are different things, and only the second is what a user perceives.
 The harness rides gpui's natural frame clock without forcing redraws, so it also
 makes *idle redraws* visible: an app repainting while nothing changed is burning
-battery for nothing.
+battery for nothing. That count comes from gpui's own per-frame invalidation
+record, so it means "drawn with nothing dirty" literally rather than inferring it
+from whether a command was dispatched recently — which filed every hover and
+animation tick as an idle repaint.
 
-The refresh interval is calibrated from the run's own ticks rather than assumed,
-using the most common interval. That keeps the dropped-frame count correct on a
-120Hz display and stays correct even in a run that dropped a third of its frames.
+The refresh interval comes from the OS where it can be asked (`EnumDisplaySettingsW`
+on Windows). Only when it cannot does the harness fall back to calibrating from
+the run's own ticks, taking the most common interval; that fallback is a guess,
+because an idle gpui window throttles its frame callbacks well below the panel's
+rate. Every mark and the run summary are judged against the same interval — they
+are all aggregated once, at the end, for exactly that reason.
 
 **Task locations** come from gpui's own profiler, which tags every task with the
 source location of the `spawn` that created it. Foreground rows are what matter:
@@ -163,7 +169,11 @@ In `crates/rgitui_perf/scenarios/`:
 | `graph-scroll` | 500 single-row selection moves. The main smoothness benchmark. |
 | `diff-browse` | Walking a diff and toggling side-by-side. |
 | `panel-tour` | Opens every heavyweight view once, census after each. |
-| `staging-churn` | Stage/unstage cycles — exercises cache *invalidation*. |
+| `staging-churn` | Dirties the tree, then stage/unstage cycles — cache *invalidation*. |
+| `scroll-storm` | Continuous wheel scrolling. The only scenario that draws long enough for draw p95/p99 to mean anything. |
+| `key-repeat-degradation` | A held arrow key at 30Hz, timed in blocks of 100, to see whether block eight costs what block one did. |
+| `idle` | Fifteen seconds of nothing. Any frame drawn here is one too many. |
+| `startup-warm` | Second launch, with the caches the first one left. |
 | `soak` | Repeated identical cycles; growth across them is a leak. |
 
 A scenario is a JSON list of steps:
@@ -173,6 +183,7 @@ A scenario is a JSON list of steps:
 { "action":   { "action": "graph::GraphSelectNext", "repeat": 500, "settle": "frame" } }
 { "key":      { "key": "ctrl-shift-p" } }
 { "scroll":   { "x": 400, "y": 300, "delta_y": -120, "repeat": 100 } }
+{ "dirty":    { "count": 40 } }
 { "wait_for": { "condition": "operation_idle", "timeout_ms": 30000 } }
 { "snapshot": { "snapshot": "after-scroll" } }
 { "end_mark": { "mark": "graph-scroll" } }
@@ -184,9 +195,17 @@ registry before the first step runs, so a scenario naming a command that no
 longer exists fails immediately instead of quietly measuring fewer steps than it
 claims.
 
-`"settle": "frame"` waits for the next presented frame, which is what makes the
-per-action latency table measure keypress-to-pixels rather than
-keypress-to-return.
+`"settle": "frame"` waits for the next presented frame before the next step.
+`"settle": {"rate": {"hz": 30}}` instead delivers on a fixed clock whether or not
+the app kept up — the only mode that reproduces a held key, because the backlog
+that builds when the app falls behind is the whole phenomenon, and settling on a
+frame is precisely the case where it cannot form.
+
+Per-action latency does not come from either. An action is charged against the
+first frame whose *invalidation* happened at or after the dispatch — the first
+frame that could contain its effect — measured to the end of that draw. Closing
+on the next tick regardless, which is what this used to do, measured the
+remainder of the frame period and little else.
 
 `mark`/`end_mark` bracket a named region and give it its own frame statistics
 and memory delta. Marks are how you attribute a regression to a phase rather

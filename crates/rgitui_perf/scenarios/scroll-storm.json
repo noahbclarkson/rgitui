@@ -1,0 +1,37 @@
+{
+  "name": "scroll-storm",
+  "description": "Scrolls the graph continuously with the wheel — 1200 events at 120Hz, then 600 back — so that frames are drawn without pause for long enough that draw p95 and p99 describe steady-state cost rather than first-frame warm-up. Every other scenario settles between steps and lets the app go idle, which is correct for what they measure and is why none of them produces enough draws for a tail percentile to mean anything. Scroll is also the only input here with no keyboard equivalent that goes through the same path, so this is what exercises it.",
+  "corpus": "medium",
+  "start_from": "cold",
+  "steps": [
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 120000 } },
+    { "snapshot": { "snapshot": "before-scroll" } },
+
+    { "mark": { "mark": "scroll-down-1200" } },
+    {
+      "scroll": {
+        "x": 400.0,
+        "y": 400.0,
+        "delta_y": -60.0,
+        "repeat": 1200,
+        "settle": { "rate": { "hz": 120.0 } }
+      }
+    },
+    { "end_mark": { "mark": "scroll-down-1200" } },
+
+    { "mark": { "mark": "scroll-up-600" } },
+    {
+      "scroll": {
+        "x": 400.0,
+        "y": 400.0,
+        "delta_y": 120.0,
+        "repeat": 600,
+        "settle": { "rate": { "hz": 120.0 } }
+      }
+    },
+    { "end_mark": { "mark": "scroll-up-600" } },
+
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 60000 } },
+    { "snapshot": { "snapshot": "after-scroll" } }
+  ]
+}
