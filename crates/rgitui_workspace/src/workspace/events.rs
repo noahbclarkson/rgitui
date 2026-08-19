@@ -171,7 +171,7 @@ pub(super) fn update_toolbar_for_active_worktree(
             .branches()
             .iter()
             .find(|branch| branch.is_head)
-            .map(|branch| (branch.ahead, branch.behind))
+            .map(|branch| (branch.ahead_count(), branch.behind_count()))
             .unwrap_or((0, 0));
         let has_github_token = tab.prs_panel.read(cx).github_token().is_some();
         (has_changes, has_stashes, ahead, behind, has_github_token)
@@ -860,7 +860,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                 let (ahead, behind) = branches
                     .iter()
                     .find(|b| b.is_head)
-                    .map(|b| (b.ahead, b.behind))
+                    .map(|b| (b.ahead_count(), b.behind_count()))
                     .unwrap_or((0, 0));
                 toolbar.update(cx, |tb, cx| {
                     tb.set_ahead_behind(ahead, behind, cx);

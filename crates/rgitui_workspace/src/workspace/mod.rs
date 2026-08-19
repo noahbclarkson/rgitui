@@ -415,6 +415,7 @@ impl Workspace {
             focus: FocusState {
                 last_focused_panel: None,
                 pending_focus_restore: false,
+                initial_focus_taken: false,
                 crash_recovery_available: false,
                 crash_recovery_shown: false,
             },
@@ -632,12 +633,17 @@ impl Workspace {
 
     /// Whether the workspace has something worth showing yet.
     ///
-    /// True once the active tab has commits, or immediately when there is no
-    /// repository to load — a welcome screen is as ready as it will ever be.
-    /// Used to decide when the splash has finished being useful.
+    /// True once the active tab has finished its first refresh, or immediately
+    /// when there is no repository to load — a welcome screen is as ready as it
+    /// will ever be. Used to decide when the splash has finished being useful.
+    ///
+    /// Deliberately not "has commits": a repository that has just been
+    /// initialised has none and never will until the first commit, and waiting
+    /// for one held the splash up for its full timeout on exactly the repository
+    /// that had the least to load.
     pub fn has_visible_content(&self, cx: &gpui::App) -> bool {
         match self.tabs.get(self.active_tab) {
-            Some(tab) => tab.project.read(cx).loaded_commit_count() > 0,
+            Some(tab) => tab.project.read(cx).has_loaded(),
             None => true,
         }
     }

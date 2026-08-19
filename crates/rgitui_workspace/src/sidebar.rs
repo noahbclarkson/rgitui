@@ -2024,23 +2024,23 @@ impl Render for Sidebar {
                             );
                         }
 
-                        if branch.ahead > 0 || branch.behind > 0 {
+                        if branch.ahead_count() > 0 || branch.behind_count() > 0 {
                             item = item.child(
                                 div()
                                     .h_flex()
                                     .gap(px(4.))
                                     .flex_shrink_0()
                                     .items_center()
-                                    .when(branch.ahead > 0, |el| {
+                                    .when(branch.ahead_count() > 0, |el| {
                                         el.child(
-                                            Badge::new(format!("{}", branch.ahead))
+                                            Badge::new(format!("{}", branch.ahead_count()))
                                                 .color(Color::Success)
                                                 .prefix("+"),
                                         )
                                     })
-                                    .when(branch.behind > 0, |el| {
+                                    .when(branch.behind_count() > 0, |el| {
                                         el.child(
-                                            Badge::new(format!("{}", branch.behind))
+                                            Badge::new(format!("{}", branch.behind_count()))
                                                 .color(Color::Warning)
                                                 .prefix("-"),
                                         )
@@ -4922,8 +4922,8 @@ mod tests {
             is_head: false,
             is_remote: false,
             upstream: None,
-            ahead: 0,
-            behind: 0,
+            ahead: None,
+            behind: None,
             tip_oid: None,
             author_email: None,
             last_commit_time: None,

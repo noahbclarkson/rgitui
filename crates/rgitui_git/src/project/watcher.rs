@@ -507,24 +507,24 @@ impl GitProject {
                                     return false;
                                 }
 
-                                // Preserve per-branch ahead/behind (BUG-21): the
-                                // lightweight gather reports (0, 0) for every
-                                // branch, which would clobber values populated by
-                                // a prior fetch/pull/push. Re-overlay the existing
-                                // counts onto the freshly gathered branches.
-                                let preserved: std::collections::HashMap<String, (usize, usize)> =
-                                    this.branches
-                                        .iter()
-                                        .map(|b| (b.name.clone(), (b.ahead, b.behind)))
-                                        .collect();
-
+                                // Ahead/behind survives this apply through
+                                // `carry_forward_branch_graph_state`, which keys
+                                // on the branch tip and the upstream tip. The
+                                // name-keyed overlay that used to live here
+                                // predated that and re-applied counts across a
+                                // moved upstream, which is exactly what a push
+                                // does to them.
                                 this.apply_refresh_data(data);
 
-                                for branch in this.branches.iter_mut() {
-                                    if let Some(&(ahead, behind)) = preserved.get(&branch.name) {
-                                        branch.ahead = ahead;
-                                        branch.behind = behind;
-                                    }
+                                // A reference point may have moved — HEAD most
+                                // often, via a checkout in a terminal — which
+                                // drops the flags derived from it. Nothing else
+                                // on this path recomputes them, so without this
+                                // the sidebar would keep rendering a "merged"
+                                // badge measured against the previous HEAD until
+                                // an unrelated full refresh happened along.
+                                if this.needs_graph_state_refresh() {
+                                    this.refresh_ahead_behind(cx);
                                 }
 
                                 cx.emit(GitProjectEvent::StatusChanged);

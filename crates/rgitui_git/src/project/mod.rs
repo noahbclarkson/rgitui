@@ -624,6 +624,22 @@ impl GitProject {
     }
 
     /// Apply pre-gathered refresh data to self.
+    /// Whether any local branch is missing graph state it could have.
+    ///
+    /// True right after a reference point moves: the carry-forward drops the
+    /// answers that were derived from it, leaving a hole that only a fresh walk
+    /// can fill. False in the steady state, where nothing moved and everything
+    /// was carried — which is what keeps the watcher from scheduling two
+    /// history walks on every file save.
+    pub fn needs_graph_state_refresh(&self) -> bool {
+        self.branches.iter().any(|branch| {
+            !branch.is_remote
+                && (branch.is_merged_into_main.is_none()
+                    || branch.is_merged_into_head.is_none()
+                    || (branch.upstream.is_some() && !branch.has_ahead_behind()))
+        })
+    }
+
     pub(crate) fn apply_refresh_data(&mut self, data: RefreshData) {
         self.head_branch = data.head_branch;
         self.head_detached = data.head_detached;
@@ -650,6 +666,16 @@ impl GitProject {
     /// generation advanced in the meantime (a newer full refresh won).
     pub(crate) fn refresh_generation(&self) -> u64 {
         self.refresh_generation
+    }
+
+    /// Whether a refresh has ever been applied to this project.
+    ///
+    /// The honest test for "there is something to show". Counting commits
+    /// instead treats an empty repository as permanently unloaded, which is a
+    /// real state — a freshly initialised one — and leaves whatever is waiting
+    /// on it waiting until its timeout.
+    pub fn has_loaded(&self) -> bool {
+        self.refresh_generation > 0
     }
 
     /// Whether there are more commits beyond the currently loaded set.
@@ -766,10 +792,25 @@ impl GitProject {
     /// commit-graph file; libgit2's `graph_ahead_behind` does not, and one call
     /// per branch made this the second-largest cost in a refresh.
     pub fn refresh_ahead_behind(&mut self, cx: &mut Context<Self>) {
+        self.refresh_ahead_behind_attempt(0, cx);
+    }
+
+    /// The walk itself, carrying how many times it has already been restarted.
+    ///
+    /// Two full-history walks take long enough that an ordinary file save can
+    /// land a refresh underneath them, and the result then belongs to a
+    /// superseded snapshot. Dropping it silently — which is what this did —
+    /// leaves the flags permanently unset on a repository that is being written
+    /// to, because every attempt loses the same race. Restarting is bounded so
+    /// that sustained churn degrades to "no answer yet" rather than to a task
+    /// that respawns itself forever.
+    fn refresh_ahead_behind_attempt(&mut self, attempt: u8, cx: &mut Context<Self>) {
+        const MAX_ATTEMPTS: u8 = 3;
+
         let repo_path = self.repo_path.clone();
         let query_generation = self.commit_query_generation;
         let refresh_generation = self.refresh_generation;
-        let branch_tips: Vec<(String, bool, bool, Option<git2::Oid>)> = self
+        let branch_tips: Vec<BranchTip> = self
             .branches
             .iter()
             .map(|branch| {
@@ -799,10 +840,22 @@ impl GitProject {
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    if (computed.is_empty() && merged.is_empty())
-                        || this.commit_query_generation != query_generation
+                    // Nothing to apply: the repository would not open, or it
+                    // has no branches. Retrying would not change that.
+                    if computed.is_empty() && merged.is_empty() {
+                        return;
+                    }
+
+                    if this.commit_query_generation != query_generation
                         || this.refresh_generation != refresh_generation
                     {
+                        let next = attempt + 1;
+                        if next < MAX_ATTEMPTS && this.needs_graph_state_refresh() {
+                            log::debug!(
+                                "ahead/behind superseded by a newer refresh; retry {next} of {MAX_ATTEMPTS}"
+                            );
+                            this.refresh_ahead_behind_attempt(next, cx);
+                        }
                         return;
                     }
                     for (name, tip, into_main, into_head) in merged {
@@ -811,8 +864,8 @@ impl GitProject {
                             .iter_mut()
                             .find(|b| b.name == name && b.tip_oid == tip)
                         {
-                            branch.is_merged_into_main = Some(into_main);
-                            branch.is_merged_into_head = Some(into_head);
+                            branch.is_merged_into_main = into_main;
+                            branch.is_merged_into_head = into_head;
                         }
                     }
                     // Update ahead/behind values in place
@@ -822,8 +875,8 @@ impl GitProject {
                             .iter_mut()
                             .find(|b| b.name == name && b.tip_oid == Some(local_oid))
                         {
-                            branch.ahead = ahead;
-                            branch.behind = behind;
+                            branch.ahead = Some(ahead);
+                            branch.behind = Some(behind);
                         }
                     }
                     cx.emit(GitProjectEvent::AheadBehindRefreshed);
@@ -836,6 +889,13 @@ impl GitProject {
     }
 }
 
+/// A branch as the merged-flag walk needs it: name, remote, checked-out, tip.
+type BranchTip = (String, bool, bool, Option<git2::Oid>);
+
+/// One branch's answer: name, tip, merged-into-main, merged-into-HEAD. Each
+/// flag is `None` when the question could not be asked at all.
+type MergedFlags = (String, Option<git2::Oid>, Option<bool>, Option<bool>);
+
 /// Whether each local branch is merged into main, and into HEAD.
 ///
 /// Two history walks for the whole repository, rather than one per branch: the
@@ -843,11 +903,10 @@ impl GitProject {
 /// you have walked the target's history, and there are only two targets.
 ///
 /// Returns `(name, tip, merged_into_main, merged_into_head)` for local branches
-/// only; a remote branch has neither flag.
-fn merged_flags(
-    repo: &Repository,
-    branches: &[(String, bool, bool, Option<git2::Oid>)],
-) -> Vec<(String, Option<git2::Oid>, bool, bool)> {
+/// only; a remote branch has neither flag. Each flag is `None` when the question
+/// could not be asked at all — no trunk to compare against, or an unborn HEAD —
+/// so that "unknown" never reaches the UI dressed as "not merged".
+fn merged_flags(repo: &Repository, branches: &[BranchTip]) -> Vec<MergedFlags> {
     // Priority: local main > local master > remote origin/main > remote origin/master
     let tip_named = |wanted: &str, remote: bool| {
         branches
@@ -862,31 +921,44 @@ fn merged_flags(
     let head_tip = repo.head().ok().and_then(|reference| reference.target());
 
     let reachable_from_main = main_tip.map(|tip| refresh::reachable_set(repo, tip));
-    let reachable_from_head = match (head_tip, main_tip) {
-        // Usually the same commit, and the second walk would rebuild an
-        // identical set.
-        (Some(head), Some(main)) if head == main => reachable_from_main.clone(),
-        (Some(head), _) => Some(refresh::reachable_set(repo, head)),
-        (None, _) => None,
+
+    // When HEAD is the same commit as main the second walk would rebuild an
+    // identical set. Borrowing the first one instead of cloning it matters at
+    // scale: on a repository the size of linux.git each set is tens of
+    // megabytes, and the clone also pays for a full rehash.
+    let head_is_main = matches!((head_tip, main_tip), (Some(head), Some(main)) if head == main);
+    let walked_from_head = match head_tip {
+        Some(head) if !head_is_main => Some(refresh::reachable_set(repo, head)),
+        _ => None,
+    };
+    let reachable_from_head = if head_is_main {
+        reachable_from_main.as_ref()
+    } else {
+        walked_from_head.as_ref()
+    };
+
+    // A tip that is not in the set is genuinely not merged; a set that does not
+    // exist means the question could not be asked. The two must not collapse
+    // together — a repository whose trunk is `develop` has no `main` to walk,
+    // and reporting every branch as unmerged there invites the user to delete
+    // branches that are fully merged.
+    let membership = |set: Option<&std::collections::HashSet<git2::Oid>>,
+                      tip: Option<git2::Oid>| {
+        set.zip(tip)
+            .map(|(reachable, tip)| reachable.contains(&tip))
     };
 
     branches
         .iter()
         .filter(|(_, is_remote, _, _)| !is_remote)
-        .map(|(name, _, is_head, tip)| {
-            let into_main = if *is_head {
-                // The checked-out branch is "merged into main" when it is main.
-                *tip == main_tip
-            } else {
-                reachable_from_main
-                    .as_ref()
-                    .zip(*tip)
-                    .is_some_and(|(reachable, tip)| reachable.contains(&tip))
-            };
-            let into_head = reachable_from_head
-                .as_ref()
-                .zip(*tip)
-                .is_some_and(|(reachable, tip)| reachable.contains(&tip));
+        .map(|(name, _, _, tip)| {
+            // The checked-out branch needs no special case: `reachable_set`
+            // includes the commit it starts from, so a branch that *is* main
+            // finds its own tip in the set, and one that was merged into main
+            // finds it there too — which the previous tip-equality test got
+            // wrong for exactly that second case.
+            let into_main = membership(reachable_from_main.as_ref(), *tip);
+            let into_head = membership(reachable_from_head, *tip);
             (name.clone(), *tip, into_main, into_head)
         })
         .collect()
@@ -900,8 +972,11 @@ fn merged_flags(
 /// the sidebar would flicker between "merged" and "unknown" on every watcher
 /// tick until the follow-up landed.
 ///
-/// Carried only when the branch still points at the same commit. A moved tip
-/// invalidates both answers, and showing a stale one is worse than showing none.
+/// Each answer is carried only when *both* commits it was derived from are
+/// unchanged. A branch's own tip is not enough: "merged into HEAD" is a fact
+/// about the branch and HEAD together, so checking out a different branch
+/// invalidates it even though nothing about the branch moved. The same holds
+/// for ahead/behind against a moved upstream, which is what a push does.
 fn carry_forward_branch_graph_state(
     previous: &[BranchInfo],
     mut incoming: Vec<BranchInfo>,
@@ -910,28 +985,82 @@ fn carry_forward_branch_graph_state(
         return incoming;
     }
 
+    // An unresolvable reference point counts as changed, so the answer is
+    // dropped rather than carried on an assumption.
+    let trunk_unchanged =
+        trunk_tip(previous).is_some() && trunk_tip(previous) == trunk_tip(&incoming);
+    let head_unchanged = head_tip(previous).is_some() && head_tip(previous) == head_tip(&incoming);
+
     let known: std::collections::HashMap<(&str, Option<git2::Oid>), &BranchInfo> = previous
         .iter()
         .map(|branch| ((branch.name.as_str(), branch.tip_oid), branch))
         .collect();
 
-    for branch in &mut incoming {
-        let Some(before) = known.get(&(branch.name.as_str(), branch.tip_oid)) else {
+    for index in 0..incoming.len() {
+        let Some(before) = known
+            .get(&(incoming[index].name.as_str(), incoming[index].tip_oid))
+            .copied()
+        else {
             continue;
         };
-        if branch.is_merged_into_main.is_none() {
-            branch.is_merged_into_main = before.is_merged_into_main;
+
+        if trunk_unchanged && incoming[index].is_merged_into_main.is_none() {
+            incoming[index].is_merged_into_main = before.is_merged_into_main;
         }
-        if branch.is_merged_into_head.is_none() {
-            branch.is_merged_into_head = before.is_merged_into_head;
+        if head_unchanged && incoming[index].is_merged_into_head.is_none() {
+            incoming[index].is_merged_into_head = before.is_merged_into_head;
         }
-        if branch.ahead == 0 && branch.behind == 0 {
-            branch.ahead = before.ahead;
-            branch.behind = before.behind;
+
+        if !incoming[index].has_ahead_behind() {
+            let upstream_moved = match incoming[index].upstream.as_deref() {
+                Some(upstream) => {
+                    upstream_tip(previous, upstream) != upstream_tip(&incoming, upstream)
+                }
+                // No upstream to be ahead or behind of.
+                None => true,
+            };
+            if !upstream_moved {
+                incoming[index].ahead = before.ahead;
+                incoming[index].behind = before.behind;
+            }
         }
     }
 
     incoming
+}
+
+/// Tip of the branch the merged-into-main flag is measured against.
+///
+/// Same priority as [`merged_flags`] uses, so the carry-forward invalidates on
+/// exactly the commit the flag was derived from.
+fn trunk_tip(branches: &[BranchInfo]) -> Option<git2::Oid> {
+    let named = |wanted: &str, remote: bool| {
+        branches
+            .iter()
+            .find(|branch| branch.is_remote == remote && branch.name == wanted)
+            .and_then(|branch| branch.tip_oid)
+    };
+    named("main", false)
+        .or_else(|| named("master", false))
+        .or_else(|| named("origin/main", true))
+        .or_else(|| named("origin/master", true))
+}
+
+/// Tip of the checked-out branch, or `None` when HEAD is detached and no branch
+/// in the list claims it.
+fn head_tip(branches: &[BranchInfo]) -> Option<git2::Oid> {
+    branches
+        .iter()
+        .find(|branch| branch.is_head)
+        .and_then(|branch| branch.tip_oid)
+}
+
+/// Tip of the remote-tracking branch `upstream`, by its full name.
+fn upstream_tip(branches: &[BranchInfo], upstream: &str) -> Option<git2::Oid> {
+    branches
+        .iter()
+        .find(|branch| branch.is_remote && branch.name == upstream)
+        .and_then(|branch| branch.tip_oid)
 }
 
 /// Ahead/behind counts for every local branch that has an upstream.
@@ -1026,15 +1155,19 @@ fn parse_upstream_track(track: &str) -> Option<(usize, usize)> {
 mod carry_forward_tests {
     use super::{carry_forward_branch_graph_state, BranchInfo};
 
-    fn branch(name: &str, tip: Option<git2::Oid>) -> BranchInfo {
+    fn oid(byte: u8) -> git2::Oid {
+        git2::Oid::from_bytes(&[byte; 20]).unwrap()
+    }
+
+    fn branch(name: &str, tip: u8) -> BranchInfo {
         BranchInfo {
             name: name.to_string(),
             is_head: false,
             is_remote: false,
             upstream: None,
-            ahead: 0,
-            behind: 0,
-            tip_oid: tip,
+            ahead: None,
+            behind: None,
+            tip_oid: Some(oid(tip)),
             author_email: None,
             last_commit_time: None,
             is_merged_into_main: None,
@@ -1042,57 +1175,178 @@ mod carry_forward_tests {
         }
     }
 
-    fn oid(byte: u8) -> git2::Oid {
-        git2::Oid::from_bytes(&[byte; 20]).unwrap()
+    /// `main`, checked out, so both reference points resolve.
+    fn trunk(tip: u8) -> BranchInfo {
+        let mut main = branch("main", tip);
+        main.is_head = true;
+        main
+    }
+
+    fn remote(name: &str, tip: u8) -> BranchInfo {
+        let mut branch = branch(name, tip);
+        branch.is_remote = true;
+        branch
+    }
+
+    /// A `feature` branch tracking `origin/feature`, with every answer known.
+    fn tracked_feature(tip: u8) -> BranchInfo {
+        let mut feature = branch("feature", tip);
+        feature.upstream = Some("origin/feature".to_string());
+        feature.is_merged_into_main = Some(true);
+        feature.is_merged_into_head = Some(true);
+        feature.ahead = Some(3);
+        feature.behind = Some(2);
+        feature
+    }
+
+    /// The same branch after the carry-forward, by name.
+    fn feature_of(branches: &[BranchInfo]) -> &BranchInfo {
+        branches
+            .iter()
+            .find(|branch| branch.name == "feature")
+            .expect("the feature branch survives the carry-forward")
+    }
+
+    /// An incoming `feature` that tracks its upstream and knows nothing else.
+    fn incoming_feature(tip: u8) -> BranchInfo {
+        let mut feature = branch("feature", tip);
+        feature.upstream = Some("origin/feature".to_string());
+        feature
     }
 
     #[test]
-    fn a_flag_the_snapshot_did_not_compute_keeps_its_previous_value() {
-        let mut before = branch("feature", Some(oid(1)));
-        before.is_merged_into_main = Some(true);
-        before.ahead = 3;
-        before.behind = 2;
+    fn answers_the_snapshot_did_not_compute_keep_their_previous_values() {
+        let before = vec![trunk(1), remote("origin/feature", 5), tracked_feature(2)];
+        let incoming = vec![trunk(1), remote("origin/feature", 5), incoming_feature(2)];
 
-        let after =
-            carry_forward_branch_graph_state(&[before], vec![branch("feature", Some(oid(1)))]);
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
 
-        assert_eq!(after[0].is_merged_into_main, Some(true));
-        assert_eq!((after[0].ahead, after[0].behind), (3, 2));
+        assert_eq!(feature.is_merged_into_main, Some(true));
+        assert_eq!(feature.is_merged_into_head, Some(true));
+        assert_eq!((feature.ahead, feature.behind), (Some(3), Some(2)));
     }
 
     #[test]
     fn a_moved_tip_discards_what_was_known_about_the_old_one() {
         // The answers described the previous commit. Showing them against a new
         // one would be worse than showing nothing.
-        let mut before = branch("feature", Some(oid(1)));
-        before.is_merged_into_main = Some(true);
-        before.ahead = 3;
+        let before = vec![trunk(1), remote("origin/feature", 5), tracked_feature(2)];
+        let incoming = vec![trunk(1), remote("origin/feature", 5), incoming_feature(9)];
 
-        let after =
-            carry_forward_branch_graph_state(&[before], vec![branch("feature", Some(oid(2)))]);
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
 
-        assert_eq!(after[0].is_merged_into_main, None);
-        assert_eq!(after[0].ahead, 0);
+        assert_eq!(feature.is_merged_into_main, None);
+        assert_eq!(feature.ahead, None);
+    }
+
+    #[test]
+    fn checking_out_another_branch_invalidates_merged_into_head_but_not_into_main() {
+        // The branch did not move; the thing it was compared against did. This
+        // is the case a tip-only key cannot see, and it is the common one — it
+        // is what `git checkout` in a terminal looks like from here.
+        let before = vec![trunk(1), tracked_feature(2)];
+
+        let mut moved_head = incoming_feature(2);
+        moved_head.is_head = true;
+        let incoming = vec![branch("main", 1), moved_head];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
+
+        assert_eq!(
+            feature.is_merged_into_head, None,
+            "HEAD moved, so the answer measured against the old HEAD is gone"
+        );
+        assert_eq!(
+            feature.is_merged_into_main,
+            Some(true),
+            "main did not move, so that answer still holds"
+        );
+    }
+
+    #[test]
+    fn a_moved_trunk_invalidates_merged_into_main() {
+        let before = vec![trunk(1), tracked_feature(2)];
+        let incoming = vec![trunk(7), incoming_feature(2)];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        assert_eq!(feature_of(&after).is_merged_into_main, None);
+    }
+
+    #[test]
+    fn pushing_a_branch_does_not_leave_it_reporting_the_old_ahead_count() {
+        // A push moves the upstream and leaves the local tip alone, so a key
+        // built only from the local tip matches and carries "ahead 3" onto a
+        // branch that is now level.
+        let before = vec![trunk(1), remote("origin/feature", 5), tracked_feature(2)];
+        let incoming = vec![trunk(1), remote("origin/feature", 2), incoming_feature(2)];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
+
+        assert_eq!((feature.ahead, feature.behind), (None, None));
+        assert_eq!(
+            feature.is_merged_into_main,
+            Some(true),
+            "the upstream is irrelevant to the merged flags"
+        );
+    }
+
+    #[test]
+    fn a_branch_level_with_its_upstream_is_not_mistaken_for_an_uncomputed_one() {
+        // `Some(0)` is an answer. The sentinel this replaced could not tell it
+        // from "no walk has run", and overwrote it with whatever came before.
+        let before = vec![trunk(1), remote("origin/feature", 2), tracked_feature(2)];
+        let mut level = incoming_feature(2);
+        level.ahead = Some(0);
+        level.behind = Some(0);
+        let incoming = vec![trunk(1), remote("origin/feature", 2), level];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
+
+        assert_eq!((feature.ahead, feature.behind), (Some(0), Some(0)));
     }
 
     #[test]
     fn a_freshly_computed_flag_wins_over_the_old_one() {
-        let mut before = branch("feature", Some(oid(1)));
-        before.is_merged_into_main = Some(false);
+        let mut stale = tracked_feature(2);
+        stale.is_merged_into_main = Some(false);
+        let before = vec![trunk(1), stale];
 
-        let mut incoming = branch("feature", Some(oid(1)));
-        incoming.is_merged_into_main = Some(true);
+        let mut fresh = incoming_feature(2);
+        fresh.is_merged_into_main = Some(true);
+        let incoming = vec![trunk(1), fresh];
 
-        let after = carry_forward_branch_graph_state(&[before], vec![incoming]);
-        assert_eq!(after[0].is_merged_into_main, Some(true));
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        assert_eq!(feature_of(&after).is_merged_into_main, Some(true));
     }
 
     #[test]
     fn a_branch_that_is_new_is_left_alone() {
-        let before = branch("old", Some(oid(1)));
-        let after = carry_forward_branch_graph_state(&[before], vec![branch("new", Some(oid(9)))]);
-        assert_eq!(after.len(), 1);
+        let before = vec![trunk(1), branch("old", 3)];
+        let after = carry_forward_branch_graph_state(&before, vec![trunk(1), branch("new", 9)]);
+
+        assert_eq!(after.len(), 2);
+        let fresh = after
+            .iter()
+            .find(|branch| branch.name == "new")
+            .expect("the new branch is present");
+        assert_eq!(fresh.is_merged_into_main, None);
+    }
+
+    #[test]
+    fn nothing_is_carried_when_the_reference_points_cannot_be_resolved() {
+        // No trunk in the list and no branch claiming HEAD: both answers were
+        // measured against something this snapshot cannot identify, so neither
+        // is safe to keep.
+        let before = vec![tracked_feature(2)];
+        let after = carry_forward_branch_graph_state(&before, vec![incoming_feature(2)]);
+
         assert_eq!(after[0].is_merged_into_main, None);
+        assert_eq!(after[0].is_merged_into_head, None);
     }
 }
 

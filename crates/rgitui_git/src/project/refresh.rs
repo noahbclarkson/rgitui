@@ -574,19 +574,21 @@ fn gather_refresh_data_internal(
                 .ok()
                 .and_then(|u| u.name().ok().flatten().map(String::from));
 
+            // `None` rather than `(0, 0)` when the walk did not run: the
+            // deferred pass fills these in, and a snapshot that reported "level
+            // with upstream" here would be indistinguishable from one that had
+            // simply not looked yet.
             let (ahead, behind) = if compute_ahead_behind {
-                if let (Some(local_oid), Ok(upstream_ref)) = (tip_oid, branch.upstream()) {
-                    if let Some(remote_oid) = upstream_ref.get().target() {
-                        repo.graph_ahead_behind(local_oid, remote_oid)
-                            .unwrap_or((0, 0))
-                    } else {
-                        (0, 0)
-                    }
-                } else {
-                    (0, 0)
+                match (tip_oid, branch.upstream()) {
+                    (Some(local_oid), Ok(upstream_ref)) => upstream_ref
+                        .get()
+                        .target()
+                        .and_then(|remote_oid| repo.graph_ahead_behind(local_oid, remote_oid).ok())
+                        .map_or((None, None), |(ahead, behind)| (Some(ahead), Some(behind))),
+                    _ => (None, None),
                 }
             } else {
-                (0, 0)
+                (None, None)
             };
 
             let last_commit_time =
@@ -1659,13 +1661,20 @@ mod is_merged_tests {
                 .unwrap()
         };
 
-        assert!(
+        assert_eq!(
             flag("main"),
+            Some(true),
             "main is an ancestor of the checked-out feature"
         );
-        assert!(
-            !flag("diverged"),
+        assert_eq!(
+            flag("diverged"),
+            Some(false),
             "a branch that diverged before HEAD is not merged into it"
+        );
+        assert_eq!(
+            flag("feature"),
+            Some(true),
+            "the checked-out branch is trivially merged into itself"
         );
     }
 
@@ -1686,6 +1695,64 @@ mod is_merged_tests {
                 .all(|branch| branch.is_merged_into_main.is_none()
                     && branch.is_merged_into_head.is_none()),
             "the snapshot must not walk history for these"
+        );
+    }
+
+    #[test]
+    fn a_repository_with_no_trunk_reports_unknown_rather_than_unmerged() {
+        // The trunk here is `develop`, which is not one of the names
+        // `merged_flags` looks for. There is no answer to "is this merged into
+        // main", and saying `false` would have the branch health panel offer
+        // every branch up for deletion as unmerged.
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
+        let a = commit(&fixture, "refs/heads/develop", "A", None);
+        let feature_tip = commit(&fixture, "refs/heads/feature", "B", Some(a));
+        repo.set_head("refs/heads/develop").unwrap();
+
+        let branches = vec![
+            ("develop".to_string(), false, true, Some(a)),
+            ("feature".to_string(), false, false, Some(feature_tip)),
+        ];
+        let flags = super::super::merged_flags(repo, &branches);
+
+        for (name, _, into_main, _) in &flags {
+            assert_eq!(
+                *into_main, None,
+                "{name} has no trunk to be measured against, so the flag is unknown"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreachable_branch_is_reported_as_unmerged_not_unknown() {
+        // The counterpart to the test above: here the walk *did* run and the
+        // tip genuinely is not in it. That is an answer, and it must not be
+        // flattened into the same `None` as "could not ask".
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
+        let a = commit(&fixture, "refs/heads/main", "A", None);
+        let orphan = commit(&fixture, "refs/heads/orphan", "unrelated", None);
+        repo.set_head("refs/heads/main").unwrap();
+
+        let branches = vec![
+            ("main".to_string(), false, true, Some(a)),
+            ("orphan".to_string(), false, false, Some(orphan)),
+        ];
+        let flags = super::super::merged_flags(repo, &branches);
+        let into_main = |wanted: &str| {
+            flags
+                .iter()
+                .find(|(name, _, _, _)| name == wanted)
+                .map(|(_, _, into_main, _)| *into_main)
+                .unwrap()
+        };
+
+        assert_eq!(into_main("main"), Some(true));
+        assert_eq!(
+            into_main("orphan"),
+            Some(false),
+            "a root commit with no path to main is answerably not merged"
         );
     }
 }
