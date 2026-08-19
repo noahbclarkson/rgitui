@@ -65,7 +65,8 @@ mod enabled {
         };
 
         let census_handle = workspace.clone();
-        let idle_handle = workspace;
+        let idle_handle = workspace.clone();
+        let repo_handle = workspace;
 
         let result = PerfSession::install(
             config,
@@ -78,6 +79,11 @@ mod enabled {
                 idle_handle
                     .upgrade()
                     .is_none_or(|workspace| workspace.read(cx).is_operation_idle())
+            }),
+            Box::new(move |cx| {
+                repo_handle
+                    .upgrade()
+                    .and_then(|workspace| workspace.read(cx).active_repo_path(cx))
             }),
             window,
             cx,

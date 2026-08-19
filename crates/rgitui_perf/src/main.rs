@@ -177,7 +177,7 @@ fn summarize(args: &[String]) -> anyhow::Result<()> {
     );
     println!(
         "         {} dropped, {} idle redraws, {:.2}ms refresh interval",
-        frames.dropped_frames, frames.idle_redraws, frames.refresh_interval_ms
+        frames.dropped_frames, report.summary.draws.idle_redraws, frames.refresh_interval_ms
     );
 
     if let Some(ms) = report.summary.time_to_first_content_ms {
@@ -217,9 +217,9 @@ fn summarize(args: &[String]) -> anyhow::Result<()> {
         bytes_to_mb(report.summary.final_process.private_bytes as i64)
     );
     println!(
-        "         census {:.1} MB, unaccounted {:.1} MB",
+        "         census {:.1} MB, unaccounted {}",
         bytes_to_mb(report.summary.peak_census_bytes as i64),
-        bytes_to_mb(report.summary.unaccounted_bytes)
+        unaccounted_display(&report)
     );
     if let Some(cpu) = report.summary.cpu_percent_mean {
         println!("CPU      {cpu:.1}% of one core (mean)");
@@ -259,6 +259,18 @@ fn summarize(args: &[String]) -> anyhow::Result<()> {
 
 /// GPU counters are the most likely to be missing, so the reason is printed
 /// rather than the section silently vanishing.
+/// The unaccounted figure, or why there is not one.
+///
+/// Printing a number here regardless would mean printing one derived from a
+/// private-bytes counter that does not exist off Windows — a large negative
+/// that reads as a finding rather than as a missing input.
+fn unaccounted_display(report: &Report) -> String {
+    match report.summary.unaccounted_bytes {
+        Some(unaccounted) => format!("{:.1} MB", bytes_to_mb(unaccounted)),
+        None => "unavailable (no private-bytes counter on this platform)".to_string(),
+    }
+}
+
 fn print_gpu(report: &Report) {
     let gpu = &report.summary.gpu;
     if gpu.is_available() {
@@ -340,10 +352,10 @@ fn heap(args: &[String]) -> anyhow::Result<()> {
         );
     }
     println!(
-        "\ncensus total {:.1} MB, process private {:.1} MB, unaccounted {:.1} MB",
+        "\ncensus total {:.1} MB, process private {:.1} MB, unaccounted {}",
         bytes_to_mb(report.summary.peak_census_bytes as i64),
         bytes_to_mb(report.summary.final_process.private_bytes as i64),
-        bytes_to_mb(report.summary.unaccounted_bytes)
+        unaccounted_display(&report)
     );
     Ok(())
 }

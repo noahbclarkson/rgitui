@@ -14,8 +14,8 @@ use crate::keymap;
 use crate::{CommandId, StatusBar, TitleBar, ToastKind};
 
 use super::{
-    BottomPanelMode, CommitInputResize, DetailPanelResize, DiffViewerResize, RightPanelMode,
-    SidebarResize, ViewAvailability, Workspace,
+    BottomPanelMode, CommitInputResize, DetailPanelResize, DiffViewerResize, FocusedPanel,
+    RightPanelMode, SidebarResize, ViewAvailability, Workspace,
 };
 
 /// Key context identifier for the workspace root.
@@ -154,6 +154,24 @@ impl Render for Workspace {
         if self.focus.pending_focus_restore {
             self.focus.pending_focus_restore = false;
             self.restore_focus(window, cx);
+        }
+
+        // Nothing holds focus on a fresh launch. gpui dispatches an action
+        // along the path from the focused node up to the root, so with no focus
+        // at all every shortcut resolves against the dispatch-tree root — above
+        // the handlers this workspace attaches — and silently does nothing
+        // until the user clicks a panel. Giving the default panel focus as soon
+        // as there is a tab to focus makes the keyboard work from the first
+        // frame. Overlays are left alone: one that does not take focus itself
+        // would otherwise have it pulled out from under it.
+        if !self.focus.initial_focus_taken && !self.tabs.is_empty() && !self.any_overlay_active(cx)
+        {
+            self.focus.initial_focus_taken = true;
+            log::debug!(
+                "workspace: taking initial focus (was {:?})",
+                window.focused(cx)
+            );
+            self.focus_panel(FocusedPanel::Graph, window, cx);
         }
 
         // Apply the configured UI font size. Every `rgitui_ui` component sizes
@@ -307,7 +325,7 @@ impl Render for Workspace {
             .branches()
             .iter()
             .find(|b| b.is_head)
-            .map(|b| (b.ahead, b.behind))
+            .map(|b| (b.ahead_count(), b.behind_count()))
             .unwrap_or((0, 0));
 
         // Build tab bar

@@ -57,6 +57,13 @@ pub(crate) struct OperationState {
 pub(crate) struct FocusState {
     pub last_focused_panel: Option<FocusedPanel>,
     pub pending_focus_restore: bool,
+    /// Whether the workspace has handed focus to a panel yet.
+    ///
+    /// One-shot: on a fresh launch nothing in the workspace holds focus, and
+    /// gpui resolves an action along the path from the focused node up to the
+    /// root — so until a panel has it, every keyboard shortcut lands above the
+    /// handlers the workspace attaches and silently does nothing.
+    pub initial_focus_taken: bool,
     pub crash_recovery_available: bool,
     pub crash_recovery_shown: bool,
 }

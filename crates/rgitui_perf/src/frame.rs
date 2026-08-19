@@ -45,8 +45,6 @@ pub struct FrameStats {
     /// Intervals longer than 1.5x the display's refresh interval, i.e. frames
     /// the user would perceive as dropped.
     pub dropped_frames: u64,
-    /// Ticks that redrew while nothing had changed.
-    pub idle_redraws: u64,
     /// Refresh interval this region was judged against.
     pub refresh_interval_ms: f64,
 }
@@ -66,7 +64,6 @@ impl FrameStats {
 pub struct FrameRecorder {
     intervals_ms: Vec<f64>,
     drawn: Vec<bool>,
-    dirty: Vec<bool>,
     refresh_interval_ms: f64,
 }
 
@@ -79,16 +76,14 @@ impl FrameRecorder {
         Self {
             intervals_ms: Vec::new(),
             drawn: Vec::new(),
-            dirty: Vec::new(),
             refresh_interval_ms,
         }
     }
 
     /// Records one tick.
-    pub fn record(&mut self, interval_ms: f64, drawn: bool, was_dirty: bool) {
+    pub fn record(&mut self, interval_ms: f64, drawn: bool) {
         self.intervals_ms.push(interval_ms);
         self.drawn.push(drawn);
-        self.dirty.push(was_dirty);
     }
 
     /// Number of ticks recorded so far. Used to express scenario steps as
@@ -129,9 +124,6 @@ impl FrameRecorder {
             dropped_frames: intervals
                 .iter()
                 .filter(|ms| **ms > dropped_threshold)
-                .count() as u64,
-            idle_redraws: (start..end)
-                .filter(|i| self.drawn[*i] && !self.dirty[*i])
                 .count() as u64,
             refresh_interval_ms: self.refresh_interval_ms,
         }
@@ -291,10 +283,10 @@ mod tests {
     fn stats_count_dropped_frames_past_one_and_a_half_refresh_intervals() {
         let mut recorder = FrameRecorder::new(8.0);
         for _ in 0..10 {
-            recorder.record(8.0, true, true);
+            recorder.record(8.0, true);
         }
-        recorder.record(13.0, true, true); // 1.625x — dropped
-        recorder.record(11.0, true, true); // 1.375x — not dropped
+        recorder.record(13.0, true); // 1.625x — dropped
+        recorder.record(11.0, true); // 1.375x — not dropped
 
         let stats = recorder.stats_all();
         assert_eq!(stats.frames, 12);
@@ -303,23 +295,21 @@ mod tests {
     }
 
     #[test]
-    fn stats_count_redraws_that_happened_with_nothing_dirty() {
+    fn stats_count_the_ticks_that_drew() {
         let mut recorder = FrameRecorder::new(8.0);
-        recorder.record(8.0, true, true);
-        recorder.record(8.0, true, false);
-        recorder.record(8.0, false, false);
+        recorder.record(8.0, true);
+        recorder.record(8.0, true);
+        recorder.record(8.0, false);
 
-        let stats = recorder.stats_all();
-        assert_eq!(stats.drawn_frames, 2);
-        assert_eq!(stats.idle_redraws, 1);
+        assert_eq!(recorder.stats_all().drawn_frames, 2);
     }
 
     #[test]
     fn stats_over_a_sub_range_ignore_ticks_outside_it() {
         let mut recorder = FrameRecorder::new(8.0);
-        recorder.record(100.0, true, true);
-        recorder.record(8.0, true, true);
-        recorder.record(8.0, true, true);
+        recorder.record(100.0, true);
+        recorder.record(8.0, true);
+        recorder.record(8.0, true);
 
         let stats = recorder.stats(1..3);
         assert_eq!(stats.frames, 2);
@@ -331,7 +321,7 @@ mod tests {
     fn calibration_finds_the_refresh_interval_from_the_most_common_tick() {
         let mut recorder = FrameRecorder::new(16.667);
         for _ in 0..100 {
-            recorder.record(8.3, true, true);
+            recorder.record(8.3, true);
         }
         recorder.calibrate();
         assert!(
@@ -345,10 +335,10 @@ mod tests {
     fn calibration_survives_a_run_that_dropped_many_frames() {
         let mut recorder = FrameRecorder::new(16.667);
         for _ in 0..60 {
-            recorder.record(8.3, true, true);
+            recorder.record(8.3, true);
         }
         for _ in 0..40 {
-            recorder.record(50.0, true, true);
+            recorder.record(50.0, true);
         }
         recorder.calibrate();
 
@@ -364,7 +354,7 @@ mod tests {
     fn calibration_leaves_a_short_run_on_its_assumed_default() {
         let mut recorder = FrameRecorder::new(16.667);
         for _ in 0..5 {
-            recorder.record(8.3, true, true);
+            recorder.record(8.3, true);
         }
         recorder.calibrate();
         assert_eq!(recorder.refresh_interval_ms(), 16.667);

@@ -226,10 +226,10 @@ pub fn compare(baseline: &Report, candidate: &Report, noise: &NoiseFloor) -> Com
             candidate.summary.frames.dropped_frames as f64,
         ),
         (
-            "frames.idle_redraws",
+            "draws.idle_redraws",
             Kind::Count,
-            baseline.summary.frames.idle_redraws as f64,
-            candidate.summary.frames.idle_redraws as f64,
+            baseline.summary.draws.idle_redraws as f64,
+            candidate.summary.draws.idle_redraws as f64,
         ),
         (
             "tasks.worst_foreground_ms",
@@ -441,6 +441,7 @@ mod tests {
                 revision: None,
                 profile: "release-like".into(),
                 heap_profiling: false,
+                cpu_sampling: false,
                 os: "windows".into(),
                 cpu_count: 8,
             },

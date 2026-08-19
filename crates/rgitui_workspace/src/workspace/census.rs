@@ -13,12 +13,30 @@ use super::{ProjectTab, ViewCacheEntry, ViewCacheKey, ViewCaches, Workspace};
 use crate::cache::LruCache;
 
 impl Workspace {
-    /// Records every open tab's retained memory.
+    /// Records every open tab's retained memory, plus the process-wide caches
+    /// that belong to no tab.
     pub(crate) fn census(&self, census: &mut Census, cx: &App) {
         for (index, tab) in self.tabs.iter().enumerate() {
             let label = format!("tab[{index}]");
             census.enter(&label, &TabCensus { tab, cx });
         }
+
+        // Lives in `rgitui_ui` as a gpui global, so no tab can reach it and
+        // nothing else walks it. Without this it is simply memory the report
+        // does not see.
+        if let Some(avatars) = cx.try_global::<rgitui_ui::AvatarCache>() {
+            census.enter("avatars", &AvatarCensus(avatars));
+        }
+    }
+
+    /// Where the active tab's repository lives.
+    ///
+    /// Used by scenario steps that have to touch the working tree, so they can
+    /// find it rather than reconstructing it from the command line.
+    pub(crate) fn active_repo_path(&self, cx: &App) -> Option<std::path::PathBuf> {
+        self.tabs
+            .get(self.active_tab)
+            .map(|tab| tab.project.read(cx).repo_path().to_path_buf())
     }
 
     /// Whether the workspace has no git operation running.
@@ -219,6 +237,16 @@ where
 
     fn heap_count(&self) -> Option<usize> {
         Some(self.census_len())
+    }
+}
+
+/// Bridges the avatar cache's inherent `census` method to [`HeapSize`], the
+/// same way [`EntityCensus`] does for panels.
+struct AvatarCensus<'a>(&'a rgitui_ui::AvatarCache);
+
+impl HeapSize for AvatarCensus<'_> {
+    fn heap_size(&self, census: &mut Census) -> usize {
+        self.0.census(census)
     }
 }
 

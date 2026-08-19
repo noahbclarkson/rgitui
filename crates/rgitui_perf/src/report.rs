@@ -71,6 +71,10 @@ pub struct RunInfo {
     pub profile: String,
     /// Whether the dhat allocator was active, which invalidates timings.
     pub heap_profiling: bool,
+    /// Whether the CPU sampler was running. It suspends each busy thread
+    /// briefly to walk it, so a run with this on carries a little overhead the
+    /// shipped app would not — small, but worth knowing before comparing.
+    pub cpu_sampling: bool,
     pub os: String,
     pub cpu_count: usize,
 }
@@ -91,11 +95,27 @@ pub struct Summary {
     pub final_process: ProcessSample,
     /// Highest working set observed.
     pub peak_working_set_bytes: u64,
+    /// Highest private commit observed. `None` where the platform does not
+    /// report it.
+    pub peak_private_bytes: Option<u64>,
     /// Bytes the semantic census accounted for at its largest.
     pub peak_census_bytes: usize,
-    /// Process private bytes minus census bytes at peak. A large gap is
-    /// memory rgitui's own structures do not explain.
-    pub unaccounted_bytes: i64,
+    /// Peak private bytes minus peak census bytes. A large gap is memory
+    /// rgitui's own structures do not explain — usually the graphics driver and
+    /// loaded DLLs rather than a leak.
+    ///
+    /// `None` where the platform does not report private bytes at all, rather
+    /// than a plausible-looking negative derived from a hardcoded zero.
+    pub unaccounted_bytes: Option<i64>,
+    /// Dispatched commands that no frame ever answered.
+    ///
+    /// Normally zero. A non-zero count means the app was asked to do something
+    /// and never repainted as a result — which is what a replay driver that is
+    /// not reaching the app's handlers looks like from the inside, and the
+    /// reason this is counted rather than quietly dropped.
+    pub actions_without_a_frame: u64,
+    /// Scenario steps that waited for a frame and timed out instead.
+    pub settle_timeouts: u64,
     /// Mean CPU utilisation as a percentage of one core.
     pub cpu_percent_mean: Option<f64>,
     /// Last GPU reading of the run.
@@ -114,7 +134,9 @@ pub struct MarkReport {
     pub working_set_delta_bytes: i64,
 }
 
-/// Latency of one command, measured from dispatch to the next presented frame.
+/// Latency of one command, measured from dispatch to the end of the draw that
+/// answered it — the first frame whose invalidation happened at or after the
+/// dispatch, and therefore the first that could contain its effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionReport {
     /// The `namespace::Name` that was dispatched.
@@ -245,15 +267,19 @@ impl Report {
                 });
             }
 
-            if frames.idle_redraws > 0 {
+            let idle_redraws = self.summary.draws.idle_redraws;
+            if idle_redraws > 0 {
                 findings.push(Finding {
                     severity: Severity::Info,
                     code: "frame.idle_redraws".into(),
                     message: format!(
-                        "{} frames redrew with nothing dirty — wasted GPU work while idle",
-                        frames.idle_redraws
+                        "{idle_redraws} frames were drawn with no invalidation behind them — \
+                         wasted GPU work while idle"
                     ),
-                    evidence: serde_json::json!({ "idle_redraws": frames.idle_redraws }),
+                    evidence: serde_json::json!({
+                        "idle_redraws": idle_redraws,
+                        "draws": self.summary.draws.draws,
+                    }),
                 });
             }
         }
@@ -351,6 +377,43 @@ impl Report {
             }
         }
 
+        if self.summary.settle_timeouts > 0 {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                code: "replay.settle_timeout".into(),
+                message: format!(
+                    "{} steps waited for a frame that never came and gave up on the timeout — \
+                     their wall times are the timeout, not the app, so treat every mark \
+                     containing one as unmeasured",
+                    self.summary.settle_timeouts
+                ),
+                evidence: serde_json::json!({
+                    "settle_timeouts": self.summary.settle_timeouts,
+                }),
+            });
+        }
+
+        if self.summary.actions_without_a_frame > 0 {
+            findings.push(Finding {
+                severity: Severity::Critical,
+                code: "actions.never_drawn".into(),
+                message: format!(
+                    "{} dispatched commands were never followed by a frame — the app did not \
+                     repaint in response, so any latency or smoothness figure in this run \
+                     describes an idle window rather than the work that was asked for",
+                    self.summary.actions_without_a_frame
+                ),
+                evidence: serde_json::json!({
+                    "actions_without_a_frame": self.summary.actions_without_a_frame,
+                    "actions_answered": self
+                        .actions
+                        .iter()
+                        .map(|action| action.count)
+                        .sum::<u64>(),
+                }),
+            });
+        }
+
         let draws = &self.summary.draws;
         if draws.draws > 0 && draws.draws < MIN_DRAWS_FOR_PERCENTILES {
             // Worth saying rather than staying silent: a reader who sees no
@@ -426,7 +489,12 @@ impl Report {
             }
         }
 
-        if self.summary.unaccounted_bytes > thresholds.unaccounted_bytes {
+        if self
+            .summary
+            .unaccounted_bytes
+            .is_some_and(|unaccounted| unaccounted > thresholds.unaccounted_bytes)
+        {
+            let unaccounted = self.summary.unaccounted_bytes.unwrap_or_default();
             findings.push(Finding {
                 severity: Severity::Warning,
                 code: "memory.unaccounted".into(),
@@ -435,12 +503,12 @@ impl Report {
                      most of it is the graphics driver, loaded DLLs and thread stacks rather \
                      than the heap, so confirm with a `--features perf-dhat` run before \
                      treating it as a leak",
-                    bytes_to_mb(self.summary.unaccounted_bytes)
+                    bytes_to_mb(unaccounted)
                 ),
                 evidence: serde_json::json!({
-                    "unaccounted_bytes": self.summary.unaccounted_bytes,
+                    "unaccounted_bytes": unaccounted,
                     "census_bytes": self.summary.peak_census_bytes,
-                    "private_bytes": self.summary.final_process.private_bytes,
+                    "peak_private_bytes": self.summary.peak_private_bytes,
                 }),
             });
         }
@@ -524,11 +592,14 @@ impl Report {
         out.push_str("## Memory\n\n");
         out.push_str(&format!(
             "- Working set (final): {:.1} MB\n- Working set (peak): {:.1} MB\n\
-             - Census (peak): {:.1} MB\n- Unaccounted: {:.1} MB\n\n",
+             - Census (peak): {:.1} MB\n- Unaccounted: {}\n\n",
             bytes_to_mb(self.summary.final_process.working_set_bytes as i64),
             bytes_to_mb(self.summary.peak_working_set_bytes as i64),
             bytes_to_mb(self.summary.peak_census_bytes as i64),
-            bytes_to_mb(self.summary.unaccounted_bytes)
+            match self.summary.unaccounted_bytes {
+                Some(unaccounted) => format!("{:.1} MB", bytes_to_mb(unaccounted)),
+                None => "not available on this platform".to_string(),
+            }
         ));
 
         if !self.heap.is_empty() {
@@ -593,6 +664,7 @@ mod tests {
                 revision: None,
                 profile: "perf".into(),
                 heap_profiling: false,
+                cpu_sampling: false,
                 os: "windows".into(),
                 cpu_count: 8,
             },
@@ -617,7 +689,6 @@ mod tests {
             p99_ms: 8.6,
             max_ms: 9.0,
             dropped_frames: 0,
-            idle_redraws: 0,
             refresh_interval_ms: 8.3,
         };
         report.detect_findings(&Thresholds::default());
@@ -689,7 +760,6 @@ mod tests {
             duration_ms: 2000.0,
             p99_ms: 40.0,
             dropped_frames: 50,
-            idle_redraws: 4,
             refresh_interval_ms: 8.3,
             ..FrameStats::default()
         };

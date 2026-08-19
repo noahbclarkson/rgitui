@@ -54,6 +54,14 @@ pub struct DrawStats {
     pub invalidations_p95: f64,
     /// Total invalidations across the region.
     pub invalidations_total: u64,
+    /// Frames gpui drew that nothing had invalidated.
+    ///
+    /// The authoritative form of the question, taken from gpui's own count.
+    /// Deriving it from "did the app dispatch a command recently" instead files
+    /// every hover, scroll and animation tick as an idle repaint, and the
+    /// finding that follows sends someone hunting a repaint loop that was never
+    /// there.
+    pub idle_redraws: u64,
     /// Refresh interval the headroom figures are judged against.
     pub refresh_interval_ms: f64,
 }
@@ -95,6 +103,12 @@ impl DrawStats {
 /// One frame's cost, reduced to the three numbers this module reports on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawSample {
+    /// When the draw finished, taken from gpui's own `FrameTiming`.
+    ///
+    /// Draws reach this recorder in batches on a timer rather than as they
+    /// happen, so their position in the buffer says nothing about when they
+    /// occurred. A measurement region has to select them by this instead.
+    pub drawn_at: std::time::Instant,
     /// CPU milliseconds inside `Window::draw`.
     pub draw_ms: f64,
     /// Milliseconds from first invalidation to end of draw, when gpui observed
@@ -191,8 +205,30 @@ impl DrawRecorder {
             invalidations_p50: percentile(&invalidations, 0.50),
             invalidations_p95: percentile(&invalidations, 0.95),
             invalidations_total: window.iter().map(|sample| sample.invalidations).sum(),
+            idle_redraws: window
+                .iter()
+                .filter(|sample| sample.invalidations == 0)
+                .count() as u64,
             refresh_interval_ms: self.refresh_interval_ms,
         }
+    }
+
+    /// Aggregates the frames drawn within a wall-clock window.
+    ///
+    /// This is what a measurement region must use. Draws are drained from gpui
+    /// on a timer, so slicing the buffer by the index it happened to have when
+    /// a mark opened and closed puts up to one drain interval of unrelated
+    /// frames inside the region at each edge — and leaves the region's frame
+    /// intervals, which are recorded synchronously, describing a different span
+    /// of the run than its draws do.
+    pub fn stats_between(&self, start: std::time::Instant, end: std::time::Instant) -> DrawStats {
+        let first = self
+            .samples
+            .partition_point(|sample| sample.drawn_at < start);
+        let last = self
+            .samples
+            .partition_point(|sample| sample.drawn_at <= end);
+        self.stats(first..last)
     }
 
     /// Aggregates every frame recorded.
@@ -207,10 +243,79 @@ mod tests {
 
     fn sample(draw_ms: f64, dirty_to_draw_ms: Option<f64>, invalidations: u64) -> DrawSample {
         DrawSample {
+            drawn_at: std::time::Instant::now(),
             draw_ms,
             dirty_to_draw_ms,
             invalidations,
         }
+    }
+
+    /// A sample stamped at a chosen offset from `origin`, for the tests that
+    /// care about which frames a wall-clock window selects.
+    fn sample_at(origin: std::time::Instant, offset_ms: u64, draw_ms: f64) -> DrawSample {
+        DrawSample {
+            drawn_at: origin + std::time::Duration::from_millis(offset_ms),
+            draw_ms,
+            dirty_to_draw_ms: None,
+            invalidations: 1,
+        }
+    }
+
+    #[test]
+    fn a_window_selects_the_frames_drawn_inside_it_whatever_order_they_arrived() {
+        // The failure this guards against: draws reach the recorder in batches
+        // on a timer, so a region that slices by buffer index picks up frames
+        // from up to a whole drain interval either side of itself.
+        let origin = std::time::Instant::now();
+        let mut recorder = DrawRecorder::new(10.0);
+        for (offset, cost) in [(0, 1.0), (50, 2.0), (100, 3.0), (150, 4.0), (200, 5.0)] {
+            recorder.record(sample_at(origin, offset, cost));
+        }
+
+        let stats = recorder.stats_between(
+            origin + std::time::Duration::from_millis(50),
+            origin + std::time::Duration::from_millis(150),
+        );
+
+        assert_eq!(stats.draws, 3, "the frames at 50ms, 100ms and 150ms");
+        assert_eq!(stats.draw_total_ms, 9.0, "2.0 + 3.0 + 4.0");
+    }
+
+    #[test]
+    fn a_window_with_no_frames_in_it_reports_none_rather_than_the_neighbours() {
+        let origin = std::time::Instant::now();
+        let mut recorder = DrawRecorder::new(10.0);
+        recorder.record(sample_at(origin, 0, 1.0));
+        recorder.record(sample_at(origin, 500, 2.0));
+
+        let stats = recorder.stats_between(
+            origin + std::time::Duration::from_millis(100),
+            origin + std::time::Duration::from_millis(200),
+        );
+
+        assert_eq!(stats.draws, 0);
+        assert_eq!(
+            stats.refresh_interval_ms, 10.0,
+            "an empty window still knows what budget it was judged against"
+        );
+    }
+
+    #[test]
+    fn the_window_boundaries_are_inclusive_at_both_ends() {
+        // A mark opens and closes on an instant, and a frame drawn on exactly
+        // that instant belongs to it. Excluding either edge would drop the
+        // first frame of a region that starts by triggering a repaint.
+        let origin = std::time::Instant::now();
+        let mut recorder = DrawRecorder::new(10.0);
+        recorder.record(sample_at(origin, 100, 1.0));
+        recorder.record(sample_at(origin, 200, 2.0));
+
+        let stats = recorder.stats_between(
+            origin + std::time::Duration::from_millis(100),
+            origin + std::time::Duration::from_millis(200),
+        );
+
+        assert_eq!(stats.draws, 2);
     }
 
     #[test]

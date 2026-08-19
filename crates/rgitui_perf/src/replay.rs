@@ -50,6 +50,8 @@ pub async fn run(scenario: Scenario, cx: &mut AsyncWindowContext) -> anyhow::Res
         scenario.steps.len()
     );
 
+    wait_for_workspace(cx).await?;
+
     for (index, step) in scenario.steps.iter().enumerate() {
         execute(step, cx)
             .await
@@ -79,7 +81,13 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
                     let built = cx
                         .build_action(action, None)
                         .map_err(|error| anyhow::anyhow!("cannot build {action:?}: {error}"))?;
-                    PerfSession::note_dispatch(action, None, cx);
+                    // Deliberately not recorded here. The generated
+                    // `attach_actions` handler calls `note_dispatch` for every
+                    // command the app handles, so recording it on this side too
+                    // would count each replayed step twice — and would also
+                    // record steps that never reached a handler at all, which
+                    // is exactly the failure this driver needs to stay able to
+                    // detect.
                     window.dispatch_action(built, cx);
                     Ok(())
                 })??;
@@ -188,6 +196,22 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
             })?;
         }
 
+        Step::Dirty { count } => {
+            let repo_path = cx.update(|_, cx| crate::session::active_repo_path(cx))?;
+            let Some(repo_path) = repo_path else {
+                anyhow::bail!(
+                    "a `dirty` step needs an open repository, and no tab has one — put it after \
+                     the `wait_for` that lets the first refresh finish"
+                );
+            };
+            let count = *count;
+            let touched = cx
+                .background_executor()
+                .spawn(async move { dirty_tracked_files(&repo_path, count) })
+                .await?;
+            log::info!("dirtied {touched} tracked files");
+        }
+
         Step::Snapshot { snapshot } => {
             cx.update(|_, cx| {
                 cx.update_global::<PerfSession, _>(|session, cx| {
@@ -206,8 +230,55 @@ async fn settle_for(settle: Settle, cx: &mut AsyncWindowContext) {
     match settle {
         Settle::None => {}
         Settle::Frame => next_frame(cx).await,
+        // Paced off a clock rather than off the app, so a step that the app
+        // cannot keep up with builds a backlog exactly as a held key does.
+        Settle::Rate { hz } => {
+            if hz > 0.0 {
+                cx.background_executor()
+                    .timer(Duration::from_secs_f64(1.0 / hz))
+                    .await;
+            }
+        }
     }
 }
+
+/// How long to wait for the splash to hand over before giving up on a run.
+///
+/// Generous: the handover waits for the repository, and a cold open of a very
+/// large one is allowed to be slow. It is a timeout rather than an unbounded
+/// wait so that a run which will never start says so instead of hanging.
+const WORKSPACE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Blocks until the workspace has rendered, so the first step has something to
+/// talk to.
+///
+/// Without this a scenario begins while the splash is still up: the harness
+/// installs as soon as the workspace entity is constructed, which happens well
+/// before it is shown. Short scenarios then ran to completion against a window
+/// with no workspace in it and reported an idle one, and long ones lost however
+/// many steps fell before the handover.
+async fn wait_for_workspace(cx: &mut AsyncWindowContext) -> anyhow::Result<()> {
+    let deadline = Instant::now() + WORKSPACE_TIMEOUT;
+    loop {
+        if cx.update(|_, cx| PerfSession::has_rendered(cx))? {
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            anyhow::bail!(
+                "the workspace never rendered within {:?} — the splash never handed over, so                  there was nothing for this scenario to drive",
+                WORKSPACE_TIMEOUT
+            );
+        }
+        cx.background_executor().timer(FRAME_POLL_INTERVAL).await;
+    }
+}
+
+/// How long a `settle: frame` step waits before giving up.
+///
+/// Bounded so a step that never triggers a repaint slows the scenario rather
+/// than hanging it forever. Every expiry is counted — see
+/// [`PerfSession::note_settle_timeout`].
+const SETTLE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Yields until the app has presented at least one more frame.
 ///
@@ -218,11 +289,19 @@ async fn next_frame(cx: &mut AsyncWindowContext) {
 
     // Bounded so a step that never triggers a repaint slows the scenario rather
     // than hanging it forever.
-    let deadline = Instant::now() + Duration::from_millis(500);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         cx.background_executor().timer(FRAME_POLL_INTERVAL).await;
         let now = cx.update(|_, cx| frame_count(cx)).unwrap_or(before);
-        if now > before || Instant::now() > deadline {
+        if now > before {
+            return;
+        }
+        if Instant::now() > deadline {
+            // Counted, not swallowed. `wait_for` treats its timeout as an
+            // error; this one cannot, because a step that legitimately draws
+            // nothing should not fail a run — but a report that stayed silent
+            // about it would present the timeout as the app's response time.
+            cx.update(|_, cx| PerfSession::note_settle_timeout(cx)).ok();
             return;
         }
     }
@@ -300,4 +379,52 @@ pub fn spawn(scenario: Scenario, window: &mut Window, cx: &mut gpui::App) {
             });
         })
         .detach();
+}
+
+/// Appends a line to up to `count` tracked files, returning how many changed.
+///
+/// Reads the HEAD tree rather than the working directory so it only ever
+/// touches files git already knows about — an untracked scratch file would
+/// change what `git status` reports without exercising the staging path a
+/// scenario is trying to measure. Paths are taken in tree order, which is
+/// stable for a given corpus, so two runs of the same scenario dirty the same
+/// files.
+fn dirty_tracked_files(repo_path: &std::path::Path, count: usize) -> anyhow::Result<usize> {
+    let repo = git2::Repository::open(repo_path)
+        .map_err(|error| anyhow::anyhow!("cannot open {}: {error}", repo_path.display()))?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("a bare repository has no working tree to dirty"))?
+        .to_path_buf();
+    let tree = repo.head()?.peel_to_commit()?.tree()?;
+
+    let mut paths = Vec::new();
+    tree.walk(git2::TreeWalkMode::PreOrder, |dir, entry| {
+        if paths.len() >= count {
+            return git2::TreeWalkResult::Abort;
+        }
+        if entry.kind() == Some(git2::ObjectType::Blob) {
+            if let Some(name) = entry.name() {
+                paths.push(format!("{dir}{name}"));
+            }
+        }
+        git2::TreeWalkResult::Ok
+    })?;
+
+    let mut touched = 0;
+    for path in paths {
+        let full = workdir.join(&path);
+        // Appending rather than rewriting keeps the change small, so the diff a
+        // scenario then stages is a realistic one rather than a whole-file
+        // replacement.
+        match std::fs::OpenOptions::new().append(true).open(&full) {
+            Ok(mut file) => {
+                use std::io::Write as _;
+                writeln!(file, "// touched by the perf harness")?;
+                touched += 1;
+            }
+            Err(error) => log::warn!("could not dirty {}: {error}", full.display()),
+        }
+    }
+    Ok(touched)
 }

@@ -66,6 +66,22 @@ pub fn is_idle(cx: &App) -> bool {
     }
 }
 
+/// Reports where the active tab's repository lives.
+///
+/// Supplied by the app for the same reason as [`IdleFn`]. A scenario that
+/// dirties the working tree has to find it, and guessing from `argv` would
+/// break the moment a run opened more than one repository.
+pub type RepoPathFn = Box<dyn Fn(&App) -> Option<PathBuf>>;
+
+/// Path of the repository the active tab has open, if a session is installed
+/// and the app registered a way to ask.
+pub fn active_repo_path(cx: &App) -> Option<PathBuf> {
+    cx.try_global::<PerfSession>()?
+        .repo_path_fn
+        .as_ref()
+        .and_then(|repo_path| repo_path(cx))
+}
+
 /// How often the OS counters are read. Fast enough to catch a memory step
 /// change within a scenario step, cheap enough to be invisible.
 const COUNTER_INTERVAL: Duration = Duration::from_millis(500);
@@ -136,8 +152,23 @@ struct OpenMark {
     name: String,
     started: Instant,
     start_frame: usize,
-    start_draw: usize,
     start_working_set: u64,
+}
+
+/// A closed region, held as extents rather than as statistics.
+///
+/// Aggregating at `end_mark` would freeze whatever refresh interval the
+/// recorders happened to hold at that moment — the 60Hz placeholder, for every
+/// mark that closes before the run ends. Keeping the extents and aggregating
+/// once, at the end, means every mark and the summary are judged against the
+/// same budget.
+struct CompletedMark {
+    name: String,
+    wall_ms: f64,
+    frames: std::ops::Range<usize>,
+    drawn_from: Instant,
+    drawn_to: Instant,
+    working_set_delta_bytes: i64,
 }
 
 /// The run in progress. Installed as a gpui [`Global`] so that the app's
@@ -148,6 +179,7 @@ pub struct PerfSession {
     started: Instant,
     census_fn: CensusFn,
     idle_fn: Option<IdleFn>,
+    repo_path_fn: Option<RepoPathFn>,
 
     frames: FrameRecorder,
     draws: crate::draw::DrawRecorder,
@@ -164,7 +196,7 @@ pub struct PerfSession {
     pending_actions: Vec<(String, Instant)>,
 
     open_marks: Vec<OpenMark>,
-    completed_marks: Vec<MarkReport>,
+    completed_marks: Vec<CompletedMark>,
 
     /// Bumped by the app's root view every time it renders, which is how the
     /// session knows a tick actually drew rather than merely ticked.
@@ -177,6 +209,11 @@ pub struct PerfSession {
     last_tick: Option<Instant>,
     last_process: ProcessSample,
     peak_working_set: u64,
+    settle_timeouts: u64,
+    /// Held for the run's lifetime: sampling starts when this is constructed
+    /// and the profile is written when it drops.
+    cpu: Option<crate::cpu::CpuProfiler>,
+    peak_private_bytes: u64,
     peak_census_bytes: usize,
     /// Node breakdown from the census that produced [`Self::peak_census_bytes`].
     peak_census_nodes: Vec<crate::heap::CensusNode>,
@@ -194,6 +231,7 @@ impl PerfSession {
         config: SessionConfig,
         census_fn: CensusFn,
         idle_fn: IdleFn,
+        repo_path_fn: RepoPathFn,
         window: &mut Window,
         cx: &mut App,
     ) -> anyhow::Result<()> {
@@ -234,6 +272,7 @@ impl PerfSession {
             started,
             census_fn,
             idle_fn: Some(idle_fn),
+            repo_path_fn: Some(repo_path_fn),
             // Recalibrated from observed ticks once the run has data; 60Hz is
             // only the placeholder until then.
             frames: FrameRecorder::new(16.667),
@@ -255,6 +294,9 @@ impl PerfSession {
             last_tick: None,
             last_process: ProcessSample::default(),
             peak_working_set: 0,
+            settle_timeouts: 0,
+            cpu: crate::cpu::CpuProfiler::start(),
+            peak_private_bytes: 0,
             peak_census_bytes: 0,
             peak_census_nodes: Vec::new(),
             first_content: None,
@@ -282,6 +324,18 @@ impl PerfSession {
     }
 
     /// Frames ticked so far, which replay uses to wait for pixels.
+    /// Whether the app has drawn its workspace at least once.
+    ///
+    /// The harness installs as soon as the workspace *entity* exists, which is
+    /// while the splash is still on screen — the entity is built behind it and
+    /// handed over when the repository is ready. A scenario that starts
+    /// dispatching before that handover is talking to a window that has no
+    /// workspace in it, and every step lands on nothing.
+    pub fn has_rendered(cx: &App) -> bool {
+        cx.try_global::<Self>()
+            .is_some_and(|session| session.render_count > 0)
+    }
+
     pub fn frame_count(&self) -> usize {
         self.frames.len()
     }
@@ -346,13 +400,25 @@ impl PerfSession {
         });
     }
 
+    /// Records a step that gave up waiting for a frame.
+    ///
+    /// Worth counting rather than shrugging at. A step that settles on a frame
+    /// and never gets one costs the full timeout, so a scenario which has
+    /// stopped causing repaints slows to a crawl and still reports success —
+    /// with every wall time in it inflated by however many times this fired.
+    pub fn note_settle_timeout(cx: &mut App) {
+        if !cx.has_global::<Self>() {
+            return;
+        }
+        cx.update_global::<Self, _>(|session, _| session.settle_timeouts += 1);
+    }
+
     /// Opens a measurement region.
     pub fn begin_mark(&mut self, name: &str) {
         self.open_marks.push(OpenMark {
             name: name.to_string(),
             started: Instant::now(),
             start_frame: self.frames.len(),
-            start_draw: self.draws.len(),
             start_working_set: self.last_process.working_set_bytes,
         });
     }
@@ -364,11 +430,13 @@ impl PerfSession {
             return;
         };
         let mark = self.open_marks.remove(index);
-        self.completed_marks.push(MarkReport {
+        let ended = Instant::now();
+        self.completed_marks.push(CompletedMark {
             name: mark.name,
-            wall_ms: mark.started.elapsed().as_secs_f64() * 1000.0,
-            frames: self.frames.stats(mark.start_frame..self.frames.len()),
-            draws: self.draws.stats(mark.start_draw..self.draws.len()),
+            wall_ms: ended.duration_since(mark.started).as_secs_f64() * 1000.0,
+            frames: mark.start_frame..self.frames.len(),
+            drawn_from: mark.started,
+            drawn_to: ended,
             working_set_delta_bytes: self.last_process.working_set_bytes as i64
                 - mark.start_working_set as i64,
         });
@@ -416,6 +484,7 @@ impl PerfSession {
         };
         self.last_process = process;
         self.peak_working_set = self.peak_working_set.max(process.working_set_bytes);
+        self.peak_private_bytes = self.peak_private_bytes.max(process.private_bytes);
 
         let gpu = self.gpu.sample();
         self.samples.push(TimeSample {
@@ -436,7 +505,9 @@ impl PerfSession {
     /// and the frames worth having are usually the early ones.
     fn drain_frame_timings(&mut self) {
         for timing in self.frame_timings.collect_unseen() {
+            self.charge_actions_answered_by(&timing);
             self.draws.record(crate::draw::DrawSample {
+                drawn_at: timing.draw_end,
                 draw_ms: timing.draw_duration().as_secs_f64() * 1000.0,
                 dirty_to_draw_ms: timing
                     .dirty_to_draw_duration()
@@ -481,39 +552,50 @@ impl PerfSession {
 
     /// One frame tick.
     ///
-    /// `busy` says whether the app had git work in flight, which counts as a
-    /// legitimate reason to repaint. Without it every frame painted while a
-    /// fetch was completing would be misfiled as an idle redraw, and the
-    /// resulting finding would send someone hunting a repaint loop that does
-    /// not exist.
-    fn tick(&mut self, now: Instant, busy: bool) {
+    /// Cadence only. Action latency is closed out against gpui's own frame
+    /// records in [`Self::drain_frame_timings`], because a tick says a frame
+    /// was presented and says nothing about whether it contained the effect of
+    /// any particular dispatch.
+    fn tick(&mut self, now: Instant) {
         let drawn = self.render_count != self.last_render_count;
         self.last_render_count = self.render_count;
 
         if let Some(previous) = self.last_tick {
             let interval_ms = now.duration_since(previous).as_secs_f64() * 1000.0;
-            self.frames
-                .record(interval_ms, drawn, self.activity_since_tick || busy);
+            self.frames.record(interval_ms, drawn);
         }
         self.last_tick = Some(now);
+    }
 
-        // Closed out on the next tick, not the next tick that *drew*. A tick is
-        // a presented frame, which is what the user's eye is waiting for, and it
-        // is a signal this code can trust. Gating on `drawn` instead made the
-        // number meaningless: gpui caches views that are not dirty, so a repaint
-        // confined to a child panel never reaches `note_render`, dispatches then
-        // queued up across many frames, and each one was finally charged for all
-        // the time it had spent waiting — a keystroke that took one frame was
-        // reported at close to a second.
-        for (action, dispatched) in self.pending_actions.drain(..) {
-            let latency_ms = now.duration_since(dispatched).as_secs_f64() * 1000.0;
-            self.action_latencies
-                .entry(action)
-                .or_default()
-                .push(latency_ms);
+    /// Charges every dispatch that this frame answered.
+    ///
+    /// A frame answers a dispatch when the invalidation that produced it
+    /// happened at or after the dispatch: only then can the pixels it put on
+    /// screen contain that dispatch's effect. The latency is then dispatch to
+    /// end-of-draw, which is what "keypress to pixels" actually means.
+    ///
+    /// Closing on the next *tick* instead — which is what this used to do —
+    /// measured the remainder of the frame period and almost nothing else, so a
+    /// fast action and a slow one both reported about half a refresh interval.
+    fn charge_actions_answered_by(&mut self, timing: &gpui::profiler::FrameTiming) {
+        // A frame already dirty before tracing began has no invalidation time;
+        // the draw's own start is the earliest moment it could have contained
+        // anything, so use that rather than dropping the frame.
+        let answered_from = timing.dirty_at.unwrap_or(timing.draw_start);
+
+        let mut still_pending = Vec::with_capacity(self.pending_actions.len());
+        for (action, dispatched) in std::mem::take(&mut self.pending_actions) {
+            if answered_from >= dispatched {
+                let latency_ms = timing.draw_end.duration_since(dispatched).as_secs_f64() * 1000.0;
+                self.action_latencies
+                    .entry(action)
+                    .or_default()
+                    .push(latency_ms);
+            } else {
+                still_pending.push((action, dispatched));
+            }
         }
-
-        self.activity_since_tick = false;
+        self.pending_actions = still_pending;
     }
 
     /// Aggregates everything and writes the run's files.
@@ -547,26 +629,30 @@ impl PerfSession {
             )
         })?;
 
+        // Before anything reads a statistic. `stats()` stamps the recorder's
+        // current refresh interval onto every `FrameStats` and `DrawStats` it
+        // produces, so a mark closed while the recorders still hold the 60Hz
+        // placeholder keeps that placeholder forever — and a report would then
+        // judge its marks against 16.7ms while judging its summary against the
+        // display, from the same samples.
+        self.frames.adopt_refresh_interval();
+        self.draws
+            .set_refresh_interval_ms(self.frames.refresh_interval_ms());
+
         for mark in std::mem::take(&mut self.open_marks) {
             log::warn!(
                 "mark {:?} was never closed; reporting it up to end of run",
                 mark.name
             );
-            self.completed_marks.push(MarkReport {
+            self.completed_marks.push(CompletedMark {
                 name: mark.name,
                 wall_ms: mark.started.elapsed().as_secs_f64() * 1000.0,
-                frames: self.frames.stats(mark.start_frame..self.frames.len()),
-                draws: self.draws.stats(mark.start_draw..self.draws.len()),
-                working_set_delta_bytes: self.last_process.working_set_bytes as i64
-                    - mark.start_working_set as i64,
+                frames: mark.start_frame..self.frames.len(),
+                drawn_from: mark.started,
+                drawn_to: Instant::now(),
+                working_set_delta_bytes: mark.start_working_set as i64,
             });
         }
-
-        self.frames.adopt_refresh_interval();
-        // Headroom is judged against the display's real interval, not the
-        // 60Hz a run starts out assuming.
-        self.draws
-            .set_refresh_interval_ms(self.frames.refresh_interval_ms());
 
         let peak_census = self.peak_census_bytes.max(census_total);
         let mut actions: Vec<ActionReport> = self
@@ -600,6 +686,7 @@ impl PerfSession {
                 revision: git_revision(),
                 profile: build_profile().to_string(),
                 heap_profiling: crate::is_heap_profiling(),
+                cpu_sampling: self.cpu.is_some(),
                 os: std::env::consts::OS.to_string(),
                 cpu_count: std::thread::available_parallelism()
                     .map(|n| n.get())
@@ -614,8 +701,19 @@ impl PerfSession {
                 worst_foreground_task_ms: self.tasks.worst_foreground_ms(),
                 final_process: self.last_process,
                 peak_working_set_bytes: self.peak_working_set,
+                peak_private_bytes: (self.peak_private_bytes > 0)
+                    .then_some(self.peak_private_bytes),
                 peak_census_bytes: peak_census,
-                unaccounted_bytes: self.last_process.private_bytes as i64 - peak_census as i64,
+                // Peak against peak. Subtracting a peak census from a final
+                // reading charged the run for however much the process shrank
+                // after its high-water mark, which is a bias, not a measurement.
+                // `None` rather than a number where the platform does not
+                // report private bytes at all — on those the old form produced
+                // a large negative from a hardcoded zero, and printed it.
+                unaccounted_bytes: (self.peak_private_bytes > 0)
+                    .then(|| self.peak_private_bytes as i64 - peak_census as i64),
+                actions_without_a_frame: self.pending_actions.len() as u64,
+                settle_timeouts: self.settle_timeouts,
                 cpu_percent_mean: self.mean_cpu_percent(),
                 gpu: self
                     .samples
@@ -624,7 +722,16 @@ impl PerfSession {
                     .unwrap_or_default(),
             },
             findings: Vec::new(),
-            marks: std::mem::take(&mut self.completed_marks),
+            marks: std::mem::take(&mut self.completed_marks)
+                .into_iter()
+                .map(|mark| MarkReport {
+                    name: mark.name,
+                    wall_ms: mark.wall_ms,
+                    frames: self.frames.stats(mark.frames),
+                    draws: self.draws.stats_between(mark.drawn_from, mark.drawn_to),
+                    working_set_delta_bytes: mark.working_set_delta_bytes,
+                })
+                .collect(),
             actions,
             hot_locations: self.tasks.stats(),
             heap: std::mem::take(&mut self.peak_census_nodes),
@@ -675,11 +782,7 @@ fn arm_frame_chain(window: &Window) {
     window.on_next_frame(move |window, cx| {
         let now = Instant::now();
         if cx.has_global::<PerfSession>() {
-            // Read before taking the global out: `is_idle` reads the session,
-            // and `update_global` moves it to the stack for the duration of the
-            // closure, so asking inside would find it missing.
-            let busy = !is_idle(cx);
-            cx.update_global::<PerfSession, _>(|session, _| session.tick(now, busy));
+            cx.update_global::<PerfSession, _>(|session, _| session.tick(now));
         }
         arm_frame_chain(window);
     });
