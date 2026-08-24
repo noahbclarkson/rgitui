@@ -269,7 +269,7 @@ impl Workspace {
             }
             UndoAction::PopStash(index) => {
                 project.update(cx, |proj, cx| {
-                    proj.stash_pop(index, cx).detach();
+                    proj.stash_pop_at(index, &worktree_path, cx).detach();
                 });
                 self.show_toast(
                     format!("Undid: {undo_label}{suffix}"),

@@ -317,6 +317,11 @@ pub struct GitProject {
     commit_query_generation: u64,
     /// Suppresses duplicate pagination requests while one page is already in flight.
     load_more_in_flight: bool,
+    /// The linked worktree the UI is currently inspecting, if any. The watcher
+    /// always watches this checkout — even when the `watch_all_worktrees`
+    /// setting is off — so the file list and diff of the worktree the user is
+    /// actually looking at stay live.
+    inspected_worktree: Option<PathBuf>,
 }
 
 impl EventEmitter<GitProjectEvent> for GitProject {}
@@ -349,6 +354,7 @@ impl GitProject {
             refresh_generation: 0,
             commit_query_generation: 0,
             load_more_in_flight: false,
+            inspected_worktree: None,
         }
     }
 
@@ -384,6 +390,7 @@ impl GitProject {
             refresh_generation: 0,
             commit_query_generation: 0,
             load_more_in_flight: false,
+            inspected_worktree: None,
         };
 
         if let Some(cached) = history_cache::load(&project.repo_path, project.commit_limit) {
@@ -516,6 +523,35 @@ impl GitProject {
 
     pub fn is_head_detached(&self) -> bool {
         self.head_detached
+    }
+
+    /// Tell the watcher which linked worktree the UI is inspecting so it is
+    /// watched and fingerprinted regardless of the `watch_all_worktrees`
+    /// setting. Pass `None` when the user leaves worktree inspection.
+    pub fn set_inspected_worktree(&mut self, path: Option<PathBuf>) {
+        self.inspected_worktree = path;
+    }
+
+    pub(crate) fn inspected_worktree(&self) -> Option<&Path> {
+        self.inspected_worktree.as_deref()
+    }
+
+    /// The worktree in the current snapshot whose working directory is
+    /// `worktree_path`, if any.
+    pub fn worktree_at(&self, worktree_path: &Path) -> Option<&WorktreeInfo> {
+        self.worktrees
+            .iter()
+            .find(|worktree| worktree.path == worktree_path)
+    }
+
+    /// The branch checked out in `worktree_path`. Falls back to this project's
+    /// own HEAD branch when the path is not a worktree we know about, so
+    /// operation labels degrade to something sensible rather than blank.
+    pub fn head_branch_at(&self, worktree_path: &Path) -> Option<String> {
+        match self.worktree_at(worktree_path) {
+            Some(worktree) => worktree.branch.clone(),
+            None => self.head_branch.clone(),
+        }
     }
 
     pub fn repo_state(&self) -> RepoState {

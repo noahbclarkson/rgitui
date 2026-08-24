@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
+use std::path::Path;
 
 use crate::types::*;
 
@@ -12,9 +13,27 @@ use super::{
     RefreshData,
 };
 
+/// Open the repository handle for a specific working tree. Network operations
+/// resolve their branch and upstream from *this* checkout, which is what makes
+/// pushing from an inspected worktree push that worktree's branch rather than
+/// the branch the main checkout happens to be on.
+fn open_worktree_repo(worktree_path: &Path) -> Result<Repository> {
+    Repository::open(worktree_path)
+        .with_context(|| format!("Failed to open worktree at {}", worktree_path.display()))
+}
+
 impl GitProject {
     pub fn fetch_default(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("fetch_default");
+        let worktree_path = self.repo_path.clone();
+        self.fetch_default_at(&worktree_path, cx)
+    }
+
+    pub fn fetch_default_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("fetch_default: worktree={}", worktree_path.display());
         let remote_name = match self.preferred_remote_name() {
             Ok(remote_name) => remote_name,
             Err(error) => {
@@ -27,13 +46,22 @@ impl GitProject {
                 )
             }
         };
-        self.fetch(&remote_name, cx)
+        self.fetch_at(&remote_name, worktree_path, cx)
     }
 
     pub fn pull_default(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("pull_default");
+        let worktree_path = self.repo_path.clone();
+        self.pull_default_at(&worktree_path, cx)
+    }
+
+    pub fn pull_default_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("pull_default: worktree={}", worktree_path.display());
         let (remote_name, branch_name) =
-            match self.open_repo().and_then(|repo| pull_target(&repo, None)) {
+            match open_worktree_repo(worktree_path).and_then(|repo| pull_target(&repo, None)) {
                 Ok(target) => target,
                 Err(error) => {
                     return self.fail_to_start_task(
@@ -45,13 +73,27 @@ impl GitProject {
                     )
                 }
             };
-        self.pull_from(&remote_name, &branch_name, cx)
+        self.pull_from_at(&remote_name, &branch_name, worktree_path, cx)
     }
 
     pub fn push_default(&mut self, force: bool, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("push_default: force={}", force);
+        let worktree_path = self.repo_path.clone();
+        self.push_default_at(force, &worktree_path, cx)
+    }
+
+    pub fn push_default_at(
+        &mut self,
+        force: bool,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "push_default: force={} worktree={}",
+            force,
+            worktree_path.display()
+        );
         let (remote_name, branch_name, set_upstream) =
-            match self.open_repo().and_then(|repo| push_target(&repo, None)) {
+            match open_worktree_repo(worktree_path).and_then(|repo| push_target(&repo, None)) {
                 Ok(target) => target,
                 Err(error) => {
                     return self.fail_to_start_task(
@@ -63,21 +105,44 @@ impl GitProject {
                     )
                 }
             };
-        self.push_to(&remote_name, &branch_name, force, set_upstream, cx)
+        self.push_to_at(
+            &remote_name,
+            &branch_name,
+            force,
+            set_upstream,
+            worktree_path,
+            cx,
+        )
     }
 
     /// Fetch from a remote.
     pub fn fetch(&mut self, remote_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("fetch: remote={}", remote_name);
+        let worktree_path = self.repo_path.clone();
+        self.fetch_at(remote_name, &worktree_path, cx)
+    }
+
+    /// Fetch from a remote, running git in the given worktree.
+    pub fn fetch_at(
+        &mut self,
+        remote_name: &str,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "fetch: remote={} worktree={}",
+            remote_name,
+            worktree_path.display()
+        );
         let remote_name = remote_name.to_string();
         let task_remote_name = remote_name.clone();
+        let task_worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
             GitOperationKind::Fetch,
             format!("Fetching from '{}'...", remote_name),
             Some(remote_name.clone()),
-            self.head_branch.clone(),
+            self.head_branch_at(worktree_path),
             cx,
         );
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -86,7 +151,7 @@ impl GitProject {
                 .spawn(async move {
                     validate_remote_name(&task_remote_name)?;
                     let details = run_git_network_command(
-                        &repo_path,
+                        &task_worktree_path,
                         &["fetch", "--prune", &task_remote_name],
                     )?;
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
@@ -133,9 +198,24 @@ impl GitProject {
 
     /// Pull from a remote (fetch + merge).
     pub fn pull(&mut self, remote_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("pull: remote={}", remote_name);
-        let branch_name = match self
-            .open_repo()
+        let worktree_path = self.repo_path.clone();
+        self.pull_at(remote_name, &worktree_path, cx)
+    }
+
+    /// Pull into the given worktree, merging into the branch *that* worktree
+    /// has checked out.
+    pub fn pull_at(
+        &mut self,
+        remote_name: &str,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "pull: remote={} worktree={}",
+            remote_name,
+            worktree_path.display()
+        );
+        let branch_name = match open_worktree_repo(worktree_path)
             .and_then(|repo| pull_target(&repo, Some(remote_name)).map(|(_, branch)| branch))
         {
             Ok(branch_name) => branch_name,
@@ -149,7 +229,7 @@ impl GitProject {
                 )
             }
         };
-        self.pull_from(remote_name, &branch_name, cx)
+        self.pull_from_at(remote_name, &branch_name, worktree_path, cx)
     }
 
     pub fn pull_from(
@@ -158,11 +238,28 @@ impl GitProject {
         branch_name: &str,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("pull_from: remote={} branch={}", remote_name, branch_name);
+        let worktree_path = self.repo_path.clone();
+        self.pull_from_at(remote_name, branch_name, &worktree_path, cx)
+    }
+
+    pub fn pull_from_at(
+        &mut self,
+        remote_name: &str,
+        branch_name: &str,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "pull_from: remote={} branch={} worktree={}",
+            remote_name,
+            branch_name,
+            worktree_path.display()
+        );
         let remote_name = remote_name.to_string();
         let branch_name = branch_name.to_string();
         let task_remote_name = remote_name.clone();
         let task_branch_name = branch_name.clone();
+        let task_worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
@@ -177,14 +274,14 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let (msg, details) = {
-                        let repo = Repository::open(&repo_path)?;
+                        let repo = Repository::open(&task_worktree_path)?;
                         ensure_clean_worktree(&repo, "Pull")?;
                         drop(repo);
 
                         validate_remote_name(&task_remote_name)?;
                         validate_branch_name(&task_branch_name)?;
                         match run_git_network_command(
-                            &repo_path,
+                            &task_worktree_path,
                             &["pull", &task_remote_name, &task_branch_name],
                         ) {
                             Ok(details) => {
@@ -210,7 +307,7 @@ impl GitProject {
                                 if error_msg.contains("CONFLICT")
                                     || error_msg.contains("Automatic merge failed")
                                 {
-                                    let repo = Repository::open(&repo_path)?;
+                                    let repo = Repository::open(&task_worktree_path)?;
                                     let conflict_count =
                                         repo.index()?.conflicts()?.count();
                                     let msg = format!(
@@ -285,8 +382,25 @@ impl GitProject {
         force: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("push: remote={} force={}", remote_name, force);
-        let (branch_name, set_upstream) = match self.open_repo().and_then(|repo| {
+        let worktree_path = self.repo_path.clone();
+        self.push_at(remote_name, force, &worktree_path, cx)
+    }
+
+    /// Push the branch checked out in the given worktree.
+    pub fn push_at(
+        &mut self,
+        remote_name: &str,
+        force: bool,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "push: remote={} force={} worktree={}",
+            remote_name,
+            force,
+            worktree_path.display()
+        );
+        let (branch_name, set_upstream) = match open_worktree_repo(worktree_path).and_then(|repo| {
             push_target(&repo, Some(remote_name)).map(|(_, branch, set)| (branch, set))
         }) {
             Ok(target) => target,
@@ -300,7 +414,14 @@ impl GitProject {
                 )
             }
         };
-        self.push_to(remote_name, &branch_name, force, set_upstream, cx)
+        self.push_to_at(
+            remote_name,
+            &branch_name,
+            force,
+            set_upstream,
+            worktree_path,
+            cx,
+        )
     }
 
     pub fn push_to(
@@ -311,16 +432,38 @@ impl GitProject {
         set_upstream: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!(
-            "push_to: remote={} branch={} force={}",
+        let worktree_path = self.repo_path.clone();
+        self.push_to_at(
             remote_name,
             remote_branch_name,
-            force
+            force,
+            set_upstream,
+            &worktree_path,
+            cx,
+        )
+    }
+
+    pub fn push_to_at(
+        &mut self,
+        remote_name: &str,
+        remote_branch_name: &str,
+        force: bool,
+        set_upstream: bool,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "push_to: remote={} branch={} force={} worktree={}",
+            remote_name,
+            remote_branch_name,
+            force,
+            worktree_path.display()
         );
         let remote_name = remote_name.to_string();
         let remote_branch_name = remote_branch_name.to_string();
         let task_remote_name = remote_name.clone();
         let task_remote_branch_name = remote_branch_name.clone();
+        let task_worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let operation_id = self.begin_operation(
@@ -342,7 +485,7 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let (msg, details) = {
-                        let repo = Repository::open(&repo_path)?;
+                        let repo = Repository::open(&task_worktree_path)?;
                         let branch_name = head_branch_name(&repo)?;
                         drop(repo);
 
@@ -359,7 +502,7 @@ impl GitProject {
                         args.push(task_remote_name.as_str());
                         let refspec = format!("HEAD:{}", task_remote_branch_name);
                         args.push(refspec.as_str());
-                        let details = run_git_network_command(&repo_path, &args)?;
+                        let details = run_git_network_command(&task_worktree_path, &args)?;
                         let msg = if force {
                             format!(
                                 "Force pushed '{}' to '{}/{}'",

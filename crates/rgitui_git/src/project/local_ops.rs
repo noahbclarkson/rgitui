@@ -1252,8 +1252,21 @@ impl GitProject {
         message: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("stash_save");
+        let worktree_path = self.repo_path.clone();
+        self.stash_save_at(message, &worktree_path, cx)
+    }
+
+    /// Save the given worktree to a stash. Stashes are stored in the shared
+    /// object store, but the changes taken are those of `worktree_path`.
+    pub fn stash_save_at(
+        &mut self,
+        message: Option<&str>,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("stash_save: worktree={}", worktree_path.display());
         let message = message.map(String::from);
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1268,7 +1281,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     let sig = repo.signature()?;
                     repo.stash_save(&sig, message.as_deref().unwrap_or("WIP"), None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -1309,7 +1322,23 @@ impl GitProject {
 
     /// Pop the top stash entry.
     pub fn stash_pop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("stash_pop: index={}", index);
+        let worktree_path = self.repo_path.clone();
+        self.stash_pop_at(index, &worktree_path, cx)
+    }
+
+    /// Pop a stash entry into the given worktree.
+    pub fn stash_pop_at(
+        &mut self,
+        index: usize,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "stash_pop: index={} worktree={}",
+            index,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1324,7 +1353,7 @@ impl GitProject {
             let result: anyhow::Result<(RefreshData, String)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     // A conflicting pop leaves conflict markers and unmerged index
                     // entries rather than truly failing; surface that (and still
                     // refresh) instead of a hard failure that hides the new state.
@@ -1380,7 +1409,23 @@ impl GitProject {
 
     /// Apply a stash entry without removing it from the stash list.
     pub fn stash_apply(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("stash_apply: index={}", index);
+        let worktree_path = self.repo_path.clone();
+        self.stash_apply_at(index, &worktree_path, cx)
+    }
+
+    /// Apply a stash entry into the given worktree without removing it.
+    pub fn stash_apply_at(
+        &mut self,
+        index: usize,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "stash_apply: index={} worktree={}",
+            index,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1395,7 +1440,7 @@ impl GitProject {
             let result: anyhow::Result<(RefreshData, String)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     // A conflicting apply leaves conflict markers and unmerged index
                     // entries rather than truly failing; surface that (and still
                     // refresh) instead of a hard failure that hides the new state.
@@ -1727,6 +1772,18 @@ impl GitProject {
     /// Remove all untracked files and directories from the working tree.
     /// Uses `git clean -fd` after a dry-run to enumerate files.
     pub fn clean_untracked(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let worktree_path = self.repo_path.clone();
+        self.clean_untracked_at(&worktree_path, cx)
+    }
+
+    /// Remove all untracked files and directories from the given worktree.
+    pub fn clean_untracked_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("clean_untracked: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1743,7 +1800,7 @@ impl GitProject {
                 .spawn(async move {
                     // Dry run first to count files
                     let dry_output = super::git_command()
-                        .current_dir(&repo_path)
+                        .current_dir(&worktree_path)
                         .args(["clean", "-n", "-fd"])
                         .output()
                         .context("Failed to execute git clean -n")?;
@@ -1766,7 +1823,7 @@ impl GitProject {
 
                     // Actually remove untracked files and directories
                     let output = super::git_command()
-                        .current_dir(&repo_path)
+                        .current_dir(&worktree_path)
                         .args(["clean", "-f", "-fd"])
                         .output()
                         .context("Failed to execute git clean -f")?;

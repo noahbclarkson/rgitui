@@ -1127,15 +1127,28 @@ impl GitProject {
 
     /// Summary of staged changes for AI context.
     pub fn staged_summary(&self) -> String {
-        let mut parts = Vec::new();
-        for file in &self.status.staged {
-            parts.push(format!(
-                "{} {}",
-                file.kind.short_code(),
-                file.path.display()
-            ));
+        Self::format_staged_summary(&self.status.staged)
+    }
+
+    /// Staged-file summary for a specific worktree, so an AI commit message
+    /// describes the changes the commit will actually contain rather than
+    /// whatever the main checkout happens to have staged.
+    pub fn staged_summary_at(&self, worktree_path: &Path) -> String {
+        match self
+            .worktree_at(worktree_path)
+            .and_then(|worktree| worktree.status.as_ref())
+        {
+            Some(status) => Self::format_staged_summary(&status.staged),
+            None => self.staged_summary(),
         }
-        parts.join("\n")
+    }
+
+    fn format_staged_summary(staged: &[FileStatus]) -> String {
+        staged
+            .iter()
+            .map(|file| format!("{} {}", file.kind.short_code(), file.path.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 

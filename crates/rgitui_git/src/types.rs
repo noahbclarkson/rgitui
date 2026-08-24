@@ -162,10 +162,17 @@ pub struct WorktreeInfo {
     pub path: PathBuf,
     /// Whether the worktree is locked (e.g. by a running operation).
     pub is_locked: bool,
-    /// Whether this is the current worktree (the main repository).
+    /// Whether this is the worktree the open `Repository` handle points at —
+    /// i.e. the one rgitui was launched on. That is the main checkout only when
+    /// rgitui was opened on the main repository; opening a linked worktree
+    /// directly makes *it* the current one.
     pub is_current: bool,
-    /// The branch currently checked out in this worktree, if any.
+    /// The branch currently checked out in this worktree. `None` when HEAD is
+    /// detached — git2's `shorthand()` reports a short OID in that case, which
+    /// must not be rendered as a branch name.
     pub branch: Option<String>,
+    /// Whether this worktree's HEAD is detached.
+    pub head_detached: bool,
     /// OID of the HEAD commit in this worktree.
     pub head_oid: Option<git2::Oid>,
     /// Cached pending-change status for this worktree, if available.
