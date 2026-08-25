@@ -261,6 +261,24 @@ pub fn compare(baseline: &Report, candidate: &Report, noise: &NoiseFloor) -> Com
         metrics.push(delta(metric, kind, base, cand, noise));
     }
 
+    // Startup is not covered by any mark. Replay waits for the workspace to
+    // render before its first step, so `startup-to-idle` opens after first
+    // content is already on screen — this field is the only wall-clock
+    // measurement of getting there, and without it a comparison would report
+    // no regression when opening the repository got materially slower.
+    if let (Some(base), Some(cand)) = (
+        baseline.summary.time_to_first_content_ms,
+        candidate.summary.time_to_first_content_ms,
+    ) {
+        metrics.push(delta(
+            "startup.time_to_first_content_ms",
+            Kind::Duration,
+            base,
+            cand,
+            noise,
+        ));
+    }
+
     for mark in &candidate.marks {
         let Some(base) = baseline.marks.iter().find(|m| m.name == mark.name) else {
             continue;

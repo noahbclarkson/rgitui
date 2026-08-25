@@ -241,7 +241,13 @@ pub fn trace_to_scenario(name: &str, events: &[TraceEvent], max_gap_ms: u64) -> 
         steps.push(Step::Action {
             action: event.action.clone(),
             repeat: 1,
-            settle: Settle::Frame,
+            // No settling. The gap emitted above is dispatch-to-dispatch time
+            // from the real session, and it already contains however long the
+            // app took to draw. Waiting for a frame *and then* sleeping the gap
+            // adds a draw to every step, which serializes exactly the bursts —
+            // held keys, fast scrolling — that are worth replaying, and makes
+            // the generated benchmark measure something the user never did.
+            settle: Settle::None,
         });
         previous_ns = Some(event.t_ns);
     }
@@ -387,19 +393,23 @@ mod tests {
         ];
 
         let scenario = trace_to_scenario("recorded", &events, 5_000);
+        // No settling on the actions: the 250ms gap is dispatch-to-dispatch
+        // time from the real session and already contains whatever the app
+        // spent drawing. Waiting for a frame as well would add one to every
+        // step and stretch the rhythm this conversion exists to preserve.
         assert_eq!(
             scenario.steps,
             vec![
                 Step::Action {
                     action: "a::B".into(),
                     repeat: 1,
-                    settle: Settle::Frame
+                    settle: Settle::None
                 },
                 Step::Wait { ms: 250 },
                 Step::Action {
                     action: "a::C".into(),
                     repeat: 1,
-                    settle: Settle::Frame
+                    settle: Settle::None
                 },
             ]
         );

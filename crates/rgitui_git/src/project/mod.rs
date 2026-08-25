@@ -639,23 +639,7 @@ impl GitProject {
     /// full history walk and a `git for-each-ref` behind every file save, on
     /// exactly the repositories that already got the worst of this code.
     pub fn needs_graph_state_refresh(&self) -> bool {
-        let trunk = trunk_tip(&self.branches);
-        let head = head_tip(&self.branches);
-        self.branches.iter().any(|branch| {
-            if branch.is_remote {
-                return false;
-            }
-            let merged_into_main_pending =
-                trunk.is_some() && branch.is_merged_into_main.is_none() && branch.tip_oid.is_some();
-            let merged_into_head_pending =
-                head.is_some() && branch.is_merged_into_head.is_none() && branch.tip_oid.is_some();
-            let ahead_behind_pending = branch
-                .upstream
-                .as_deref()
-                .is_some_and(|upstream| upstream_tip(&self.branches, upstream).is_some())
-                && !branch.has_ahead_behind();
-            merged_into_main_pending || merged_into_head_pending || ahead_behind_pending
-        })
+        graph_state_is_incomplete(&self.branches, self.head_detached)
     }
 
     pub(crate) fn apply_refresh_data(&mut self, data: RefreshData) {
@@ -1073,6 +1057,37 @@ fn head_tip(branches: &[BranchInfo]) -> Option<git2::Oid> {
         .and_then(|branch| branch.tip_oid)
 }
 
+/// Whether any local branch is missing graph state that a walk could supply.
+///
+/// The distinction that matters is between an answer nobody has computed yet
+/// and one that does not exist. A repository whose trunk is neither `main` nor
+/// `master` has nothing for `is_merged_into_main` to be about, and reading that
+/// permanent `None` as outstanding work would put a full history walk and a
+/// `git for-each-ref` behind every file save.
+///
+/// `head_detached` is passed separately because a detached HEAD still resolves
+/// to a commit — the walk answers merged-into-HEAD from the repository, not
+/// from this list — while no branch here claims to be it.
+fn graph_state_is_incomplete(branches: &[BranchInfo], head_detached: bool) -> bool {
+    let trunk = trunk_tip(branches);
+    let head = head_tip(branches).is_some() || head_detached;
+    branches.iter().any(|branch| {
+        if branch.is_remote {
+            return false;
+        }
+        let merged_into_main_pending =
+            trunk.is_some() && branch.is_merged_into_main.is_none() && branch.tip_oid.is_some();
+        let merged_into_head_pending =
+            head && branch.is_merged_into_head.is_none() && branch.tip_oid.is_some();
+        let ahead_behind_pending = branch
+            .upstream
+            .as_deref()
+            .is_some_and(|upstream| upstream_tip(branches, upstream).is_some())
+            && !branch.has_ahead_behind();
+        merged_into_main_pending || merged_into_head_pending || ahead_behind_pending
+    })
+}
+
 /// Tip of the remote-tracking branch `upstream`, by its full name.
 fn upstream_tip(branches: &[BranchInfo], upstream: &str) -> Option<git2::Oid> {
     branches
@@ -1187,29 +1202,12 @@ fn parse_upstream_track(track: &str) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod carry_forward_tests {
-    use super::{carry_forward_branch_graph_state, head_tip, trunk_tip, upstream_tip, BranchInfo};
+    use super::{carry_forward_branch_graph_state, graph_state_is_incomplete, BranchInfo};
 
-    /// The body of [`super::GitProject::needs_graph_state_refresh`], over a
-    /// branch list rather than a project, so the decision can be tested without
-    /// a repository or a display.
+    /// [`graph_state_is_incomplete`] for a repository whose HEAD is on a branch,
+    /// which is every case but the one test that says otherwise.
     fn needs_refresh(branches: &[BranchInfo]) -> bool {
-        let trunk = trunk_tip(branches);
-        let head = head_tip(branches);
-        branches.iter().any(|branch| {
-            if branch.is_remote {
-                return false;
-            }
-            let merged_into_main_pending =
-                trunk.is_some() && branch.is_merged_into_main.is_none() && branch.tip_oid.is_some();
-            let merged_into_head_pending =
-                head.is_some() && branch.is_merged_into_head.is_none() && branch.tip_oid.is_some();
-            let ahead_behind_pending = branch
-                .upstream
-                .as_deref()
-                .is_some_and(|upstream| upstream_tip(branches, upstream).is_some())
-                && !branch.has_ahead_behind();
-            merged_into_main_pending || merged_into_head_pending || ahead_behind_pending
-        })
+        graph_state_is_incomplete(branches, false)
     }
 
     fn oid(byte: u8) -> git2::Oid {
@@ -1284,6 +1282,17 @@ mod carry_forward_tests {
         orphan.upstream = Some("origin/feature".to_string());
         orphan.is_merged_into_head = Some(false);
         assert!(!needs_refresh(&[orphan]));
+    }
+
+    #[test]
+    fn a_detached_head_still_asks_for_the_walk() {
+        // `git checkout <commit>` in a terminal leaves no branch marked
+        // `is_head`, but HEAD still resolves and the walk can still answer.
+        // Treating the missing branch as a missing reference point would strand
+        // every merged-into-current badge as unknown.
+        let feature = branch("feature", 2);
+        assert!(!needs_refresh(std::slice::from_ref(&feature)));
+        assert!(graph_state_is_incomplete(&[feature], true));
     }
 
     #[test]
