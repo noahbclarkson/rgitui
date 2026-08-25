@@ -177,6 +177,11 @@ pub struct WorktreeInfo {
     pub head_oid: Option<git2::Oid>,
     /// Cached pending-change status for this worktree, if available.
     pub status: Option<WorkingTreeStatus>,
+    /// Whether this checkout is mid-merge, mid-rebase, mid-cherry-pick and so
+    /// on. Each worktree keeps its own — `MERGE_HEAD` for a linked worktree
+    /// lives under `.git/worktrees/<name>/`, so asking the main repository
+    /// about it always answers `Clean`.
+    pub state: RepoState,
 }
 
 /// Information about a stash entry.

@@ -684,13 +684,17 @@ pub(super) fn subscribe_confirm_dialog(
                             }
                         }
                         ConfirmAction::ResetHard(target) => {
-                            let previous_head_oid = project
-                                .read(cx)
-                                .recent_commits()
-                                .first()
-                                .map(|c| c.oid.to_string());
                             let target = target.clone();
                             let worktree_path = this.effective_worktree_path(cx);
+                            // The graph's first row is the repository-wide log,
+                            // which is a different branch's tip whenever the
+                            // inspected worktree is on its own branch. Undo has
+                            // to put back the HEAD the reset moved, so it is
+                            // read from that worktree, as the commit path does.
+                            let previous_head_oid = project
+                                .read(cx)
+                                .head_oid_at(&worktree_path)
+                                .map(|oid| oid.to_string());
                             project.update(cx, |proj, cx| {
                                 if let Ok(oid) = git2::Oid::from_str(&target) {
                                     proj.reset_to_commit_at(oid, &worktree_path, cx).detach();
@@ -736,8 +740,9 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                         }
                         ConfirmAction::AbortMerge => {
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
-                                proj.abort_operation(cx).detach();
+                                proj.abort_operation_at(&worktree_path, cx).detach();
                             });
                         }
                         ConfirmAction::WorktreeRemove(path) => {
@@ -948,16 +953,12 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
     cx.subscribe(project, {
         move |this, project, event: &GitProjectEvent, cx| match event {
             GitProjectEvent::AheadBehindRefreshed => {
-                let proj = project.read(cx);
-                let branches = proj.branches();
-                let (ahead, behind) = branches
-                    .iter()
-                    .find(|b| b.is_head)
-                    .map(|b| (b.ahead, b.behind))
-                    .unwrap_or((0, 0));
-                toolbar.update(cx, |tb, cx| {
-                    tb.set_ahead_behind(ahead, behind, cx);
-                });
+                // `is_head` is the branch the *main* checkout has out. Reading
+                // it here would undo the inspected worktree's own counts every
+                // time this fires — which is after every refresh and every
+                // staging operation, so the toolbar would spend most of its
+                // life labelled with a branch the user is not on.
+                update_toolbar_for_active_worktree(this, cx);
             }
             GitProjectEvent::WorktreePatchApplied {
                 label,

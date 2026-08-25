@@ -2241,14 +2241,20 @@ impl GitProject {
         })
     }
 
-    /// Abort the current in-progress operation (merge, rebase, cherry-pick, revert).
-    /// Resets the working tree and index to HEAD and cleans up the repo state.
-    pub fn abort_operation(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("abort_operation");
+    /// Abort the operation in progress in `worktree_path` (merge, rebase,
+    /// cherry-pick, revert). Resets that working tree and index to its HEAD and
+    /// cleans up its state.
+    pub fn abort_operation_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("abort_operation: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
-        let state_label = self.repo_state.label().to_string();
+        let branch_name = self.head_branch_at(&worktree_path);
+        let state_label = self.repo_state_at(&worktree_path).label().to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
             format!("Aborting {}...", state_label.to_lowercase()),
@@ -2260,7 +2266,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
 
                     if repo.state() == git2::RepositoryState::Rebase
                         || repo.state() == git2::RepositoryState::RebaseInteractive
@@ -2317,13 +2323,18 @@ impl GitProject {
         })
     }
 
-    /// Continue the current merge by committing with the default merge message.
-    /// This stages all files and creates the merge commit.
-    pub fn continue_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("continue_merge");
+    /// Continue the merge in progress in `worktree_path` by committing with the
+    /// default merge message.
+    pub fn continue_merge_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("continue_merge: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
             "Continuing merge...",
@@ -2335,7 +2346,7 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
 
                     // Only finalize an actual merge. Other paused operations
                     // (cherry-pick/revert/rebase/bisect) have no MERGE_HEAD and must

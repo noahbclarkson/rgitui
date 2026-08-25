@@ -558,6 +558,18 @@ impl GitProject {
         self.repo_state
     }
 
+    /// The merge/rebase state of `worktree_path`. Each checkout keeps its own —
+    /// a conflicted pull inside a linked worktree writes `MERGE_HEAD` under
+    /// `.git/worktrees/<name>/`, which the main repository reports as clean —
+    /// so a banner or a Continue/Abort command asking about the project would
+    /// tell the user nothing is in progress while they are looking at conflicts.
+    pub fn repo_state_at(&self, worktree_path: &Path) -> RepoState {
+        match self.worktree_at(worktree_path) {
+            Some(worktree) => worktree.state,
+            None => self.repo_state,
+        }
+    }
+
     pub fn branches(&self) -> &[BranchInfo] {
         &self.branches
     }
@@ -650,6 +662,22 @@ impl GitProject {
             .unstaged
             .iter()
             .any(|f| f.kind == FileChangeKind::Conflicted)
+    }
+
+    /// Whether `worktree_path` has any conflicted files. Falls back to this
+    /// project's own status when that checkout has no cached status yet, which
+    /// is the same answer the caller would have got before asking.
+    pub fn has_conflicts_at(&self, worktree_path: &Path) -> bool {
+        match self
+            .worktree_at(worktree_path)
+            .and_then(|worktree| worktree.status.as_ref())
+        {
+            Some(status) => status
+                .unstaged
+                .iter()
+                .any(|f| f.kind == FileChangeKind::Conflicted),
+            None => self.has_conflicts(),
+        }
     }
 
     pub(crate) fn open_repo(&self) -> Result<Repository> {

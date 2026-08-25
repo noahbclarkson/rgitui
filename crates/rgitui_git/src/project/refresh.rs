@@ -212,9 +212,15 @@ fn worktree_info_at(
     is_locked: bool,
     is_current: bool,
 ) -> WorktreeInfo {
-    let (branch, head_detached, head_oid) = Repository::open(&path)
-        .map(|repo| head_summary(&repo))
+    let opened = Repository::open(&path);
+    let (branch, head_detached, head_oid) = opened
+        .as_ref()
+        .map(head_summary)
         .unwrap_or((None, false, None));
+    let state = opened
+        .as_ref()
+        .map(|repo| RepoState::from_git2(repo.state()))
+        .unwrap_or(RepoState::Clean);
     WorktreeInfo {
         name,
         path,
@@ -224,6 +230,7 @@ fn worktree_info_at(
         head_detached,
         head_oid,
         status: None,
+        state,
     }
 }
 
@@ -258,6 +265,7 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
         head_detached,
         head_oid,
         status: None,
+        state: RepoState::from_git2(repo.state()),
     });
 
     // The main checkout, when this handle was opened on a linked worktree. A

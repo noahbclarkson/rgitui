@@ -226,17 +226,39 @@ impl IgnoreRepos {
     }
 
     fn is_ignored(&self, path: &Path) -> bool {
-        self.repos.iter().any(|(root, repo)| {
-            match path.strip_prefix(root) {
+        let Some(owner) = owning_root(self.repos.iter().map(|(root, _)| root.as_path()), path)
+        else {
+            return false;
+        };
+        self.repos
+            .iter()
+            .find(|(root, _)| root == owner)
+            .is_some_and(|(root, repo)| match path.strip_prefix(root) {
                 Ok(relative) if relative.as_os_str().is_empty() => false,
                 // A workdir-relative path sidesteps libgit2's absolute-path
                 // relativization entirely, which is where the cross-worktree
                 // answer went wrong.
                 Ok(relative) => repo.status_should_ignore(relative).unwrap_or(false),
                 Err(_) => false,
-            }
-        })
+            })
     }
+}
+
+/// The checkout that owns `path`: the deepest watched root containing it.
+///
+/// A linked worktree may live inside the main checkout, and when it does the
+/// main repository almost certainly ignores that directory — you do not want a
+/// worktree showing up as untracked files in its own parent. Asking every root
+/// and taking any "yes" would let that answer suppress events for files the
+/// worktree itself tracks, leaving its status and diff stale while the user
+/// edits them. Only the innermost checkout has standing to answer.
+fn owning_root<'a>(roots: impl Iterator<Item = &'a Path>, path: &Path) -> Option<&'a Path> {
+    roots
+        .filter(|root| {
+            path.strip_prefix(root)
+                .is_ok_and(|relative| !relative.as_os_str().is_empty())
+        })
+        .max_by_key(|root| root.components().count())
 }
 
 impl GitProject {
@@ -561,6 +583,42 @@ impl GitProject {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nested_worktree_answers_for_its_own_files() {
+        let main = Path::new("/repo");
+        let nested = Path::new("/repo/feature");
+        let roots = [main, nested];
+
+        // The main checkout very likely ignores `feature/` — a worktree inside
+        // it would otherwise read as a pile of untracked files — so letting it
+        // answer would suppress events for files the worktree tracks.
+        assert_eq!(
+            owning_root(roots.into_iter(), Path::new("/repo/feature/src/main.rs")),
+            Some(nested)
+        );
+        assert_eq!(
+            owning_root(roots.into_iter(), Path::new("/repo/src/main.rs")),
+            Some(main)
+        );
+    }
+
+    #[test]
+    fn a_path_under_no_watched_root_has_no_owner() {
+        let roots = [Path::new("/repo")];
+        assert_eq!(
+            owning_root(roots.into_iter(), Path::new("/elsewhere/file.rs")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_root_does_not_own_itself() {
+        // Stripping the prefix leaves nothing, and asking libgit2 whether a
+        // checkout ignores its own directory is not a question with an answer.
+        let roots = [Path::new("/repo")];
+        assert_eq!(owning_root(roots.into_iter(), Path::new("/repo")), None);
+    }
 
     #[test]
     fn loose_ref_fingerprint_includes_oid_content() {

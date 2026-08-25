@@ -266,7 +266,13 @@ impl Render for Workspace {
                 }
                 .into()
             });
-        let repo_state = project.repo_state();
+        // A conflicted merge inside a linked worktree records itself under
+        // `.git/worktrees/<name>/`, so the project's own state stays clean and
+        // the banner would hide conflicts the user is looking straight at.
+        let repo_state = match inspected {
+            Some(worktree) => worktree.state,
+            None => project.repo_state(),
+        };
         let stash_count = project.stashes().len();
         let repo_path_display: SharedString = match inspected {
             Some(worktree) => worktree.path.display().to_string(),
