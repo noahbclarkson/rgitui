@@ -234,6 +234,14 @@ a fixed recipe on a fixed clock, so the same tier is identical on every machine.
 Recipes are fingerprinted into the directory name, so changing one regenerates
 rather than silently reusing a repository built to the old shape.
 
+A corpus is restored to its committed state each time it is handed to a run.
+Scenarios are allowed to change the working tree — `staging-churn` has to, or it
+stages nothing — and without this that would compound: the second run would
+append to what the first appended to, and two runs of the same scenario would
+stop measuring the same thing. Restoring on the way in rather than on the way
+out also covers the run that died partway through. Nothing you leave in a corpus
+directory survives, so treat it as the harness's, not yours.
+
 ## Interactive profiling with Tracy
 
 `--features perf-tracy` routes gpui's own instrumentation — it already annotates

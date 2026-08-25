@@ -107,7 +107,8 @@ pub struct SessionConfig {
     pub scenario: Option<Scenario>,
     /// Where the report is written.
     pub output_dir: PathBuf,
-    /// Corpus the run is measuring against, for the report metadata.
+    /// Corpus the run is measuring against, taken from the scenario, for the
+    /// report metadata.
     pub corpus: Option<String>,
     pub thresholds: Thresholds,
 }
@@ -128,6 +129,13 @@ impl SessionConfig {
             .as_ref()
             .map(|s| s.name.clone())
             .unwrap_or_else(|| mode.label().to_string());
+        // The scenario declares which corpus it is written against, and the
+        // report is the only place a reader — or `compare`, which warns when
+        // two runs used different inputs — can learn it afterwards.
+        let corpus = scenario
+            .as_ref()
+            .and_then(|s| s.corpus)
+            .map(|tier| tier.name().to_string());
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
         // Not `target/perf`: that is where Cargo puts the `perf` profile's own
         // build artifacts, and a run would drop report directories in among
@@ -141,7 +149,7 @@ impl SessionConfig {
             mode,
             scenario,
             output_dir: root.join(format!("{stamp}-{label}")),
-            corpus: None,
+            corpus,
             thresholds: Thresholds::default(),
         })
     }
@@ -891,6 +899,23 @@ fn frames_to_jsonl(frames: &FrameRecorder) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replay_config_records_the_corpus_its_scenario_declares() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("scenario.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"probe","corpus":"medium","steps":[{"wait":{"ms":1}}]}"#,
+        )
+        .unwrap();
+
+        let config = SessionConfig::from_mode(Mode::Replay(path)).unwrap();
+
+        // `compare` warns when two runs used different inputs, and it can only
+        // do that if the run metadata carries which one was used.
+        assert_eq!(config.corpus.as_deref(), Some("medium"));
+    }
 
     #[test]
     fn jsonl_writes_one_record_per_line() {

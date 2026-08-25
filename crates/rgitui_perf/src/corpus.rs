@@ -19,7 +19,8 @@ use std::time::Instant;
 use anyhow::Context as _;
 use git2::build::CheckoutBuilder;
 use git2::{
-    Buf, Commit, FileMode, Mempack, Odb, Oid, Repository, RepositoryInitOptions, Signature, Time,
+    Buf, Commit, FileMode, Mempack, Odb, Oid, Repository, RepositoryInitOptions, ResetType,
+    Signature, StatusOptions, Time,
 };
 use serde::{Deserialize, Serialize};
 
@@ -251,6 +252,7 @@ fn ensure_at(recipe: &Recipe, path: &Path) -> anyhow::Result<PathBuf> {
     let tier = recipe.tier.name();
     if is_complete(recipe, path) {
         log::info!("perf corpus {tier} is already built at {}", path.display());
+        restore(path)?;
         return Ok(path.to_path_buf());
     }
 
@@ -295,6 +297,64 @@ fn ensure_at(recipe: &Recipe, path: &Path) -> anyhow::Result<PathBuf> {
     let seconds = started.elapsed().as_secs_f64();
     log::info!("generated the {tier} perf corpus in {seconds:.1}s");
     Ok(path.to_path_buf())
+}
+
+/// Put a cached corpus back the way the generator left it.
+///
+/// The completion marker records the recipe, which says nothing about the
+/// working tree, and a scenario is free to change it — `staging-churn` dirties
+/// forty files on purpose. Left alone that compounds: every run appends to the
+/// files the last one appended to, so file sizes and diff sizes grow run over
+/// run and two runs of the same scenario stop measuring the same thing, which
+/// is the one guarantee a benchmark corpus has to make. Restoring when the
+/// corpus is handed out, rather than when a run ends, also covers the run that
+/// panicked halfway through and never got to tidy up.
+fn restore(root: &Path) -> anyhow::Result<()> {
+    let repo = Repository::open(root)
+        .with_context(|| format!("failed to open the corpus at {}", root.display()))?;
+    if repo.workdir().is_none() {
+        return Ok(());
+    }
+
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false);
+    let statuses = repo.statuses(Some(&mut options))?;
+    if statuses.is_empty() {
+        return Ok(());
+    }
+    let dirty = statuses.len();
+
+    // A hard reset restores tracked content and clears the index, but leaves
+    // whatever the run created behind: `GIT_CHECKOUT_REMOVE_UNTRACKED` only
+    // reaches paths the checkout itself walks, and resetting to the commit
+    // already at HEAD walks almost nothing. Untracked paths are removed here,
+    // from the status list, so the guarantee does not depend on that.
+    let workdir = repo.workdir().unwrap_or(root).to_path_buf();
+    for entry in statuses.iter() {
+        if !entry.status().contains(git2::Status::WT_NEW) {
+            continue;
+        }
+        let Some(path) = entry.path() else { continue };
+        let full = workdir.join(path);
+        if let Err(error) = std::fs::remove_file(&full) {
+            log::warn!("could not remove {}: {error}", full.display());
+        }
+    }
+    drop(statuses);
+
+    let head = repo.head()?.peel(git2::ObjectType::Commit)?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.reset(&head, ResetType::Hard, Some(&mut checkout))
+        .with_context(|| format!("failed to restore the corpus at {}", root.display()))?;
+    log::info!(
+        "restored {dirty} path(s) a previous run left changed in {}",
+        root.display()
+    );
+    Ok(())
 }
 
 /// Where the completion marker for a corpus rooted at `root` lives.
@@ -1364,14 +1424,71 @@ mod tests {
         let path = ensure_at(&recipe, &dir.path().join("corpus")).unwrap();
         let head = head_oid(&path);
 
-        // A file generation never writes: it survives only if the corpus was
-        // left alone.
-        let sentinel = path.join("sentinel.txt");
+        // A file generation never writes, inside `.git` so that restoring the
+        // working tree does not remove it either: it survives only if the
+        // corpus was reused rather than cleared and rebuilt.
+        let sentinel = path.join(".git").join("sentinel.txt");
         std::fs::write(&sentinel, "kept").unwrap();
         ensure_at(&recipe, &path).unwrap();
 
         assert!(sentinel.is_file());
         assert_eq!(head_oid(&path), head);
+    }
+
+    #[test]
+    fn a_corpus_a_run_dirtied_is_restored_before_it_is_handed_out_again() {
+        let dir = TempDir::new().unwrap();
+        let recipe = tiny_recipe();
+        let path = ensure_at(&recipe, &dir.path().join("corpus")).unwrap();
+
+        let readme = path.join("README.md");
+        let pristine = std::fs::read_to_string(&readme).unwrap();
+
+        // What a `dirty` step does, plus the untracked file and the staged
+        // change a run that died partway through would leave behind.
+        std::fs::write(
+            &readme,
+            format!(
+                "{pristine}// touched by the perf harness
+"
+            ),
+        )
+        .unwrap();
+        std::fs::write(path.join("scratch.txt"), "left over").unwrap();
+        {
+            let repo = Repository::open(&path).unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README.md")).unwrap();
+            index.write().unwrap();
+        }
+
+        ensure_at(&recipe, &path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&readme).unwrap(),
+            pristine,
+            "a tracked file the last run appended to is back to its committed content"
+        );
+        assert!(
+            !path.join("scratch.txt").exists(),
+            "an untracked file the last run left is gone"
+        );
+        let repo = Repository::open(&path).unwrap();
+        assert!(repo.statuses(None).unwrap().is_empty(), "status is clean");
+    }
+
+    #[test]
+    fn restoring_a_clean_corpus_leaves_its_history_alone() {
+        let dir = TempDir::new().unwrap();
+        let recipe = tiny_recipe();
+        let path = ensure_at(&recipe, &dir.path().join("corpus")).unwrap();
+        let head = head_oid(&path);
+        let refs = refs_of(&path);
+
+        restore(&path).unwrap();
+
+        assert_eq!(head_oid(&path), head);
+        assert_eq!(refs_of(&path), refs);
     }
 
     #[test]
