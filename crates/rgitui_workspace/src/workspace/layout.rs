@@ -327,13 +327,10 @@ impl Render for Workspace {
             })
             .unwrap_or((ViewAvailability::Unavailable, ViewAvailability::Unavailable));
 
-        // Find head branch info for ahead/behind
-        let (ahead, behind) = project
-            .branches()
-            .iter()
-            .find(|b| b.is_head)
-            .map(|b| (b.ahead, b.behind))
-            .unwrap_or((0, 0));
+        // The same lookup the toolbar uses. `is_head` is the main checkout's
+        // branch, which would print one branch's name beside another branch's
+        // divergence counts whenever a worktree is being inspected.
+        let (ahead, behind) = super::events::active_branch_ahead_behind(active_tab, project);
 
         // Build tab bar
         let mut tab_bar = TabBar::new();

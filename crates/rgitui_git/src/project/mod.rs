@@ -663,14 +663,6 @@ impl GitProject {
             .collect()
     }
 
-    /// Whether the working tree has any conflicted files.
-    pub fn has_conflicts(&self) -> bool {
-        self.status
-            .unstaged
-            .iter()
-            .any(|f| f.kind == FileChangeKind::Conflicted)
-    }
-
     /// The conflicted files in `worktree_path`. Falls back to this project's
     /// own status when that checkout has no cached status yet, which is the
     /// same answer the caller would have got before asking.

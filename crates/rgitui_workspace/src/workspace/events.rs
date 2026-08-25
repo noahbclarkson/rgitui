@@ -66,6 +66,30 @@ pub(super) fn build_worktree_graph_infos(
 /// status: showing the main repository's changed files under a banner that says
 /// you are in a worktree — with staging routed by path to the worktree — is
 /// worse than showing nothing for the moment it takes the status to land.
+/// Divergence counts for the branch the active checkout has out.
+///
+/// The toolbar's push/pull buttons and the status bar both label themselves
+/// with that branch, so both have to count it. `branches().find(|b| b.is_head)`
+/// is the *main* checkout's branch, which is a different branch entirely while
+/// a linked worktree is being inspected.
+pub(super) fn active_branch_ahead_behind(
+    tab: &super::ProjectTab,
+    proj: &GitProject,
+) -> (usize, usize) {
+    let active_branch = match &tab.inspecting_worktree {
+        Some(inspecting) => proj.head_branch_at(&inspecting.path),
+        None => proj.head_branch().map(str::to_string),
+    };
+    active_branch
+        .and_then(|name| {
+            proj.branches()
+                .iter()
+                .find(|branch| !branch.is_remote && branch.name == name)
+        })
+        .map(|branch| (branch.ahead, branch.behind))
+        .unwrap_or((0, 0))
+}
+
 fn active_worktree_status(
     tab: &super::ProjectTab,
     proj: &GitProject,
@@ -174,21 +198,7 @@ pub(super) fn update_toolbar_for_active_worktree(
         let (status, _) = active_worktree_status(tab, proj);
         let has_changes = !status.staged.is_empty() || !status.unstaged.is_empty();
         let has_stashes = !proj.stashes().is_empty();
-        // Ahead/behind belongs to the branch the *inspected* checkout has out —
-        // the toolbar's push/pull act on that branch, so counting the main
-        // repository's HEAD here would label the buttons with the wrong numbers.
-        let active_branch = match &tab.inspecting_worktree {
-            Some(inspecting) => proj.head_branch_at(&inspecting.path),
-            None => proj.head_branch().map(str::to_string),
-        };
-        let (ahead, behind) = active_branch
-            .and_then(|name| {
-                proj.branches()
-                    .iter()
-                    .find(|branch| !branch.is_remote && branch.name == name)
-            })
-            .map(|branch| (branch.ahead, branch.behind))
-            .unwrap_or((0, 0));
+        let (ahead, behind) = active_branch_ahead_behind(tab, proj);
         let has_github_token = tab.prs_panel.read(cx).github_token().is_some();
         (has_changes, has_stashes, ahead, behind, has_github_token)
     };
@@ -458,8 +468,10 @@ pub(super) fn subscribe_stash_branch_dialog(
                     let project = tab.project.clone();
                     let name = name.clone();
                     let idx = *stash_index;
+                    let worktree_path = this.effective_worktree_path(cx);
                     project.update(cx, |proj, cx| {
-                        proj.stash_branch(&name, idx, cx).detach();
+                        proj.stash_branch_at(&name, idx, &worktree_path, cx)
+                            .detach();
                     });
                 }
                 this.show_toast(
@@ -1429,14 +1441,18 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::AcceptConflictOurs(path) => {
                 let path = path.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.accept_conflict_ours(path, cx).detach();
+                    proj.accept_conflict_ours_at(path, &worktree_path, cx)
+                        .detach();
                 });
             }
             SidebarEvent::AcceptConflictTheirs(path) => {
                 let path = path.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.accept_conflict_theirs(path, cx).detach();
+                    proj.accept_conflict_theirs_at(path, &worktree_path, cx)
+                        .detach();
                 });
             }
             SidebarEvent::StashSelected(index) => {

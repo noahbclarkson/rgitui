@@ -1495,17 +1495,28 @@ impl GitProject {
 
     /// Create a branch from a stash entry and apply the stash to it.
     /// Equivalent to `git stash branch <branchname>`.
-    pub fn stash_branch(
+    pub fn stash_branch_at(
         &mut self,
         branch_name: &str,
         stash_index: usize,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("stash_branch: branch={} index={}", branch_name, stash_index);
+        log::info!(
+            "stash_branch: branch={} index={} worktree={}",
+            branch_name,
+            stash_index,
+            worktree_path.display()
+        );
+        // This checks a new branch out and applies the stash into a working
+        // tree — both of which belong to the checkout on screen. Doing it in
+        // the main one would switch a checkout the user is not looking at and
+        // drop the shared stash from under the one they are.
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name_owned = branch_name.to_string();
-        let current_branch = self.head_branch.clone();
+        let current_branch = self.head_branch_at(&worktree_path);
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
             format!(
@@ -1522,7 +1533,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
 
                     // Collect stash OIDs to find the one at stash_index.
                     let mut stash_oids: Vec<git2::Oid> = Vec::new();
@@ -3350,31 +3361,38 @@ impl GitProject {
     }
 
     /// Accept the "ours" version of a conflicted file, staging it as resolved.
-    pub fn accept_conflict_ours(
+    pub fn accept_conflict_ours_at(
         &mut self,
         path: String,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("accept_conflict_ours: path={}", path);
-        self.accept_conflict_side(path, ConflictSide::Ours, cx)
+        self.accept_conflict_side(path, ConflictSide::Ours, worktree_path, cx)
     }
 
     /// Accept the "theirs" version of a conflicted file, staging it as resolved.
-    pub fn accept_conflict_theirs(
+    pub fn accept_conflict_theirs_at(
         &mut self,
         path: String,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("accept_conflict_theirs: path={}", path);
-        self.accept_conflict_side(path, ConflictSide::Theirs, cx)
+        self.accept_conflict_side(path, ConflictSide::Theirs, worktree_path, cx)
     }
 
     fn accept_conflict_side(
         &mut self,
         path: String,
         side: ConflictSide,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        // The conflicted index and the file to rewrite both belong to the
+        // checkout the conflict is in; the snapshot is still gathered from the
+        // project's own root, which is what every other operation does.
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let file_path = PathBuf::from(&path);
@@ -3382,7 +3400,7 @@ impl GitProject {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.clone());
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let side_label = match side {
             ConflictSide::Ours => "ours",
             ConflictSide::Theirs => "theirs",
@@ -3401,7 +3419,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     // Find the conflict for this path in the index's conflict iterator
                     let index = repo.index()?;
                     let mut conflicts = index.conflicts()?;
@@ -3435,7 +3453,7 @@ impl GitProject {
                     let content = blob.content();
 
                     // Write the chosen content to the workdir file
-                    let full_path = repo_path.join(&file_path);
+                    let full_path = worktree_path.join(&file_path);
                     if let Some(parent) = full_path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }
