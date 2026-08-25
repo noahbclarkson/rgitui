@@ -52,9 +52,42 @@ pub(super) fn build_worktree_graph_infos(
                 combined_breakdown,
                 worktree_path: worktree.path.clone(),
                 branch: worktree.branch.clone(),
+                head_detached: worktree.head_detached,
             })
         })
         .collect()
+}
+
+/// The working-tree status the UI should be showing, plus the checkout it
+/// belongs to.
+///
+/// While a worktree is being inspected this is that worktree's status. When it
+/// has not been computed yet the result is *empty*, never the main checkout's
+/// status: showing the main repository's changed files under a banner that says
+/// you are in a worktree — with staging routed by path to the worktree — is
+/// worse than showing nothing for the moment it takes the status to land.
+/// Divergence counts for the branch the active checkout has out.
+///
+/// The toolbar's push/pull buttons and the status bar both label themselves
+/// with that branch, so both have to count it. `branches().find(|b| b.is_head)`
+/// is the *main* checkout's branch, which is a different branch entirely while
+/// a linked worktree is being inspected.
+pub(super) fn active_branch_ahead_behind(
+    tab: &super::ProjectTab,
+    proj: &GitProject,
+) -> (usize, usize) {
+    let active_branch = match &tab.inspecting_worktree {
+        Some(inspecting) => proj.head_branch_at(&inspecting.path),
+        None => proj.head_branch().map(str::to_string),
+    };
+    active_branch
+        .and_then(|name| {
+            proj.branches()
+                .iter()
+                .find(|branch| !branch.is_remote && branch.name == name)
+        })
+        .map(|branch| (branch.ahead, branch.behind))
+        .unwrap_or((0, 0))
 }
 
 fn active_worktree_status(
@@ -63,11 +96,9 @@ fn active_worktree_status(
 ) -> (rgitui_git::WorkingTreeStatus, std::path::PathBuf) {
     if let Some(inspecting) = &tab.inspecting_worktree {
         let status = proj
-            .worktrees()
-            .iter()
-            .find(|worktree| worktree.path == inspecting.path)
+            .worktree_at(&inspecting.path)
             .and_then(|worktree| worktree.status.clone())
-            .unwrap_or_else(|| proj.status().clone());
+            .unwrap_or_default();
         (status, inspecting.path.clone())
     } else {
         (proj.status().clone(), proj.repo_path().to_path_buf())
@@ -167,12 +198,7 @@ pub(super) fn update_toolbar_for_active_worktree(
         let (status, _) = active_worktree_status(tab, proj);
         let has_changes = !status.staged.is_empty() || !status.unstaged.is_empty();
         let has_stashes = !proj.stashes().is_empty();
-        let (ahead, behind) = proj
-            .branches()
-            .iter()
-            .find(|branch| branch.is_head)
-            .map(|branch| (branch.ahead, branch.behind))
-            .unwrap_or((0, 0));
+        let (ahead, behind) = active_branch_ahead_behind(tab, proj);
         let has_github_token = tab.prs_panel.read(cx).github_token().is_some();
         (has_changes, has_stashes, ahead, behind, has_github_token)
     };
@@ -180,6 +206,52 @@ pub(super) fn update_toolbar_for_active_worktree(
         toolbar.set_state(true, true, has_stashes, has_changes, has_github_token, cx);
         toolbar.set_ahead_behind(ahead, behind, cx);
     });
+}
+
+/// Enter (or leave, with `None`) worktree inspection on the active tab.
+///
+/// Every entry point routes through here so the four things that must move
+/// together always do: the tab's inspection state, the watcher target on the
+/// git project, the panels showing the previous checkout's content, and the
+/// graph cursor sitting on a worktree pseudo-row.
+pub(super) fn set_inspecting_worktree(
+    workspace: &mut Workspace,
+    inspecting: Option<super::InspectingWorktree>,
+    cx: &mut Context<Workspace>,
+) {
+    set_inspecting_worktree_for_tab(workspace, workspace.active_tab, inspecting, cx);
+}
+
+/// As [`set_inspecting_worktree`], but for a specific tab. Watcher-driven
+/// changes arrive for the tab that owns the emitting project, which is not
+/// necessarily the tab the user is looking at.
+pub(super) fn set_inspecting_worktree_for_tab(
+    workspace: &mut Workspace,
+    tab_index: usize,
+    inspecting: Option<super::InspectingWorktree>,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(tab) = workspace.tabs.get_mut(tab_index) else {
+        return;
+    };
+    let leaving = inspecting.is_none();
+    let watch_path = inspecting.as_ref().map(|worktree| worktree.path.clone());
+    tab.inspecting_worktree = inspecting;
+
+    let project = tab.project.clone();
+    let detail_panel = tab.detail_panel.clone();
+    let diff_viewer = tab.diff_viewer.clone();
+    let graph = tab.graph.clone();
+
+    project.update(cx, |proj, _| proj.set_inspected_worktree(watch_path));
+    if tab_index == workspace.active_tab {
+        update_sidebar_for_active_worktree(workspace, cx);
+    }
+    detail_panel.update(cx, |dp, cx| dp.clear(cx));
+    diff_viewer.update(cx, |dv, cx| dv.clear(cx));
+    if leaving {
+        graph.update(cx, |g, cx| g.clear_worktree_selection(cx));
+    }
 }
 
 pub(super) fn update_sidebar_for_active_worktree(
@@ -358,9 +430,11 @@ pub(super) fn subscribe_stash_save_dialog(
         stash_save_dialog,
         |this, _d, event: &StashSaveDialogEvent, cx| match event {
             StashSaveDialogEvent::CreateStash { message } => {
+                let worktree_path = this.effective_worktree_path(cx);
                 if let Some(tab) = this.tabs.get(this.active_tab) {
                     tab.project.update(cx, |proj, cx| {
-                        proj.stash_save(message.as_deref(), cx).detach();
+                        proj.stash_save_at(message.as_deref(), &worktree_path, cx)
+                            .detach();
                     });
                 }
                 let msg_desc = message
@@ -387,8 +461,10 @@ pub(super) fn subscribe_stash_branch_dialog(
                     let project = tab.project.clone();
                     let name = name.clone();
                     let idx = *stash_index;
+                    let worktree_path = this.effective_worktree_path(cx);
                     project.update(cx, |proj, cx| {
-                        proj.stash_branch(&name, idx, cx).detach();
+                        proj.stash_branch_at(&name, idx, &worktree_path, cx)
+                            .detach();
                     });
                 }
                 this.show_toast(
@@ -510,8 +586,9 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                         }
                         ConfirmAction::ForcePush => {
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
-                                proj.push_default(true, cx).detach();
+                                proj.push_default_at(true, &worktree_path, cx).detach();
                             });
                         }
                         ConfirmAction::BranchDelete(name) => {
@@ -546,10 +623,28 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                         }
                         ConfirmAction::DiscardAll => {
-                            let has_changes = project.read(cx).has_changes();
+                            // Discard what the user is *looking at*. Reading the
+                            // main checkout's status here meant confirming
+                            // "discard all" while inspecting a worktree stashed
+                            // the main repository's work instead.
+                            let worktree_path = this.effective_worktree_path(cx);
+                            let has_changes = this
+                                .tabs
+                                .get(this.active_tab)
+                                .map(|tab| {
+                                    let (status, _) =
+                                        active_worktree_status(tab, tab.project.read(cx));
+                                    !status.staged.is_empty() || !status.unstaged.is_empty()
+                                })
+                                .unwrap_or(false);
                             if has_changes {
                                 project.update(cx, |proj, cx| {
-                                    proj.stash_save(Some("rgitui-undo-discard"), cx).detach();
+                                    proj.stash_save_at(
+                                        Some("rgitui-undo-discard"),
+                                        &worktree_path,
+                                        cx,
+                                    )
+                                    .detach();
                                 });
                                 this.push_undo(
                                     "Discarded all changes",
@@ -564,8 +659,9 @@ pub(super) fn subscribe_confirm_dialog(
                             }
                         }
                         ConfirmAction::CleanUntracked => {
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
-                                proj.clean_untracked(cx).detach();
+                                proj.clean_untracked_at(&worktree_path, cx).detach();
                             });
                         }
                         ConfirmAction::TagDelete(name) => {
@@ -593,17 +689,22 @@ pub(super) fn subscribe_confirm_dialog(
                             }
                         }
                         ConfirmAction::ResetHard(target) => {
+                            let target = target.clone();
+                            let worktree_path = this.effective_worktree_path(cx);
+                            // The graph's first row is the repository-wide log,
+                            // which is a different branch's tip whenever the
+                            // inspected worktree is on its own branch. Undo has
+                            // to put back the HEAD the reset moved, so it is
+                            // read from that worktree, as the commit path does.
                             let previous_head_oid = project
                                 .read(cx)
-                                .recent_commits()
-                                .first()
-                                .map(|c| c.oid.to_string());
-                            let target = target.clone();
+                                .head_oid_at(&worktree_path)
+                                .map(|oid| oid.to_string());
                             project.update(cx, |proj, cx| {
                                 if let Ok(oid) = git2::Oid::from_str(&target) {
-                                    proj.reset_to_commit(oid, cx).detach();
+                                    proj.reset_to_commit_at(oid, &worktree_path, cx).detach();
                                 } else {
-                                    proj.reset_hard(cx).detach();
+                                    proj.reset_hard_at(&worktree_path, cx).detach();
                                 }
                             });
                             if let Some(oid_hex) = previous_head_oid {
@@ -621,17 +722,19 @@ pub(super) fn subscribe_confirm_dialog(
                         }
                         ConfirmAction::ResetSoft(target) => {
                             let target = target.clone();
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
                                 if let Ok(oid) = git2::Oid::from_str(&target) {
-                                    proj.reset_soft(oid, cx).detach();
+                                    proj.reset_soft_at(oid, &worktree_path, cx).detach();
                                 }
                             });
                         }
                         ConfirmAction::ResetMixed(target) => {
                             let target = target.clone();
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
                                 if let Ok(oid) = git2::Oid::from_str(&target) {
-                                    proj.reset_mixed(oid, cx).detach();
+                                    proj.reset_mixed_at(oid, &worktree_path, cx).detach();
                                 }
                             });
                         }
@@ -642,20 +745,20 @@ pub(super) fn subscribe_confirm_dialog(
                             });
                         }
                         ConfirmAction::AbortMerge => {
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
-                                proj.abort_operation(cx).detach();
+                                proj.abort_operation_at(&worktree_path, cx).detach();
                             });
                         }
                         ConfirmAction::WorktreeRemove(path) => {
                             let path = std::path::PathBuf::from(path.clone());
-                            if let Some(tab) = this.tabs.get_mut(this.active_tab) {
-                                if tab
-                                    .inspecting_worktree
-                                    .as_ref()
-                                    .is_some_and(|inspecting| inspecting.path == path)
-                                {
-                                    tab.inspecting_worktree = None;
-                                }
+                            let removing_inspected = this
+                                .tabs
+                                .get(this.active_tab)
+                                .and_then(|tab| tab.inspecting_worktree.as_ref())
+                                .is_some_and(|inspecting| inspecting.path == path);
+                            if removing_inspected {
+                                set_inspecting_worktree(this, None, cx);
                             }
                             project.update(cx, |proj, cx| {
                                 proj.remove_worktree(path, cx).detach();
@@ -855,16 +958,12 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
     cx.subscribe(project, {
         move |this, project, event: &GitProjectEvent, cx| match event {
             GitProjectEvent::AheadBehindRefreshed => {
-                let proj = project.read(cx);
-                let branches = proj.branches();
-                let (ahead, behind) = branches
-                    .iter()
-                    .find(|b| b.is_head)
-                    .map(|b| (b.ahead, b.behind))
-                    .unwrap_or((0, 0));
-                toolbar.update(cx, |tb, cx| {
-                    tb.set_ahead_behind(ahead, behind, cx);
-                });
+                // `is_head` is the branch the *main* checkout has out. Reading
+                // it here would undo the inspected worktree's own counts every
+                // time this fires — which is after every refresh and every
+                // staging operation, so the toolbar would spend most of its
+                // life labelled with a branch the user is not on.
+                update_toolbar_for_active_worktree(this, cx);
             }
             GitProjectEvent::WorktreePatchApplied {
                 label,
@@ -942,23 +1041,33 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     this.configure_github_panels(&proj, &issues_panel, &prs_panel, cx);
                 }
 
-                // Scope the inspecting-worktree auto-exit to the tab whose project
-                // fired this event — NOT the active tab. A background tab's watcher
-                // event must not clear the active tab's inspected worktree.
-                if let Some(tab) = this.tabs.iter_mut().find(|t| t.project == project) {
-                    if let Some(inspecting) = &tab.inspecting_worktree {
-                        let inspected_worktree =
-                            worktrees.iter().find(|wt| wt.path == inspecting.path);
-                        let should_exit = match inspected_worktree {
-                            None => true,
-                            Some(worktree) => worktree.status.as_ref().is_some_and(|status| {
-                                status.staged.is_empty() && status.unstaged.is_empty()
-                            }),
-                        };
-                        if should_exit {
-                            tab.inspecting_worktree = None;
+                // Leave worktree inspection only when the worktree itself is
+                // gone (removed or pruned) — never merely because it became
+                // clean. Committing everything is not a request to be teleported
+                // back to the main checkout with the sidebar, commit panel and
+                // toolbar all swapping underneath you.
+                //
+                // Scoped to the tab whose project fired this event — NOT the
+                // active tab. A background tab's watcher event must not clear the
+                // active tab's inspected worktree.
+                let vanished_worktree = this
+                    .tabs
+                    .iter()
+                    .position(|t| t.project == project)
+                    .and_then(|tab_index| {
+                        let inspecting = this.tabs[tab_index].inspecting_worktree.as_ref()?;
+                        if worktrees.iter().any(|wt| wt.path == inspecting.path) {
+                            return None;
                         }
-                    }
+                        Some((tab_index, inspecting.name.clone()))
+                    });
+                if let Some((tab_index, name)) = vanished_worktree {
+                    set_inspecting_worktree_for_tab(this, tab_index, None, cx);
+                    this.show_toast(
+                        format!("Worktree '{}' is no longer available.", name),
+                        ToastKind::Warning,
+                        cx,
+                    );
                 }
 
                 update_sidebar_for_active_worktree(this, cx);
@@ -987,7 +1096,16 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     // selection (nor its detail panel).
                     let viewer_generation = diff_viewer.read(cx).generation();
                     let dp = detail_panel_ref.clone();
-                    let repo_path = project.read(cx).repo_path().to_path_buf();
+                    // Recompute against the checkout the diff was read from. Using
+                    // the main repository here found no changes for a file that is
+                    // only modified inside an inspected worktree, and the empty
+                    // result below cleared the pane on every refresh.
+                    let repo_path = this
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.project == project)
+                        .map(|tab| tab.effective_repo_path(cx))
+                        .unwrap_or_else(|| project.read(cx).repo_path().to_path_buf());
                     let dv = diff_viewer.clone();
                     let path_str_for_spawn = path_str.clone();
                     let path_str_for_update = path_str.clone();
@@ -1270,20 +1388,23 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::RemoteFetch(name) => {
                 let name = name.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.fetch(&name, cx).detach();
+                    proj.fetch_at(&name, &worktree_path, cx).detach();
                 });
             }
             SidebarEvent::RemotePull(name) => {
                 let name = name.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.pull(&name, cx).detach();
+                    proj.pull_at(&name, &worktree_path, cx).detach();
                 });
             }
             SidebarEvent::RemotePush(name) => {
                 let name = name.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.push(&name, false, cx).detach();
+                    proj.push_at(&name, false, &worktree_path, cx).detach();
                 });
             }
             SidebarEvent::RemoteRemove(name) => {
@@ -1313,14 +1434,18 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::AcceptConflictOurs(path) => {
                 let path = path.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.accept_conflict_ours(path, cx).detach();
+                    proj.accept_conflict_ours_at(path, &worktree_path, cx)
+                        .detach();
                 });
             }
             SidebarEvent::AcceptConflictTheirs(path) => {
                 let path = path.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.accept_conflict_theirs(path, cx).detach();
+                    proj.accept_conflict_theirs_at(path, &worktree_path, cx)
+                        .detach();
                 });
             }
             SidebarEvent::StashSelected(index) => {
@@ -1416,30 +1541,17 @@ pub(super) fn subscribe_sidebar(
             SidebarEvent::WorktreeSelected(index) => {
                 let worktrees = project.read(cx).worktrees().to_vec();
                 if let Some(wt) = worktrees.get(*index) {
-                    if let Some(tab) = this.tabs.get_mut(this.active_tab) {
-                        tab.inspecting_worktree = if wt.is_current {
-                            None
-                        } else {
-                            Some(super::InspectingWorktree {
-                                name: wt.name.clone(),
-                                path: wt.path.clone(),
-                                branch: wt.branch.clone(),
-                            })
-                        };
-                    }
+                    let inspecting = (!wt.is_current).then(|| super::InspectingWorktree {
+                        name: wt.name.clone(),
+                        path: wt.path.clone(),
+                    });
+                    set_inspecting_worktree(this, inspecting, cx);
                     if let Some(oid) = wt.head_oid {
                         if let Some(tab) = this.tabs.get(this.active_tab) {
                             tab.graph.update(cx, |g, cx| {
                                 g.scroll_to_commit(oid, cx);
                             });
                         }
-                    }
-                    update_sidebar_for_active_worktree(this, cx);
-                    if let Some(tab) = this.tabs.get(this.active_tab) {
-                        let dp = tab.detail_panel.clone();
-                        let dv = tab.diff_viewer.clone();
-                        dp.update(cx, |dp, cx| dp.clear(cx));
-                        dv.update(cx, |dv, cx| dv.clear(cx));
                     }
                 }
             }
@@ -1542,8 +1654,9 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::StashApply(index) => {
                 let index = *index;
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.stash_apply(index, cx).detach();
+                    proj.stash_apply_at(index, &worktree_path, cx).detach();
                 });
             }
             SidebarEvent::BranchRename(name) => {
@@ -1568,8 +1681,9 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::StashPop(index) => {
                 let index = *index;
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.stash_pop(index, cx).detach();
+                    proj.stash_pop_at(index, &worktree_path, cx).detach();
                 });
             }
             SidebarEvent::StashBranch(index) => {
@@ -1865,20 +1979,18 @@ pub(super) fn subscribe_graph(
                 }
                 GraphViewEvent::CherryPick(oid) => {
                     let oid = *oid;
-                    // Capture HEAD before cherry-pick for undo support
+                    let worktree_path = this.effective_worktree_path(cx);
+                    // The HEAD the undo will reset to, read from the checkout
+                    // the cherry-pick is about to change. The repository-wide log's
+                    // HEAD row is the main checkout's branch, which is a
+                    // different commit whenever a worktree is being inspected.
                     let previous_head_oid: Option<String> = project
                         .read(cx)
-                        .recent_commits()
-                        .iter()
-                        .find(|c| {
-                            c.refs
-                                .iter()
-                                .any(|r| matches!(r, rgitui_git::RefLabel::Head))
-                        })
-                        .map(|c| c.oid.to_string());
+                        .head_oid_at(&worktree_path)
+                        .map(|oid| oid.to_string());
 
                     project.update(cx, |proj, cx| {
-                        proj.cherry_pick(oid, cx).detach();
+                        proj.cherry_pick_at(oid, &worktree_path, cx).detach();
                     });
 
                     if let Some(oid_hex) = previous_head_oid {
@@ -1891,20 +2003,18 @@ pub(super) fn subscribe_graph(
                 }
                 GraphViewEvent::RevertCommit(oid) => {
                     let oid = *oid;
-                    // Capture HEAD before revert for undo support
+                    let worktree_path = this.effective_worktree_path(cx);
+                    // The HEAD the undo will reset to, read from the checkout
+                    // the revert is about to change. The repository-wide log's
+                    // HEAD row is the main checkout's branch, which is a
+                    // different commit whenever a worktree is being inspected.
                     let previous_head_oid: Option<String> = project
                         .read(cx)
-                        .recent_commits()
-                        .iter()
-                        .find(|c| {
-                            c.refs
-                                .iter()
-                                .any(|r| matches!(r, rgitui_git::RefLabel::Head))
-                        })
-                        .map(|c| c.oid.to_string());
+                        .head_oid_at(&worktree_path)
+                        .map(|oid| oid.to_string());
 
                     project.update(cx, |proj, cx| {
-                        proj.revert_commit(oid, cx).detach();
+                        proj.revert_commit_at(oid, &worktree_path, cx).detach();
                     });
 
                     if let Some(oid_hex) = previous_head_oid {
@@ -2072,30 +2182,15 @@ pub(super) fn subscribe_graph(
                 } => {
                     let worktree_path = worktree_path.clone();
                     let name = name.clone();
-                    let worktree = project
+                    let is_current = project
                         .read(cx)
-                        .worktrees()
-                        .iter()
-                        .find(|worktree| worktree.path == worktree_path)
-                        .cloned();
-                    if let Some(tab) = this.tabs.get_mut(this.active_tab) {
-                        tab.inspecting_worktree = worktree.and_then(|worktree| {
-                            if worktree.is_current {
-                                None
-                            } else {
-                                Some(super::InspectingWorktree {
-                                    name,
-                                    path: worktree_path,
-                                    branch: worktree.branch,
-                                })
-                            }
-                        });
-                    }
-                    update_sidebar_for_active_worktree(this, cx);
-                    let dp = detail_panel_ref.clone();
-                    let dv = diff_viewer.clone();
-                    dp.update(cx, |dp, cx| dp.clear(cx));
-                    dv.update(cx, |dv, cx| dv.clear(cx));
+                        .worktree_at(&worktree_path)
+                        .is_some_and(|worktree| worktree.is_current);
+                    let inspecting = (!is_current).then_some(super::InspectingWorktree {
+                        name,
+                        path: worktree_path,
+                    });
+                    set_inspecting_worktree(this, inspecting, cx);
                 }
                 GraphViewEvent::InteractiveRebase(target_oid) => {
                     let target = *target_oid;
@@ -2196,19 +2291,14 @@ pub(super) fn subscribe_detail_panel(
                 if let Some(project) = this.active_project().cloned() {
                     if let Ok(oid) = git2::Oid::from_str(sha) {
                         // Capture HEAD before cherry-pick for undo support
+                        let worktree_path = this.effective_worktree_path(cx);
                         let previous_head_oid: Option<String> = project
                             .read(cx)
-                            .recent_commits()
-                            .iter()
-                            .find(|c| {
-                                c.refs
-                                    .iter()
-                                    .any(|r| matches!(r, rgitui_git::RefLabel::Head))
-                            })
-                            .map(|c| c.oid.to_string());
+                            .head_oid_at(&worktree_path)
+                            .map(|oid| oid.to_string());
 
                         project.update(cx, |proj, cx| {
-                            proj.cherry_pick(oid, cx).detach();
+                            proj.cherry_pick_at(oid, &worktree_path, cx).detach();
                         });
 
                         if let Some(oid_hex) = previous_head_oid {
@@ -2482,9 +2572,11 @@ pub(super) fn subscribe_commit_panel(
                     cp.set_ai_generating(true, cx);
                 });
 
-                let proj = project.read(cx);
-                let repo_path = proj.repo_path().to_path_buf();
-                let summary = proj.staged_summary();
+                // Describe the checkout the commit will land in. Reading the
+                // main repository here made "generate message" summarise the main
+                // checkout's staged changes while the commit went to the worktree.
+                let repo_path = this.effective_worktree_path(cx);
+                let summary = project.read(cx).staged_summary_at(&repo_path);
                 let ai_entity = ai.clone();
                 let diff_repo_path = repo_path.clone();
                 let settings_state = cx.global::<rgitui_settings::SettingsState>();
@@ -2525,18 +2617,21 @@ pub(super) fn subscribe_toolbar(
     cx.subscribe(toolbar, {
         move |this, _toolbar, event: &ToolbarEvent, cx| match event {
             ToolbarEvent::Fetch => {
+                let worktree_path = this.effective_worktree_path(cx);
                 _project.update(cx, |proj, cx| {
-                    proj.fetch_default(cx).detach();
+                    proj.fetch_default_at(&worktree_path, cx).detach();
                 });
             }
             ToolbarEvent::Pull => {
+                let worktree_path = this.effective_worktree_path(cx);
                 _project.update(cx, |proj, cx| {
-                    proj.pull_default(cx).detach();
+                    proj.pull_default_at(&worktree_path, cx).detach();
                 });
             }
             ToolbarEvent::Push => {
+                let worktree_path = this.effective_worktree_path(cx);
                 _project.update(cx, |proj, cx| {
-                    proj.push_default(false, cx).detach();
+                    proj.push_default_at(false, &worktree_path, cx).detach();
                 });
             }
             ToolbarEvent::StashSave => {
@@ -2545,8 +2640,9 @@ pub(super) fn subscribe_toolbar(
                 });
             }
             ToolbarEvent::StashPop => {
+                let worktree_path = this.effective_worktree_path(cx);
                 _project.update(cx, |proj, cx| {
-                    proj.stash_pop(0, cx).detach();
+                    proj.stash_pop_at(0, &worktree_path, cx).detach();
                 });
             }
             ToolbarEvent::Branch => {

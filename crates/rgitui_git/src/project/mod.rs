@@ -296,6 +296,9 @@ pub struct GitProject {
     /// Number of commits currently loaded (used by incremental load-more).
     commit_offset: usize,
     next_operation_id: u64,
+    /// Where each recent operation ran, so a retry can go back to the same
+    /// checkout rather than to whatever is on screen when the failure lands.
+    operation_worktrees: std::collections::HashMap<u64, PathBuf>,
     /// Remote default branch (e.g. "main"), from `refs/remotes/origin/HEAD`.
     default_branch: Option<String>,
     /// Current Git user email, read from repo config then global config.
@@ -317,6 +320,11 @@ pub struct GitProject {
     commit_query_generation: u64,
     /// Suppresses duplicate pagination requests while one page is already in flight.
     load_more_in_flight: bool,
+    /// The linked worktree the UI is currently inspecting, if any. The watcher
+    /// always watches this checkout — even when the `watch_all_worktrees`
+    /// setting is off — so the file list and diff of the worktree the user is
+    /// actually looking at stay live.
+    inspected_worktree: Option<PathBuf>,
 }
 
 impl EventEmitter<GitProjectEvent> for GitProject {}
@@ -341,6 +349,7 @@ impl GitProject {
             has_more_commits: false,
             commit_offset: 0,
             next_operation_id: 1,
+            operation_worktrees: std::collections::HashMap::new(),
             default_branch: None,
             current_user_email: None,
             commit_author_filter: None,
@@ -349,6 +358,7 @@ impl GitProject {
             refresh_generation: 0,
             commit_query_generation: 0,
             load_more_in_flight: false,
+            inspected_worktree: None,
         }
     }
 
@@ -376,6 +386,7 @@ impl GitProject {
             has_more_commits: false,
             commit_offset: 0,
             next_operation_id: 1,
+            operation_worktrees: std::collections::HashMap::new(),
             default_branch: None,
             current_user_email: None,
             commit_author_filter: None,
@@ -384,6 +395,7 @@ impl GitProject {
             refresh_generation: 0,
             commit_query_generation: 0,
             load_more_in_flight: false,
+            inspected_worktree: None,
         };
 
         if let Some(cached) = history_cache::load(&project.repo_path, project.commit_limit) {
@@ -420,10 +432,31 @@ impl GitProject {
             details: None,
             remote_name,
             branch_name,
+            worktree_path: None,
             retryable: false,
         }));
         cx.notify();
         id
+    }
+
+    /// How many operations' worktrees to remember. Only the retryable ones
+    /// register, and only the most recent failure is ever offered, so this is
+    /// far more history than anything reads.
+    const REMEMBERED_OPERATION_WORKTREES: usize = 32;
+
+    /// Records where operation `id` is running, so its retry can go back there.
+    pub(crate) fn note_operation_worktree(&mut self, id: u64, worktree_path: &Path) {
+        self.operation_worktrees
+            .insert(id, worktree_path.to_path_buf());
+        if self.operation_worktrees.len() > Self::REMEMBERED_OPERATION_WORKTREES {
+            let cutoff = id.saturating_sub(Self::REMEMBERED_OPERATION_WORKTREES as u64);
+            self.operation_worktrees
+                .retain(|recorded, _| *recorded > cutoff);
+        }
+    }
+
+    fn operation_worktree(&self, id: u64) -> Option<PathBuf> {
+        self.operation_worktrees.get(&id).cloned()
     }
 
     pub(crate) fn complete_op(
@@ -442,6 +475,7 @@ impl GitProject {
             details: names.0,
             remote_name: names.1,
             branch_name: names.2,
+            worktree_path: self.operation_worktree(id),
             retryable: false,
         }));
     }
@@ -463,6 +497,7 @@ impl GitProject {
             details: Some(error.into()),
             remote_name: names.0,
             branch_name: names.1,
+            worktree_path: self.operation_worktree(id),
             retryable: names.2,
         }));
     }
@@ -518,8 +553,49 @@ impl GitProject {
         self.head_detached
     }
 
+    /// Tell the watcher which linked worktree the UI is inspecting so it is
+    /// watched and fingerprinted regardless of the `watch_all_worktrees`
+    /// setting. Pass `None` when the user leaves worktree inspection.
+    pub fn set_inspected_worktree(&mut self, path: Option<PathBuf>) {
+        self.inspected_worktree = path;
+    }
+
+    pub(crate) fn inspected_worktree(&self) -> Option<&Path> {
+        self.inspected_worktree.as_deref()
+    }
+
+    /// The worktree in the current snapshot whose working directory is
+    /// `worktree_path`, if any.
+    pub fn worktree_at(&self, worktree_path: &Path) -> Option<&WorktreeInfo> {
+        self.worktrees
+            .iter()
+            .find(|worktree| worktree.path == worktree_path)
+    }
+
+    /// The branch checked out in `worktree_path`. Falls back to this project's
+    /// own HEAD branch when the path is not a worktree we know about, so
+    /// operation labels degrade to something sensible rather than blank.
+    pub fn head_branch_at(&self, worktree_path: &Path) -> Option<String> {
+        match self.worktree_at(worktree_path) {
+            Some(worktree) => worktree.branch.clone(),
+            None => self.head_branch.clone(),
+        }
+    }
+
     pub fn repo_state(&self) -> RepoState {
         self.repo_state
+    }
+
+    /// The merge/rebase state of `worktree_path`. Each checkout keeps its own —
+    /// a conflicted pull inside a linked worktree writes `MERGE_HEAD` under
+    /// `.git/worktrees/<name>/`, which the main repository reports as clean —
+    /// so a banner or a Continue/Abort command asking about the project would
+    /// tell the user nothing is in progress while they are looking at conflicts.
+    pub fn repo_state_at(&self, worktree_path: &Path) -> RepoState {
+        match self.worktree_at(worktree_path) {
+            Some(worktree) => worktree.state,
+            None => self.repo_state,
+        }
     }
 
     pub fn branches(&self) -> &[BranchInfo] {
@@ -534,8 +610,15 @@ impl GitProject {
         &self.remotes
     }
 
-    pub fn preferred_remote_name(&self) -> Result<String> {
-        let repo = self.open_repo()?;
+    /// The remote a default fetch should use for `worktree_path`.
+    ///
+    /// Derived from that checkout's own HEAD and upstream. A linked worktree on
+    /// a branch tracking `fork/feature` should fetch `fork`, and asking the
+    /// main repository would answer `origin` — the remote of a branch the user
+    /// is not on.
+    pub fn preferred_remote_name_at(&self, worktree_path: &Path) -> Result<String> {
+        let repo = Repository::open(worktree_path)
+            .with_context(|| format!("Failed to open repository at {}", worktree_path.display()))?;
         default_remote_name(&repo)
     }
 
@@ -608,12 +691,26 @@ impl GitProject {
             .collect()
     }
 
-    /// Whether the working tree has any conflicted files.
-    pub fn has_conflicts(&self) -> bool {
-        self.status
-            .unstaged
-            .iter()
-            .any(|f| f.kind == FileChangeKind::Conflicted)
+    /// The conflicted files in `worktree_path`. Falls back to this project's
+    /// own status when that checkout has no cached status yet, which is the
+    /// same answer the caller would have got before asking.
+    pub fn conflicted_files_at(&self, worktree_path: &Path) -> Vec<&FileStatus> {
+        match self
+            .worktree_at(worktree_path)
+            .and_then(|worktree| worktree.status.as_ref())
+        {
+            Some(status) => status
+                .unstaged
+                .iter()
+                .filter(|f| f.kind == FileChangeKind::Conflicted)
+                .collect(),
+            None => self.conflicted_files(),
+        }
+    }
+
+    /// Whether `worktree_path` has any conflicted files.
+    pub fn has_conflicts_at(&self, worktree_path: &Path) -> bool {
+        !self.conflicted_files_at(worktree_path).is_empty()
     }
 
     pub(crate) fn open_repo(&self) -> Result<Repository> {

@@ -75,12 +75,6 @@ fn checkout_tree_safe(repo: &Repository, target: &git2::Object<'_>, operation: &
 }
 
 impl GitProject {
-    /// Stage specific files.
-    pub fn stage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_files_at(paths, &worktree_path, cx)
-    }
-
     /// Stage specific files in the given worktree.
     pub fn stage_files_at(
         &mut self,
@@ -166,12 +160,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage specific files.
-    pub fn unstage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_files_at(paths, &worktree_path, cx)
     }
 
     /// Unstage specific files in the given worktree.
@@ -267,12 +255,6 @@ impl GitProject {
         })
     }
 
-    /// Stage all changes.
-    pub fn stage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_all_at(&worktree_path, cx)
-    }
-
     /// Stage all changes in the given worktree.
     pub fn stage_all_at(
         &mut self,
@@ -341,12 +323,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage all changes.
-    pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_all_at(&worktree_path, cx)
     }
 
     /// Unstage all changes in the given worktree.
@@ -421,16 +397,6 @@ impl GitProject {
     }
 
     /// Create a commit with the current staged changes.
-    pub fn commit(
-        &mut self,
-        message: &str,
-        amend: bool,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<git2::Oid>> {
-        let worktree_path = self.repo_path.clone();
-        self.commit_at(message, amend, &worktree_path, cx)
-    }
-
     /// Create a commit in the given worktree with the current staged changes.
     pub fn commit_at(
         &mut self,
@@ -923,10 +889,6 @@ impl GitProject {
     }
 
     /// Create a new branch from HEAD.
-    pub fn create_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
-        self.create_branch_at(name, None, cx)
-    }
-
     /// Create a new branch, optionally at a specific commit (SHA or ref).
     /// If `base_ref` is None or empty, creates at HEAD.
     pub fn create_branch_at(
@@ -1246,14 +1208,17 @@ impl GitProject {
         })
     }
 
-    /// Save the current working tree to a stash.
-    pub fn stash_save(
+    /// Save the given worktree to a stash. Stashes are stored in the shared
+    /// object store, but the changes taken are those of `worktree_path`.
+    pub fn stash_save_at(
         &mut self,
         message: Option<&str>,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("stash_save");
+        log::info!("stash_save: worktree={}", worktree_path.display());
         let message = message.map(String::from);
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1268,7 +1233,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     let sig = repo.signature()?;
                     repo.stash_save(&sig, message.as_deref().unwrap_or("WIP"), None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -1307,9 +1272,19 @@ impl GitProject {
         })
     }
 
-    /// Pop the top stash entry.
-    pub fn stash_pop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("stash_pop: index={}", index);
+    /// Pop a stash entry into the given worktree.
+    pub fn stash_pop_at(
+        &mut self,
+        index: usize,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "stash_pop: index={} worktree={}",
+            index,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1324,7 +1299,7 @@ impl GitProject {
             let result: anyhow::Result<(RefreshData, String)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     // A conflicting pop leaves conflict markers and unmerged index
                     // entries rather than truly failing; surface that (and still
                     // refresh) instead of a hard failure that hides the new state.
@@ -1378,9 +1353,19 @@ impl GitProject {
         })
     }
 
-    /// Apply a stash entry without removing it from the stash list.
-    pub fn stash_apply(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("stash_apply: index={}", index);
+    /// Apply a stash entry into the given worktree without removing it.
+    pub fn stash_apply_at(
+        &mut self,
+        index: usize,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "stash_apply: index={} worktree={}",
+            index,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1395,7 +1380,7 @@ impl GitProject {
             let result: anyhow::Result<(RefreshData, String)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     // A conflicting apply leaves conflict markers and unmerged index
                     // entries rather than truly failing; surface that (and still
                     // refresh) instead of a hard failure that hides the new state.
@@ -1510,17 +1495,28 @@ impl GitProject {
 
     /// Create a branch from a stash entry and apply the stash to it.
     /// Equivalent to `git stash branch <branchname>`.
-    pub fn stash_branch(
+    pub fn stash_branch_at(
         &mut self,
         branch_name: &str,
         stash_index: usize,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("stash_branch: branch={} index={}", branch_name, stash_index);
+        log::info!(
+            "stash_branch: branch={} index={} worktree={}",
+            branch_name,
+            stash_index,
+            worktree_path.display()
+        );
+        // This checks a new branch out and applies the stash into a working
+        // tree — both of which belong to the checkout on screen. Doing it in
+        // the main one would switch a checkout the user is not looking at and
+        // drop the shared stash from under the one they are.
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name_owned = branch_name.to_string();
-        let current_branch = self.head_branch.clone();
+        let current_branch = self.head_branch_at(&worktree_path);
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
             format!(
@@ -1537,7 +1533,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
 
                     // Collect stash OIDs to find the one at stash_index.
                     let mut stash_oids: Vec<git2::Oid> = Vec::new();
@@ -1609,16 +1605,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Discard changes in specific files (restore to HEAD).
-    pub fn discard_changes(
-        &mut self,
-        paths: &[PathBuf],
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.discard_changes_at(paths, &worktree_path, cx)
     }
 
     /// Discard changes in specific files for the given worktree (restore to HEAD).
@@ -1724,9 +1710,14 @@ impl GitProject {
         })
     }
 
-    /// Remove all untracked files and directories from the working tree.
-    /// Uses `git clean -fd` after a dry-run to enumerate files.
-    pub fn clean_untracked(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+    /// Remove all untracked files and directories from the given worktree.
+    pub fn clean_untracked_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("clean_untracked: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1743,7 +1734,7 @@ impl GitProject {
                 .spawn(async move {
                     // Dry run first to count files
                     let dry_output = super::git_command()
-                        .current_dir(&repo_path)
+                        .current_dir(&worktree_path)
                         .args(["clean", "-n", "-fd"])
                         .output()
                         .context("Failed to execute git clean -n")?;
@@ -1766,7 +1757,7 @@ impl GitProject {
 
                     // Actually remove untracked files and directories
                     let output = super::git_command()
-                        .current_dir(&repo_path)
+                        .current_dir(&worktree_path)
                         .args(["clean", "-f", "-fd"])
                         .output()
                         .context("Failed to execute git clean -f")?;
@@ -1828,8 +1819,13 @@ impl GitProject {
     }
 
     /// Hard reset to HEAD, discarding all working tree and index changes.
-    pub fn reset_hard(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_hard");
+    pub fn reset_hard_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("reset_hard: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1844,7 +1840,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let head_commit = repo.head()?.peel_to_commit()?;
                     repo.reset(head_commit.as_object(), git2::ResetType::Hard, None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -1887,9 +1883,19 @@ impl GitProject {
         })
     }
 
-    /// Hard-reset the current branch to a specific commit.
-    pub fn reset_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_to_commit: oid={}", oid);
+    /// Hard-reset the given worktree's branch to a specific commit.
+    pub fn reset_to_commit_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "reset_to_commit: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1905,7 +1911,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Hard, None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -1946,12 +1952,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Soft-reset the current branch to a specific commit, preserving changes in the index.
-    pub fn reset_soft(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.reset_soft_at(oid, &worktree_path, cx)
     }
 
     /// Soft-reset the given worktree's branch to `oid`, preserving changes in the
@@ -2023,9 +2023,19 @@ impl GitProject {
         })
     }
 
-    /// Mixed-reset the current branch to a specific commit, unstaging all changes.
-    pub fn reset_mixed(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_mixed: oid={}", oid);
+    /// Mixed-reset the given worktree's branch to a specific commit, unstaging all changes.
+    pub fn reset_mixed_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "reset_mixed: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -2041,7 +2051,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Mixed, None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -2085,11 +2095,21 @@ impl GitProject {
     }
 
     /// Revert a commit (creates a new commit that undoes the given commit).
-    pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("revert_commit: oid={}", oid);
+    pub fn revert_commit_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "revert_commit: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Revert,
@@ -2102,7 +2122,7 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData, bool)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     ensure_clean_worktree(&repo, "Revert")?;
                     let commit = repo.find_commit(oid)?;
                     let summary = commit.summary().unwrap_or("").to_string();
@@ -2164,11 +2184,21 @@ impl GitProject {
     }
 
     /// Cherry-pick a commit onto the current HEAD.
-    pub fn cherry_pick(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("cherry_pick: oid={}", oid);
+    pub fn cherry_pick_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "cherry_pick: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::CherryPick,
@@ -2181,7 +2211,7 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData, bool)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     ensure_clean_worktree(&repo, "Cherry-pick")?;
                     let commit = repo.find_commit(oid)?;
                     let summary = commit.summary().unwrap_or("").to_string();
@@ -2242,14 +2272,20 @@ impl GitProject {
         })
     }
 
-    /// Abort the current in-progress operation (merge, rebase, cherry-pick, revert).
-    /// Resets the working tree and index to HEAD and cleans up the repo state.
-    pub fn abort_operation(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("abort_operation");
+    /// Abort the operation in progress in `worktree_path` (merge, rebase,
+    /// cherry-pick, revert). Resets that working tree and index to its HEAD and
+    /// cleans up its state.
+    pub fn abort_operation_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("abort_operation: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
-        let state_label = self.repo_state.label().to_string();
+        let branch_name = self.head_branch_at(&worktree_path);
+        let state_label = self.repo_state_at(&worktree_path).label().to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
             format!("Aborting {}...", state_label.to_lowercase()),
@@ -2261,7 +2297,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
 
                     if repo.state() == git2::RepositoryState::Rebase
                         || repo.state() == git2::RepositoryState::RebaseInteractive
@@ -2318,13 +2354,18 @@ impl GitProject {
         })
     }
 
-    /// Continue the current merge by committing with the default merge message.
-    /// This stages all files and creates the merge commit.
-    pub fn continue_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("continue_merge");
+    /// Continue the merge in progress in `worktree_path` by committing with the
+    /// default merge message.
+    pub fn continue_merge_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("continue_merge: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
             "Continuing merge...",
@@ -2336,7 +2377,7 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
 
                     // Only finalize an actual merge. Other paused operations
                     // (cherry-pick/revert/rebase/bisect) have no MERGE_HEAD and must
@@ -3340,31 +3381,38 @@ impl GitProject {
     }
 
     /// Accept the "ours" version of a conflicted file, staging it as resolved.
-    pub fn accept_conflict_ours(
+    pub fn accept_conflict_ours_at(
         &mut self,
         path: String,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("accept_conflict_ours: path={}", path);
-        self.accept_conflict_side(path, ConflictSide::Ours, cx)
+        self.accept_conflict_side(path, ConflictSide::Ours, worktree_path, cx)
     }
 
     /// Accept the "theirs" version of a conflicted file, staging it as resolved.
-    pub fn accept_conflict_theirs(
+    pub fn accept_conflict_theirs_at(
         &mut self,
         path: String,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("accept_conflict_theirs: path={}", path);
-        self.accept_conflict_side(path, ConflictSide::Theirs, cx)
+        self.accept_conflict_side(path, ConflictSide::Theirs, worktree_path, cx)
     }
 
     fn accept_conflict_side(
         &mut self,
         path: String,
         side: ConflictSide,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        // The conflicted index and the file to rewrite both belong to the
+        // checkout the conflict is in; the snapshot is still gathered from the
+        // project's own root, which is what every other operation does.
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let file_path = PathBuf::from(&path);
@@ -3372,7 +3420,7 @@ impl GitProject {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.clone());
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let side_label = match side {
             ConflictSide::Ours => "ours",
             ConflictSide::Theirs => "theirs",
@@ -3391,7 +3439,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     // Find the conflict for this path in the index's conflict iterator
                     let index = repo.index()?;
                     let mut conflicts = index.conflicts()?;
@@ -3425,7 +3473,7 @@ impl GitProject {
                     let content = blob.content();
 
                     // Write the chosen content to the workdir file
-                    let full_path = repo_path.join(&file_path);
+                    let full_path = worktree_path.join(&file_path);
                     if let Some(parent) = full_path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }

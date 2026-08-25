@@ -269,7 +269,7 @@ impl Workspace {
             }
             UndoAction::PopStash(index) => {
                 project.update(cx, |proj, cx| {
-                    proj.stash_pop(index, cx).detach();
+                    proj.stash_pop_at(index, &worktree_path, cx).detach();
                 });
                 self.show_toast(
                     format!("Undid: {undo_label}{suffix}"),
@@ -294,7 +294,7 @@ impl Workspace {
             UndoAction::ResetTo(oid_hex) => {
                 if let Ok(oid) = git2::Oid::from_str(&oid_hex) {
                     project.update(cx, |proj, cx| {
-                        proj.reset_to_commit(oid, cx).detach();
+                        proj.reset_to_commit_at(oid, &worktree_path, cx).detach();
                     });
                     self.show_toast(
                         format!("Undid: {undo_label}{suffix}"),

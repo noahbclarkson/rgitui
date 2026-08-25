@@ -184,6 +184,83 @@ fn repository_git_dirs(repo_path: &Path) -> Option<(PathBuf, PathBuf)> {
     Some((repo.path().to_path_buf(), repo.commondir().to_path_buf()))
 }
 
+/// Gitignore filtering for the notify callback, one handle per watched checkout.
+///
+/// `Repository::status_should_ignore` resolves the path it is given against the
+/// workdir of the repository it is asked. Asking the main repository about a
+/// path inside a *linked worktree* therefore evaluates a nonsense relative path
+/// and answers "not ignored" no matter what that worktree's `.gitignore` says —
+/// so a `cargo build` in a watched worktree woke a refresh for every file the
+/// compiler wrote. Routing each event path to the checkout that owns it, and
+/// asking about the path *relative to that root*, makes the answer correct.
+struct IgnoreRepos {
+    repos: Vec<(PathBuf, git2::Repository)>,
+}
+
+impl IgnoreRepos {
+    fn new() -> Self {
+        Self { repos: Vec::new() }
+    }
+
+    /// Open a handle for `root` if one is not held already.
+    fn add(&mut self, root: &Path) {
+        if self.repos.iter().any(|(path, _)| path == root) {
+            return;
+        }
+        match git2::Repository::open(root) {
+            Ok(repo) => self.repos.push((root.to_path_buf(), repo)),
+            Err(e) => log::debug!("No gitignore filtering for {}: {}", root.display(), e),
+        }
+    }
+
+    /// Drop handles for roots that are no longer watched.
+    fn retain_roots(&mut self, keep: &HashSet<PathBuf>) {
+        self.repos.retain(|(path, _)| keep.contains(path));
+    }
+
+    /// Whether every path in `paths` is ignored by the checkout that owns it.
+    /// A path under no watched root counts as not ignored, so unknown changes
+    /// still wake a refresh rather than being silently dropped.
+    fn all_ignored(&self, paths: &[PathBuf]) -> bool {
+        !paths.is_empty() && paths.iter().all(|path| self.is_ignored(path))
+    }
+
+    fn is_ignored(&self, path: &Path) -> bool {
+        let Some(owner) = owning_root(self.repos.iter().map(|(root, _)| root.as_path()), path)
+        else {
+            return false;
+        };
+        self.repos
+            .iter()
+            .find(|(root, _)| root == owner)
+            .is_some_and(|(root, repo)| match path.strip_prefix(root) {
+                Ok(relative) if relative.as_os_str().is_empty() => false,
+                // A workdir-relative path sidesteps libgit2's absolute-path
+                // relativization entirely, which is where the cross-worktree
+                // answer went wrong.
+                Ok(relative) => repo.status_should_ignore(relative).unwrap_or(false),
+                Err(_) => false,
+            })
+    }
+}
+
+/// The checkout that owns `path`: the deepest watched root containing it.
+///
+/// A linked worktree may live inside the main checkout, and when it does the
+/// main repository almost certainly ignores that directory — you do not want a
+/// worktree showing up as untracked files in its own parent. Asking every root
+/// and taking any "yes" would let that answer suppress events for files the
+/// worktree itself tracks, leaving its status and diff stale while the user
+/// edits them. Only the innermost checkout has standing to answer.
+fn owning_root<'a>(roots: impl Iterator<Item = &'a Path>, path: &Path) -> Option<&'a Path> {
+    roots
+        .filter(|root| {
+            path.strip_prefix(root)
+                .is_ok_and(|relative| !relative.as_os_str().is_empty())
+        })
+        .max_by_key(|root| root.components().count())
+}
+
 impl GitProject {
     /// Start watching the repository for filesystem changes.
     ///
@@ -205,12 +282,14 @@ impl GitProject {
         // remove watched paths when the all-worktrees setting flips.
         let watcher_handle: Arc<Mutex<Option<RecommendedWatcher>>> = Arc::new(Mutex::new(None));
 
+        // One gitignore handle per watched checkout, kept in step with the
+        // watched set by the poll loop below.
+        let ignore_repos: Arc<Mutex<IgnoreRepos>> = Arc::new(Mutex::new(IgnoreRepos::new()));
+        ignore_repos.lock().expect("ignore mutex").add(&repo_path);
+
         {
             let dirty_flag = dirty.clone();
-            // Open a Repository handle for gitignore filtering. `git2::Repository`
-            // is `Send`, and the notify callback is a single-threaded `FnMut`,
-            // so we can move it in directly. None means we skip the filter.
-            let ignore_repo: Option<git2::Repository> = git2::Repository::open(&repo_path).ok();
+            let callback_ignore_repos = ignore_repos.clone();
             let watcher =
                 notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                     if let Ok(event) = res {
@@ -225,13 +304,8 @@ impl GitProject {
                         // (e.g. `target/`, `node_modules/`). Tracked files —
                         // even modified ones — are never reported as ignored,
                         // so legitimate changes still pass through.
-                        if let Some(repo) = ignore_repo.as_ref() {
-                            let all_ignored = !event.paths.is_empty()
-                                && event
-                                    .paths
-                                    .iter()
-                                    .all(|p| repo.status_should_ignore(p).unwrap_or(false));
-                            if all_ignored {
+                        if let Ok(repos) = callback_ignore_repos.lock() {
+                            if repos.all_ignored(&event.paths) {
                                 return;
                             }
                         }
@@ -273,6 +347,7 @@ impl GitProject {
         cx.spawn({
             let watcher_handle = watcher_handle.clone();
             let watched_extras = watched_extras.clone();
+            let ignore_repos = ignore_repos.clone();
             let last_fingerprint = last_fingerprint.clone();
             let dirty = dirty.clone();
             let repo_path = repo_path.clone();
@@ -309,7 +384,7 @@ impl GitProject {
                             // the whole list with just `commit_limit` commits).
                             let effective_limit =
                                 proj.loaded_commit_count().max(watcher_commit_limit);
-                            let paths = if watch_all {
+                            let mut paths = if watch_all {
                                 proj.worktrees
                                     .iter()
                                     .filter(|w| !w.is_current)
@@ -318,6 +393,14 @@ impl GitProject {
                             } else {
                                 HashSet::new()
                             };
+                            // The worktree the user is inspecting is watched
+                            // whether or not the setting is on: its file list
+                            // and diff are on screen, so they have to stay live.
+                            if let Some(inspected) = proj.inspected_worktree() {
+                                if inspected != proj.repo_path {
+                                    paths.insert(inspected.to_path_buf());
+                                }
+                            }
                             Some((
                                 paths,
                                 effective_limit,
@@ -356,6 +439,15 @@ impl GitProject {
                                 }
                             }
                             *current = desired.clone();
+
+                            if let Ok(mut repos) = ignore_repos.lock() {
+                                let mut keep = desired.clone();
+                                keep.insert(repo_path.clone());
+                                repos.retain_roots(&keep);
+                                for root in &desired {
+                                    repos.add(root);
+                                }
+                            }
                         }
                     }
 
@@ -493,6 +585,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_nested_worktree_answers_for_its_own_files() {
+        let main = Path::new("/repo");
+        let nested = Path::new("/repo/feature");
+        let roots = [main, nested];
+
+        // The main checkout very likely ignores `feature/` — a worktree inside
+        // it would otherwise read as a pile of untracked files — so letting it
+        // answer would suppress events for files the worktree tracks.
+        assert_eq!(
+            owning_root(roots.into_iter(), Path::new("/repo/feature/src/main.rs")),
+            Some(nested)
+        );
+        assert_eq!(
+            owning_root(roots.into_iter(), Path::new("/repo/src/main.rs")),
+            Some(main)
+        );
+    }
+
+    #[test]
+    fn a_path_under_no_watched_root_has_no_owner() {
+        let roots = [Path::new("/repo")];
+        assert_eq!(
+            owning_root(roots.into_iter(), Path::new("/elsewhere/file.rs")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_root_does_not_own_itself() {
+        // Stripping the prefix leaves nothing, and asking libgit2 whether a
+        // checkout ignores its own directory is not a question with an answer.
+        let roots = [Path::new("/repo")];
+        assert_eq!(owning_root(roots.into_iter(), Path::new("/repo")), None);
+    }
+
+    #[test]
     fn loose_ref_fingerprint_includes_oid_content() {
         let temp = tempfile::TempDir::new().unwrap();
         let git_dir = temp.path();
@@ -583,5 +711,104 @@ mod tests {
         assert_eq!(common_dir, repo.commondir());
         assert!(git_state_fingerprint(&git_dir).is_some());
         assert!(git_state_fingerprint(&common_dir).is_some());
+    }
+}
+
+#[cfg(test)]
+mod ignore_repos_tests {
+    use super::*;
+    use rgitui_test_support::TempRepo;
+
+    /// Main repo with a committed `/target` ignore rule plus a linked worktree
+    /// that inherits it. The worktree lives *outside* the main working
+    /// directory, which is where linked worktrees normally sit and where the
+    /// cross-checkout ignore question actually bites.
+    fn repo_with_worktree() -> (TempRepo, tempfile::TempDir) {
+        let fixture = TempRepo::init();
+        fixture.commit_file(".gitignore", "/target\n", "add gitignore");
+
+        let elsewhere = tempfile::TempDir::new().unwrap();
+        let worktree_path = elsewhere.path().join("feature");
+        {
+            let repo = fixture.repo();
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("feature", &head, false).unwrap();
+            let reference = repo.find_reference("refs/heads/feature").unwrap();
+            let mut opts = git2::WorktreeAddOptions::new();
+            opts.reference(Some(&reference));
+            repo.worktree("feature", &worktree_path, Some(&opts))
+                .unwrap();
+        }
+
+        (fixture, elsewhere)
+    }
+
+    /// The checkout [`repo_with_worktree`] added, inside its temp directory.
+    fn worktree_path(elsewhere: &tempfile::TempDir) -> PathBuf {
+        elsewhere.path().join("feature")
+    }
+
+    #[test]
+    fn ignored_build_output_in_the_main_repo_is_filtered() {
+        let fixture = TempRepo::init();
+        fixture.commit_file(".gitignore", "/target\n", "add gitignore");
+        let mut repos = IgnoreRepos::new();
+        repos.add(fixture.path());
+
+        assert!(repos.all_ignored(&[fixture.path().join("target/debug/app.exe")]));
+        assert!(!repos.all_ignored(&[fixture.path().join("src/main.rs")]));
+    }
+
+    /// The main repository cannot answer for a path inside a *different*
+    /// checkout: libgit2 resolves the path against its own workdir, so the
+    /// answer comes back "not ignored" and every file a compiler writes in the
+    /// worktree used to wake a refresh.
+    #[test]
+    fn a_worktree_needs_its_own_handle_to_filter_its_build_output() {
+        let (fixture, elsewhere) = repo_with_worktree();
+        let worktree_path = worktree_path(&elsewhere);
+        let build_output = worktree_path.join("target/debug/app.exe");
+
+        let mut main_only = IgnoreRepos::new();
+        main_only.add(fixture.path());
+        assert!(
+            !main_only.all_ignored(std::slice::from_ref(&build_output)),
+            "the main repo has no basis to answer for another checkout"
+        );
+
+        let mut both = IgnoreRepos::new();
+        both.add(fixture.path());
+        both.add(&worktree_path);
+        assert!(both.all_ignored(&[build_output]));
+        assert!(!both.all_ignored(&[worktree_path.join("src/main.rs")]));
+    }
+
+    #[test]
+    fn a_mixed_event_is_not_filtered() {
+        let fixture = TempRepo::init();
+        fixture.commit_file(".gitignore", "/target\n", "add gitignore");
+        let mut repos = IgnoreRepos::new();
+        repos.add(fixture.path());
+
+        assert!(!repos.all_ignored(&[
+            fixture.path().join("target/debug/app.exe"),
+            fixture.path().join("src/main.rs"),
+        ]));
+        assert!(!repos.all_ignored(&[]), "an empty event is never filtered");
+    }
+
+    #[test]
+    fn dropping_a_root_stops_it_answering() {
+        let (fixture, elsewhere) = repo_with_worktree();
+        let worktree_path = worktree_path(&elsewhere);
+        let build_output = worktree_path.join("target/debug/app.exe");
+        let mut repos = IgnoreRepos::new();
+        repos.add(fixture.path());
+        repos.add(&worktree_path);
+        assert!(repos.all_ignored(std::slice::from_ref(&build_output)));
+
+        let keep: HashSet<PathBuf> = std::iter::once(fixture.path().to_path_buf()).collect();
+        repos.retain_roots(&keep);
+        assert!(!repos.all_ignored(&[build_output]));
     }
 }

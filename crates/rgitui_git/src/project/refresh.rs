@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use chrono::{TimeZone, Utc};
 use git2::{Repository, StatusOptions};
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -179,31 +179,119 @@ fn parse_git_log_records(
     commits
 }
 
+/// Canonical form used to compare two working-tree paths for identity. Git
+/// reports the same checkout through several spellings (trailing separator,
+/// `/` vs `\` on Windows, differing case), so raw `PathBuf` equality would let
+/// the same worktree appear twice. Falls back to the path as given when it
+/// cannot be resolved — e.g. a registry entry whose directory was deleted.
+fn worktree_identity(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Read the checked-out branch and HEAD commit of `repo`.
+///
+/// git2's `shorthand()` returns a short OID rather than `None` on a detached
+/// HEAD, so the detached case is reported separately and `branch` left empty —
+/// otherwise every caller renders `a1b2c3d` as if it were a branch name.
+fn head_summary(repo: &Repository) -> (Option<String>, bool, Option<git2::Oid>) {
+    let detached = repo.head_detached().unwrap_or(false);
+    let head = repo.head().ok();
+    let branch = if detached {
+        None
+    } else {
+        head.as_ref().and_then(|h| h.shorthand().map(String::from))
+    };
+    let head_oid = head.and_then(|h| h.target());
+    (branch, detached, head_oid)
+}
+
+/// Build a [`WorktreeInfo`] for the checkout at `path` by opening it directly.
+fn worktree_info_at(
+    name: String,
+    path: PathBuf,
+    is_locked: bool,
+    is_current: bool,
+) -> WorktreeInfo {
+    let opened = Repository::open(&path);
+    let (branch, head_detached, head_oid) = opened
+        .as_ref()
+        .map(head_summary)
+        .unwrap_or((None, false, None));
+    let state = opened
+        .as_ref()
+        .map(|repo| RepoState::from_git2(repo.state()))
+        .unwrap_or(RepoState::Clean);
+    WorktreeInfo {
+        name,
+        path,
+        is_locked,
+        is_current,
+        branch,
+        head_detached,
+        head_oid,
+        status: None,
+        state,
+    }
+}
+
 /// Gather information about all worktrees attached to this repository.
+///
+/// Three sources are merged, deduplicated by canonical path:
+/// 1. `repo.workdir()` — the checkout rgitui was opened on (`is_current`).
+/// 2. The main checkout, derived from the common git dir. It is absent from
+///    `repo.worktrees()` (which lists only *linked* worktrees), so without this
+///    step it has no row at all when rgitui was opened on a linked worktree.
+/// 3. `repo.worktrees()` — the linked-worktree registry, which still contains
+///    the current checkout when that checkout is itself a linked worktree.
 fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
     let mut worktrees = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
 
-    // Current (main) worktree
-    let workdir = repo.workdir().unwrap_or_else(|| repo.path());
+    // The checkout this Repository handle points at.
+    let workdir = repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf();
     let current_name = workdir
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("main")
         .to_string();
+    let (branch, head_detached, head_oid) = head_summary(repo);
+    seen.insert(worktree_identity(&workdir));
     worktrees.push(WorktreeInfo {
         name: current_name,
-        path: workdir.to_path_buf(),
+        path: workdir,
         is_locked: false,
         is_current: true,
-        branch: repo
-            .head()
-            .ok()
-            .and_then(|h| h.shorthand().map(String::from)),
-        head_oid: repo.head().ok().and_then(|h| h.target()),
+        branch,
+        head_detached,
+        head_oid,
         status: None,
+        state: RepoState::from_git2(repo.state()),
     });
 
-    // List all worktrees from the main repo
+    // The main checkout, when this handle was opened on a linked worktree. A
+    // linked worktree's git dir is `<common>/worktrees/<name>`, so the common
+    // dir's parent is where the main working directory should be. That is only
+    // a guess — a bare repository has no checkout there, and an unrelated
+    // repository could sit at that path — so it counts only if opening it
+    // yields a working directory sharing our common git dir.
+    let common_dir = repo.commondir().to_path_buf();
+    if common_dir != repo.path() {
+        if let Some(main_workdir) = common_dir
+            .parent()
+            .and_then(|candidate| Repository::open(candidate).ok())
+            .filter(|main| main.commondir() == common_dir)
+            .and_then(|main| main.workdir().map(Path::to_path_buf))
+        {
+            if seen.insert(worktree_identity(&main_workdir)) {
+                if let Some(name) = main_workdir.file_name().and_then(|n| n.to_str()) {
+                    let name = name.to_string();
+                    worktrees.push(worktree_info_at(name, main_workdir, false, false));
+                }
+            }
+        }
+    }
+
+    // The linked-worktree registry, shared by every checkout of this repository.
     if let Ok(names) = repo.worktrees() {
         for name in names.iter().flatten() {
             if name.is_empty() {
@@ -211,29 +299,15 @@ fn gather_worktrees(repo: &Repository) -> Vec<WorktreeInfo> {
             }
             if let Ok(wt) = repo.find_worktree(name) {
                 let path = wt.path().to_path_buf();
+                if !seen.insert(worktree_identity(&path)) {
+                    // Already listed — this is the checkout rgitui was opened on.
+                    continue;
+                }
                 let is_locked = match wt.is_locked() {
                     Ok(git2::WorktreeLockStatus::Locked(_)) => true,
                     Ok(git2::WorktreeLockStatus::Unlocked) | Err(_) => false,
                 };
-
-                // Try to open the worktree repo to get branch/HEAD info
-                let wt_repo = Repository::open(&path).ok();
-                let branch = wt_repo
-                    .as_ref()
-                    .and_then(|r| r.head().ok().and_then(|h| h.shorthand().map(String::from)));
-                let head_oid = wt_repo
-                    .as_ref()
-                    .and_then(|r| r.head().ok().and_then(|h| h.target()));
-
-                worktrees.push(WorktreeInfo {
-                    name: name.to_string(),
-                    path,
-                    is_locked,
-                    is_current: false,
-                    branch,
-                    head_oid,
-                    status: None,
-                });
+                worktrees.push(worktree_info_at(name.to_string(), path, is_locked, false));
             }
         }
     }
@@ -731,11 +805,29 @@ fn gather_refresh_data_internal(
             current_worktree.status = Some(status.clone());
         }
 
+        // A failed or panicked status thread leaves `None` — "not known yet" —
+        // rather than an empty status. An empty status is indistinguishable from
+        // a clean worktree, and callers act on that: it would silently drop the
+        // user out of worktree inspection because the checkout looked clean.
         for (idx, handle) in worktree_status_handles {
-            worktrees[idx].status = handle
-                .join()
-                .unwrap_or_else(|_| Ok(Default::default()))
-                .ok();
+            worktrees[idx].status = match handle.join() {
+                Ok(Ok(status)) => Some(status),
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "Failed to compute status for worktree {}: {}",
+                        worktrees[idx].path.display(),
+                        e
+                    );
+                    None
+                }
+                Err(_) => {
+                    log::warn!(
+                        "Status thread panicked for worktree {}",
+                        worktrees[idx].path.display()
+                    );
+                    None
+                }
+            };
         }
 
         let stashes = stash_handle.join().unwrap_or_default();
@@ -1587,5 +1679,97 @@ mod is_merged_tests {
             .unwrap();
         assert_eq!(main.is_merged_into_head, Some(true));
         assert_eq!(diverged.is_merged_into_head, Some(false));
+    }
+}
+
+// ── gather_worktrees ─────────────────────────────────────────────
+
+#[cfg(test)]
+mod worktree_tests {
+    use super::*;
+    use rgitui_test_support::TempRepo;
+
+    /// Add a linked worktree checked out on a new branch, returning its path.
+    fn add_worktree(fixture: &TempRepo, name: &str) -> PathBuf {
+        let repo = fixture.repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch(name, &head, false).unwrap();
+        let path = fixture.path().join(name);
+        let reference = repo
+            .find_reference(&format!("refs/heads/{}", name))
+            .unwrap();
+        let mut opts = git2::WorktreeAddOptions::new();
+        opts.reference(Some(&reference));
+        repo.worktree(name, &path, Some(&opts)).unwrap();
+        path
+    }
+
+    fn find<'a>(worktrees: &'a [WorktreeInfo], name: &str) -> &'a WorktreeInfo {
+        worktrees
+            .iter()
+            .find(|worktree| worktree.name == name)
+            .unwrap_or_else(|| panic!("no worktree named {name}"))
+    }
+
+    #[test]
+    fn main_repo_lists_itself_and_its_linked_worktrees() {
+        let fixture = TempRepo::with_commits(1);
+        add_worktree(&fixture, "feature");
+
+        let worktrees = gather_worktrees(fixture.repo());
+
+        assert_eq!(worktrees.len(), 2, "{worktrees:?}");
+        assert!(worktrees[0].is_current, "the current worktree sorts first");
+        assert_eq!(
+            find(&worktrees, "feature").branch.as_deref(),
+            Some("feature")
+        );
+        assert_eq!(
+            worktrees.iter().filter(|w| w.is_current).count(),
+            1,
+            "exactly one worktree is current"
+        );
+    }
+
+    /// Opening rgitui on a linked worktree used to list that worktree twice —
+    /// once as `repo.workdir()` and again from the registry — while the main
+    /// checkout had no row at all.
+    #[test]
+    fn opening_a_linked_worktree_lists_each_checkout_once() {
+        let fixture = TempRepo::with_commits(1);
+        let worktree_path = add_worktree(&fixture, "feature");
+        let linked = Repository::open(&worktree_path).unwrap();
+
+        let worktrees = gather_worktrees(&linked);
+
+        assert_eq!(worktrees.len(), 2, "{worktrees:?}");
+        let identities: HashSet<PathBuf> = worktrees
+            .iter()
+            .map(|worktree| worktree_identity(&worktree.path))
+            .collect();
+        assert_eq!(identities.len(), 2, "no checkout is listed twice");
+        assert!(
+            identities.contains(&worktree_identity(fixture.path())),
+            "the main checkout is present"
+        );
+        assert!(find(&worktrees, "feature").is_current);
+    }
+
+    /// `shorthand()` reports a short OID on a detached HEAD, which must not
+    /// reach the UI as if it were a branch name.
+    #[test]
+    fn detached_head_reports_no_branch() {
+        let fixture = TempRepo::with_commits(2);
+        fixture
+            .repo()
+            .set_head_detached(fixture.head_oid())
+            .unwrap();
+
+        let worktrees = gather_worktrees(fixture.repo());
+
+        let current = worktrees.iter().find(|w| w.is_current).unwrap();
+        assert!(current.head_detached);
+        assert_eq!(current.branch, None);
+        assert_eq!(current.head_oid, Some(fixture.head_oid()));
     }
 }

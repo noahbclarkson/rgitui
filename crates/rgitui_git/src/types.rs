@@ -162,14 +162,26 @@ pub struct WorktreeInfo {
     pub path: PathBuf,
     /// Whether the worktree is locked (e.g. by a running operation).
     pub is_locked: bool,
-    /// Whether this is the current worktree (the main repository).
+    /// Whether this is the worktree the open `Repository` handle points at —
+    /// i.e. the one rgitui was launched on. That is the main checkout only when
+    /// rgitui was opened on the main repository; opening a linked worktree
+    /// directly makes *it* the current one.
     pub is_current: bool,
-    /// The branch currently checked out in this worktree, if any.
+    /// The branch currently checked out in this worktree. `None` when HEAD is
+    /// detached — git2's `shorthand()` reports a short OID in that case, which
+    /// must not be rendered as a branch name.
     pub branch: Option<String>,
+    /// Whether this worktree's HEAD is detached.
+    pub head_detached: bool,
     /// OID of the HEAD commit in this worktree.
     pub head_oid: Option<git2::Oid>,
     /// Cached pending-change status for this worktree, if available.
     pub status: Option<WorkingTreeStatus>,
+    /// Whether this checkout is mid-merge, mid-rebase, mid-cherry-pick and so
+    /// on. Each worktree keeps its own — `MERGE_HEAD` for a linked worktree
+    /// lives under `.git/worktrees/<name>/`, so asking the main repository
+    /// about it always answers `Clean`.
+    pub state: RepoState,
 }
 
 /// Information about a stash entry.
@@ -443,6 +455,13 @@ pub struct GitOperationUpdate {
     pub details: Option<String>,
     pub remote_name: Option<String>,
     pub branch_name: Option<String>,
+    /// The checkout the operation ran in, for the operations that record one.
+    ///
+    /// Retrying has to go back to where it failed. Resolving that at retry time
+    /// from whatever is being inspected then is wrong as soon as the failure
+    /// arrives after the user has moved on — which for a network operation,
+    /// where the failure is a timeout or a rejected push, is the normal case.
+    pub worktree_path: Option<std::path::PathBuf>,
     pub retryable: bool,
 }
 

@@ -283,8 +283,9 @@ impl Workspace {
                     cx,
                 );
                 for tab in &self.tabs {
+                    let worktree_path = tab.effective_repo_path(cx);
                     tab.project.update(cx, |proj, cx| {
-                        proj.push_default(false, cx).detach();
+                        proj.push_default_at(false, &worktree_path, cx).detach();
                     });
                 }
             }
@@ -299,8 +300,9 @@ impl Workspace {
                     cx,
                 );
                 for tab in &self.tabs {
+                    let worktree_path = tab.effective_repo_path(cx);
                     tab.project.update(cx, |proj, cx| {
-                        proj.pull_default(cx).detach();
+                        proj.pull_default_at(&worktree_path, cx).detach();
                     });
                 }
             }
@@ -362,18 +364,21 @@ impl Workspace {
     ) {
         match cmd {
             CommandId::Fetch => {
+                let worktree_path = tab.effective_repo_path(cx);
                 tab.project.update(cx, |proj, cx| {
-                    proj.fetch_default(cx).detach();
+                    proj.fetch_default_at(&worktree_path, cx).detach();
                 });
             }
             CommandId::Pull => {
+                let worktree_path = tab.effective_repo_path(cx);
                 tab.project.update(cx, |proj, cx| {
-                    proj.pull_default(cx).detach();
+                    proj.pull_default_at(&worktree_path, cx).detach();
                 });
             }
             CommandId::Push => {
+                let worktree_path = tab.effective_repo_path(cx);
                 tab.project.update(cx, |proj, cx| {
-                    proj.push_default(false, cx).detach();
+                    proj.push_default_at(false, &worktree_path, cx).detach();
                 });
             }
             // PushAll and PullAll are handled in execute_command (iterates all tabs).
@@ -386,13 +391,15 @@ impl Workspace {
                 });
             }
             CommandId::StageAll => {
+                let worktree_path = tab.effective_repo_path(cx);
                 tab.project.update(cx, |proj, cx| {
-                    proj.stage_all(cx).detach();
+                    proj.stage_all_at(&worktree_path, cx).detach();
                 });
             }
             CommandId::UnstageAll => {
+                let worktree_path = tab.effective_repo_path(cx);
                 tab.project.update(cx, |proj, cx| {
-                    proj.unstage_all(cx).detach();
+                    proj.unstage_all_at(&worktree_path, cx).detach();
                 });
             }
             CommandId::StashSave => {
@@ -401,8 +408,9 @@ impl Workspace {
                 });
             }
             CommandId::StashPop => {
+                let worktree_path = tab.effective_repo_path(cx);
                 tab.project.update(cx, |proj, cx| {
-                    proj.stash_pop(0, cx).detach();
+                    proj.stash_pop_at(0, &worktree_path, cx).detach();
                 });
             }
             CommandId::ToggleDiffMode => {
@@ -478,8 +486,9 @@ impl Workspace {
             CommandId::StashApply => {
                 let has_stashes = !tab.project.read(cx).stashes().is_empty();
                 if has_stashes {
+                    let worktree_path = tab.effective_repo_path(cx);
                     tab.project.update(cx, |proj, cx| {
-                        proj.stash_apply(0, cx).detach();
+                        proj.stash_apply_at(0, &worktree_path, cx).detach();
                     });
                 } else {
                     self.show_toast("No stashes to apply", ToastKind::Warning, cx);
@@ -516,7 +525,8 @@ impl Workspace {
                 });
             }
             CommandId::AbortOperation => {
-                let state = tab.project.read(cx).repo_state();
+                let worktree_path = self.effective_worktree_path(cx);
+                let state = tab.project.read(cx).repo_state_at(&worktree_path);
                 if state.is_clean() {
                     self.show_toast("No operation in progress to abort", ToastKind::Warning, cx);
                 } else {
@@ -535,10 +545,11 @@ impl Workspace {
                 }
             }
             CommandId::ContinueMerge => {
-                let state = tab.project.read(cx).repo_state();
+                let worktree_path = self.effective_worktree_path(cx);
+                let state = tab.project.read(cx).repo_state_at(&worktree_path);
                 if state.is_clean() {
                     self.show_toast("No operation in progress", ToastKind::Warning, cx);
-                } else if tab.project.read(cx).has_conflicts() {
+                } else if tab.project.read(cx).has_conflicts_at(&worktree_path) {
                     self.show_toast(
                         "Cannot continue -- resolve all conflicts first",
                         ToastKind::Error,
@@ -546,7 +557,7 @@ impl Workspace {
                     );
                 } else {
                     tab.project.update(cx, |proj, cx| {
-                        proj.continue_merge(cx).detach();
+                        proj.continue_merge_at(&worktree_path, cx).detach();
                     });
                 }
             }

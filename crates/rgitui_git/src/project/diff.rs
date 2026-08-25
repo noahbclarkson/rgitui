@@ -708,18 +708,6 @@ impl GitProject {
         parse_multi_file_diff(&diff)
     }
 
-    /// Stage a specific hunk from a file diff.
-    /// Generates a patch for just that hunk and applies it to the index.
-    pub fn stage_hunk(
-        &mut self,
-        file_path: &Path,
-        hunk_index: usize,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_hunk_at(file_path, hunk_index, &worktree_path, cx)
-    }
-
     /// Stage a specific hunk in the given worktree.
     pub fn stage_hunk_at(
         &mut self,
@@ -800,17 +788,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage a specific hunk from a staged file diff.
-    pub fn unstage_hunk(
-        &mut self,
-        file_path: &Path,
-        hunk_index: usize,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_hunk_at(file_path, hunk_index, &worktree_path, cx)
     }
 
     /// Unstage a specific hunk from a staged file diff in the given worktree.
@@ -894,19 +871,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Stage specific lines within a file's diff.
-    /// `line_pairs` is `&[(Option<usize>, Option<usize>)]` from the diff viewer —
-    /// (old_lineno, new_lineno) for each selected line.
-    pub fn stage_lines(
-        &mut self,
-        file_path: &Path,
-        line_pairs: &[(Option<usize>, Option<usize>)],
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_lines_at(file_path, line_pairs, &worktree_path, cx)
     }
 
     /// Stage specific lines within a file's diff in the given worktree.
@@ -997,17 +961,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage specific lines from a staged file diff.
-    pub fn unstage_lines(
-        &mut self,
-        file_path: &Path,
-        line_pairs: &[(Option<usize>, Option<usize>)],
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_lines_at(file_path, line_pairs, &worktree_path, cx)
     }
 
     /// Unstage specific lines from a staged file diff in the given worktree.
@@ -1127,15 +1080,28 @@ impl GitProject {
 
     /// Summary of staged changes for AI context.
     pub fn staged_summary(&self) -> String {
-        let mut parts = Vec::new();
-        for file in &self.status.staged {
-            parts.push(format!(
-                "{} {}",
-                file.kind.short_code(),
-                file.path.display()
-            ));
+        Self::format_staged_summary(&self.status.staged)
+    }
+
+    /// Staged-file summary for a specific worktree, so an AI commit message
+    /// describes the changes the commit will actually contain rather than
+    /// whatever the main checkout happens to have staged.
+    pub fn staged_summary_at(&self, worktree_path: &Path) -> String {
+        match self
+            .worktree_at(worktree_path)
+            .and_then(|worktree| worktree.status.as_ref())
+        {
+            Some(status) => Self::format_staged_summary(&status.staged),
+            None => self.staged_summary(),
         }
-        parts.join("\n")
+    }
+
+    fn format_staged_summary(staged: &[FileStatus]) -> String {
+        staged
+            .iter()
+            .map(|file| format!("{} {}", file.kind.short_code(), file.path.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
