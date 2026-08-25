@@ -252,9 +252,28 @@ pub fn trace_to_scenario(name: &str, events: &[TraceEvent], max_gap_ms: u64) -> 
         previous_ns = Some(event.t_ns);
     }
 
+    // Tab switches are made with the mouse as often as not, and there is no
+    // command for "activate tab N" to convert them into — `NextTab` and
+    // `PrevTab` are all there is, and they depend on where you started. A
+    // scenario built from such a trace drives whichever tab replay happens to
+    // open, so it says so rather than presenting itself as a faithful replay.
+    let tabs: std::collections::BTreeSet<usize> = events.iter().filter_map(|e| e.tab).collect();
+    let description = match tabs.len() {
+        0 | 1 => format!("Recorded session, {} action(s)", events.len()),
+        count => {
+            log::warn!(
+                "the recorded session spans {count} repository tabs; the generated scenario                  drives one, because there is no command that selects a tab by index"
+            );
+            format!(
+                "Recorded session, {} action(s), originally across {count} tabs — replayed                  against one",
+                events.len()
+            )
+        }
+    };
+
     Scenario {
         name: name.to_string(),
-        description: format!("Recorded session, {} action(s)", events.len()),
+        description,
         corpus: None,
         start_from: StartState::Cold,
         steps,
@@ -375,6 +394,30 @@ mod tests {
         };
         let error = scenario.validate_marks().unwrap_err().to_string();
         assert!(error.contains("no matching mark"), "error: {error}");
+    }
+
+    #[test]
+    fn a_trace_across_tabs_admits_it_cannot_reproduce_them() {
+        let events = [
+            TraceEvent {
+                t_ns: 0,
+                action: "a::B".into(),
+                tab: Some(0),
+            },
+            TraceEvent {
+                t_ns: 1_000_000,
+                action: "a::C".into(),
+                tab: Some(1),
+            },
+        ];
+
+        let scenario = trace_to_scenario("recorded", &events, 5_000);
+
+        assert!(
+            scenario.description.contains("2 tabs"),
+            "description: {}",
+            scenario.description
+        );
     }
 
     #[test]

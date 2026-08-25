@@ -210,6 +210,9 @@ pub struct PerfSession {
     /// session knows a tick actually drew rather than merely ticked.
     render_count: u64,
     last_render_count: u64,
+    /// The repository tab on screen, as of the last render. Stamped onto every
+    /// recorded dispatch.
+    active_tab: Option<usize>,
     /// Whether anything happened since the previous tick that could legitimately
     /// dirty the window. Drives the idle-redraw heuristic.
     activity_since_tick: bool,
@@ -298,6 +301,7 @@ impl PerfSession {
             completed_marks: Vec::new(),
             render_count: 0,
             last_render_count: 0,
+            active_tab: None,
             activity_since_tick: true,
             last_tick: None,
             last_process: ProcessSample::default(),
@@ -411,7 +415,7 @@ impl PerfSession {
     ///
     /// The latency is closed out on the next tick that draws, so what lands in
     /// the report is keypress-to-pixels rather than keypress-to-return.
-    pub fn note_dispatch(action: &str, tab: Option<usize>, cx: &mut App) {
+    pub fn note_dispatch(action: &str, cx: &mut App) {
         if !cx.has_global::<Self>() {
             return;
         }
@@ -422,9 +426,24 @@ impl PerfSession {
             session.trace.push(TraceEvent {
                 t_ns: now.duration_since(session.started).as_nanos(),
                 action: action.to_string(),
-                tab,
+                // The dispatch hook is inside a macro that cannot see the
+                // workspace, so the tab comes from the last render instead.
+                tab: session.active_tab,
             });
         });
+    }
+
+    /// Records which repository tab is on screen.
+    ///
+    /// Called from the workspace's render, so it is current by the time any
+    /// command is dispatched. Without it every recorded event claimed no tab,
+    /// and a trace taken across two repositories read as though it had all
+    /// happened in one.
+    pub fn note_active_tab(index: usize, cx: &mut App) {
+        if !cx.has_global::<Self>() {
+            return;
+        }
+        cx.update_global::<Self, _>(|session, _| session.active_tab = Some(index));
     }
 
     /// Records a step that gave up waiting for a frame.

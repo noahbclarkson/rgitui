@@ -138,6 +138,9 @@ impl Render for Workspace {
         // Distinguishes a vsync tick that redrew from one that only ticked,
         // which is what makes an idle repaint visible in the perf report.
         crate::perf::note_render(cx);
+        // Stamped onto every command recorded from here on, so a session across
+        // two repositories does not read as though it happened in one.
+        crate::perf::note_active_tab(self.active_tab, cx);
 
         // The first render with commits to show is the moment the app stops
         // looking empty, and it is the startup number worth quoting. Cheap

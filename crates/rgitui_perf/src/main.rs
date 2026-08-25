@@ -506,19 +506,43 @@ fn convert_trace(args: &[String]) -> anyhow::Result<()> {
 }
 
 /// Shortens a string to fit a column, marking that it was cut.
+///
+/// Counted in characters, not bytes: repository paths and profiler symbols
+/// carry non-ASCII often enough, and a byte offset lands inside a code point
+/// and panics — a report printer that crashes on somebody's directory name is
+/// worse than a column that is a few cells wide.
 fn truncate(text: &str, width: usize) -> String {
-    if text.len() <= width {
+    let characters = text.chars().count();
+    if characters <= width {
         return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
     }
     // Keep the tail: a path's filename and line number identify it far better
     // than the leading directories do.
-    let tail = &text[text.len() - (width - 1)..];
+    let tail: String = text.chars().skip(characters - (width - 1)).collect();
     format!("…{tail}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_cuts_between_characters_not_inside_them() {
+        // A repository under a non-ASCII path, which byte slicing panicked on.
+        let path = "crates/rgitui_git/src/проект/refresh.rs:506";
+        let short = truncate(path, 20);
+        assert_eq!(short.chars().count(), 20);
+        assert!(short.starts_with('…'));
+        assert!(path.ends_with(short.trim_start_matches('…')));
+    }
+
+    #[test]
+    fn truncate_handles_a_zero_width_column() {
+        assert_eq!(truncate("anything", 0), "");
+    }
 
     #[test]
     fn truncate_keeps_the_identifying_tail_of_a_long_path() {

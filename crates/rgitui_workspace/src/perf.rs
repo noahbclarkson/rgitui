@@ -111,8 +111,14 @@ mod enabled {
 
     /// Records a dispatched command for latency measurement and for the
     /// recorded trace.
-    pub fn note_dispatch(action: &str, tab: Option<usize>, cx: &mut App) {
-        PerfSession::note_dispatch(action, tab, cx);
+    pub fn note_dispatch(action: &str, cx: &mut App) {
+        PerfSession::note_dispatch(action, cx);
+    }
+
+    /// Records which repository tab is on screen, so recorded commands are
+    /// attributed to the repository they were aimed at.
+    pub fn note_active_tab(index: usize, cx: &mut App) {
+        PerfSession::note_active_tab(index, cx);
     }
 
     /// Writes the report. Called when the window closes, which is what ends a
@@ -155,7 +161,9 @@ mod disabled {
 
     /// No-op: see [`install`].
     #[inline]
-    pub fn note_dispatch(_action: &str, _tab: Option<usize>, _cx: &mut App) {}
+    pub fn note_dispatch(_action: &str, _cx: &mut App) {}
+
+    pub fn note_active_tab(_index: usize, _cx: &mut App) {}
 
     /// No-op: see [`install`].
     #[inline]

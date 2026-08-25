@@ -295,7 +295,6 @@ macro_rules! commands {
                             move |view, _: &actions::$name, window, cx| {
                                 $crate::perf::note_dispatch(
                                     CommandId::$name.action_name(),
-                                    None,
                                     cx,
                                 );
                                 dispatch(view, CommandId::$name, window, cx);
