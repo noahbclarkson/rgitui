@@ -582,8 +582,15 @@ impl GitProject {
         &self.remotes
     }
 
-    pub fn preferred_remote_name(&self) -> Result<String> {
-        let repo = self.open_repo()?;
+    /// The remote a default fetch should use for `worktree_path`.
+    ///
+    /// Derived from that checkout's own HEAD and upstream. A linked worktree on
+    /// a branch tracking `fork/feature` should fetch `fork`, and asking the
+    /// main repository would answer `origin` — the remote of a branch the user
+    /// is not on.
+    pub fn preferred_remote_name_at(&self, worktree_path: &Path) -> Result<String> {
+        let repo = Repository::open(worktree_path)
+            .with_context(|| format!("Failed to open repository at {}", worktree_path.display()))?;
         default_remote_name(&repo)
     }
 
@@ -664,10 +671,10 @@ impl GitProject {
             .any(|f| f.kind == FileChangeKind::Conflicted)
     }
 
-    /// Whether `worktree_path` has any conflicted files. Falls back to this
-    /// project's own status when that checkout has no cached status yet, which
-    /// is the same answer the caller would have got before asking.
-    pub fn has_conflicts_at(&self, worktree_path: &Path) -> bool {
+    /// The conflicted files in `worktree_path`. Falls back to this project's
+    /// own status when that checkout has no cached status yet, which is the
+    /// same answer the caller would have got before asking.
+    pub fn conflicted_files_at(&self, worktree_path: &Path) -> Vec<&FileStatus> {
         match self
             .worktree_at(worktree_path)
             .and_then(|worktree| worktree.status.as_ref())
@@ -675,9 +682,15 @@ impl GitProject {
             Some(status) => status
                 .unstaged
                 .iter()
-                .any(|f| f.kind == FileChangeKind::Conflicted),
-            None => self.has_conflicts(),
+                .filter(|f| f.kind == FileChangeKind::Conflicted)
+                .collect(),
+            None => self.conflicted_files(),
         }
+    }
+
+    /// Whether `worktree_path` has any conflicted files.
+    pub fn has_conflicts_at(&self, worktree_path: &Path) -> bool {
+        !self.conflicted_files_at(worktree_path).is_empty()
     }
 
     pub(crate) fn open_repo(&self) -> Result<Repository> {

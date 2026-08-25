@@ -273,6 +273,15 @@ impl Render for Workspace {
             Some(worktree) => worktree.state,
             None => project.repo_state(),
         };
+        // From the same checkout `repo_state` came from. Counting the main
+        // repository's conflicts while the banner is up because a linked
+        // worktree is mid-merge would announce "all conflicts resolved" over
+        // the top of conflicts, and offer a Continue that `ContinueMerge` then
+        // refuses.
+        let conflict_count = match inspected {
+            Some(worktree) => project.conflicted_files_at(&worktree.path).len(),
+            None => project.conflicted_files().len(),
+        };
         let stash_count = project.stashes().len();
         let repo_path_display: SharedString = match inspected {
             Some(worktree) => worktree.path.display().to_string(),
@@ -529,8 +538,7 @@ impl Render for Workspace {
             .when_some(operation_output_bar, |el, bar| el.child(bar))
             // Conflict state banner (merge/rebase/cherry-pick/revert in progress)
             .when(!repo_state.is_clean(), |el| {
-                let has_conflicts = active_tab.project.read(cx).has_conflicts();
-                let conflict_count = active_tab.project.read(cx).conflicted_files().len();
+                let has_conflicts = conflict_count > 0;
                 let state_label: SharedString = repo_state.label().into();
                 let detail_msg: SharedString = if has_conflicts {
                     format!(

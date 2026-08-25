@@ -29,7 +29,7 @@ impl GitProject {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("fetch_default: worktree={}", worktree_path.display());
-        let remote_name = match self.preferred_remote_name() {
+        let remote_name = match self.preferred_remote_name_at(worktree_path) {
             Ok(remote_name) => remote_name,
             Err(error) => {
                 return self.fail_to_start_task(
