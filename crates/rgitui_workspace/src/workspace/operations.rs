@@ -176,32 +176,39 @@ impl Workspace {
             return;
         };
 
+        // The operation failed in a particular checkout, and running it again
+        // anywhere else would fetch into, merge into or push a different
+        // branch than the one the user was working on. Leaving worktree
+        // inspection clears the offer, so this is still that checkout.
+        let worktree_path = self.effective_worktree_path(cx);
+
         let handled = project.update(cx, |proj, cx| match update.kind {
             GitOperationKind::Fetch => {
                 if let Some(remote_name) = update.remote_name.as_deref() {
-                    proj.fetch(remote_name, cx).detach();
+                    proj.fetch_at(remote_name, &worktree_path, cx).detach();
                     true
                 } else {
-                    proj.fetch_default(cx).detach();
+                    proj.fetch_default_at(&worktree_path, cx).detach();
                     true
                 }
             }
             GitOperationKind::Pull => {
                 if let Some(remote_name) = update.remote_name.as_deref() {
-                    proj.pull(remote_name, cx).detach();
+                    proj.pull_at(remote_name, &worktree_path, cx).detach();
                     true
                 } else {
-                    proj.pull_default(cx).detach();
+                    proj.pull_default_at(&worktree_path, cx).detach();
                     true
                 }
             }
             GitOperationKind::Push => {
                 let force = update.summary.to_ascii_lowercase().contains("force push");
                 if let Some(remote_name) = update.remote_name.as_deref() {
-                    proj.push(remote_name, force, cx).detach();
+                    proj.push_at(remote_name, force, &worktree_path, cx)
+                        .detach();
                     true
                 } else {
-                    proj.push_default(force, cx).detach();
+                    proj.push_default_at(force, &worktree_path, cx).detach();
                     true
                 }
             }

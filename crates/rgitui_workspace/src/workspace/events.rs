@@ -235,6 +235,13 @@ pub(super) fn set_inspecting_worktree_for_tab(
 
     project.update(cx, |proj, _| proj.set_inspected_worktree(watch_path));
     if tab_index == workspace.active_tab {
+        // A failed operation is offered with a Retry button, and retrying runs
+        // it in whichever checkout is being inspected now. That is the right
+        // target only while it is still the checkout the operation failed in,
+        // so the offer does not outlive the inspection that produced it. The
+        // offer belongs to the tab on screen, so a watcher-driven change to a
+        // background tab leaves it alone.
+        workspace.operations.last_failed_git_operation = None;
         update_sidebar_for_active_worktree(workspace, cx);
     }
     detail_panel.update(cx, |dp, cx| dp.clear(cx));
@@ -683,11 +690,12 @@ pub(super) fn subscribe_confirm_dialog(
                                 .first()
                                 .map(|c| c.oid.to_string());
                             let target = target.clone();
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
                                 if let Ok(oid) = git2::Oid::from_str(&target) {
-                                    proj.reset_to_commit(oid, cx).detach();
+                                    proj.reset_to_commit_at(oid, &worktree_path, cx).detach();
                                 } else {
-                                    proj.reset_hard(cx).detach();
+                                    proj.reset_hard_at(&worktree_path, cx).detach();
                                 }
                             });
                             if let Some(oid_hex) = previous_head_oid {
@@ -705,17 +713,19 @@ pub(super) fn subscribe_confirm_dialog(
                         }
                         ConfirmAction::ResetSoft(target) => {
                             let target = target.clone();
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
                                 if let Ok(oid) = git2::Oid::from_str(&target) {
-                                    proj.reset_soft(oid, cx).detach();
+                                    proj.reset_soft_at(oid, &worktree_path, cx).detach();
                                 }
                             });
                         }
                         ConfirmAction::ResetMixed(target) => {
                             let target = target.clone();
+                            let worktree_path = this.effective_worktree_path(cx);
                             project.update(cx, |proj, cx| {
                                 if let Ok(oid) = git2::Oid::from_str(&target) {
-                                    proj.reset_mixed(oid, cx).detach();
+                                    proj.reset_mixed_at(oid, &worktree_path, cx).detach();
                                 }
                             });
                         }
@@ -1372,20 +1382,23 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::RemoteFetch(name) => {
                 let name = name.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.fetch(&name, cx).detach();
+                    proj.fetch_at(&name, &worktree_path, cx).detach();
                 });
             }
             SidebarEvent::RemotePull(name) => {
                 let name = name.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.pull(&name, cx).detach();
+                    proj.pull_at(&name, &worktree_path, cx).detach();
                 });
             }
             SidebarEvent::RemotePush(name) => {
                 let name = name.clone();
+                let worktree_path = this.effective_worktree_path(cx);
                 project.update(cx, |proj, cx| {
-                    proj.push(&name, false, cx).detach();
+                    proj.push_at(&name, false, &worktree_path, cx).detach();
                 });
             }
             SidebarEvent::RemoteRemove(name) => {

@@ -708,18 +708,6 @@ impl GitProject {
         parse_multi_file_diff(&diff)
     }
 
-    /// Stage a specific hunk from a file diff.
-    /// Generates a patch for just that hunk and applies it to the index.
-    pub fn stage_hunk(
-        &mut self,
-        file_path: &Path,
-        hunk_index: usize,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_hunk_at(file_path, hunk_index, &worktree_path, cx)
-    }
-
     /// Stage a specific hunk in the given worktree.
     pub fn stage_hunk_at(
         &mut self,
@@ -800,17 +788,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage a specific hunk from a staged file diff.
-    pub fn unstage_hunk(
-        &mut self,
-        file_path: &Path,
-        hunk_index: usize,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_hunk_at(file_path, hunk_index, &worktree_path, cx)
     }
 
     /// Unstage a specific hunk from a staged file diff in the given worktree.
@@ -894,19 +871,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Stage specific lines within a file's diff.
-    /// `line_pairs` is `&[(Option<usize>, Option<usize>)]` from the diff viewer —
-    /// (old_lineno, new_lineno) for each selected line.
-    pub fn stage_lines(
-        &mut self,
-        file_path: &Path,
-        line_pairs: &[(Option<usize>, Option<usize>)],
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_lines_at(file_path, line_pairs, &worktree_path, cx)
     }
 
     /// Stage specific lines within a file's diff in the given worktree.
@@ -997,17 +961,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage specific lines from a staged file diff.
-    pub fn unstage_lines(
-        &mut self,
-        file_path: &Path,
-        line_pairs: &[(Option<usize>, Option<usize>)],
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_lines_at(file_path, line_pairs, &worktree_path, cx)
     }
 
     /// Unstage specific lines from a staged file diff in the given worktree.

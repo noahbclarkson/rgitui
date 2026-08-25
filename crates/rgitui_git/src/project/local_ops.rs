@@ -75,12 +75,6 @@ fn checkout_tree_safe(repo: &Repository, target: &git2::Object<'_>, operation: &
 }
 
 impl GitProject {
-    /// Stage specific files.
-    pub fn stage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_files_at(paths, &worktree_path, cx)
-    }
-
     /// Stage specific files in the given worktree.
     pub fn stage_files_at(
         &mut self,
@@ -166,12 +160,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage specific files.
-    pub fn unstage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_files_at(paths, &worktree_path, cx)
     }
 
     /// Unstage specific files in the given worktree.
@@ -267,12 +255,6 @@ impl GitProject {
         })
     }
 
-    /// Stage all changes.
-    pub fn stage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_all_at(&worktree_path, cx)
-    }
-
     /// Stage all changes in the given worktree.
     pub fn stage_all_at(
         &mut self,
@@ -341,12 +323,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage all changes.
-    pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_all_at(&worktree_path, cx)
     }
 
     /// Unstage all changes in the given worktree.
@@ -421,16 +397,6 @@ impl GitProject {
     }
 
     /// Create a commit with the current staged changes.
-    pub fn commit(
-        &mut self,
-        message: &str,
-        amend: bool,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<git2::Oid>> {
-        let worktree_path = self.repo_path.clone();
-        self.commit_at(message, amend, &worktree_path, cx)
-    }
-
     /// Create a commit in the given worktree with the current staged changes.
     pub fn commit_at(
         &mut self,
@@ -923,10 +889,6 @@ impl GitProject {
     }
 
     /// Create a new branch from HEAD.
-    pub fn create_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
-        self.create_branch_at(name, None, cx)
-    }
-
     /// Create a new branch, optionally at a specific commit (SHA or ref).
     /// If `base_ref` is None or empty, creates at HEAD.
     pub fn create_branch_at(
@@ -1246,16 +1208,6 @@ impl GitProject {
         })
     }
 
-    /// Save the current working tree to a stash.
-    pub fn stash_save(
-        &mut self,
-        message: Option<&str>,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stash_save_at(message, &worktree_path, cx)
-    }
-
     /// Save the given worktree to a stash. Stashes are stored in the shared
     /// object store, but the changes taken are those of `worktree_path`.
     pub fn stash_save_at(
@@ -1318,12 +1270,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Pop the top stash entry.
-    pub fn stash_pop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stash_pop_at(index, &worktree_path, cx)
     }
 
     /// Pop a stash entry into the given worktree.
@@ -1405,12 +1351,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Apply a stash entry without removing it from the stash list.
-    pub fn stash_apply(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stash_apply_at(index, &worktree_path, cx)
     }
 
     /// Apply a stash entry into the given worktree without removing it.
@@ -1656,16 +1596,6 @@ impl GitProject {
         })
     }
 
-    /// Discard changes in specific files (restore to HEAD).
-    pub fn discard_changes(
-        &mut self,
-        paths: &[PathBuf],
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.discard_changes_at(paths, &worktree_path, cx)
-    }
-
     /// Discard changes in specific files for the given worktree (restore to HEAD).
     pub fn discard_changes_at(
         &mut self,
@@ -1767,13 +1697,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Remove all untracked files and directories from the working tree.
-    /// Uses `git clean -fd` after a dry-run to enumerate files.
-    pub fn clean_untracked(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.clean_untracked_at(&worktree_path, cx)
     }
 
     /// Remove all untracked files and directories from the given worktree.
@@ -1885,8 +1808,13 @@ impl GitProject {
     }
 
     /// Hard reset to HEAD, discarding all working tree and index changes.
-    pub fn reset_hard(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_hard");
+    pub fn reset_hard_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("reset_hard: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1901,7 +1829,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let head_commit = repo.head()?.peel_to_commit()?;
                     repo.reset(head_commit.as_object(), git2::ResetType::Hard, None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -1944,9 +1872,19 @@ impl GitProject {
         })
     }
 
-    /// Hard-reset the current branch to a specific commit.
-    pub fn reset_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_to_commit: oid={}", oid);
+    /// Hard-reset the given worktree's branch to a specific commit.
+    pub fn reset_to_commit_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "reset_to_commit: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1962,7 +1900,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Hard, None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -2003,12 +1941,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Soft-reset the current branch to a specific commit, preserving changes in the index.
-    pub fn reset_soft(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.reset_soft_at(oid, &worktree_path, cx)
     }
 
     /// Soft-reset the given worktree's branch to `oid`, preserving changes in the
@@ -2080,9 +2012,19 @@ impl GitProject {
         })
     }
 
-    /// Mixed-reset the current branch to a specific commit, unstaging all changes.
-    pub fn reset_mixed(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_mixed: oid={}", oid);
+    /// Mixed-reset the given worktree's branch to a specific commit, unstaging all changes.
+    pub fn reset_mixed_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "reset_mixed: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -2098,7 +2040,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Mixed, None)?;
                     gather_refresh_data(&repo_path, commit_limit)

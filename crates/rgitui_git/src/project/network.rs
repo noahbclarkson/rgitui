@@ -23,11 +23,6 @@ fn open_worktree_repo(worktree_path: &Path) -> Result<Repository> {
 }
 
 impl GitProject {
-    pub fn fetch_default(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.fetch_default_at(&worktree_path, cx)
-    }
-
     pub fn fetch_default_at(
         &mut self,
         worktree_path: &Path,
@@ -47,11 +42,6 @@ impl GitProject {
             }
         };
         self.fetch_at(&remote_name, worktree_path, cx)
-    }
-
-    pub fn pull_default(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.pull_default_at(&worktree_path, cx)
     }
 
     pub fn pull_default_at(
@@ -74,11 +64,6 @@ impl GitProject {
                 }
             };
         self.pull_from_at(&remote_name, &branch_name, worktree_path, cx)
-    }
-
-    pub fn push_default(&mut self, force: bool, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.push_default_at(force, &worktree_path, cx)
     }
 
     pub fn push_default_at(
@@ -113,12 +98,6 @@ impl GitProject {
             worktree_path,
             cx,
         )
-    }
-
-    /// Fetch from a remote.
-    pub fn fetch(&mut self, remote_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.fetch_at(remote_name, &worktree_path, cx)
     }
 
     /// Fetch from a remote, running git in the given worktree.
@@ -196,12 +175,6 @@ impl GitProject {
         })
     }
 
-    /// Pull from a remote (fetch + merge).
-    pub fn pull(&mut self, remote_name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.pull_at(remote_name, &worktree_path, cx)
-    }
-
     /// Pull into the given worktree, merging into the branch *that* worktree
     /// has checked out.
     pub fn pull_at(
@@ -230,16 +203,6 @@ impl GitProject {
             }
         };
         self.pull_from_at(remote_name, &branch_name, worktree_path, cx)
-    }
-
-    pub fn pull_from(
-        &mut self,
-        remote_name: &str,
-        branch_name: &str,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.pull_from_at(remote_name, branch_name, &worktree_path, cx)
     }
 
     pub fn pull_from_at(
@@ -375,17 +338,6 @@ impl GitProject {
         })
     }
 
-    /// Push to a remote.
-    pub fn push(
-        &mut self,
-        remote_name: &str,
-        force: bool,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.push_at(remote_name, force, &worktree_path, cx)
-    }
-
     /// Push the branch checked out in the given worktree.
     pub fn push_at(
         &mut self,
@@ -420,25 +372,6 @@ impl GitProject {
             force,
             set_upstream,
             worktree_path,
-            cx,
-        )
-    }
-
-    pub fn push_to(
-        &mut self,
-        remote_name: &str,
-        remote_branch_name: &str,
-        force: bool,
-        set_upstream: bool,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.push_to_at(
-            remote_name,
-            remote_branch_name,
-            force,
-            set_upstream,
-            &worktree_path,
             cx,
         )
     }
