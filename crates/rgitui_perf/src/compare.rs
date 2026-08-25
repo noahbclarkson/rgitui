@@ -261,6 +261,47 @@ pub fn compare(baseline: &Report, candidate: &Report, noise: &NoiseFloor) -> Com
         metrics.push(delta(metric, kind, base, cand, noise));
     }
 
+    // The high-water mark, not just where the process happened to end up. A
+    // candidate that commits a large transient buffer and frees it before the
+    // run ends finishes level with the baseline while having been much worse
+    // in the middle, which is the regression worth catching.
+    if let (Some(base), Some(cand)) = (
+        baseline.summary.peak_private_bytes,
+        candidate.summary.peak_private_bytes,
+    ) {
+        metrics.push(delta(
+            "process.peak_private_bytes",
+            Kind::Memory,
+            base as f64,
+            cand as f64,
+            noise,
+        ));
+    }
+
+    // Per-command latency. A handler can get materially slower while every
+    // global frame and draw number stays inside its floor — most easily in a
+    // fixed-rate scenario, whose wall time is set by the pacing rather than by
+    // the app — and a comparison that never read this table would pass it.
+    for action in &candidate.actions {
+        let Some(base) = baseline.actions.iter().find(|a| a.action == action.action) else {
+            continue;
+        };
+        metrics.push(delta(
+            &format!("action.{}.p50_ms", action.action),
+            Kind::Duration,
+            base.p50_ms,
+            action.p50_ms,
+            noise,
+        ));
+        metrics.push(delta(
+            &format!("action.{}.p95_ms", action.action),
+            Kind::Duration,
+            base.p95_ms,
+            action.p95_ms,
+            noise,
+        ));
+    }
+
     // Startup is not covered by any mark. Replay waits for the workspace to
     // render before its first step, so `startup-to-idle` opens after first
     // content is already on screen — this field is the only wall-clock

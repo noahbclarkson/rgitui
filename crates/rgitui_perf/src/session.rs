@@ -206,10 +206,14 @@ pub struct PerfSession {
     open_marks: Vec<OpenMark>,
     completed_marks: Vec<CompletedMark>,
 
-    /// Bumped by the app's root view every time it renders, which is how the
-    /// session knows a tick actually drew rather than merely ticked.
+    /// Bumped by the app's root view every time it renders. Cadence no longer
+    /// reads this — gpui caches the root, so it undercounts frames badly — but
+    /// a non-zero value is still exactly the signal replay needs: the workspace
+    /// has rendered at least once, so the splash has handed over.
     render_count: u64,
-    last_render_count: u64,
+    /// Draws recorded as of the previous tick, which is how a tick tells that
+    /// the window drew between it and the last one.
+    last_draw_count: usize,
     /// The repository tab on screen, as of the last render. Stamped onto every
     /// recorded dispatch.
     active_tab: Option<usize>,
@@ -300,7 +304,7 @@ impl PerfSession {
             open_marks: Vec::new(),
             completed_marks: Vec::new(),
             render_count: 0,
-            last_render_count: 0,
+            last_draw_count: 0,
             active_tab: None,
             activity_since_tick: true,
             last_tick: None,
@@ -603,8 +607,19 @@ impl PerfSession {
     /// was presented and says nothing about whether it contained the effect of
     /// any particular dispatch.
     fn tick(&mut self, now: Instant) {
-        let drawn = self.render_count != self.last_render_count;
-        self.last_render_count = self.render_count;
+        // Whether the *window* drew, taken from gpui's own frame records rather
+        // than from `render_count`. `Workspace::render` runs only when the root
+        // view is invalidated, and gpui caches it — a frame that repainted just
+        // the graph or the diff never reaches it. Classifying those as not
+        // drawn would drop them out of the cadence statistics, which is most of
+        // the frames in exactly the scenarios worth measuring.
+        //
+        // Draining here rather than on the counter timer also means a tick
+        // decides on frames that have actually finished, not on whatever the
+        // last 500ms sweep happened to have collected.
+        self.drain_frame_timings();
+        let drawn = self.draws.len() != self.last_draw_count;
+        self.last_draw_count = self.draws.len();
 
         if let Some(previous) = self.last_tick {
             let interval_ms = now.duration_since(previous).as_secs_f64() * 1000.0;

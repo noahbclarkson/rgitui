@@ -76,6 +76,7 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
             repeat,
             settle,
         } => {
+            let mut pacer = Pacer::new(*settle);
             for _ in 0..*repeat {
                 cx.update(|window, cx| -> anyhow::Result<()> {
                     let built = cx
@@ -91,7 +92,7 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
                     window.dispatch_action(built, cx);
                     Ok(())
                 })??;
-                settle_for(*settle, cx).await;
+                pacer.wait(cx).await;
             }
         }
 
@@ -102,11 +103,12 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
         } => {
             let keystroke = Keystroke::parse(key)
                 .map_err(|error| anyhow::anyhow!("cannot parse keystroke {key:?}: {error}"))?;
+            let mut pacer = Pacer::new(*settle);
             for _ in 0..*repeat {
                 cx.update(|window, cx| {
                     window.dispatch_keystroke(keystroke.clone(), cx);
                 })?;
-                settle_for(*settle, cx).await;
+                pacer.wait(cx).await;
             }
         }
 
@@ -118,6 +120,7 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
             settle,
         } => {
             let position = Point::new(px(*x), px(*y));
+            let mut pacer = Pacer::new(*settle);
             for _ in 0..*repeat {
                 cx.update(|window, cx| {
                     window.dispatch_event(
@@ -130,7 +133,7 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
                         cx,
                     );
                 })?;
-                settle_for(*settle, cx).await;
+                pacer.wait(cx).await;
             }
         }
 
@@ -225,18 +228,43 @@ async fn execute(step: &Step, cx: &mut AsyncWindowContext) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Waits according to a step's settle policy.
-async fn settle_for(settle: Settle, cx: &mut AsyncWindowContext) {
-    match settle {
-        Settle::None => {}
-        Settle::Frame => next_frame(cx).await,
-        // Paced off a clock rather than off the app, so a step that the app
-        // cannot keep up with builds a backlog exactly as a held key does.
-        Settle::Rate { hz } => {
-            if hz > 0.0 {
-                cx.background_executor()
-                    .timer(Duration::from_secs_f64(1.0 / hz))
-                    .await;
+/// Paces the deliveries within one repeated step.
+///
+/// [`Settle::Rate`] runs off an absolute schedule, not a fresh sleep after each
+/// dispatch. This future runs on the UI thread and cannot resume while a long
+/// render owns it; sleeping `1 / hz` from whenever it *did* resume would slow
+/// delivery to whatever the app can manage, so a candidate that got slower
+/// would look healthy precisely because it was slower. An operating system's
+/// key repeat has no such courtesy — it fires on its clock, and the backlog
+/// that builds when the app falls behind is the entire thing
+/// `key-repeat-degradation` exists to measure. Falling behind by more than a
+/// period therefore sends the next event immediately, catching up.
+struct Pacer {
+    settle: Settle,
+    /// When the next delivery is due. `None` until the first wait establishes
+    /// the schedule, and always `None` for the settle modes with no clock.
+    due: Option<Instant>,
+}
+
+impl Pacer {
+    fn new(settle: Settle) -> Self {
+        Self { settle, due: None }
+    }
+
+    async fn wait(&mut self, cx: &mut AsyncWindowContext) {
+        match self.settle {
+            Settle::None => {}
+            Settle::Frame => next_frame(cx).await,
+            Settle::Rate { hz } => {
+                if hz <= 0.0 {
+                    return;
+                }
+                let period = Duration::from_secs_f64(1.0 / hz);
+                let due = self.due.unwrap_or_else(Instant::now) + period;
+                self.due = Some(due);
+                if let Some(remaining) = due.checked_duration_since(Instant::now()) {
+                    cx.background_executor().timer(remaining).await;
+                }
             }
         }
     }

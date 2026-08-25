@@ -248,16 +248,26 @@ impl Report {
                 });
             }
 
-            let dropped_fraction = frames.dropped_frames as f64 / frames.frames as f64;
+            // Over the intervals the drops were counted across, not over every
+            // tick in the run. Cadence excludes idle intervals from the
+            // numerator, so leaving them in the denominator dilutes the rate by
+            // however long the scenario spent waiting: five drops in a hundred
+            // presenting intervals reads as 0.8% once five hundred idle ticks
+            // follow it, and slips under the threshold.
+            let dropped_fraction = if frames.presenting_intervals == 0 {
+                0.0
+            } else {
+                frames.dropped_frames as f64 / frames.presenting_intervals as f64
+            };
             if dropped_fraction > thresholds.dropped_frame_fraction {
                 findings.push(Finding {
                     severity: Severity::Warning,
                     code: "frame.dropped".into(),
                     message: format!(
-                        "{:.2}% of frames were dropped ({} of {})",
+                        "{:.2}% of presented frames were dropped ({} of {})",
                         dropped_fraction * 100.0,
                         frames.dropped_frames,
-                        frames.frames
+                        frames.presenting_intervals
                     ),
                     evidence: serde_json::json!({
                         "dropped_frames": frames.dropped_frames,
