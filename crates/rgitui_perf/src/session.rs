@@ -348,6 +348,25 @@ impl PerfSession {
         self.frames.len()
     }
 
+    /// Draws recorded so far, after taking whatever gpui has finished since the
+    /// last look.
+    ///
+    /// Replay waits on this rather than on [`Self::frame_count`]. The frame
+    /// chain records a tick on every vsync whether or not the window was
+    /// dirty, so waiting for a tick returns immediately on an idle app — which
+    /// is exactly the case a `settle: frame` step exists to catch. Draining
+    /// here rather than waiting for the counter timer keeps the answer within
+    /// a poll interval instead of within 500ms.
+    pub fn drawn_count(cx: &mut App) -> usize {
+        if !cx.has_global::<Self>() {
+            return 0;
+        }
+        cx.update_global::<Self, _>(|session, _| {
+            session.drain_frame_timings();
+            session.draws.len()
+        })
+    }
+
     /// Records that the app's root view rendered.
     ///
     /// Called from `Render::render`, so it must stay to a single increment.
@@ -577,19 +596,25 @@ impl PerfSession {
 
     /// Charges every dispatch that this frame answered.
     ///
-    /// A frame answers a dispatch when the invalidation that produced it
-    /// happened at or after the dispatch: only then can the pixels it put on
-    /// screen contain that dispatch's effect. The latency is then dispatch to
+    /// A frame answers every dispatch that finished before its draw began.
+    /// Dispatch and draw both run on the main thread and cannot interleave, so
+    /// a dispatch recorded before `draw_start` had already mutated the state
+    /// that `Render::render` then read. The latency is dispatch to
     /// end-of-draw, which is what "keypress to pixels" actually means.
+    ///
+    /// The boundary is deliberately the draw's start and not `dirty_at`. Only
+    /// the *first* command between two draws sets `dirty_at`; the rest arrive
+    /// after it and are still rendered by the same frame. Measuring from the
+    /// invalidation would leave them pending and charge them to a later frame
+    /// with a latency that includes a frame they were never waiting on — worst
+    /// of all in `key-repeat-degradation`, which exists to queue several
+    /// commands per frame.
     ///
     /// Closing on the next *tick* instead — which is what this used to do —
     /// measured the remainder of the frame period and almost nothing else, so a
     /// fast action and a slow one both reported about half a refresh interval.
     fn charge_actions_answered_by(&mut self, timing: &gpui::profiler::FrameTiming) {
-        // A frame already dirty before tracing began has no invalidation time;
-        // the draw's own start is the earliest moment it could have contained
-        // anything, so use that rather than dropping the frame.
-        let answered_from = timing.dirty_at.unwrap_or(timing.draw_start);
+        let answered_from = timing.draw_start;
 
         let mut still_pending = Vec::with_capacity(self.pending_actions.len());
         for (action, dispatched) in std::mem::take(&mut self.pending_actions) {
@@ -636,6 +661,15 @@ impl PerfSession {
                 self.config.output_dir.display()
             )
         })?;
+
+        // gpui holds finished frames and tasks until somebody collects them,
+        // and the counter timer only does that every 500ms. A scenario ending
+        // inside that window would leave its last draws and its last tasks in
+        // gpui — and, worse, leave the actions those draws answered sitting in
+        // `pending_actions`, which reports a critical `actions.never_drawn`
+        // for work the app did.
+        self.drain_frame_timings();
+        self.drain_task_timings();
 
         // Before anything reads a statistic. `stats()` stamps the recorder's
         // current refresh interval onto every `FrameStats` and `DrawStats` it

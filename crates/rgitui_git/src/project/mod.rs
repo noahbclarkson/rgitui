@@ -631,12 +631,30 @@ impl GitProject {
     /// can fill. False in the steady state, where nothing moved and everything
     /// was carried — which is what keeps the watcher from scheduling two
     /// history walks on every file save.
+    ///
+    /// "Could have" is doing real work. A repository whose trunk is named
+    /// something other than `main` or `master` has no trunk for
+    /// `is_merged_into_main` to be about, and that answer is `None` for as long
+    /// as the repository exists. Reading that as work outstanding would put a
+    /// full history walk and a `git for-each-ref` behind every file save, on
+    /// exactly the repositories that already got the worst of this code.
     pub fn needs_graph_state_refresh(&self) -> bool {
+        let trunk = trunk_tip(&self.branches);
+        let head = head_tip(&self.branches);
         self.branches.iter().any(|branch| {
-            !branch.is_remote
-                && (branch.is_merged_into_main.is_none()
-                    || branch.is_merged_into_head.is_none()
-                    || (branch.upstream.is_some() && !branch.has_ahead_behind()))
+            if branch.is_remote {
+                return false;
+            }
+            let merged_into_main_pending =
+                trunk.is_some() && branch.is_merged_into_main.is_none() && branch.tip_oid.is_some();
+            let merged_into_head_pending =
+                head.is_some() && branch.is_merged_into_head.is_none() && branch.tip_oid.is_some();
+            let ahead_behind_pending = branch
+                .upstream
+                .as_deref()
+                .is_some_and(|upstream| upstream_tip(&self.branches, upstream).is_some())
+                && !branch.has_ahead_behind();
+            merged_into_main_pending || merged_into_head_pending || ahead_behind_pending
         })
     }
 
@@ -1079,7 +1097,12 @@ fn ahead_behind_via_for_each_ref(
         .current_dir(repo_path)
         .args([
             "for-each-ref",
-            "--format=%(refname:short)%09%(upstream:track)",
+            // Not `%(refname:short)`: that shortens to a *non-ambiguous*
+            // form, so a branch `foo` sharing its name with a tag comes back
+            // as `heads/foo`. Nothing then finds it, and the branch that has
+            // two things named after it is exactly the one whose counts a
+            // user wants. The full name is unambiguous by construction.
+            "--format=%(refname)%09%(upstream:track)",
             "refs/heads",
         ])
         .output();
@@ -1095,7 +1118,10 @@ fn ahead_behind_via_for_each_ref(
     let mut results = Vec::new();
 
     for line in stdout.lines() {
-        let Some((name, track)) = line.split_once('\t') else {
+        let Some((refname, track)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(name) = local_branch_name(refname) else {
             continue;
         };
         let Some((ahead, behind)) = parse_upstream_track(track) else {
@@ -1116,6 +1142,14 @@ fn ahead_behind_via_for_each_ref(
     }
 
     results
+}
+
+/// The branch name in a full local refname, spelled as the rest of the
+/// snapshot spells it. Anything outside `refs/heads/` is not our business.
+fn local_branch_name(refname: &str) -> Option<&str> {
+    refname
+        .strip_prefix("refs/heads/")
+        .filter(|name| !name.is_empty())
 }
 
 /// Reads git's `%(upstream:track)` field into ahead/behind counts.
@@ -1153,7 +1187,30 @@ fn parse_upstream_track(track: &str) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod carry_forward_tests {
-    use super::{carry_forward_branch_graph_state, BranchInfo};
+    use super::{carry_forward_branch_graph_state, head_tip, trunk_tip, upstream_tip, BranchInfo};
+
+    /// The body of [`super::GitProject::needs_graph_state_refresh`], over a
+    /// branch list rather than a project, so the decision can be tested without
+    /// a repository or a display.
+    fn needs_refresh(branches: &[BranchInfo]) -> bool {
+        let trunk = trunk_tip(branches);
+        let head = head_tip(branches);
+        branches.iter().any(|branch| {
+            if branch.is_remote {
+                return false;
+            }
+            let merged_into_main_pending =
+                trunk.is_some() && branch.is_merged_into_main.is_none() && branch.tip_oid.is_some();
+            let merged_into_head_pending =
+                head.is_some() && branch.is_merged_into_head.is_none() && branch.tip_oid.is_some();
+            let ahead_behind_pending = branch
+                .upstream
+                .as_deref()
+                .is_some_and(|upstream| upstream_tip(branches, upstream).is_some())
+                && !branch.has_ahead_behind();
+            merged_into_main_pending || merged_into_head_pending || ahead_behind_pending
+        })
+    }
 
     fn oid(byte: u8) -> git2::Oid {
         git2::Oid::from_bytes(&[byte; 20]).unwrap()
@@ -1205,6 +1262,51 @@ mod carry_forward_tests {
             .iter()
             .find(|branch| branch.name == "feature")
             .expect("the feature branch survives the carry-forward")
+    }
+
+    #[test]
+    fn a_repository_with_no_trunk_does_not_ask_for_the_walk_forever() {
+        // `develop`, checked out, with no `main` or `master` anywhere. The
+        // merged-into-main answer is unavailable, not outstanding, and reading
+        // it as outstanding would put a full history walk behind every file
+        // save for the life of the repository.
+        let mut develop = branch("develop", 1);
+        develop.is_head = true;
+        develop.is_merged_into_head = Some(true);
+        assert!(!needs_refresh(&[develop]));
+    }
+
+    #[test]
+    fn a_branch_tracking_an_upstream_nothing_lists_does_not_ask_either() {
+        // The upstream ref is gone — deleted on the remote, or never fetched.
+        // Nothing a walk can do will produce counts against it.
+        let mut orphan = branch("feature", 2);
+        orphan.upstream = Some("origin/feature".to_string());
+        orphan.is_merged_into_head = Some(false);
+        assert!(!needs_refresh(&[orphan]));
+    }
+
+    #[test]
+    fn a_missing_answer_that_a_walk_could_supply_still_asks() {
+        // `main` is present, so merged-into-main is a question with an answer,
+        // and nothing has supplied it.
+        let feature = branch("feature", 2);
+        assert!(needs_refresh(&[trunk(1), feature]));
+    }
+
+    #[test]
+    fn a_fully_answered_repository_asks_for_nothing() {
+        let branches = vec![
+            {
+                let mut main = trunk(1);
+                main.is_merged_into_main = Some(true);
+                main.is_merged_into_head = Some(true);
+                main
+            },
+            tracked_feature(2),
+            remote("origin/feature", 2),
+        ];
+        assert!(!needs_refresh(&branches));
     }
 
     /// An incoming `feature` that tracks its upstream and knows nothing else.
@@ -1352,7 +1454,33 @@ mod carry_forward_tests {
 
 #[cfg(test)]
 mod ahead_behind_tests {
-    use super::parse_upstream_track;
+    use super::{local_branch_name, parse_upstream_track};
+
+    #[test]
+    fn a_full_refname_gives_the_name_the_snapshot_uses() {
+        assert_eq!(local_branch_name("refs/heads/main"), Some("main"));
+        assert_eq!(
+            local_branch_name("refs/heads/feature/login"),
+            Some("feature/login")
+        );
+    }
+
+    #[test]
+    fn a_branch_sharing_a_tag_s_name_still_resolves() {
+        // This is the case `%(refname:short)` used to lose: with both
+        // `refs/heads/release` and `refs/tags/release` present, git shortens
+        // the branch to `heads/release`, which matches no branch at all and
+        // left the counts unknown for the one branch anybody would be watching.
+        assert_eq!(local_branch_name("refs/heads/release"), Some("release"));
+    }
+
+    #[test]
+    fn anything_that_is_not_a_local_branch_is_declined() {
+        assert_eq!(local_branch_name("refs/tags/v1.0.0"), None);
+        assert_eq!(local_branch_name("refs/remotes/origin/main"), None);
+        assert_eq!(local_branch_name("refs/heads/"), None);
+        assert_eq!(local_branch_name("main"), None);
+    }
 
     #[test]
     fn a_level_branch_prints_nothing_and_is_zero_zero() {

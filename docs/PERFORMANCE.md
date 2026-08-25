@@ -195,17 +195,25 @@ registry before the first step runs, so a scenario naming a command that no
 longer exists fails immediately instead of quietly measuring fewer steps than it
 claims.
 
-`"settle": "frame"` waits for the next presented frame before the next step.
+`"settle": "frame"` waits for the next frame the app actually *draws* — not the
+next vsync tick, which arrives on an idle window too and would let a step that
+repainted nothing settle immediately. A step that draws nothing within 500ms
+gives up and is counted in `settle_timeouts`, so its wall time is visibly the
+timeout rather than the app.
+
 `"settle": {"rate": {"hz": 30}}` instead delivers on a fixed clock whether or not
 the app kept up — the only mode that reproduces a held key, because the backlog
 that builds when the app falls behind is the whole phenomenon, and settling on a
 frame is precisely the case where it cannot form.
 
 Per-action latency does not come from either. An action is charged against the
-first frame whose *invalidation* happened at or after the dispatch — the first
-frame that could contain its effect — measured to the end of that draw. Closing
-on the next tick regardless, which is what this used to do, measured the
-remainder of the frame period and little else.
+first frame whose *draw began* after it was dispatched, measured to the end of
+that draw. Dispatch and draw both run on the main thread and cannot interleave,
+so anything dispatched before a draw starts had already changed the state that
+draw went on to read. The boundary is the draw's start rather than the frame's
+first invalidation for a reason: only the first command between two draws sets
+that invalidation, and charging the rest to a later frame would inflate exactly
+the scenario built to queue several commands per frame.
 
 `mark`/`end_mark` bracket a named region and give it its own frame statistics
 and memory delta. Marks are how you attribute a regression to a phase rather

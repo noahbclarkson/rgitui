@@ -285,14 +285,14 @@ const SETTLE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Scenario steps that settle this way measure keypress-to-pixels rather than
 /// keypress-to-return, which is the latency a user actually experiences.
 async fn next_frame(cx: &mut AsyncWindowContext) {
-    let before = cx.update(|_, cx| frame_count(cx)).unwrap_or(0);
+    let before = cx.update(|_, cx| drawn_count(cx)).unwrap_or(0);
 
     // Bounded so a step that never triggers a repaint slows the scenario rather
     // than hanging it forever.
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         cx.background_executor().timer(FRAME_POLL_INTERVAL).await;
-        let now = cx.update(|_, cx| frame_count(cx)).unwrap_or(before);
+        let now = cx.update(|_, cx| drawn_count(cx)).unwrap_or(before);
         if now > before {
             return;
         }
@@ -307,11 +307,14 @@ async fn next_frame(cx: &mut AsyncWindowContext) {
     }
 }
 
-/// Frames presented so far, or 0 when no session is installed.
-fn frame_count(cx: &gpui::App) -> usize {
-    cx.try_global::<PerfSession>()
-        .map(PerfSession::frame_count)
-        .unwrap_or(0)
+/// Frames *drawn* so far, or 0 when no session is installed.
+///
+/// Deliberately not the frame-chain tick count: gpui runs those callbacks on
+/// every vsync whether the window was dirty or not, so a step that failed to
+/// repaint would settle on the next idle tick and the settle timeout could
+/// never fire — the one thing it exists to detect.
+fn drawn_count(cx: &mut gpui::App) -> usize {
+    PerfSession::drawn_count(cx)
 }
 
 /// Blocks until `condition` has held continuously for [`SETTLED_POLLS`] polls,
