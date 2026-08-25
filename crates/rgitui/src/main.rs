@@ -245,8 +245,16 @@ fn start_perf_clock() {}
 /// leaves its corpus in somebody's recent-repository list.
 #[cfg(feature = "perf")]
 fn isolate_perf_state() {
-    let Some(root) = rgitui_perf::prepare_state_root() else {
-        return;
+    let root = match rgitui_perf::prepare_state_root() {
+        Ok(Some(root)) => root,
+        Ok(None) => return,
+        // Refusing to touch a directory the harness does not own is the point;
+        // continuing would measure against the user's real state, which is the
+        // thing this exists to prevent.
+        Err(error) => {
+            eprintln!("perf run: {error}");
+            std::process::exit(78);
+        }
     };
     if rgitui_settings::redirect_state_to(&root) {
         log::info!(

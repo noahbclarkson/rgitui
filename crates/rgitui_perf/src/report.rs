@@ -688,6 +688,7 @@ mod tests {
             p95_ms: 8.4,
             p99_ms: 8.6,
             max_ms: 9.0,
+            presenting_intervals: 600,
             dropped_frames: 0,
             refresh_interval_ms: 8.3,
         };

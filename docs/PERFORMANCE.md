@@ -242,6 +242,22 @@ a fixed recipe on a fixed clock, so the same tier is identical on every machine.
 Recipes are fingerprinted into the directory name, so changing one regenerates
 rather than silently reusing a repository built to the old shape.
 
+## Where a run keeps its state
+
+A measured run must not read or write the installed app's settings or caches:
+sharing them makes each run depend on what the last one left behind, and puts the
+corpus in somebody's real recent-repositories list. Runs therefore redirect to
+`RGITUI_PERF_STATE`, defaulting to a directory under the system temp dir.
+
+A cold run empties that root's `config/` and `cache/`, so the harness will only
+use a root it created — marked with a `.rgitui-perf-state` file — or an empty one
+it can adopt. Point `RGITUI_PERF_STATE` at a directory that already has other
+things in it and the run exits 78 without deleting anything. `config` and `cache`
+are ordinary enough directory names that "we never delete the root itself" was
+not protection worth relying on.
+
+## The corpus, run to run
+
 A corpus is restored to its committed state each time it is handed to a run.
 Scenarios are allowed to change the working tree — `staging-churn` has to, or it
 stages nothing — and without this that would compound: the second run would

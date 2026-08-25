@@ -42,6 +42,10 @@ pub struct FrameStats {
     pub p99_ms: f64,
     /// Worst single interval in the region.
     pub max_ms: f64,
+    /// Intervals the cadence percentiles were taken over: those between two
+    /// consecutive drawn ticks. Well below `frames` in a region that spent time
+    /// idle, and equal to zero in one that never drew twice in a row.
+    pub presenting_intervals: u64,
     /// Intervals longer than 1.5x the display's refresh interval, i.e. frames
     /// the user would perceive as dropped.
     pub dropped_frames: u64,
@@ -98,6 +102,17 @@ impl FrameRecorder {
     }
 
     /// Aggregates ticks in `range` into statistics.
+    ///
+    /// Cadence is measured only across intervals between two consecutive drawn
+    /// ticks. gpui throttles its frame callbacks well below the display rate
+    /// once a window goes idle, so counting every interval would report the
+    /// fifteen quiet seconds of `idle.json` as a solid wall of dropped frames
+    /// and raise `frame.p99_over_budget` for an app that was doing nothing —
+    /// while a genuine stall still lands on the tick where drawing resumed,
+    /// between two drawn ticks, and is still counted.
+    ///
+    /// `frames`, `drawn_frames` and `duration_ms` continue to describe the
+    /// whole region, so the ratio between them stays readable.
     pub fn stats(&self, range: std::ops::Range<usize>) -> FrameStats {
         let end = range.end.min(self.intervals_ms.len());
         let start = range.start.min(end);
@@ -109,7 +124,14 @@ impl FrameRecorder {
             };
         }
 
-        let mut sorted = intervals.to_vec();
+        let presenting: Vec<f64> = (start..end)
+            .filter(|index| {
+                self.drawn[*index] && index.checked_sub(1).is_some_and(|p| self.drawn[p])
+            })
+            .map(|index| self.intervals_ms[index])
+            .collect();
+
+        let mut sorted = presenting.clone();
         sorted.sort_by(|a, b| a.total_cmp(b));
         let dropped_threshold = self.refresh_interval_ms * 1.5;
 
@@ -120,8 +142,9 @@ impl FrameRecorder {
             p50_ms: percentile(&sorted, 0.50),
             p95_ms: percentile(&sorted, 0.95),
             p99_ms: percentile(&sorted, 0.99),
-            max_ms: *sorted.last().unwrap_or(&0.0),
-            dropped_frames: intervals
+            max_ms: sorted.last().copied().unwrap_or(0.0),
+            presenting_intervals: presenting.len() as u64,
+            dropped_frames: presenting
                 .iter()
                 .filter(|ms| **ms > dropped_threshold)
                 .count() as u64,
@@ -264,6 +287,61 @@ pub fn percentile(sorted: &[f64], quantile: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_idle_stretch_is_not_a_wall_of_dropped_frames() {
+        // What `idle.json` looks like: gpui throttles its callbacks to ~25Hz
+        // once nothing is dirty, so every interval is four times the refresh
+        // period. Counting them would report fifteen seconds of doing nothing
+        // as the worst stutter in the run.
+        let mut recorder = FrameRecorder::new(10.0);
+        for _ in 0..100 {
+            recorder.record(40.0, false);
+        }
+
+        let stats = recorder.stats_all();
+
+        assert_eq!(stats.frames, 100, "the ticks are still reported");
+        assert_eq!(stats.drawn_frames, 0);
+        assert_eq!(stats.presenting_intervals, 0);
+        assert_eq!(stats.dropped_frames, 0);
+        assert_eq!(stats.p99_ms, 0.0);
+    }
+
+    #[test]
+    fn a_stall_while_presenting_is_still_counted() {
+        // The case that must survive: drawing continuously, one frame late.
+        let mut recorder = FrameRecorder::new(10.0);
+        for _ in 0..20 {
+            recorder.record(10.0, true);
+        }
+        recorder.record(85.0, true);
+
+        let stats = recorder.stats_all();
+
+        assert_eq!(stats.dropped_frames, 1);
+        assert_eq!(stats.max_ms, 85.0);
+        assert_eq!(
+            stats.presenting_intervals, 20,
+            "the first tick has no predecessor"
+        );
+    }
+
+    #[test]
+    fn waking_from_idle_is_not_charged_as_a_drop() {
+        // The interval spanning the gap ends on a drawn tick but begins on an
+        // idle one, so it describes waking up rather than missing a deadline.
+        let mut recorder = FrameRecorder::new(10.0);
+        recorder.record(40.0, false);
+        recorder.record(40.0, false);
+        recorder.record(40.0, true);
+        recorder.record(10.0, true);
+
+        let stats = recorder.stats_all();
+
+        assert_eq!(stats.presenting_intervals, 1);
+        assert_eq!(stats.dropped_frames, 0);
+    }
 
     #[test]
     fn percentile_interpolates_between_samples() {

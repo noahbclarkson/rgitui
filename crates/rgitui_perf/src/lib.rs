@@ -135,14 +135,26 @@ pub fn state_root() -> Option<std::path::PathBuf> {
     Some(std::env::temp_dir().join("rgitui-perf-state"))
 }
 
+/// Written into a state root the first time the harness uses it, so a cold run
+/// can tell a directory it owns from one it was pointed at by mistake.
+const STATE_MARKER: &str = ".rgitui-perf-state";
+
 /// Resolves the state directory and puts it in the state the scenario asked
 /// for, returning the root to redirect to.
 ///
-/// Only the `config` and `cache` subdirectories are removed, never the root
-/// itself — [`STATE_ENV`] is caller-supplied, and a harness that recursively
-/// deletes whatever it is pointed at is one typo away from being a disaster.
-pub fn prepare_state_root() -> Option<std::path::PathBuf> {
-    let root = state_root()?;
+/// A cold run clears the `config` and `cache` subdirectories, and [`STATE_ENV`]
+/// is caller-supplied — so `RGITUI_PERF_STATE=$HOME`, or a project directory,
+/// would have this delete somebody's `config/` and `cache/` before it had
+/// established any right to. Sparing the root itself is not protection: those
+/// two names are as common as directory names get. A root is therefore usable
+/// only if the harness created it, or if it is empty and can be adopted;
+/// anything else is refused, and refused *before* anything is removed.
+pub fn prepare_state_root() -> anyhow::Result<Option<std::path::PathBuf>> {
+    let Some(root) = state_root() else {
+        return Ok(None);
+    };
+    claim_state_root(&root)?;
+
     if starts_cold() {
         for directory in ["config", "cache"] {
             let path = root.join(directory);
@@ -153,7 +165,50 @@ pub fn prepare_state_root() -> Option<std::path::PathBuf> {
             }
         }
     }
-    Some(root)
+    Ok(Some(root))
+}
+
+/// Establishes that `root` is the harness's to clear, creating or adopting it.
+///
+/// Refusing is the whole point, so it fails the run rather than carrying on
+/// against the user's own directories.
+fn claim_state_root(root: &std::path::Path) -> anyhow::Result<()> {
+    let marker = root.join(STATE_MARKER);
+    if marker.is_file() {
+        return Ok(());
+    }
+
+    match std::fs::read_dir(root) {
+        Ok(mut entries) => {
+            // A directory that exists and holds something the harness did not
+            // put there. Whatever it is, it is not this tool's to empty. An
+            // empty one is adopted.
+            if entries.next().is_some() {
+                anyhow::bail!(
+                    "{} already has contents and no {STATE_MARKER} marker, so it is not a                      directory this harness created. A run would delete its config/ and cache/                      subdirectories. Point {STATE_ENV} at a new or empty directory.",
+                    root.display()
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(root).map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot create the perf state root {}: {error}",
+                    root.display()
+                )
+            })?;
+        }
+        Err(error) => anyhow::bail!("cannot inspect {}: {error}", root.display()),
+    }
+
+    std::fs::write(
+        &marker,
+        "This directory holds settings and caches for rgitui performance runs.
+         A cold run empties its config/ and cache/ subdirectories.
+",
+    )
+    .map_err(|error| anyhow::anyhow!("cannot mark {} as the harness's: {error}", root.display()))?;
+    Ok(())
 }
 
 /// Whether this run should begin with no persistent caches.
@@ -201,6 +256,48 @@ pub const fn is_heap_profiling() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_directory_the_harness_has_not_seen_is_refused() {
+        // The case that matters: `RGITUI_PERF_STATE=$HOME`, or a project
+        // directory. A cold run would delete `config/` and `cache/` under it.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("config")).unwrap();
+        std::fs::write(dir.path().join("config/settings.json"), "{}").unwrap();
+
+        let error = claim_state_root(dir.path()).unwrap_err().to_string();
+
+        assert!(error.contains(STATE_MARKER), "error: {error}");
+        assert!(
+            dir.path().join("config/settings.json").is_file(),
+            "the refusal happens before anything is removed"
+        );
+    }
+
+    #[test]
+    fn an_empty_directory_is_adopted_and_marked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        claim_state_root(dir.path()).unwrap();
+        assert!(dir.path().join(STATE_MARKER).is_file());
+    }
+
+    #[test]
+    fn a_root_that_does_not_exist_yet_is_created() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("nested/state");
+        claim_state_root(&root).unwrap();
+        assert!(root.join(STATE_MARKER).is_file());
+    }
+
+    #[test]
+    fn a_root_the_harness_marked_is_accepted_again() {
+        let dir = tempfile::TempDir::new().unwrap();
+        claim_state_root(dir.path()).unwrap();
+        std::fs::create_dir(dir.path().join("cache")).unwrap();
+
+        // Contents now, but they are the harness's own from the last run.
+        claim_state_root(dir.path()).unwrap();
+    }
 
     #[test]
     fn mode_parses_record() {

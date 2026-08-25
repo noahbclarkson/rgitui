@@ -692,7 +692,12 @@ impl PerfSession {
                 frames: mark.start_frame..self.frames.len(),
                 drawn_from: mark.started,
                 drawn_to: Instant::now(),
-                working_set_delta_bytes: mark.start_working_set as i64,
+                // The delta, as `end_mark` computes it. Recording the starting
+                // footprint instead turned an ordinary 100-200MB baseline into
+                // 100-200MB of apparent growth, well past the 20MB threshold,
+                // so every salvaged report accused itself of a memory leak.
+                working_set_delta_bytes: self.last_process.working_set_bytes as i64
+                    - mark.start_working_set as i64,
             });
         }
 
