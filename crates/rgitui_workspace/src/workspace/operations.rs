@@ -176,11 +176,16 @@ impl Workspace {
             return;
         };
 
-        // The operation failed in a particular checkout, and running it again
-        // anywhere else would fetch into, merge into or push a different
-        // branch than the one the user was working on. Leaving worktree
-        // inspection clears the offer, so this is still that checkout.
-        let worktree_path = self.effective_worktree_path(cx);
+        // The checkout the operation actually ran in, carried on the update
+        // itself. Resolving it here from what is being inspected *now* is
+        // wrong whenever the failure arrives after the user has moved on —
+        // and for a network operation, whose failure is a timeout or a
+        // rejected push, arriving late is the normal case. Falling back to the
+        // effective path covers operations that record no worktree.
+        let worktree_path = update
+            .worktree_path
+            .clone()
+            .unwrap_or_else(|| self.effective_worktree_path(cx));
 
         let handled = project.update(cx, |proj, cx| match update.kind {
             GitOperationKind::Fetch => {

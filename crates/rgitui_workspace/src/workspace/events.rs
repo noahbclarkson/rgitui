@@ -245,13 +245,6 @@ pub(super) fn set_inspecting_worktree_for_tab(
 
     project.update(cx, |proj, _| proj.set_inspected_worktree(watch_path));
     if tab_index == workspace.active_tab {
-        // A failed operation is offered with a Retry button, and retrying runs
-        // it in whichever checkout is being inspected now. That is the right
-        // target only while it is still the checkout the operation failed in,
-        // so the offer does not outlive the inspection that produced it. The
-        // offer belongs to the tab on screen, so a watcher-driven change to a
-        // background tab leaves it alone.
-        workspace.operations.last_failed_git_operation = None;
         update_sidebar_for_active_worktree(workspace, cx);
     }
     detail_panel.update(cx, |dp, cx| dp.clear(cx));
@@ -1986,20 +1979,18 @@ pub(super) fn subscribe_graph(
                 }
                 GraphViewEvent::CherryPick(oid) => {
                     let oid = *oid;
-                    // Capture HEAD before cherry-pick for undo support
+                    let worktree_path = this.effective_worktree_path(cx);
+                    // The HEAD the undo will reset to, read from the checkout
+                    // the cherry-pick is about to change. The repository-wide log's
+                    // HEAD row is the main checkout's branch, which is a
+                    // different commit whenever a worktree is being inspected.
                     let previous_head_oid: Option<String> = project
                         .read(cx)
-                        .recent_commits()
-                        .iter()
-                        .find(|c| {
-                            c.refs
-                                .iter()
-                                .any(|r| matches!(r, rgitui_git::RefLabel::Head))
-                        })
-                        .map(|c| c.oid.to_string());
+                        .head_oid_at(&worktree_path)
+                        .map(|oid| oid.to_string());
 
                     project.update(cx, |proj, cx| {
-                        proj.cherry_pick(oid, cx).detach();
+                        proj.cherry_pick_at(oid, &worktree_path, cx).detach();
                     });
 
                     if let Some(oid_hex) = previous_head_oid {
@@ -2012,20 +2003,18 @@ pub(super) fn subscribe_graph(
                 }
                 GraphViewEvent::RevertCommit(oid) => {
                     let oid = *oid;
-                    // Capture HEAD before revert for undo support
+                    let worktree_path = this.effective_worktree_path(cx);
+                    // The HEAD the undo will reset to, read from the checkout
+                    // the revert is about to change. The repository-wide log's
+                    // HEAD row is the main checkout's branch, which is a
+                    // different commit whenever a worktree is being inspected.
                     let previous_head_oid: Option<String> = project
                         .read(cx)
-                        .recent_commits()
-                        .iter()
-                        .find(|c| {
-                            c.refs
-                                .iter()
-                                .any(|r| matches!(r, rgitui_git::RefLabel::Head))
-                        })
-                        .map(|c| c.oid.to_string());
+                        .head_oid_at(&worktree_path)
+                        .map(|oid| oid.to_string());
 
                     project.update(cx, |proj, cx| {
-                        proj.revert_commit(oid, cx).detach();
+                        proj.revert_commit_at(oid, &worktree_path, cx).detach();
                     });
 
                     if let Some(oid_hex) = previous_head_oid {
@@ -2302,19 +2291,14 @@ pub(super) fn subscribe_detail_panel(
                 if let Some(project) = this.active_project().cloned() {
                     if let Ok(oid) = git2::Oid::from_str(sha) {
                         // Capture HEAD before cherry-pick for undo support
+                        let worktree_path = this.effective_worktree_path(cx);
                         let previous_head_oid: Option<String> = project
                             .read(cx)
-                            .recent_commits()
-                            .iter()
-                            .find(|c| {
-                                c.refs
-                                    .iter()
-                                    .any(|r| matches!(r, rgitui_git::RefLabel::Head))
-                            })
-                            .map(|c| c.oid.to_string());
+                            .head_oid_at(&worktree_path)
+                            .map(|oid| oid.to_string());
 
                         project.update(cx, |proj, cx| {
-                            proj.cherry_pick(oid, cx).detach();
+                            proj.cherry_pick_at(oid, &worktree_path, cx).detach();
                         });
 
                         if let Some(oid_hex) = previous_head_oid {

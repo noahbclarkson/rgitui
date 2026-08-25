@@ -124,6 +124,7 @@ impl GitProject {
             self.head_branch_at(worktree_path),
             cx,
         );
+        self.note_operation_worktree(operation_id, worktree_path);
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result: anyhow::Result<(Option<String>, RefreshData)> = cx
                 .background_executor()
@@ -232,6 +233,7 @@ impl GitProject {
             Some(branch_name.clone()),
             cx,
         );
+        self.note_operation_worktree(operation_id, worktree_path);
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result: anyhow::Result<(String, Option<String>, RefreshData)> = cx
                 .background_executor()
@@ -413,6 +415,7 @@ impl GitProject {
             Some(remote_branch_name.clone()),
             cx,
         );
+        self.note_operation_worktree(operation_id, worktree_path);
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result: anyhow::Result<(String, Option<String>, RefreshData)> = cx
                 .background_executor()

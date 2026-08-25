@@ -296,6 +296,9 @@ pub struct GitProject {
     /// Number of commits currently loaded (used by incremental load-more).
     commit_offset: usize,
     next_operation_id: u64,
+    /// Where each recent operation ran, so a retry can go back to the same
+    /// checkout rather than to whatever is on screen when the failure lands.
+    operation_worktrees: std::collections::HashMap<u64, PathBuf>,
     /// Remote default branch (e.g. "main"), from `refs/remotes/origin/HEAD`.
     default_branch: Option<String>,
     /// Current Git user email, read from repo config then global config.
@@ -346,6 +349,7 @@ impl GitProject {
             has_more_commits: false,
             commit_offset: 0,
             next_operation_id: 1,
+            operation_worktrees: std::collections::HashMap::new(),
             default_branch: None,
             current_user_email: None,
             commit_author_filter: None,
@@ -382,6 +386,7 @@ impl GitProject {
             has_more_commits: false,
             commit_offset: 0,
             next_operation_id: 1,
+            operation_worktrees: std::collections::HashMap::new(),
             default_branch: None,
             current_user_email: None,
             commit_author_filter: None,
@@ -427,10 +432,31 @@ impl GitProject {
             details: None,
             remote_name,
             branch_name,
+            worktree_path: None,
             retryable: false,
         }));
         cx.notify();
         id
+    }
+
+    /// How many operations' worktrees to remember. Only the retryable ones
+    /// register, and only the most recent failure is ever offered, so this is
+    /// far more history than anything reads.
+    const REMEMBERED_OPERATION_WORKTREES: usize = 32;
+
+    /// Records where operation `id` is running, so its retry can go back there.
+    pub(crate) fn note_operation_worktree(&mut self, id: u64, worktree_path: &Path) {
+        self.operation_worktrees
+            .insert(id, worktree_path.to_path_buf());
+        if self.operation_worktrees.len() > Self::REMEMBERED_OPERATION_WORKTREES {
+            let cutoff = id.saturating_sub(Self::REMEMBERED_OPERATION_WORKTREES as u64);
+            self.operation_worktrees
+                .retain(|recorded, _| *recorded > cutoff);
+        }
+    }
+
+    fn operation_worktree(&self, id: u64) -> Option<PathBuf> {
+        self.operation_worktrees.get(&id).cloned()
     }
 
     pub(crate) fn complete_op(
@@ -449,6 +475,7 @@ impl GitProject {
             details: names.0,
             remote_name: names.1,
             branch_name: names.2,
+            worktree_path: self.operation_worktree(id),
             retryable: false,
         }));
     }
@@ -470,6 +497,7 @@ impl GitProject {
             details: Some(error.into()),
             remote_name: names.0,
             branch_name: names.1,
+            worktree_path: self.operation_worktree(id),
             retryable: names.2,
         }));
     }

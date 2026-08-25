@@ -455,6 +455,13 @@ pub struct GitOperationUpdate {
     pub details: Option<String>,
     pub remote_name: Option<String>,
     pub branch_name: Option<String>,
+    /// The checkout the operation ran in, for the operations that record one.
+    ///
+    /// Retrying has to go back to where it failed. Resolving that at retry time
+    /// from whatever is being inspected then is wrong as soon as the failure
+    /// arrives after the user has moved on — which for a network operation,
+    /// where the failure is a timeout or a rejected push, is the normal case.
+    pub worktree_path: Option<std::path::PathBuf>,
     pub retryable: bool,
 }
 

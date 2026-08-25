@@ -2095,11 +2095,21 @@ impl GitProject {
     }
 
     /// Revert a commit (creates a new commit that undoes the given commit).
-    pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("revert_commit: oid={}", oid);
+    pub fn revert_commit_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "revert_commit: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Revert,
@@ -2112,7 +2122,7 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData, bool)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     ensure_clean_worktree(&repo, "Revert")?;
                     let commit = repo.find_commit(oid)?;
                     let summary = commit.summary().unwrap_or("").to_string();
@@ -2174,11 +2184,21 @@ impl GitProject {
     }
 
     /// Cherry-pick a commit onto the current HEAD.
-    pub fn cherry_pick(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("cherry_pick: oid={}", oid);
+    pub fn cherry_pick_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "cherry_pick: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::CherryPick,
@@ -2191,7 +2211,7 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData, bool)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     ensure_clean_worktree(&repo, "Cherry-pick")?;
                     let commit = repo.find_commit(oid)?;
                     let summary = commit.summary().unwrap_or("").to_string();
