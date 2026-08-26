@@ -16,6 +16,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  # Kept in step with `rust-toolchain.toml`; preflight asserts they match.
+  RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
   # Pre-flight: resolve version + run the same quality gates as ci.yml so a
@@ -55,6 +57,15 @@ jobs:
           CARGO_VERSION="$(awk -F '"' '/^version *=/ {print $2; exit}' crates/rgitui/Cargo.toml)"
           if [ "$CARGO_VERSION" != "${{ steps.version.outputs.version }}" ]; then
             echo "::error::crates/rgitui/Cargo.toml version ($CARGO_VERSION) does not match tag version (${{ steps.version.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Check the toolchain pin has not drifted
+        shell: bash
+        run: |
+          pinned=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          if [ "$pinned" != "$RUST_TOOLCHAIN" ]; then
+            echo "::error::rust-toolchain.toml says $pinned but the workflow says $RUST_TOOLCHAIN"
             exit 1
           fi
 
@@ -98,8 +109,11 @@ jobs:
             xvfb
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        # Version comes from `rust-toolchain.toml` rather than being pinned
+        # here as well; the two drifted apart once already.
+        uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
 
       - name: Cache cargo registry and target
@@ -125,7 +139,9 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
@@ -225,7 +241,9 @@ jobs:
             fuse libfuse2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
@@ -302,7 +320,9 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2

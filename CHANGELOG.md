@@ -1,5 +1,172 @@
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-26
+
+A performance, correctness and instrumentation release. Opening a large
+repository is several times faster and uses roughly half the memory, an
+inspected linked worktree is now the single subject of the window rather than a
+mix of two checkouts, and the branch panel stops asserting things it never
+computed. Underneath all three sits a new measurement harness — the reason the
+numbers in this entry are measured rather than estimated.
+
+> **Upgrade recommended:** keyboard shortcuts did nothing on a fresh launch
+> until a panel was clicked, and repositories whose trunk is not `main` or
+> `master` had every local branch listed as unmerged — inviting deletion of
+> branches that were fully merged.
+
+### Added
+
+- **Performance and memory instrumentation harness** (`rgitui_perf`,
+  `docs/PERFORMANCE.md`). Feature-gated off by default and absent from shipped
+  binaries. Records frame cadence, per-draw cost, action latency, CPU, GPU and a
+  *labelled* memory census, and writes a pre-digested `report.json` whose
+  `findings` section states what is wrong rather than only what the numbers
+  were. Scenarios drive the real keymap → dispatch → render path, with
+  record/replay, deterministic corpus generation, `dhat` allocation-site
+  profiling, and `rgitui-perf compare` for before/after. (#76)
+
+### Changed
+
+- **The splash screen hands over on readiness, not on a clock.** It waited a
+  flat 1500ms regardless of what the repository needed. It now plays its opening
+  animation in full and then hands over as soon as the first refresh has
+  finished, keeping the splash up beyond that only for a repository that is
+  still loading, to a 2500ms ceiling. A freshly initialised repository — which
+  has no commits and never will until the first one — no longer waits out the
+  full timeout. (#76)
+- **"Go Back to Main" is now "Exit Worktree".** Leaving inspection returns to
+  whichever checkout rgitui was opened on, which may be on any branch, or be a
+  linked worktree itself — so the old label named a destination that was often
+  neither. (#75)
+- **Worktree inspection ends only when the worktree is gone.** A worktree that
+  merely became clean used to throw the user back to the main checkout with the
+  sidebar, commit panel and toolbar all swapping underneath. A status thread
+  that failed now reports "unknown" rather than degrading to an empty status,
+  which was indistinguishable from a clean worktree and triggered the same exit.
+  (#75)
+- **gpui and the Rust toolchain are updated** (gpui `f3fb4e04` → `24e25552`,
+  toolchain 1.94.1 → 1.97.1). The toolchain move is required: the new gpui uses
+  `std::hint::cold_path`. (#76)
+
+### Fixed
+
+#### Branch state
+
+- **Branches are no longer reported as unmerged when nothing asked.** With no
+  `main`, `master`, `origin/main` or `origin/master` to walk against, every
+  branch fell through to "not merged" and was stored as a definite answer. Any
+  repository whose trunk is `develop`, and any fork tracking `upstream/*`, had
+  the branch health panel list every local branch as unmerged. "Could not ask"
+  is now distinct from "asked, and no", and the same applies to ahead/behind
+  counts, whose "not computed" sentinel was `(0, 0)` — which is also what a
+  branch level with its upstream reports. (#76)
+- **A checkout in a terminal no longer leaves "merged into current branch"
+  stale.** The watcher now recomputes the merged flags when an answer is
+  missing, and the deferred pass retries when a refresh supersedes it rather
+  than leaving the flags unset for as long as anything keeps writing to the
+  working tree. Carried-forward answers are keyed on the reference point they
+  were derived from, so a checkout invalidates "merged into HEAD" and a push no
+  longer carries "ahead 3" onto a branch that is now level. (#76)
+
+#### Linked worktrees
+
+- **An inspected worktree's own state stays on screen.** The displayed diff was
+  recomputed against the main repository, where a file modified only inside the
+  worktree has no changes — so the diff pane emptied itself on every refresh,
+  including while compiling. (#75)
+- **Filesystem noise no longer wakes constant refreshes.** The watcher's
+  gitignore filter held one repository handle and asked it about every event
+  path, so a path inside a linked worktree evaluated to a nonsense relative path
+  and came back "not ignored" whatever that checkout's `.gitignore` says. There
+  is now one handle per watched checkout. The inspected worktree is also watched
+  and fingerprinted regardless of the `watch_all_worktrees` setting; until now
+  staging inside it went undetected entirely. (#75)
+- **Destructive and network operations follow the worktree on screen.**
+  Confirming "discard all" while inspecting a worktree stashed the *main
+  repository's* work. Clean, push, pull, fetch, force push, stash apply/pop,
+  stash-to-branch, reset, and conflict resolution all targeted the wrong tree,
+  from the toolbar, sidebar and command palette alike. Push and pull now resolve
+  their branch, upstream and preferred remote from that checkout, and "generate
+  commit message" describes the files the commit will actually contain. (#75)
+- **Conflicts are reported and resolved in the checkout they happened in.** A
+  conflicted merge inside a linked worktree records itself under
+  `.git/worktrees/<name>/`, so the banner read the main repository's clean state
+  and hid conflicts the user was looking straight at — then offered a Continue
+  that refused. Banner state, conflict counts, status-bar and toolbar
+  divergence counts, and undo entries all derive from the inspected checkout.
+  (#75)
+- **Retrying a failed network operation goes back where it failed.** The
+  originating worktree is recorded on the operation rather than inferred when
+  Retry is clicked, including for failures that happen before the task starts —
+  a pull with no upstream, a push with no target. Switching inspection between
+  the failure and the retry no longer redirects it. (#75)
+- **Worktree discovery is correct when rgitui is opened on a linked worktree.**
+  That checkout appeared twice while the main checkout had no row at all. The
+  three sources are merged and deduplicated by canonical path. A detached HEAD
+  no longer renders a short OID as though it were a branch name; the graph row
+  reads "Pending changes on detached HEAD". (#75)
+
+#### Keyboard and interface
+
+- **Keyboard shortcuts work on a fresh launch.** Nothing took focus at startup,
+  and GPUI resolves an action along the path from the focused node up to the
+  root — so every shortcut landed above the workspace's handlers and did nothing
+  until a panel was clicked. (#76)
+- **Continue finishes the operation that actually stopped.** The conflict
+  banner's Continue always dispatched a merge continuation, which refuses
+  anything without `MERGE_HEAD`, so a cherry-pick, revert, rebase or mailbox
+  application that stopped on conflicts advertised a recovery path that could
+  not work. Continuation now follows the repository state. Bisect, which
+  advances by judging the checked-out commit rather than by continuing, no
+  longer shows the button.
+- **Settings → Auth renders its text correctly on macOS.** Wrapping text under
+  the scroll container had no definite width during GPUI's measurement pass,
+  which the macOS text system could resolve as a one-glyph wrap. (#74, fixes
+  #73 — thanks [@cnsky1103](https://github.com/cnsky1103))
+
+### Performance
+
+Measured against a generated 20,000-commit corpus, same profile, same machine.
+
+- **Opening a large repository: 3,291ms → ~514ms to first commits.** Startup ran
+  one libgit2 `merge_base` per local branch, twice — 400 walks for a 200-branch
+  repository, 94% of a 3.04s snapshot — to compute two booleans that dim a
+  sidebar row. Asking the question the other way round costs two revwalks in
+  total, and one where HEAD and the trunk agree. Snapshot time went 3,036ms →
+  258ms and startup CPU 104.7% → ~7% of a core. (#76)
+- **Memory: private bytes 351.2 MB → 228.9 MB** in the shipping configuration.
+  A 20 MB profiling buffer was allocated per dispatcher thread in every build,
+  profiling or not; the gpui update makes that storage grow on demand behind a
+  feature and a runtime flag. (#76)
+- **Merged-flag and ahead/behind walks are off the first-paint path,** deferred
+  beside each other, with a refresh carrying forward any value the incoming
+  snapshot did not compute — so the sidebar no longer flickers between "merged"
+  and "unknown" on every watcher tick. Ahead/behind now reads one
+  `git for-each-ref` rather than 200 libgit2 walks. (#76)
+- **The file watcher stopped polling.** It fingerprinted every loose ref every
+  300ms forever — about 2% of a core per open tab, scaling with ref count — while
+  the filesystem watcher was already receiving those events and discarding them.
+  It now scans only when something under a git directory changed, with a 5s
+  fallback for mounts where notify cannot be trusted. (#76)
+- **Diff prefetching stays out of the way.** The queue is capped and drained
+  newest-first, so holding a key no longer buries the diff being looked at under
+  stale speculative work, and it leaves cores free rather than taking four.
+  Syntect's per-line highlighter rebuild is hoisted to one per theme, the
+  graph's ancestor cache is bounded on entry count and walk depth, and sidebar
+  sorting and author deduplication stop allocating per comparison. (#76)
+
+### Internal
+
+- The `perf` feature is built in CI — roughly 2,000 lines across six crates
+  previously compiled on no platform, with four census tests red the whole time.
+  A `perf` job now runs clippy and tests with `--features rgitui/perf`. (#76)
+- CI and release workflows take the Rust version from `rust-toolchain.toml`
+  rather than pinning it separately, with a step that fails if the two drift.
+  They had already drifted. (#76)
+- Expanded regression coverage for worktree discovery and gitignore filtering,
+  the merged-flag carry-forward, sequencer continuation, refresh-readiness
+  tracking, frame-cadence calibration, and before/after comparison.
+
 ## [0.4.0] - 2026-08-12
 
 A major workflow, safety, and interface release. Keyboard shortcuts are now
@@ -950,7 +1117,8 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/noahbclarkson/rgitui/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/noahbclarkson/rgitui/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/noahbclarkson/rgitui/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/noahbclarkson/rgitui/compare/v0.3.0...v0.3.1
