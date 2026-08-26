@@ -39,13 +39,22 @@ impl Workspace {
             .map(|tab| tab.project.read(cx).repo_path().to_path_buf())
     }
 
-    /// Whether the workspace has no git operation running.
+    /// Whether the workspace has no git work running.
     ///
     /// Used by scenario `wait_for` steps so a measurement starts after the work
     /// it is measuring has finished, rather than partway through it.
-    pub(crate) fn is_operation_idle(&self) -> bool {
+    ///
+    /// The operation list alone is not enough: the second phase of the initial
+    /// refresh and the deferred ahead/behind walk report through neither
+    /// `active_operations` nor `active_git_operation`, so on a large corpus a
+    /// startup snapshot would be taken while history was still loading.
+    pub(crate) fn is_operation_idle(&self, cx: &App) -> bool {
         self.operations.active_operations.is_empty()
             && self.operations.active_git_operation.is_none()
+            && !self
+                .tabs
+                .iter()
+                .any(|tab| tab.project.read(cx).has_background_work())
     }
 }
 

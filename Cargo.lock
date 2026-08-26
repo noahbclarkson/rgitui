@@ -5576,7 +5576,6 @@ name = "rgitui_theme"
 version = "0.4.0"
 dependencies = [
  "anyhow",
- "dirs",
  "gpui",
  "log",
  "rgitui_settings",

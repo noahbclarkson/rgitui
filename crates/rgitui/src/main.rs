@@ -504,6 +504,16 @@ fn start_perf_harness(window: WindowHandle<AppRoot>, cx: &mut App) {
     // A recorded session has no final step to finish on, so closing the window
     // is what ends it. Without this the run would produce no report at all,
     // which is the one outcome worse than a partial one.
-    cx.on_window_closed(|cx, _closed_id| rgitui_workspace::perf::finish(cx))
-        .detach();
+    //
+    // The observer is global, so it has to check which window closed: finishing
+    // on any of them means dismissing the settings window writes the report and
+    // ends the run while the workspace is still open, silently discarding the
+    // rest of the session.
+    let instrumented = window.window_id();
+    cx.on_window_closed(move |cx, closed_id| {
+        if closed_id == instrumented {
+            rgitui_workspace::perf::finish(cx);
+        }
+    })
+    .detach();
 }

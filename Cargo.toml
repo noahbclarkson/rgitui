@@ -92,12 +92,6 @@ calloop = { git = "https://github.com/zed-industries/calloop" }
 [profile.dev]
 incremental = true
 
-[profile.dev.package]
-gpui_macros = { opt-level = 3 }
-derive_refineable = { opt-level = 3 }
-taffy = { opt-level = 3 }
-resvg = { opt-level = 3 }
-
 [profile.release]
 opt-level = 3
 lto = "thin"

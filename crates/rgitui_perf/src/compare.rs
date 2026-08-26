@@ -112,6 +112,11 @@ pub struct NoiseFloor {
     /// Tighter in relative terms than any timing: the same scenario over the
     /// same corpus allocates nearly the same bytes every run.
     pub memory: (f64, f64),
+    /// Relative and absolute change required of a CPU figure, in percentage
+    /// points of one core. Sampled at roughly 1Hz over the whole run and
+    /// shared with whatever else the machine is doing, so it is the noisiest
+    /// number the harness records and carries the widest floor.
+    pub cpu_percent: (f64, f64),
 }
 
 impl Default for NoiseFloor {
@@ -126,6 +131,7 @@ impl Default for NoiseFloor {
             extremum: (0.50, 10.0),
             count: (0.25, 10.0),
             memory: (0.08, 8.0 * 1024.0 * 1024.0),
+            cpu_percent: (0.25, 5.0),
         }
     }
 }
@@ -144,6 +150,8 @@ enum Kind {
     Count,
     /// A number of bytes.
     Memory,
+    /// A share of one core, in percentage points.
+    Cpu,
 }
 
 impl Kind {
@@ -155,6 +163,7 @@ impl Kind {
             Kind::Extremum => noise.extremum,
             Kind::Count => noise.count,
             Kind::Memory => noise.memory,
+            Kind::Cpu => noise.cpu_percent,
         }
     }
 }
@@ -298,6 +307,22 @@ pub fn compare(baseline: &Report, candidate: &Report, noise: &NoiseFloor) -> Com
             Kind::Duration,
             base.p95_ms,
             action.p95_ms,
+            noise,
+        ));
+    }
+
+    // Work that costs CPU without costing frames — a new background poll loop,
+    // a watcher that wakes too often — moves nothing else in this list. The
+    // `idle` scenario exists to catch exactly that, and would pass without it.
+    if let (Some(base), Some(cand)) = (
+        baseline.summary.cpu_percent_mean,
+        candidate.summary.cpu_percent_mean,
+    ) {
+        metrics.push(delta(
+            "process.cpu_percent_mean",
+            Kind::Cpu,
+            base,
+            cand,
             noise,
         ));
     }
@@ -531,6 +556,52 @@ mod tests {
             .iter()
             .find(|m| m.metric == metric)
             .unwrap_or_else(|| panic!("no metric {metric}"))
+    }
+
+    #[test]
+    fn a_cpu_regression_is_caught_when_nothing_else_moves() {
+        // The `idle` scenario's whole point: a new background poll loop burns a
+        // core while every frame, draw, task and memory number stays flat.
+        let mut base = report("idle");
+        let mut candidate = report("idle");
+        base.summary.cpu_percent_mean = Some(2.0);
+        candidate.summary.cpu_percent_mean = Some(28.0);
+
+        let comparison = compare(&base, &candidate, &NoiseFloor::default());
+        assert_eq!(
+            find(&comparison, "process.cpu_percent_mean").direction,
+            Direction::Regression
+        );
+        assert!(comparison.has_regressions());
+    }
+
+    #[test]
+    fn a_small_cpu_move_stays_inside_the_floor() {
+        let mut base = report("idle");
+        let mut candidate = report("idle");
+        base.summary.cpu_percent_mean = Some(2.0);
+        // Half again as much in relative terms, but one point of a core: well
+        // inside what two runs of the same scenario differ by on their own.
+        candidate.summary.cpu_percent_mean = Some(3.0);
+
+        let comparison = compare(&base, &candidate, &NoiseFloor::default());
+        assert_eq!(
+            find(&comparison, "process.cpu_percent_mean").direction,
+            Direction::Unchanged
+        );
+    }
+
+    #[test]
+    fn cpu_is_left_out_when_either_run_did_not_record_it() {
+        let mut base = report("idle");
+        let candidate = report("idle");
+        base.summary.cpu_percent_mean = Some(2.0);
+
+        let comparison = compare(&base, &candidate, &NoiseFloor::default());
+        assert!(!comparison
+            .metrics
+            .iter()
+            .any(|m| m.metric == "process.cpu_percent_mean"));
     }
 
     #[test]

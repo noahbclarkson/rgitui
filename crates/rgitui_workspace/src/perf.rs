@@ -78,7 +78,7 @@ mod enabled {
             Box::new(move |cx| {
                 idle_handle
                     .upgrade()
-                    .is_none_or(|workspace| workspace.read(cx).is_operation_idle())
+                    .is_none_or(|workspace| workspace.read(cx).is_operation_idle(cx))
             }),
             Box::new(move |cx| {
                 repo_handle

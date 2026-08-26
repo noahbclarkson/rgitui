@@ -866,7 +866,12 @@ impl GitProject {
         // toggle instead of showing every author.
         let author_filter = self.commit_author_filter.clone();
 
+        let work = self.track_background_work();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Held for both phases, so a caller waiting for the project to
+            // settle waits for the remaining history too, not just the first
+            // batch that made the window look populated.
+            let _work = work;
             // Phase 1: lightweight refresh (skip ahead/behind) with a small commit batch
             let repo_path_p1 = repo_path.clone();
             let cache_path_p1 = repo_path.clone();

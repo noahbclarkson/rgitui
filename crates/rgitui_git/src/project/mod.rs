@@ -23,6 +23,7 @@ use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::types::*;
@@ -319,6 +320,25 @@ pub struct GitProject {
     commit_query_generation: u64,
     /// Suppresses duplicate pagination requests while one page is already in flight.
     load_more_in_flight: bool,
+    /// How many background refreshes are in flight — history paging and the
+    /// ahead/behind walk, neither of which reports through `OperationUpdated`.
+    ///
+    /// Held behind an `Arc` so [`BackgroundWorkGuard`] can decrement it from
+    /// `Drop`: a task cancelled by a newer refresh has to lower the count too,
+    /// or anything waiting for the project to go quiet would wait forever.
+    background_work: Arc<AtomicUsize>,
+}
+
+/// Keeps [`GitProject::has_background_work`] true for as long as it is alive.
+///
+/// Move one into a spawned refresh so the count falls when the task finishes
+/// *or* when its future is dropped part-way through.
+pub(crate) struct BackgroundWorkGuard(Arc<AtomicUsize>);
+
+impl Drop for BackgroundWorkGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
 }
 
 impl EventEmitter<GitProjectEvent> for GitProject {}
@@ -351,6 +371,7 @@ impl GitProject {
             refresh_generation: 0,
             commit_query_generation: 0,
             load_more_in_flight: false,
+            background_work: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -386,6 +407,7 @@ impl GitProject {
             refresh_generation: 0,
             commit_query_generation: 0,
             load_more_in_flight: false,
+            background_work: Arc::new(AtomicUsize::new(0)),
         };
 
         if let Some(cached) = history_cache::load(&project.repo_path, project.commit_limit) {
@@ -493,6 +515,23 @@ impl GitProject {
 
     pub fn repo_path(&self) -> &Path {
         &self.repo_path
+    }
+
+    /// Raise [`GitProject::has_background_work`] until the returned guard drops.
+    pub(crate) fn track_background_work(&self) -> BackgroundWorkGuard {
+        self.background_work.fetch_add(1, Ordering::AcqRel);
+        BackgroundWorkGuard(self.background_work.clone())
+    }
+
+    /// Whether a background refresh is still running.
+    ///
+    /// Neither history paging nor the ahead/behind walk emits an
+    /// `OperationUpdated`, so a caller that only watches operations sees an idle
+    /// project while both are still loading. Anything that waits for the
+    /// repository to settle — a measurement, a snapshot — has to consult this
+    /// as well as the operation list.
+    pub fn has_background_work(&self) -> bool {
+        self.background_work.load(Ordering::Acquire) > 0
     }
 
     /// Resolve the current HEAD commit OID of the given worktree (or the main
@@ -825,7 +864,9 @@ impl GitProject {
             })
             .collect();
 
+        let work = self.track_background_work();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let _work = work;
             let (computed, merged) = cx
                 .background_executor()
                 .spawn(async move {
@@ -1537,6 +1578,38 @@ mod tests {
             .lines()
             .zip(source.lines().skip(1))
             .any(|(left, right)| is_legacy(left) && is_legacy(right))
+    }
+
+    #[test]
+    fn background_work_is_reported_until_every_guard_drops() {
+        let project = GitProject::empty_at(PathBuf::from("."));
+        assert!(!project.has_background_work());
+
+        let first = project.track_background_work();
+        let second = project.track_background_work();
+        assert!(project.has_background_work());
+
+        drop(first);
+        assert!(
+            project.has_background_work(),
+            "one refresh finishing must not make a project with another in flight look idle"
+        );
+
+        drop(second);
+        assert!(!project.has_background_work());
+    }
+
+    #[test]
+    fn a_dropped_refresh_still_lowers_the_background_count() {
+        // A task cancelled by a newer refresh never reaches its own completion
+        // path, so the count has to come down from `Drop` or anything waiting
+        // for the project to settle waits forever.
+        let project = GitProject::empty_at(PathBuf::from("."));
+        {
+            let _abandoned = project.track_background_work();
+            assert!(project.has_background_work());
+        }
+        assert!(!project.has_background_work());
     }
 
     #[test]
