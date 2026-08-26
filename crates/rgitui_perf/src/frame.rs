@@ -124,12 +124,7 @@ impl FrameRecorder {
             };
         }
 
-        let presenting: Vec<f64> = (start..end)
-            .filter(|index| {
-                self.drawn[*index] && index.checked_sub(1).is_some_and(|p| self.drawn[p])
-            })
-            .map(|index| self.intervals_ms[index])
-            .collect();
+        let presenting = self.presenting_intervals(start..end);
 
         let mut sorted = presenting.clone();
         sorted.sort_by(|a, b| a.total_cmp(b));
@@ -155,6 +150,24 @@ impl FrameRecorder {
     /// Aggregates every tick recorded.
     pub fn stats_all(&self) -> FrameStats {
         self.stats(0..self.intervals_ms.len())
+    }
+
+    /// The intervals cadence is measured over: those between two consecutive
+    /// drawn ticks.
+    ///
+    /// gpui throttles its frame callbacks well below the display rate once a
+    /// window goes idle, so every figure derived from cadence — the
+    /// percentiles, the dropped-frame count, and the calibrated refresh
+    /// interval — has to be taken over these rather than over every callback.
+    fn presenting_intervals(&self, range: std::ops::Range<usize>) -> Vec<f64> {
+        let end = range.end.min(self.intervals_ms.len());
+        let start = range.start.min(end);
+        (start..end)
+            .filter(|index| {
+                self.drawn[*index] && index.checked_sub(1).is_some_and(|p| self.drawn[p])
+            })
+            .map(|index| self.intervals_ms[index])
+            .collect()
     }
 
     /// The raw intervals, for writing the drill-down time series.
@@ -185,29 +198,38 @@ impl FrameRecorder {
 
     /// Derives the display's refresh interval from the ticks observed.
     ///
-    /// The fallback for when the OS will not say. gpui's frame loop is paced
-    /// off vsync while the window is busy, so the *most common* interval is the
-    /// refresh interval — provided the window was busy. Taking the mode rather
-    /// than the mean or median makes the estimate immune to stalls: a run that
-    /// dropped a third of its frames still calibrates correctly, which matters
-    /// because that is exactly the run whose dropped-frame count needs to be
-    /// right.
+    /// The fallback for when the OS will not say — which on Linux and macOS is
+    /// always. gpui's frame loop is paced off vsync while the window is busy,
+    /// so the *most common* interval is the refresh interval — provided the
+    /// window was busy. Taking the mode rather than the mean or median makes
+    /// the estimate immune to stalls: a run that dropped a third of its frames
+    /// still calibrates correctly, which matters because that is exactly the
+    /// run whose dropped-frame count needs to be right.
+    ///
+    /// Only presenting intervals are counted. An idle window's throttled
+    /// callbacks are not paced by vsync at all, and in a run like `idle.json`
+    /// they outnumber the real ones many times over — enough to put the mode in
+    /// the ~40ms throttle bucket and calibrate a 120Hz display as 25Hz. Every
+    /// dropped-frame threshold and headroom figure is then judged against a
+    /// budget four times too generous, which hides exactly the regressions this
+    /// exists to catch.
     ///
     /// Leaves the existing value alone when there are too few samples to be
-    /// confident, so a short run keeps its assumed default rather than
-    /// calibrating to noise.
+    /// confident, so a short run — or one that never drew twice in a row —
+    /// keeps its assumed default rather than calibrating to noise.
     pub fn calibrate(&mut self) {
         const MIN_SAMPLES: usize = 30;
         /// Bucket width in milliseconds. Fine enough to tell 60Hz (16.67) from
         /// 120Hz (8.33), coarse enough that jitter lands in one bucket.
         const BUCKET_MS: f64 = 0.5;
 
-        if self.intervals_ms.len() < MIN_SAMPLES {
+        let presenting = self.presenting_intervals(0..self.intervals_ms.len());
+        if presenting.len() < MIN_SAMPLES {
             return;
         }
 
         let mut histogram: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
-        for interval in &self.intervals_ms {
+        for interval in &presenting {
             if *interval <= 0.0 {
                 continue;
             }
@@ -426,6 +448,41 @@ mod tests {
             recorder.refresh_interval_ms()
         );
         assert_eq!(recorder.stats_all().dropped_frames, 40);
+    }
+
+    #[test]
+    fn calibration_ignores_throttled_idle_callbacks() {
+        // What a run of `idle.json` looks like on a platform where the OS will
+        // not report the refresh rate: a short burst of real 120Hz frames, then
+        // fifteen seconds of gpui's ~25Hz idle throttle. The throttled ticks
+        // outnumber the real ones four to one.
+        let mut recorder = FrameRecorder::new(16.667);
+        for _ in 0..40 {
+            recorder.record(8.3, true);
+        }
+        for _ in 0..160 {
+            recorder.record(40.0, false);
+        }
+        recorder.calibrate();
+
+        assert!(
+            (recorder.refresh_interval_ms() - 8.3).abs() < 0.5,
+            "idle throttling must not set the refresh interval: got {}",
+            recorder.refresh_interval_ms()
+        );
+    }
+
+    #[test]
+    fn calibration_holds_its_default_when_nothing_presented_twice_in_a_row() {
+        // Every tick drew, but never two in succession, so there is no interval
+        // paced by vsync to learn anything from.
+        let mut recorder = FrameRecorder::new(16.667);
+        for _ in 0..100 {
+            recorder.record(40.0, true);
+            recorder.record(40.0, false);
+        }
+        recorder.calibrate();
+        assert_eq!(recorder.refresh_interval_ms(), 16.667);
     }
 
     #[test]

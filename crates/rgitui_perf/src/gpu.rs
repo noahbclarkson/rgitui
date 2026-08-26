@@ -232,8 +232,12 @@ mod platform {
         /// and re-adding it every tick would pile duplicate counters into the
         /// query for as long as the process stays idle.
         fn attach(&mut self) -> Result<(), String> {
+            // The underscore after the PID is part of the instance name —
+            // `pid_1234_luid_..._engtype_3D` — and anchoring on it is what
+            // stops `pid_1234*` also matching process 12345, whose engine
+            // utilisation would then be summed into this process's sample.
             let path = wide(&format!(
-                r"\GPU Engine(pid_{}*)\Utilization Percentage",
+                r"\GPU Engine(pid_{}_*)\Utilization Percentage",
                 std::process::id()
             ));
             let mut counter = PDH_HCOUNTER::default();
