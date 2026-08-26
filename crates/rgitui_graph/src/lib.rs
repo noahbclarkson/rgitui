@@ -342,7 +342,9 @@ pub struct WorktreeGraphInfo {
     pub unstaged_count: usize,
     pub combined_breakdown: HashMap<FileChangeKind, usize>,
     pub worktree_path: PathBuf,
+    /// Checked-out branch, or `None` when HEAD is detached.
     pub branch: Option<String>,
+    pub head_detached: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1209,6 +1211,26 @@ impl GraphView {
     /// This is the public API used by external callers (workspace vim-key navigation).
     pub fn select_index(&mut self, index: usize, cx: &mut Context<Self>) {
         self.select_list_index(index, cx);
+    }
+
+    /// Drop the cursor when it sits on a worktree pseudo-row.
+    ///
+    /// Called when the user leaves worktree inspection: the row that put them
+    /// there no longer matches what the rest of the window is showing, so
+    /// leaving it highlighted misreports the state.
+    pub fn clear_worktree_selection(&mut self, cx: &mut Context<Self>) {
+        if !self
+            .selected_index
+            .is_some_and(|index| self.is_worktree_row(index))
+        {
+            return;
+        }
+        self.selected_index = None;
+        self.selected_oid = None;
+        self.selection.clear();
+        self.sync_selected_rows();
+        cx.emit(GraphViewEvent::SelectionChanged);
+        cx.notify();
     }
 
     /// Select an item by its index in the uniform list (accounts for working tree row).
@@ -2083,6 +2105,7 @@ impl Render for GraphView {
                                 combined_breakdown: info.combined_breakdown.clone(),
                                 worktree_name: info.name.clone(),
                                 branch_name: info.branch.clone(),
+                                head_detached: info.head_detached,
                                 is_current_worktree: info.is_current,
                                 is_orphan_worktree: is_orphan,
                                 pass_through_edges,
@@ -3448,6 +3471,7 @@ struct WorkingTreeRowParams {
     combined_breakdown: HashMap<FileChangeKind, usize>,
     worktree_name: String,
     branch_name: Option<String>,
+    head_detached: bool,
     is_current_worktree: bool,
     is_orphan_worktree: bool,
     pass_through_edges: Vec<GraphEdge>,
@@ -3490,6 +3514,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         combined_breakdown,
         worktree_name,
         branch_name,
+        head_detached,
         is_current_worktree,
         is_orphan_worktree,
         pass_through_edges,
@@ -3568,14 +3593,19 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
 
     let graph_width = graph_col_width;
     let node_x = node_lane as f32 * lane_width + lane_width / 2.0 + graph_padding_left;
-    let display_branch = branch_name.filter(|branch| !branch.is_empty());
+    // A detached HEAD has no branch to name, but saying so beats saying nothing:
+    // the row would otherwise read identically to a worktree whose branch simply
+    // failed to load.
+    let head_label = branch_name
+        .filter(|branch| !branch.is_empty())
+        .or_else(|| head_detached.then(|| "detached HEAD".to_string()));
     let row_title = if is_orphan_worktree {
-        display_branch
+        head_label
             .clone()
-            .map(|branch| format!("{branch} (no commits)"))
+            .map(|label| format!("{label} (no commits)"))
             .unwrap_or_else(|| "No commits yet".to_string())
-    } else if let Some(branch) = display_branch.clone() {
-        format!("Pending changes on {branch}")
+    } else if let Some(label) = head_label.clone() {
+        format!("Pending changes on {label}")
     } else {
         "Pending changes".to_string()
     };
@@ -4061,6 +4091,7 @@ mod tests {
             combined_breakdown: HashMap::new(),
             worktree_path: PathBuf::from(name),
             branch: Some(name.to_string()),
+            head_detached: false,
         }
     }
 

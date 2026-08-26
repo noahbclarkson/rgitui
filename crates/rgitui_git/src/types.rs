@@ -188,14 +188,26 @@ pub struct WorktreeInfo {
     pub path: PathBuf,
     /// Whether the worktree is locked (e.g. by a running operation).
     pub is_locked: bool,
-    /// Whether this is the current worktree (the main repository).
+    /// Whether this is the worktree the open `Repository` handle points at —
+    /// i.e. the one rgitui was launched on. That is the main checkout only when
+    /// rgitui was opened on the main repository; opening a linked worktree
+    /// directly makes *it* the current one.
     pub is_current: bool,
-    /// The branch currently checked out in this worktree, if any.
+    /// The branch currently checked out in this worktree. `None` when HEAD is
+    /// detached — git2's `shorthand()` reports a short OID in that case, which
+    /// must not be rendered as a branch name.
     pub branch: Option<String>,
+    /// Whether this worktree's HEAD is detached.
+    pub head_detached: bool,
     /// OID of the HEAD commit in this worktree.
     pub head_oid: Option<git2::Oid>,
     /// Cached pending-change status for this worktree, if available.
     pub status: Option<WorkingTreeStatus>,
+    /// Whether this checkout is mid-merge, mid-rebase, mid-cherry-pick and so
+    /// on. Each worktree keeps its own — `MERGE_HEAD` for a linked worktree
+    /// lives under `.git/worktrees/<name>/`, so asking the main repository
+    /// about it always answers `Clean`.
+    pub state: RepoState,
 }
 
 /// Information about a stash entry.
@@ -355,6 +367,40 @@ impl RepoState {
         matches!(self, RepoState::Clean)
     }
 
+    /// The `git` subcommand whose `--continue` carries this state forward, or
+    /// `None` for the states that have no continuation. A clean repository has
+    /// nothing to continue, and a bisect advances by marking the checked-out
+    /// commit good or bad rather than by continuing.
+    pub fn continue_subcommand(&self) -> Option<&'static str> {
+        match self {
+            RepoState::Merge => Some("merge"),
+            RepoState::Revert | RepoState::RevertSequence => Some("revert"),
+            RepoState::CherryPick | RepoState::CherryPickSequence => Some("cherry-pick"),
+            RepoState::Rebase | RepoState::RebaseInteractive | RepoState::RebaseMerge => {
+                Some("rebase")
+            }
+            RepoState::ApplyMailbox | RepoState::ApplyMailboxOrRebase => Some("am"),
+            RepoState::Clean | RepoState::Bisect => None,
+        }
+    }
+
+    /// The operation kind this state belongs to, so continuing or aborting it
+    /// is reported under the same kind that started it.
+    pub fn operation_kind(&self) -> GitOperationKind {
+        match self {
+            RepoState::Revert | RepoState::RevertSequence => GitOperationKind::Revert,
+            RepoState::CherryPick | RepoState::CherryPickSequence => GitOperationKind::CherryPick,
+            RepoState::Rebase | RepoState::RebaseInteractive | RepoState::RebaseMerge => {
+                GitOperationKind::Rebase
+            }
+            RepoState::Bisect => GitOperationKind::Bisect,
+            RepoState::Clean
+            | RepoState::Merge
+            | RepoState::ApplyMailbox
+            | RepoState::ApplyMailboxOrRebase => GitOperationKind::Merge,
+        }
+    }
+
     /// Human-readable label for the repo state.
     pub fn label(&self) -> &'static str {
         match self {
@@ -469,11 +515,78 @@ pub struct GitOperationUpdate {
     pub details: Option<String>,
     pub remote_name: Option<String>,
     pub branch_name: Option<String>,
+    /// The checkout the operation ran in, for the operations that record one.
+    ///
+    /// Retrying has to go back to where it failed. Resolving that at retry time
+    /// from whatever is being inspected then is wrong as soon as the failure
+    /// arrives after the user has moved on — which for a network operation,
+    /// where the failure is a timeout or a rejected push, is the normal case.
+    pub worktree_path: Option<std::path::PathBuf>,
     pub retryable: bool,
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_in_progress_state_but_bisect_has_a_continue_subcommand() {
+        for state in [
+            RepoState::Merge,
+            RepoState::Revert,
+            RepoState::RevertSequence,
+            RepoState::CherryPick,
+            RepoState::CherryPickSequence,
+            RepoState::Rebase,
+            RepoState::RebaseInteractive,
+            RepoState::RebaseMerge,
+            RepoState::ApplyMailbox,
+            RepoState::ApplyMailboxOrRebase,
+        ] {
+            assert!(
+                state.continue_subcommand().is_some(),
+                "{:?} is shown in the conflict banner and must be continuable",
+                state
+            );
+        }
+
+        // A clean repo has nothing to continue, and a bisect advances by judging
+        // the checked-out commit rather than by continuing.
+        assert_eq!(RepoState::Clean.continue_subcommand(), None);
+        assert_eq!(RepoState::Bisect.continue_subcommand(), None);
+    }
+
+    #[test]
+    fn continue_subcommand_names_the_operation_that_stopped() {
+        assert_eq!(RepoState::Merge.continue_subcommand(), Some("merge"));
+        assert_eq!(
+            RepoState::CherryPickSequence.continue_subcommand(),
+            Some("cherry-pick")
+        );
+        assert_eq!(
+            RepoState::RevertSequence.continue_subcommand(),
+            Some("revert")
+        );
+        assert_eq!(RepoState::RebaseMerge.continue_subcommand(), Some("rebase"));
+        assert_eq!(
+            RepoState::ApplyMailboxOrRebase.continue_subcommand(),
+            Some("am")
+        );
+    }
+
+    #[test]
+    fn operation_kind_follows_the_state_that_stopped() {
+        assert_eq!(RepoState::Merge.operation_kind(), GitOperationKind::Merge);
+        assert_eq!(
+            RepoState::CherryPickSequence.operation_kind(),
+            GitOperationKind::CherryPick
+        );
+        assert_eq!(RepoState::Revert.operation_kind(), GitOperationKind::Revert);
+        assert_eq!(
+            RepoState::RebaseInteractive.operation_kind(),
+            GitOperationKind::Rebase
+        );
+        assert_eq!(RepoState::Bisect.operation_kind(), GitOperationKind::Bisect);
+    }
+
     use super::*;
 
     #[test]

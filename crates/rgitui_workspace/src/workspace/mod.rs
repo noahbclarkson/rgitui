@@ -212,11 +212,15 @@ impl ProjectTab {
     }
 }
 
+/// The linked worktree the active tab is inspecting.
+///
+/// Deliberately holds no branch: the branch is read live from the project
+/// snapshot at render time. A copy taken when the worktree was clicked went
+/// stale the moment anything switched branches inside that checkout.
 #[derive(Clone, Debug)]
 pub(super) struct InspectingWorktree {
     pub name: String,
     pub path: PathBuf,
-    pub branch: Option<String>,
 }
 
 /// Events from the workspace.

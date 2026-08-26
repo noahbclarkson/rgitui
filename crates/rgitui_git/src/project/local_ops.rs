@@ -20,6 +20,85 @@ use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent
 //  - BUG-41: `discard_changes_at` directory handling — verifier judged the current
 //    code correct (untracked dirs take the remove_dir_all branch); left unchanged.
 
+/// Commit the resolved merge in `repo` with its stored `MERGE_MSG`, exactly as
+/// `git merge --continue` does: the index is committed as the user staged it,
+/// with `MERGE_HEAD`'s commits as the extra parents. Untracked and unstaged
+/// working-tree changes are deliberately left out of the merge commit.
+fn finish_merge_commit(repo: &Repository) -> Result<String> {
+    let merge_head_path = repo.path().join("MERGE_HEAD");
+    if !merge_head_path.exists() {
+        anyhow::bail!("Repository is not in a merge state (no MERGE_HEAD to continue).");
+    }
+
+    let mut index = repo.index()?;
+    let tree_oid = index.write_tree()?;
+    let tree = repo.find_tree(tree_oid)?;
+
+    let sig = repo.signature()?;
+    let head_commit = repo.head()?.peel_to_commit()?;
+
+    let merge_msg_path = repo.path().join("MERGE_MSG");
+    let message = if merge_msg_path.exists() {
+        std::fs::read_to_string(&merge_msg_path).unwrap_or_else(|_| "Merge commit".to_string())
+    } else {
+        "Merge commit".to_string()
+    };
+
+    let mut parents = vec![head_commit];
+    let contents = std::fs::read_to_string(&merge_head_path)?;
+    for line in contents.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            let oid = git2::Oid::from_str(line)?;
+            parents.push(repo.find_commit(oid)?);
+        }
+    }
+
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parent_refs)?;
+    repo.cleanup_state()?;
+
+    Ok(message.lines().next().unwrap_or("Merge commit").to_string())
+}
+
+/// Run `git <subcommand> --continue` in `worktree_path`.
+///
+/// libgit2 has no sequencer, so cherry-pick, revert, mailbox application and
+/// rebase can only be carried forward by the git CLI. Each of those accepts
+/// `--continue` on its own and rejects any other flag alongside it, so the
+/// editor is suppressed through the environment rather than with `--no-edit`;
+/// the message git already stored for the stopped step is reused as-is.
+fn run_continue_subcommand(worktree_path: &Path, subcommand: &str) -> Result<String> {
+    let output = super::git_command()
+        .current_dir(worktree_path)
+        .args([subcommand, "--continue"])
+        .env("GIT_EDITOR", "true")
+        .env("GIT_SEQUENCE_EDITOR", "true")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| format!("Failed to execute git {} --continue", subcommand))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        anyhow::bail!("git {} --continue failed: {}", subcommand, detail);
+    }
+
+    let summary = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("Operation continued")
+        .to_string();
+    Ok(summary)
+}
+
 /// Renders up to three paths inline, summarising the rest, for error messages.
 fn format_path_list(paths: &[String]) -> String {
     const SHOWN: usize = 3;
@@ -75,12 +154,6 @@ fn checkout_tree_safe(repo: &Repository, target: &git2::Object<'_>, operation: &
 }
 
 impl GitProject {
-    /// Stage specific files.
-    pub fn stage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_files_at(paths, &worktree_path, cx)
-    }
-
     /// Stage specific files in the given worktree.
     pub fn stage_files_at(
         &mut self,
@@ -166,12 +239,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage specific files.
-    pub fn unstage_files(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_files_at(paths, &worktree_path, cx)
     }
 
     /// Unstage specific files in the given worktree.
@@ -267,12 +334,6 @@ impl GitProject {
         })
     }
 
-    /// Stage all changes.
-    pub fn stage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.stage_all_at(&worktree_path, cx)
-    }
-
     /// Stage all changes in the given worktree.
     pub fn stage_all_at(
         &mut self,
@@ -341,12 +402,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Unstage all changes.
-    pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.unstage_all_at(&worktree_path, cx)
     }
 
     /// Unstage all changes in the given worktree.
@@ -421,16 +476,6 @@ impl GitProject {
     }
 
     /// Create a commit with the current staged changes.
-    pub fn commit(
-        &mut self,
-        message: &str,
-        amend: bool,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<git2::Oid>> {
-        let worktree_path = self.repo_path.clone();
-        self.commit_at(message, amend, &worktree_path, cx)
-    }
-
     /// Create a commit in the given worktree with the current staged changes.
     pub fn commit_at(
         &mut self,
@@ -923,10 +968,6 @@ impl GitProject {
     }
 
     /// Create a new branch from HEAD.
-    pub fn create_branch(&mut self, name: &str, cx: &mut Context<Self>) -> Task<Result<()>> {
-        self.create_branch_at(name, None, cx)
-    }
-
     /// Create a new branch, optionally at a specific commit (SHA or ref).
     /// If `base_ref` is None or empty, creates at HEAD.
     pub fn create_branch_at(
@@ -1246,14 +1287,17 @@ impl GitProject {
         })
     }
 
-    /// Save the current working tree to a stash.
-    pub fn stash_save(
+    /// Save the given worktree to a stash. Stashes are stored in the shared
+    /// object store, but the changes taken are those of `worktree_path`.
+    pub fn stash_save_at(
         &mut self,
         message: Option<&str>,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("stash_save");
+        log::info!("stash_save: worktree={}", worktree_path.display());
         let message = message.map(String::from);
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1268,7 +1312,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     let sig = repo.signature()?;
                     repo.stash_save(&sig, message.as_deref().unwrap_or("WIP"), None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -1307,9 +1351,19 @@ impl GitProject {
         })
     }
 
-    /// Pop the top stash entry.
-    pub fn stash_pop(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("stash_pop: index={}", index);
+    /// Pop a stash entry into the given worktree.
+    pub fn stash_pop_at(
+        &mut self,
+        index: usize,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "stash_pop: index={} worktree={}",
+            index,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1324,7 +1378,7 @@ impl GitProject {
             let result: anyhow::Result<(RefreshData, String)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     // A conflicting pop leaves conflict markers and unmerged index
                     // entries rather than truly failing; surface that (and still
                     // refresh) instead of a hard failure that hides the new state.
@@ -1378,9 +1432,19 @@ impl GitProject {
         })
     }
 
-    /// Apply a stash entry without removing it from the stash list.
-    pub fn stash_apply(&mut self, index: usize, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("stash_apply: index={}", index);
+    /// Apply a stash entry into the given worktree without removing it.
+    pub fn stash_apply_at(
+        &mut self,
+        index: usize,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "stash_apply: index={} worktree={}",
+            index,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1395,7 +1459,7 @@ impl GitProject {
             let result: anyhow::Result<(RefreshData, String)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
                     // A conflicting apply leaves conflict markers and unmerged index
                     // entries rather than truly failing; surface that (and still
                     // refresh) instead of a hard failure that hides the new state.
@@ -1510,17 +1574,28 @@ impl GitProject {
 
     /// Create a branch from a stash entry and apply the stash to it.
     /// Equivalent to `git stash branch <branchname>`.
-    pub fn stash_branch(
+    pub fn stash_branch_at(
         &mut self,
         branch_name: &str,
         stash_index: usize,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("stash_branch: branch={} index={}", branch_name, stash_index);
+        log::info!(
+            "stash_branch: branch={} index={} worktree={}",
+            branch_name,
+            stash_index,
+            worktree_path.display()
+        );
+        // This checks a new branch out and applies the stash into a working
+        // tree — both of which belong to the checkout on screen. Doing it in
+        // the main one would switch a checkout the user is not looking at and
+        // drop the shared stash from under the one they are.
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name_owned = branch_name.to_string();
-        let current_branch = self.head_branch.clone();
+        let current_branch = self.head_branch_at(&worktree_path);
         let operation_id = self.begin_operation(
             GitOperationKind::Stash,
             format!(
@@ -1537,7 +1612,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut repo = Repository::open(&repo_path)?;
+                    let mut repo = Repository::open(&worktree_path)?;
 
                     // Collect stash OIDs to find the one at stash_index.
                     let mut stash_oids: Vec<git2::Oid> = Vec::new();
@@ -1609,16 +1684,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Discard changes in specific files (restore to HEAD).
-    pub fn discard_changes(
-        &mut self,
-        paths: &[PathBuf],
-        cx: &mut Context<Self>,
-    ) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.discard_changes_at(paths, &worktree_path, cx)
     }
 
     /// Discard changes in specific files for the given worktree (restore to HEAD).
@@ -1724,9 +1789,14 @@ impl GitProject {
         })
     }
 
-    /// Remove all untracked files and directories from the working tree.
-    /// Uses `git clean -fd` after a dry-run to enumerate files.
-    pub fn clean_untracked(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+    /// Remove all untracked files and directories from the given worktree.
+    pub fn clean_untracked_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("clean_untracked: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1743,7 +1813,7 @@ impl GitProject {
                 .spawn(async move {
                     // Dry run first to count files
                     let dry_output = super::git_command()
-                        .current_dir(&repo_path)
+                        .current_dir(&worktree_path)
                         .args(["clean", "-n", "-fd"])
                         .output()
                         .context("Failed to execute git clean -n")?;
@@ -1766,7 +1836,7 @@ impl GitProject {
 
                     // Actually remove untracked files and directories
                     let output = super::git_command()
-                        .current_dir(&repo_path)
+                        .current_dir(&worktree_path)
                         .args(["clean", "-f", "-fd"])
                         .output()
                         .context("Failed to execute git clean -f")?;
@@ -1828,8 +1898,13 @@ impl GitProject {
     }
 
     /// Hard reset to HEAD, discarding all working tree and index changes.
-    pub fn reset_hard(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_hard");
+    pub fn reset_hard_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("reset_hard: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1844,7 +1919,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let head_commit = repo.head()?.peel_to_commit()?;
                     repo.reset(head_commit.as_object(), git2::ResetType::Hard, None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -1887,9 +1962,19 @@ impl GitProject {
         })
     }
 
-    /// Hard-reset the current branch to a specific commit.
-    pub fn reset_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_to_commit: oid={}", oid);
+    /// Hard-reset the given worktree's branch to a specific commit.
+    pub fn reset_to_commit_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "reset_to_commit: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -1905,7 +1990,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Hard, None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -1946,12 +2031,6 @@ impl GitProject {
                 })
             })?
         })
-    }
-
-    /// Soft-reset the current branch to a specific commit, preserving changes in the index.
-    pub fn reset_soft(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let worktree_path = self.repo_path.clone();
-        self.reset_soft_at(oid, &worktree_path, cx)
     }
 
     /// Soft-reset the given worktree's branch to `oid`, preserving changes in the
@@ -2023,9 +2102,19 @@ impl GitProject {
         })
     }
 
-    /// Mixed-reset the current branch to a specific commit, unstaging all changes.
-    pub fn reset_mixed(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("reset_mixed: oid={}", oid);
+    /// Mixed-reset the given worktree's branch to a specific commit, unstaging all changes.
+    pub fn reset_mixed_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "reset_mixed: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch.clone();
@@ -2041,7 +2130,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     let commit = repo.find_commit(oid)?;
                     repo.reset(commit.as_object(), git2::ResetType::Mixed, None)?;
                     gather_refresh_data(&repo_path, commit_limit)
@@ -2085,11 +2174,21 @@ impl GitProject {
     }
 
     /// Revert a commit (creates a new commit that undoes the given commit).
-    pub fn revert_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("revert_commit: oid={}", oid);
+    pub fn revert_commit_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "revert_commit: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Revert,
@@ -2102,7 +2201,7 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData, bool)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     ensure_clean_worktree(&repo, "Revert")?;
                     let commit = repo.find_commit(oid)?;
                     let summary = commit.summary().unwrap_or("").to_string();
@@ -2164,11 +2263,21 @@ impl GitProject {
     }
 
     /// Cherry-pick a commit onto the current HEAD.
-    pub fn cherry_pick(&mut self, oid: git2::Oid, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("cherry_pick: oid={}", oid);
+    pub fn cherry_pick_at(
+        &mut self,
+        oid: git2::Oid,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!(
+            "cherry_pick: oid={} worktree={}",
+            oid,
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let short_id = oid.to_string()[..7].to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::CherryPick,
@@ -2181,7 +2290,7 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData, bool)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     ensure_clean_worktree(&repo, "Cherry-pick")?;
                     let commit = repo.find_commit(oid)?;
                     let summary = commit.summary().unwrap_or("").to_string();
@@ -2242,14 +2351,20 @@ impl GitProject {
         })
     }
 
-    /// Abort the current in-progress operation (merge, rebase, cherry-pick, revert).
-    /// Resets the working tree and index to HEAD and cleans up the repo state.
-    pub fn abort_operation(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("abort_operation");
+    /// Abort the operation in progress in `worktree_path` (merge, rebase,
+    /// cherry-pick, revert). Resets that working tree and index to its HEAD and
+    /// cleans up its state.
+    pub fn abort_operation_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        log::info!("abort_operation: worktree={}", worktree_path.display());
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
-        let state_label = self.repo_state.label().to_string();
+        let branch_name = self.head_branch_at(&worktree_path);
+        let state_label = self.repo_state_at(&worktree_path).label().to_string();
         let operation_id = self.begin_operation(
             GitOperationKind::Merge,
             format!("Aborting {}...", state_label.to_lowercase()),
@@ -2261,7 +2376,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
 
                     if repo.state() == git2::RepositoryState::Rebase
                         || repo.state() == git2::RepositoryState::RebaseInteractive
@@ -2318,16 +2433,33 @@ impl GitProject {
         })
     }
 
-    /// Continue the current merge by committing with the default merge message.
-    /// This stages all files and creates the merge commit.
-    pub fn continue_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        log::info!("continue_merge");
+    /// Continue whichever operation is paused in `worktree_path`.
+    ///
+    /// A merge is finished here with libgit2. The sequencer states — cherry-pick,
+    /// revert and mailbox application — and rebase have no libgit2 equivalent, so
+    /// they run `git <subcommand> --continue` in that checkout. Dispatching on the
+    /// state is what makes the conflict banner's Continue button finish the
+    /// operation the banner is describing rather than only a merge.
+    pub fn continue_operation_at(
+        &mut self,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let state = self.repo_state_at(worktree_path);
+        log::info!(
+            "continue_operation: state={} worktree={}",
+            state.label(),
+            worktree_path.display()
+        );
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
+        let kind = state.operation_kind();
+        let state_label = state.label().to_string();
         let operation_id = self.begin_operation(
-            GitOperationKind::Merge,
-            "Continuing merge...",
+            kind,
+            format!("Continuing {}...", state_label.to_lowercase()),
             None,
             branch_name.clone(),
             cx,
@@ -2336,57 +2468,29 @@ impl GitProject {
             let result: anyhow::Result<(String, RefreshData)> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
+                    let state = RepoState::from_git2(repo.state());
 
-                    // Only finalize an actual merge. Other paused operations
-                    // (cherry-pick/revert/rebase/bisect) have no MERGE_HEAD and must
-                    // not be miscommitted here as an ordinary single-parent commit.
-                    if !repo.path().join("MERGE_HEAD").exists() {
-                        anyhow::bail!("Repository is not in a merge state (no MERGE_HEAD to continue).");
-                    }
-
-                    let mut index = repo.index()?;
+                    let index = repo.index()?;
                     if index.has_conflicts() {
                         anyhow::bail!(
                             "There are still unresolved conflicts. Resolve all conflicts before continuing."
                         );
                     }
+                    drop(index);
 
-                    // Commit the index exactly as the user staged it (like
-                    // `git merge --continue`); do NOT sweep untracked or unstaged
-                    // working-tree changes into the merge commit.
-                    let tree_oid = index.write_tree()?;
-                    let tree = repo.find_tree(tree_oid)?;
-
-                    let sig = repo.signature()?;
-                    let head_commit = repo.head()?.peel_to_commit()?;
-
-                    let merge_msg_path = repo.path().join("MERGE_MSG");
-                    let message = if merge_msg_path.exists() {
-                        std::fs::read_to_string(&merge_msg_path)
-                            .unwrap_or_else(|_| "Merge commit".to_string())
-                    } else {
-                        "Merge commit".to_string()
+                    let summary = match state.continue_subcommand() {
+                        Some("merge") => finish_merge_commit(&repo)?,
+                        Some(subcommand) => {
+                            drop(repo);
+                            run_continue_subcommand(&worktree_path, subcommand)?
+                        }
+                        None => anyhow::bail!(
+                            "There is no {} to continue.",
+                            state.label().to_lowercase()
+                        ),
                     };
 
-                    let mut parents = vec![head_commit.clone()];
-                    let merge_head_path = repo.path().join("MERGE_HEAD");
-                    if merge_head_path.exists() {
-                        let contents = std::fs::read_to_string(&merge_head_path)?;
-                        for line in contents.lines() {
-                            let line = line.trim();
-                            if !line.is_empty() {
-                                let oid = git2::Oid::from_str(line)?;
-                                parents.push(repo.find_commit(oid)?);
-                            }
-                        }
-                    }
-
-                    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-                    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parent_refs)?;
-                    repo.cleanup_state()?;
-
-                    let summary = message.lines().next().unwrap_or("Merge commit").to_string();
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((summary, data))
                 })
@@ -2399,8 +2503,8 @@ impl GitProject {
                             this.apply_refresh_data(data);
                             this.complete_op(
                                 operation_id,
-                                GitOperationKind::Merge,
-                                "Merge completed",
+                                kind,
+                                format!("{} completed", state_label),
                                 (Some(summary), None, branch_name.clone()),
                                 cx,
                             );
@@ -2409,8 +2513,8 @@ impl GitProject {
                         Err(e) => {
                             this.fail_op(
                                 operation_id,
-                                GitOperationKind::Merge,
-                                "Continue merge failed",
+                                kind,
+                                format!("Could not continue {}", state_label.to_lowercase()),
                                 e.to_string(),
                                 (None, branch_name.clone(), false),
                                 cx,
@@ -3340,31 +3444,38 @@ impl GitProject {
     }
 
     /// Accept the "ours" version of a conflicted file, staging it as resolved.
-    pub fn accept_conflict_ours(
+    pub fn accept_conflict_ours_at(
         &mut self,
         path: String,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("accept_conflict_ours: path={}", path);
-        self.accept_conflict_side(path, ConflictSide::Ours, cx)
+        self.accept_conflict_side(path, ConflictSide::Ours, worktree_path, cx)
     }
 
     /// Accept the "theirs" version of a conflicted file, staging it as resolved.
-    pub fn accept_conflict_theirs(
+    pub fn accept_conflict_theirs_at(
         &mut self,
         path: String,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("accept_conflict_theirs: path={}", path);
-        self.accept_conflict_side(path, ConflictSide::Theirs, cx)
+        self.accept_conflict_side(path, ConflictSide::Theirs, worktree_path, cx)
     }
 
     fn accept_conflict_side(
         &mut self,
         path: String,
         side: ConflictSide,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        // The conflicted index and the file to rewrite both belong to the
+        // checkout the conflict is in; the snapshot is still gathered from the
+        // project's own root, which is what every other operation does.
+        let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let file_path = PathBuf::from(&path);
@@ -3372,7 +3483,7 @@ impl GitProject {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.clone());
-        let branch_name = self.head_branch.clone();
+        let branch_name = self.head_branch_at(&worktree_path);
         let side_label = match side {
             ConflictSide::Ours => "ours",
             ConflictSide::Theirs => "theirs",
@@ -3391,7 +3502,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&repo_path)?;
+                    let repo = Repository::open(&worktree_path)?;
                     // Find the conflict for this path in the index's conflict iterator
                     let index = repo.index()?;
                     let mut conflicts = index.conflicts()?;
@@ -3425,7 +3536,7 @@ impl GitProject {
                     let content = blob.content();
 
                     // Write the chosen content to the workdir file
-                    let full_path = repo_path.join(&file_path);
+                    let full_path = worktree_path.join(&file_path);
                     if let Some(parent) = full_path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }
@@ -3619,6 +3730,80 @@ mod tests {
     use std::fs;
 
     use rgitui_test_support::TempRepo;
+
+    use super::run_continue_subcommand;
+
+    /// Run a git subcommand in `dir`, asserting nothing about its exit status —
+    /// the conflict-stopping steps these tests set up are expected to fail.
+    fn run_git(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        super::super::git_command()
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_EDITOR", "true")
+            .output()
+            .expect("failed to run git")
+    }
+
+    /// A repo whose `feature` branch and `main` both change `file.txt`'s only
+    /// line, so cherry-picking `feature` onto `main` stops on a conflict.
+    fn make_repo_with_conflicting_pick() -> TempRepo {
+        let fixture = TempRepo::init();
+        fixture.write_file("file.txt", "base\n");
+        fixture.stage("file.txt");
+        fixture.commit("base");
+
+        run_git(fixture.path(), &["checkout", "-b", "feature"]);
+        fixture.write_file("file.txt", "feature\n");
+        fixture.stage("file.txt");
+        fixture.commit("feature change");
+
+        run_git(fixture.path(), &["checkout", "main"]);
+        fixture.write_file("file.txt", "main\n");
+        fixture.stage("file.txt");
+        fixture.commit("main change");
+
+        fixture
+    }
+
+    #[test]
+    fn run_continue_subcommand_finishes_a_resolved_cherry_pick() {
+        let fixture = make_repo_with_conflicting_pick();
+        let path = fixture.path();
+
+        let picked = run_git(path, &["rev-parse", "feature"]);
+        let picked = String::from_utf8_lossy(&picked.stdout).trim().to_string();
+        run_git(path, &["cherry-pick", &picked]);
+
+        let repo = git2::Repository::open(path).unwrap();
+        assert_eq!(repo.state(), git2::RepositoryState::CherryPick);
+        drop(repo);
+
+        // Resolve the conflict the way the user would, then continue.
+        fs::write(path.join("file.txt"), "resolved\n").unwrap();
+        run_git(path, &["add", "file.txt"]);
+
+        let summary = run_continue_subcommand(path, "cherry-pick").unwrap();
+        assert!(!summary.is_empty());
+
+        let repo = git2::Repository::open(path).unwrap();
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.summary(), Some("feature change"));
+    }
+
+    #[test]
+    fn run_continue_subcommand_reports_why_git_refused() {
+        // Nothing is in progress, so `git cherry-pick --continue` fails; the
+        // error has to carry git's reason rather than a bare exit status.
+        let fixture = make_test_repo();
+        let error = run_continue_subcommand(fixture.path(), "cherry-pick").unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("cherry-pick --continue failed"),
+            "unexpected error: {message}"
+        );
+        assert!(message.len() > "git cherry-pick --continue failed: ".len());
+    }
 
     /// A repo whose single commit has an empty tree, so a test is free to create
     /// and stage `file.txt` itself without colliding with an existing entry.

@@ -3,6 +3,7 @@
 //! Mirrors the design language of `branch_health_panel.rs` and `prs_panel.rs`.
 //! Stash operations delegate to `GitProject` stash methods.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::prelude::*;
@@ -78,12 +79,30 @@ impl StashesPanel {
         }
     }
 
+    /// Which checkout a stash should be applied into.
+    ///
+    /// Stashes live in the repository, shared by every worktree, but applying
+    /// one writes files — so it has to write them where the user is looking.
+    /// Falling back to the project's own path keeps a detached panel working.
+    fn target_worktree(&self, cx: &App) -> PathBuf {
+        self.workspace
+            .upgrade()
+            .map(|ws| ws.read(cx).effective_worktree_path(cx))
+            .or_else(|| {
+                self.project
+                    .upgrade()
+                    .map(|proj| proj.read(cx).repo_path().to_path_buf())
+            })
+            .unwrap_or_default()
+    }
+
     fn apply_stash(&self, index: usize, cx: &mut Context<Self>) {
         let Some(proj) = self.project.upgrade() else {
             return;
         };
+        let worktree_path = self.target_worktree(cx);
         proj.update(cx, |proj, cx| {
-            proj.stash_apply(index, cx).detach();
+            proj.stash_apply_at(index, &worktree_path, cx).detach();
         });
     }
 
@@ -91,8 +110,11 @@ impl StashesPanel {
         let Some(proj) = self.project.upgrade() else {
             return;
         };
+        let worktree_path = self.target_worktree(cx);
         proj.update(cx, |proj, cx| {
-            proj.stash_pop(index, cx).detach();
+            // `pop` removes the entry from a list every worktree shares, so
+            // applying it to the wrong one loses it for all of them.
+            proj.stash_pop_at(index, &worktree_path, cx).detach();
         });
     }
 

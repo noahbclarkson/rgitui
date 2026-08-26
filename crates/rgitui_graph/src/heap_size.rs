@@ -126,6 +126,7 @@ mod tests {
             combined_breakdown,
             worktree_path: PathBuf::from("/repos/rgitui"),
             branch: Some("main".to_string()),
+            head_detached: false,
         }
     }
 

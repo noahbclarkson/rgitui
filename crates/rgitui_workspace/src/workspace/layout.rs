@@ -246,44 +246,86 @@ impl Render for Workspace {
             return div().into_any_element();
         };
         let project = active_tab.project.read(cx);
-        let repo_name: SharedString = project.repo_name().to_string().into();
-        let branch_name: SharedString = project
-            .head_branch()
-            .unwrap_or("detached")
-            .to_string()
-            .into();
-        let (has_changes, staged_count, unstaged_count) =
-            if let Some(inspecting) = &active_tab.inspecting_worktree {
-                project
-                    .worktrees()
-                    .iter()
-                    .find(|worktree| worktree.path == inspecting.path)
-                    .and_then(|worktree| worktree.status.as_ref())
-                    .map(|status| {
-                        (
-                            !status.staged.is_empty() || !status.unstaged.is_empty(),
-                            status.staged.len(),
-                            status.unstaged.len(),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        (
-                            project.has_changes(),
-                            project.status().staged.len(),
-                            project.status().unstaged.len(),
-                        )
-                    })
-            } else {
-                (
-                    project.has_changes(),
-                    project.status().staged.len(),
-                    project.status().unstaged.len(),
-                )
-            };
-        let head_detached = project.is_head_detached();
-        let repo_state = project.repo_state();
+        // While a worktree is being inspected the whole window shows *that*
+        // checkout, so the title bar has to name it too. Reporting the main
+        // repository's branch here put the header in direct contradiction with
+        // the inspection banner sitting right underneath it.
+        let inspected = active_tab
+            .inspecting_worktree
+            .as_ref()
+            .and_then(|inspecting| project.worktree_at(&inspecting.path));
+        let repo_name: SharedString = match inspected {
+            Some(worktree) => worktree.name.clone().into(),
+            None => project.repo_name().to_string().into(),
+        };
+        let head_detached = match inspected {
+            Some(worktree) => worktree.head_detached,
+            None => project.is_head_detached(),
+        };
+        let branch_name: SharedString = match inspected {
+            Some(worktree) => worktree.branch.clone().unwrap_or_else(|| "detached".into()),
+            None => project.head_branch().unwrap_or("detached").to_string(),
+        }
+        .into();
+        let (has_changes, staged_count, unstaged_count) = match active_tab.inspecting_worktree {
+            // An inspected worktree whose status has not been computed yet
+            // reports no changes rather than borrowing the main checkout's
+            // counts, which would belong to a different set of files entirely.
+            Some(_) => inspected
+                .and_then(|worktree| worktree.status.as_ref())
+                .map(|status| {
+                    (
+                        !status.staged.is_empty() || !status.unstaged.is_empty(),
+                        status.staged.len(),
+                        status.unstaged.len(),
+                    )
+                })
+                .unwrap_or((false, 0, 0)),
+            None => (
+                project.has_changes(),
+                project.status().staged.len(),
+                project.status().unstaged.len(),
+            ),
+        };
+        // Built from the live snapshot rather than from what was captured when
+        // the worktree was clicked, so switching branches inside the inspected
+        // worktree updates the banner instead of freezing the old branch there.
+        let inspecting_banner_label: Option<SharedString> =
+            active_tab.inspecting_worktree.as_ref().map(|inspecting| {
+                let head = inspected.and_then(|worktree| {
+                    worktree
+                        .branch
+                        .clone()
+                        .or_else(|| worktree.head_detached.then(|| "detached HEAD".to_string()))
+                });
+                match head {
+                    Some(head) => format!("Inspecting worktree: {} ({})", inspecting.name, head),
+                    None => format!("Inspecting worktree: {}", inspecting.name),
+                }
+                .into()
+            });
+        // A conflicted merge inside a linked worktree records itself under
+        // `.git/worktrees/<name>/`, so the project's own state stays clean and
+        // the banner would hide conflicts the user is looking straight at.
+        let repo_state = match inspected {
+            Some(worktree) => worktree.state,
+            None => project.repo_state(),
+        };
+        // From the same checkout `repo_state` came from. Counting the main
+        // repository's conflicts while the banner is up because a linked
+        // worktree is mid-merge would announce "all conflicts resolved" over
+        // the top of conflicts, and offer a Continue that `ContinueMerge` then
+        // refuses.
+        let conflict_count = match inspected {
+            Some(worktree) => project.conflicted_files_at(&worktree.path).len(),
+            None => project.conflicted_files().len(),
+        };
         let stash_count = project.stashes().len();
-        let repo_path_display: SharedString = project.repo_path().display().to_string().into();
+        let repo_path_display: SharedString = match inspected {
+            Some(worktree) => worktree.path.display().to_string(),
+            None => project.repo_path().display().to_string(),
+        }
+        .into();
         let overlays_active = self.overlays.command_palette.read(cx).is_visible()
             || self.overlays.interactive_rebase.read(cx).is_visible()
             || self.overlays.theme_editor.read(cx).is_visible()
@@ -323,13 +365,10 @@ impl Render for Workspace {
             })
             .unwrap_or((ViewAvailability::Unavailable, ViewAvailability::Unavailable));
 
-        // Find head branch info for ahead/behind
-        let (ahead, behind) = project
-            .branches()
-            .iter()
-            .find(|b| b.is_head)
-            .map(|b| (b.ahead_count(), b.behind_count()))
-            .unwrap_or((0, 0));
+        // The same lookup the toolbar uses. `is_head` is the main checkout's
+        // branch, which would print one branch's name beside another branch's
+        // divergence counts whenever a worktree is being inspected.
+        let (ahead, behind) = super::events::active_branch_ahead_behind(active_tab, project);
 
         // Build tab bar
         let mut tab_bar = TabBar::new();
@@ -534,8 +573,7 @@ impl Render for Workspace {
             .when_some(operation_output_bar, |el, bar| el.child(bar))
             // Conflict state banner (merge/rebase/cherry-pick/revert in progress)
             .when(!repo_state.is_clean(), |el| {
-                let has_conflicts = active_tab.project.read(cx).has_conflicts();
-                let conflict_count = active_tab.project.read(cx).conflicted_files().len();
+                let has_conflicts = conflict_count > 0;
                 let state_label: SharedString = repo_state.label().into();
                 let detail_msg: SharedString = if has_conflicts {
                     format!(
@@ -599,16 +637,21 @@ impl Render for Workspace {
                                         .truncate(),
                                 ),
                         )
-                        .child(
-                            Button::new("conflict-continue", "Continue")
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Filled)
-                                .color(Color::Success)
-                                .disabled(has_conflicts)
-                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                                    this.execute_command(CommandId::ContinueMerge, cx);
-                                })),
-                        )
+                        // Bisect has no continuation — it advances by judging
+                        // the checked-out commit — so it gets no button rather
+                        // than one that can only report why it did nothing.
+                        .when(repo_state.continue_subcommand().is_some(), |el| {
+                            el.child(
+                                Button::new("conflict-continue", "Continue")
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Filled)
+                                    .color(Color::Success)
+                                    .disabled(has_conflicts)
+                                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                        this.execute_command(CommandId::ContinueMerge, cx);
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new("conflict-abort", "Abort")
                                 .size(ButtonSize::Compact)
@@ -620,13 +663,7 @@ impl Render for Workspace {
                         ),
                 )
             })
-            .when_some(active_tab.inspecting_worktree.clone(), |el, inspecting| {
-                let label: SharedString = inspecting
-                    .branch
-                    .clone()
-                    .map(|branch| format!("Inspecting worktree: {} ({})", inspecting.name, branch))
-                    .unwrap_or_else(|| format!("Inspecting worktree: {}", inspecting.name))
-                    .into();
+            .when_some(inspecting_banner_label, |el, label| {
                 el.child(
                     div()
                         .h_flex()
@@ -652,19 +689,15 @@ impl Render for Workspace {
                         )
                         .child(div().flex_1())
                         .child(
-                            Button::new("go-back-main", "Go Back to Main")
+                            // Not "back to main": leaving inspection returns to
+                            // whichever checkout rgitui was opened on, which may
+                            // be on any branch — or be a linked worktree itself.
+                            Button::new("exit-worktree-inspection", "Exit Worktree")
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Subtle)
                                 .color(Color::Warning)
                                 .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                                    if let Some(tab) = this.tabs.get_mut(this.active_tab) {
-                                        tab.inspecting_worktree = None;
-                                        let dp = tab.detail_panel.clone();
-                                        let dv = tab.diff_viewer.clone();
-                                        dp.update(cx, |dp, cx| dp.clear(cx));
-                                        dv.update(cx, |dv, cx| dv.clear(cx));
-                                    }
-                                    super::events::update_sidebar_for_active_worktree(this, cx);
+                                    super::events::set_inspecting_worktree(this, None, cx);
                                 })),
                         ),
                 )
