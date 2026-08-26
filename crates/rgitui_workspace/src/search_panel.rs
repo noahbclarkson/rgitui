@@ -398,7 +398,7 @@ impl GlobalSearchView {
             })
             .child({
                 div()
-                    .flex_grow()
+                    .flex_grow(1.0)
                     .h_flex()
                     .items_center()
                     .child(self.query_input.clone())
@@ -585,7 +585,7 @@ impl GlobalSearchView {
                             .text_color(text_muted)
                             .child(Label::new("|").size(LabelSize::XSmall)),
                         div()
-                            .flex_grow()
+                            .flex_grow(1.0)
                             .overflow_hidden()
                             .text_xs()
                             .text_color(text_muted)
@@ -602,7 +602,7 @@ impl GlobalSearchView {
         div()
             .id("global-search-results")
             .v_flex()
-            .flex_grow()
+            .flex_grow(1.0)
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)
@@ -635,6 +635,20 @@ impl GlobalSearchView {
                         ),
                 )
             })
+    }
+}
+
+/// The global search view's share of the heap census.
+///
+/// `git grep` over a large repository returns tens of thousands of matches and
+/// every one of them arrives with its own path and matched line as owned
+/// strings. The result set is retained until the next search or a clear, which
+/// makes this the one node here that can outweigh the repository snapshot.
+#[cfg(feature = "perf")]
+impl GlobalSearchView {
+    /// Records the retained result set and the current query.
+    pub(crate) fn census(&self, census: &mut rgitui_perf::Census) -> usize {
+        census.enter("results", &self.results) + census.enter("query", &self.query)
     }
 }
 

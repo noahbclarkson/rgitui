@@ -1,0 +1,14 @@
+{
+  "name": "idle",
+  "description": "Open a repository and then do nothing at all for fifteen seconds. Everything measured here is work the app chose to do with no user and no filesystem activity — the cost of merely being open, which on a laptop is the cost of having the battery drain.",
+  "corpus": "medium",
+  "start_from": "cold",
+  "steps": [
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 120000 } },
+    { "wait": { "ms": 2000 } },
+    { "mark": { "mark": "doing-nothing" } },
+    { "wait": { "ms": 15000 } },
+    { "end_mark": { "mark": "doing-nothing" } },
+    { "snapshot": { "snapshot": "after-idle" } }
+  ]
+}

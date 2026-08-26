@@ -750,7 +750,7 @@ impl CommandPalette {
                 })
                 .collect();
             // Sort by score descending (best first)
-            scored.sort_by(|a, b| b.1.cmp(&a.1));
+            scored.sort_by_key(|entry| std::cmp::Reverse(entry.1));
             self.filtered_indices = scored;
         }
         self.selected_index = 0;

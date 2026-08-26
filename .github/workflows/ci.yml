@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  # Kept in step with `rust-toolchain.toml`; the check job asserts they match.
+  RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
   check:
@@ -64,8 +66,11 @@ jobs:
             xvfb
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.1
+        # Version comes from `rust-toolchain.toml` rather than being pinned
+        # here as well; the two drifted apart once already.
+        uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
 
       - name: Cache cargo registry and target
@@ -87,5 +92,61 @@ jobs:
         if: runner.os != 'Linux'
         run: cargo test --workspace
 
+      - name: Check the toolchain pin has not drifted
+        shell: bash
+        run: |
+          pinned=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          if [ "$pinned" != "$RUST_TOOLCHAIN" ]; then
+            echo "rust-toolchain.toml says $pinned but the workflow says $RUST_TOOLCHAIN" >&2
+            exit 1
+          fi
+
       - name: Build release binary
         run: cargo build --release --package rgitui
+
+  # The performance harness compiles roughly two thousand lines across six
+  # crates that the default feature set leaves out entirely — the `HeapSize`
+  # impls, the census roots, and `rgitui_perf` itself. Without this job those
+  # only break when somebody next tries to measure something, which is how the
+  # census tests came to be failing for a fortnight without anyone knowing.
+  #
+  # Linux only: the code is the same everywhere, and the platform-specific half
+  # is guarded well enough that a second runner would be paying for coverage it
+  # does not add.
+  perf:
+    name: Perf harness
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout rgitui
+        uses: actions/checkout@v7
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake clang lld gcc g++ pkg-config \
+            libasound2-dev libfontconfig-dev libfreetype-dev libgit2-dev \
+            libglib2.0-dev libssl-dev libsqlite3-dev libva-dev \
+            libvulkan1 libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-x11-dev libxkbcommon-dev libxcomposite-dev \
+            libxdamage-dev libxext-dev libxfixes-dev libxrandr-dev libxi-dev \
+            libxcursor-dev libdrm-dev libgbm-dev libzstd-dev vulkan-tools xvfb
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+          key: perf
+
+      - name: Run clippy with the harness enabled
+        run: cargo clippy --workspace --all-targets --features rgitui/perf -- -D warnings
+
+      - name: Run tests with the harness enabled
+        run: xvfb-run -a cargo test --workspace --features rgitui/perf

@@ -1,3 +1,6 @@
+#[cfg(feature = "perf")]
+mod heap_size;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -23,9 +26,10 @@ use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, EstimatedListScroll, Icon, IconName, IconSize, Label,
     LabelSize, Scrollbar, Spinner,
 };
-use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle as SyntectFontStyle, Theme, ThemeSet};
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::highlighting::{
+    FontStyle as SyntectFontStyle, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet,
+};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 
 /// Line numbers for a single selected line: (old_file_line, new_file_line).
 /// old_file_line is None for additions (new lines), new_file_line is None for deletions.
@@ -539,7 +543,15 @@ enum SyntaxLineHighlighter {
     Syntect {
         syntax_set: &'static SyntaxSet,
         syntax: &'static SyntaxReference,
-        theme: &'static Theme,
+        /// Built once per theme rather than per line.
+        ///
+        /// `HighlightLines::new` looks cheap and is not: it constructs a
+        /// `Highlighter`, which walks every scope selector in the theme into two
+        /// vectors and sorts one of them. Doing that per diff line put a
+        /// 100-200 element sort in front of every line of every diff. The
+        /// `Highlighter` is a pure function of the theme, so it is shared; only
+        /// the parse and highlight state have to be per line.
+        highlighter: &'static Highlighter<'static>,
     },
 }
 
@@ -2145,8 +2157,23 @@ impl DiffViewer {
         SyntaxLineHighlighter::Syntect {
             syntax_set: &assets.syntax_set,
             syntax,
-            theme: Self::syntax_theme(appearance),
+            highlighter: Self::syntax_highlighter(appearance),
         }
+    }
+
+    /// The shared [`Highlighter`] for an appearance.
+    ///
+    /// There are only ever two, and each is derived entirely from a `'static`
+    /// theme, so they are built once and handed out by reference.
+    fn syntax_highlighter(appearance: Appearance) -> &'static Highlighter<'static> {
+        static DARK: OnceLock<Highlighter<'static>> = OnceLock::new();
+        static LIGHT: OnceLock<Highlighter<'static>> = OnceLock::new();
+
+        let cell = match appearance {
+            Appearance::Dark => &DARK,
+            Appearance::Light => &LIGHT,
+        };
+        cell.get_or_init(|| Highlighter::new(Self::syntax_theme(appearance)))
     }
 
     fn syntect_style_to_highlight(style: syntect::highlighting::Style) -> HighlightStyle {
@@ -2182,7 +2209,7 @@ impl DiffViewer {
             SyntaxLineHighlighter::Syntect {
                 syntax_set,
                 syntax,
-                theme,
+                highlighter,
             } => {
                 // Highlight each line with a fresh parse state to prevent
                 // block-comment / multi-line string state from bleeding across
@@ -2190,10 +2217,17 @@ impl DiffViewer {
                 // from different file versions so stateful highlighting
                 // produces incorrect results -- e.g. a `/*` in a deleted line
                 // would color all subsequent additions as comments).
-                let mut fresh = HighlightLines::new(syntax, theme);
-                let Ok(ranges) = fresh.highlight_line(trimmed, syntax_set) else {
+                //
+                // The state is what has to be fresh; the highlighter behind it
+                // does not, so it is shared rather than rebuilt here.
+                let mut parse_state = ParseState::new(syntax);
+                let mut highlight_state = HighlightState::new(highlighter, ScopeStack::new());
+                let Ok(operations) = parse_state.parse_line(trimmed, syntax_set) else {
                     return StyledLine::plain(trimmed.to_string());
                 };
+                let ranges: Vec<(syntect::highlighting::Style, &str)> =
+                    HighlightIterator::new(&mut highlight_state, &operations, trimmed, highlighter)
+                        .collect();
 
                 let text_len = trimmed.len();
                 let mut highlights = Vec::new();
@@ -3517,14 +3551,14 @@ impl Render for DiffViewer {
                             .expect("build_unified returns exactly one row")
                     })
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
-                    .flex_grow();
+                    .flex_grow(1.0);
                     // v_flex parent so `list_body`'s `flex_grow` actually
                     // gives it a definite height — without it the List is
                     // 0px tall and renders nothing in wrap mode.
                     div()
                         .id("diff-lines-wrap")
                         .v_flex()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .min_h(px(0.))
                         .min_w_0()
                         .overflow_x_hidden()
@@ -3537,7 +3571,7 @@ impl Render for DiffViewer {
                             ListHorizontalSizingBehavior::Unconstrained,
                         )
                         .with_width_from_item(Some(display_longest_row_ix))
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .track_scroll(&self.scroll_handle)
                         .into_any_element()
                 }
@@ -3944,11 +3978,11 @@ impl Render for DiffViewer {
                             .expect("build_sbs returns exactly one row")
                     })
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
-                    .flex_grow();
+                    .flex_grow(1.0);
                     div()
                         .id("diff-lines-sbs-wrap")
                         .v_flex()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .min_h(px(0.))
                         .min_w_0()
                         .overflow_x_hidden()
@@ -3960,7 +3994,7 @@ impl Render for DiffViewer {
                     // (no Unconstrained sizing, no global horizontal scrollbar).
                     uniform_list("diff-lines-sbs", row_count, build_sbs)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .track_scroll(&self.scroll_handle)
                         .into_any_element()
                 }
@@ -4291,11 +4325,11 @@ impl Render for DiffViewer {
                             .expect("build_tw returns exactly one row")
                     })
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
-                    .flex_grow();
+                    .flex_grow(1.0);
                     div()
                         .id("diff-lines-tw-wrap")
                         .v_flex()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .min_h(px(0.))
                         .min_w_0()
                         .overflow_x_hidden()
@@ -4304,7 +4338,7 @@ impl Render for DiffViewer {
                 } else {
                     uniform_list("diff-lines-tw", row_count, build_tw)
                         .with_sizing_behavior(ListSizingBehavior::Auto)
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .track_scroll(&self.scroll_handle)
                         .into_any_element()
                 }
@@ -4509,14 +4543,14 @@ impl Render for DiffViewer {
         };
 
         let list_row = div()
-            .flex_grow()
+            .flex_grow(1.0)
             .h_flex()
             .items_stretch()
             .min_h(px(0.))
             .child(list)
             .child(vscroll);
 
-        let mut body = div().v_flex().flex_grow().min_h(px(0.)).child(list_row);
+        let mut body = div().v_flex().flex_grow(1.0).min_h(px(0.)).child(list_row);
         let show_hscroll = !wrap_enabled && display_mode == DiffDisplayMode::Unified;
         if show_hscroll {
             let h_handle = self.scroll_handle.0.borrow().base_handle.clone();

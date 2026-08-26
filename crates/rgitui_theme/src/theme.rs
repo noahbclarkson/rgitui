@@ -177,26 +177,20 @@ pub fn builtin_themes() -> Vec<Arc<Theme>> {
 pub fn init(cx: &mut App) {
     let mut available = builtin_themes();
 
-    if let Some(config_dir) = dirs::config_dir() {
-        let themes_dir = config_dir.join("rgitui").join("themes");
-        if themes_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&themes_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "json") {
-                        match std::fs::read_to_string(&path) {
-                            Ok(json) => match crate::json_theme::load_theme_from_json(&json) {
-                                Ok(theme) => {
-                                    log::info!("Loaded custom theme: {}", theme.name);
-                                    upsert_theme_by_name(&mut available, Arc::new(theme));
-                                }
-                                Err(e) => {
-                                    log::warn!("Failed to parse theme {}: {}", path.display(), e)
-                                }
-                            },
-                            Err(e) => log::warn!("Failed to read theme {}: {}", path.display(), e),
+    let themes_dir = crate::json_theme::themes_dir();
+    if let Ok(entries) = std::fs::read_dir(&themes_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                match std::fs::read_to_string(&path) {
+                    Ok(json) => match crate::json_theme::load_theme_from_json(&json) {
+                        Ok(theme) => {
+                            log::info!("Loaded custom theme: {}", theme.name);
+                            upsert_theme_by_name(&mut available, Arc::new(theme));
                         }
-                    }
+                        Err(e) => log::warn!("Failed to parse theme {}: {}", path.display(), e),
+                    },
+                    Err(e) => log::warn!("Failed to read theme {}: {}", path.display(), e),
                 }
             }
         }
@@ -242,6 +236,7 @@ impl ElevationIndex {
                 offset: point(px(0.), px(1.)),
                 blur_radius: px(2.),
                 spread_radius: px(0.),
+                inset: false,
             }],
             ElevationIndex::ElevatedSurface => vec![
                 BoxShadow {
@@ -249,12 +244,14 @@ impl ElevationIndex {
                     offset: point(px(0.), px(2.)),
                     blur_radius: px(4.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: black(0.04),
                     offset: point(px(0.), px(1.)),
                     blur_radius: px(2.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
             ],
             ElevationIndex::ModalSurface => vec![
@@ -263,18 +260,21 @@ impl ElevationIndex {
                     offset: point(px(0.), px(4.)),
                     blur_radius: px(8.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: black(0.08),
                     offset: point(px(0.), px(2.)),
                     blur_radius: px(4.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: black(0.06),
                     offset: point(px(0.), px(8.)),
                     blur_radius: px(16.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
             ],
         }

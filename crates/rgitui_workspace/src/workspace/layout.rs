@@ -14,8 +14,8 @@ use crate::keymap;
 use crate::{CommandId, StatusBar, TitleBar, ToastKind};
 
 use super::{
-    BottomPanelMode, CommitInputResize, DetailPanelResize, DiffViewerResize, RightPanelMode,
-    SidebarResize, ViewAvailability, Workspace,
+    BottomPanelMode, CommitInputResize, DetailPanelResize, DiffViewerResize, FocusedPanel,
+    RightPanelMode, SidebarResize, ViewAvailability, Workspace,
 };
 
 /// Key context identifier for the workspace root.
@@ -134,9 +134,47 @@ impl Render for Workspace {
             self.tabs.len(),
             self.active_tab
         );
+
+        // Distinguishes a vsync tick that redrew from one that only ticked,
+        // which is what makes an idle repaint visible in the perf report.
+        crate::perf::note_render(cx);
+        // Stamped onto every command recorded from here on, so a session across
+        // two repositories does not read as though it happened in one.
+        crate::perf::note_active_tab(self.active_tab, cx);
+
+        // The first render with commits to show is the moment the app stops
+        // looking empty, and it is the startup number worth quoting. Cheap
+        // enough to test every frame: a length check on the active tab, and the
+        // harness itself ignores every call after the first.
+        if self
+            .tabs
+            .get(self.active_tab)
+            .is_some_and(|tab| tab.project.read(cx).loaded_commit_count() > 0)
+        {
+            crate::perf::note_first_content(cx);
+        }
+
         if self.focus.pending_focus_restore {
             self.focus.pending_focus_restore = false;
             self.restore_focus(window, cx);
+        }
+
+        // Nothing holds focus on a fresh launch. gpui dispatches an action
+        // along the path from the focused node up to the root, so with no focus
+        // at all every shortcut resolves against the dispatch-tree root — above
+        // the handlers this workspace attaches — and silently does nothing
+        // until the user clicks a panel. Giving the default panel focus as soon
+        // as there is a tab to focus makes the keyboard work from the first
+        // frame. Overlays are left alone: one that does not take focus itself
+        // would otherwise have it pulled out from under it.
+        if !self.focus.initial_focus_taken && !self.tabs.is_empty() && !self.any_overlay_active(cx)
+        {
+            self.focus.initial_focus_taken = true;
+            log::debug!(
+                "workspace: taking initial focus (was {:?})",
+                window.focused(cx)
+            );
+            self.focus_panel(FocusedPanel::Graph, window, cx);
         }
 
         // Apply the configured UI font size. Every `rgitui_ui` component sizes

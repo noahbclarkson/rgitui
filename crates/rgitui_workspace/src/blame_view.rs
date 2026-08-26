@@ -427,7 +427,7 @@ impl Render for BlameView {
             },
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
-        .flex_grow()
+        .flex_grow(1.0)
         .track_scroll(&self.scroll_handle);
 
         div()
@@ -481,6 +481,21 @@ impl Render for BlameView {
             )
             .child(list)
             .into_any_element()
+    }
+}
+
+/// The blame view's share of the heap census.
+///
+/// Blame is the view most likely to be the largest thing in the app after the
+/// commit graph: it holds the entire file, one [`rgitui_git::BlameLine`] per
+/// line, and every line carries its own copy of the author name, email and
+/// short id even where a thousand consecutive lines came from one commit. That
+/// duplication is real and is charged here rather than smoothed away.
+#[cfg(feature = "perf")]
+impl BlameView {
+    /// Records the blame lines and the colour map derived from them.
+    pub(crate) fn census(&self, census: &mut rgitui_perf::Census) -> usize {
+        census.enter("lines", &self.lines) + census.enter("oid_colors", &self.oid_color_indices)
     }
 }
 

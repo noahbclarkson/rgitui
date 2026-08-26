@@ -1,0 +1,176 @@
+{
+  "name": "staging-churn",
+  "description": "Dirties 40 tracked files, then stages and unstages the whole working tree ten times. The dirty step is what makes this measure anything: the corpus generator ends with a forced checkout, so without it every StageAll here staged an empty change set. Each cycle now invalidates the status snapshot and every diff derived from it, which is the cache-invalidation path this scenario exists for, and a cache that fails to release evicted entries shows as steady growth across the ten cycles.",
+  "corpus": "small",
+  "start_from": "cold",
+  "steps": [
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 120000
+      }
+    },
+    {
+      "dirty": {
+        "count": 40
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "dirty-unstaged"
+      }
+    },
+    {
+      "mark": {
+        "mark": "stage-unstage-x10"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::StageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::UnstageAll",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "stage-unstage-x10"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Refresh"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "end"
+      }
+    }
+  ]
+}

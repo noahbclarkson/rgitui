@@ -123,8 +123,13 @@ pub struct BranchInfo {
     pub is_head: bool,
     pub is_remote: bool,
     pub upstream: Option<String>,
-    pub ahead: usize,
-    pub behind: usize,
+    /// Commits this branch has that its upstream does not. `None` until the
+    /// walk that computes it has run — which is a different thing from `Some(0)`,
+    /// "level with upstream", and conflating the two is how a pushed branch
+    /// keeps reporting the count it had before the push.
+    pub ahead: Option<usize>,
+    /// Commits the upstream has that this branch does not. See [`BranchInfo::ahead`].
+    pub behind: Option<usize>,
     pub tip_oid: Option<git2::Oid>,
     /// Author email of the tip commit — used to filter "My Branches".
     pub author_email: Option<String>,
@@ -135,6 +140,27 @@ pub struct BranchInfo {
     pub is_merged_into_main: Option<bool>,
     /// Whether this local branch is merged into the currently checked-out branch.
     pub is_merged_into_head: Option<bool>,
+}
+
+impl BranchInfo {
+    /// Commits ahead of upstream, treating "not computed yet" as none.
+    ///
+    /// For display only. Anything deciding whether the value is *known* — a
+    /// cache carrying state forward, a filter asserting divergence — must look
+    /// at the [`Option`] itself, or it will read a pending walk as a result.
+    pub fn ahead_count(&self) -> usize {
+        self.ahead.unwrap_or(0)
+    }
+
+    /// Commits behind upstream. See [`BranchInfo::ahead_count`].
+    pub fn behind_count(&self) -> usize {
+        self.behind.unwrap_or(0)
+    }
+
+    /// Whether the ahead/behind walk has produced an answer for this branch.
+    pub fn has_ahead_behind(&self) -> bool {
+        self.ahead.is_some() || self.behind.is_some()
+    }
 }
 
 /// Information about a tag.

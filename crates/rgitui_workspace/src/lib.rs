@@ -19,6 +19,7 @@ mod interactive_rebase;
 mod issues_panel;
 pub mod keymap;
 mod markdown_view;
+pub mod perf;
 mod prs_panel;
 mod reflog_view;
 mod rename_dialog;

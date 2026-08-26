@@ -1,0 +1,49 @@
+{
+  "name": "startup",
+  "description": "Measures cold start alone: the harness installs before the splash screen, so this run covers repository open, the first refresh and the first paint, then stops. Short by design \u2014 a startup number mixed in with a browsing workload is a number nobody can act on.",
+  "corpus": "medium",
+  "start_from": "cold",
+  "steps": [
+    {
+      "mark": {
+        "mark": "startup-to-idle"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 180000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "startup-to-idle"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "first-idle"
+      }
+    },
+    {
+      "mark": {
+        "mark": "settle"
+      }
+    },
+    {
+      "wait": {
+        "ms": 3000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "settle"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "settled"
+      }
+    }
+  ]
+}

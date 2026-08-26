@@ -1,3 +1,5 @@
+#[cfg(feature = "perf")]
+mod census;
 mod commands;
 mod events;
 mod key_handler;
@@ -417,6 +419,7 @@ impl Workspace {
             focus: FocusState {
                 last_focused_panel: None,
                 pending_focus_restore: false,
+                initial_focus_taken: false,
                 crash_recovery_available: false,
                 crash_recovery_shown: false,
             },
@@ -467,8 +470,8 @@ impl Workspace {
 
         let target_id = handle.window_id();
         let weak = cx.entity().downgrade();
-        let subscription = cx.on_window_closed(move |app| {
-            if app.windows().iter().any(|w| w.window_id() == target_id) {
+        let subscription = cx.on_window_closed(move |app, closed_id| {
+            if closed_id != target_id {
                 return;
             }
             // The window can be closed programmatically from within a Workspace
@@ -630,6 +633,23 @@ impl Workspace {
             pp.configure(token.clone(), owner.clone(), repo.clone(), cx);
             pp.fetch_prs(cx);
         });
+    }
+
+    /// Whether the workspace has something worth showing yet.
+    ///
+    /// True once the active tab has finished its first refresh, or immediately
+    /// when there is no repository to load — a welcome screen is as ready as it
+    /// will ever be. Used to decide when the splash has finished being useful.
+    ///
+    /// Deliberately not "has commits": a repository that has just been
+    /// initialised has none and never will until the first commit, and waiting
+    /// for one held the splash up for its full timeout on exactly the repository
+    /// that had the least to load.
+    pub fn has_visible_content(&self, cx: &gpui::App) -> bool {
+        match self.tabs.get(self.active_tab) {
+            Some(tab) => tab.project.read(cx).has_loaded(),
+            None => true,
+        }
     }
 
     /// Set whether crash recovery is available (previous session didn't exit cleanly).

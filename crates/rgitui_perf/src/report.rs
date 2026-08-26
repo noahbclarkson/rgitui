@@ -1,0 +1,850 @@
+//! The run's output, shaped so that reading it is the fast path.
+//!
+//! # Why the shape matters
+//!
+//! A run produces tens of thousands of samples. Handing that to a reader — a
+//! person or an agent — and expecting a conclusion is how profiling data ends
+//! up unused. So the raw series go to `samples.jsonl` and `frames.jsonl`, and
+//! `report.json` carries only what a decision needs: a summary, a ranked list
+//! of *findings* that name what is wrong, and the top rows of each detail
+//! table. It is budgeted to stay small enough to read in one go.
+//!
+//! [`Report::findings`] is the part that makes the file useful rather than
+//! merely available. Thresholds are evaluated here, in code, so the report says
+//! "the foreground executor blocked for 41ms at refresh.rs:506" rather than
+//! leaving a reader to notice that themselves.
+
+use serde::{Deserialize, Serialize};
+
+use crate::draw::DrawStats;
+use crate::frame::FrameStats;
+use crate::gpu::GpuSample;
+use crate::heap::CensusNode;
+use crate::process::ProcessSample;
+use crate::tasks::LocationStats;
+
+/// Schema version of `report.json`.
+///
+/// Bumped on any breaking change to the shape so that `compare` refuses to
+/// compare reports it would misread, rather than producing a plausible and
+/// wrong delta.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// How serious a finding is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    /// Worth knowing, not worth acting on alone.
+    Info,
+    /// A real cost that a user could notice.
+    Warning,
+    /// A user would definitely notice this.
+    Critical,
+}
+
+/// Something the run detected, stated as a problem rather than a number.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Finding {
+    pub severity: Severity,
+    /// Stable machine-readable identifier, e.g. `frame.p99_over_budget`.
+    /// Comparisons key off this, so it must not change with the wording.
+    pub code: String,
+    /// One sentence naming what is wrong.
+    pub message: String,
+    /// The numbers behind the claim.
+    pub evidence: serde_json::Value,
+}
+
+/// Metadata describing what produced a report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunInfo {
+    /// ISO-8601 start time.
+    pub started_at: String,
+    /// Scenario name, or `record` for a live session.
+    pub scenario: String,
+    /// Corpus the run measured against.
+    pub corpus: Option<String>,
+    /// Git revision of rgitui under test.
+    pub revision: Option<String>,
+    /// Cargo profile the binary was built with. A run built with `dev` is not
+    /// comparable to one built with `perf`, so this is recorded, not assumed.
+    pub profile: String,
+    /// Whether the dhat allocator was active, which invalidates timings.
+    pub heap_profiling: bool,
+    /// Whether the CPU sampler was running. It suspends each busy thread
+    /// briefly to walk it, so a run with this on carries a little overhead the
+    /// shipped app would not — small, but worth knowing before comparing.
+    pub cpu_sampling: bool,
+    pub os: String,
+    pub cpu_count: usize,
+}
+
+/// The headline numbers.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Summary {
+    /// Frame cadence across the whole run.
+    pub frames: FrameStats,
+    /// What each frame cost to produce, and how much of the budget is spare.
+    pub draws: DrawStats,
+    /// Milliseconds from process start until the app first drew real content.
+    /// `None` when the run never reached that point.
+    pub time_to_first_content_ms: Option<f64>,
+    /// Longest single task on the frame thread, in milliseconds.
+    pub worst_foreground_task_ms: f64,
+    /// Process memory at the end of the run.
+    pub final_process: ProcessSample,
+    /// Highest working set observed.
+    pub peak_working_set_bytes: u64,
+    /// Highest private commit observed. `None` where the platform does not
+    /// report it.
+    pub peak_private_bytes: Option<u64>,
+    /// Bytes the semantic census accounted for at its largest.
+    pub peak_census_bytes: usize,
+    /// Peak private bytes minus peak census bytes. A large gap is memory
+    /// rgitui's own structures do not explain — usually the graphics driver and
+    /// loaded DLLs rather than a leak.
+    ///
+    /// `None` where the platform does not report private bytes at all, rather
+    /// than a plausible-looking negative derived from a hardcoded zero.
+    pub unaccounted_bytes: Option<i64>,
+    /// Dispatched commands that no frame ever answered.
+    ///
+    /// Normally zero. A non-zero count means the app was asked to do something
+    /// and never repainted as a result — which is what a replay driver that is
+    /// not reaching the app's handlers looks like from the inside, and the
+    /// reason this is counted rather than quietly dropped.
+    pub actions_without_a_frame: u64,
+    /// Scenario steps that waited for a frame and timed out instead.
+    pub settle_timeouts: u64,
+    /// Mean CPU utilisation as a percentage of one core.
+    pub cpu_percent_mean: Option<f64>,
+    /// Last GPU reading of the run.
+    pub gpu: GpuSample,
+}
+
+/// A named region of a run, opened with `mark` and closed with `end_mark`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MarkReport {
+    pub name: String,
+    pub wall_ms: f64,
+    pub frames: FrameStats,
+    pub draws: DrawStats,
+    /// Working set change across the region. Growth that never comes back is
+    /// what distinguishes a cache from a leak.
+    pub working_set_delta_bytes: i64,
+}
+
+/// Latency of one command, measured from dispatch to the end of the draw that
+/// answered it — the first frame whose invalidation happened at or after the
+/// dispatch, and therefore the first that could contain its effect.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionReport {
+    /// The `namespace::Name` that was dispatched.
+    pub action: String,
+    pub count: u64,
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub max_ms: f64,
+}
+
+/// The complete run output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Report {
+    pub schema_version: u32,
+    pub run: RunInfo,
+    pub summary: Summary,
+    /// Ranked most severe first.
+    pub findings: Vec<Finding>,
+    pub marks: Vec<MarkReport>,
+    pub actions: Vec<ActionReport>,
+    /// Worst task locations, foreground first.
+    pub hot_locations: Vec<LocationStats>,
+    /// Largest census nodes at peak.
+    pub heap: Vec<CensusNode>,
+}
+
+/// Draws needed before p95 and p99 mean anything.
+///
+/// Below this the tail percentiles are simply the worst one or two samples, and
+/// in a short scenario those are the first frames — shader compilation, glyph
+/// rasterisation, atlas population — which describe starting up rather than
+/// running. An app that correctly stops redrawing when idle produces few draws,
+/// so a small sample is a sign of health as often as a gap in the data.
+const MIN_DRAWS_FOR_PERCENTILES: u64 = 100;
+
+/// Rows kept in each detail table, so `report.json` stays readable in one pass.
+pub const MAX_HOT_LOCATIONS: usize = 40;
+/// Census nodes kept. See [`MAX_HOT_LOCATIONS`].
+pub const MAX_HEAP_NODES: usize = 60;
+
+/// Thresholds that turn measurements into findings.
+///
+/// Defaults are deliberately conservative: a report that cries wolf gets
+/// ignored, and the point of the findings list is that it is worth reading.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Thresholds {
+    /// Multiple of the refresh interval above which p99 is a finding.
+    pub frame_p99_refresh_multiple: f64,
+    /// Fraction of frames that may be dropped before it is a finding.
+    pub dropped_frame_fraction: f64,
+    /// Foreground task duration that counts as a stall, in milliseconds.
+    /// Half a 120Hz frame: long enough to be real, short enough to catch
+    /// things before they become visible hitches.
+    pub foreground_task_ms: f64,
+    /// Census node size that is worth questioning, in bytes.
+    pub large_census_node_bytes: usize,
+    /// Working set a mark may add without it being reported, in bytes.
+    pub mark_growth_bytes: i64,
+    /// Process memory the census may fail to explain, in bytes.
+    pub unaccounted_bytes: i64,
+    /// How much slower a machine may be before p95 draws stop fitting in the
+    /// frame budget. Below this, the app is relying on fast hardware.
+    pub min_cpu_headroom: f64,
+    /// Invalidations coalesced into one frame before it is worth questioning.
+    /// A handful is ordinary; dozens means the app is asking to redraw far
+    /// more often than it has anything new to show.
+    pub invalidations_per_frame: f64,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Self {
+            frame_p99_refresh_multiple: 2.0,
+            dropped_frame_fraction: 0.01,
+            foreground_task_ms: 8.0,
+            large_census_node_bytes: 100 * 1024 * 1024,
+            mark_growth_bytes: 20 * 1024 * 1024,
+            unaccounted_bytes: 200 * 1024 * 1024,
+            min_cpu_headroom: 3.0,
+            invalidations_per_frame: 12.0,
+        }
+    }
+}
+
+impl Report {
+    /// Evaluates `thresholds` against the report's own data and fills in
+    /// [`Report::findings`], most severe first.
+    pub fn detect_findings(&mut self, thresholds: &Thresholds) {
+        let mut findings = Vec::new();
+
+        let frames = &self.summary.frames;
+        if frames.frames > 0 {
+            let budget = frames.refresh_interval_ms * thresholds.frame_p99_refresh_multiple;
+            if frames.p99_ms > budget {
+                findings.push(Finding {
+                    severity: Severity::Critical,
+                    code: "frame.p99_over_budget".into(),
+                    message: format!(
+                        "99th percentile frame interval was {:.1}ms against a {:.1}ms budget — \
+                         visible stutter under this workload",
+                        frames.p99_ms, budget
+                    ),
+                    evidence: serde_json::json!({
+                        "p99_ms": frames.p99_ms,
+                        "budget_ms": budget,
+                        "refresh_interval_ms": frames.refresh_interval_ms,
+                        "max_ms": frames.max_ms,
+                    }),
+                });
+            }
+
+            // Over the intervals the drops were counted across, not over every
+            // tick in the run. Cadence excludes idle intervals from the
+            // numerator, so leaving them in the denominator dilutes the rate by
+            // however long the scenario spent waiting: five drops in a hundred
+            // presenting intervals reads as 0.8% once five hundred idle ticks
+            // follow it, and slips under the threshold.
+            let dropped_fraction = if frames.presenting_intervals == 0 {
+                0.0
+            } else {
+                frames.dropped_frames as f64 / frames.presenting_intervals as f64
+            };
+            if dropped_fraction > thresholds.dropped_frame_fraction {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    code: "frame.dropped".into(),
+                    message: format!(
+                        "{:.2}% of presented frames were dropped ({} of {})",
+                        dropped_fraction * 100.0,
+                        frames.dropped_frames,
+                        frames.presenting_intervals
+                    ),
+                    evidence: serde_json::json!({
+                        "dropped_frames": frames.dropped_frames,
+                        "total_frames": frames.frames,
+                        "fraction": dropped_fraction,
+                    }),
+                });
+            }
+
+            let idle_redraws = self.summary.draws.idle_redraws;
+            if idle_redraws > 0 {
+                findings.push(Finding {
+                    severity: Severity::Info,
+                    code: "frame.idle_redraws".into(),
+                    message: format!(
+                        "{idle_redraws} frames were drawn with no invalidation behind them — \
+                         wasted GPU work while idle"
+                    ),
+                    evidence: serde_json::json!({
+                        "idle_redraws": idle_redraws,
+                        "draws": self.summary.draws.draws,
+                    }),
+                });
+            }
+        }
+
+        for location in self
+            .hot_locations
+            .iter()
+            .filter(|row| row.is_foreground && row.max_ms > thresholds.foreground_task_ms)
+        {
+            findings.push(Finding {
+                severity: Severity::Critical,
+                code: "task.foreground_stall".into(),
+                message: format!(
+                    "{}:{} blocked the frame thread for {:.1}ms (worst of {} run(s))",
+                    location.file, location.line, location.max_ms, location.count
+                ),
+                evidence: serde_json::json!({
+                    "file": location.file,
+                    "line": location.line,
+                    "max_ms": location.max_ms,
+                    "total_ms": location.total_ms,
+                    "count": location.count,
+                }),
+            });
+        }
+
+        for node in self
+            .heap
+            .iter()
+            .filter(|node| node.bytes > thresholds.large_census_node_bytes)
+        {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                code: "heap.large_node".into(),
+                message: format!(
+                    "{} holds {:.1} MB{}",
+                    node.path,
+                    bytes_to_mb(node.bytes as i64),
+                    node.count
+                        .map(|count| format!(" across {count} entries"))
+                        .unwrap_or_default()
+                ),
+                evidence: serde_json::json!({
+                    "path": node.path,
+                    "bytes": node.bytes,
+                    "count": node.count,
+                }),
+            });
+        }
+
+        for mark in self
+            .marks
+            .iter()
+            .filter(|mark| mark.working_set_delta_bytes > thresholds.mark_growth_bytes)
+        {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                code: "memory.mark_growth".into(),
+                message: format!(
+                    "{} grew the working set by {:.1} MB and did not give it back",
+                    mark.name,
+                    bytes_to_mb(mark.working_set_delta_bytes)
+                ),
+                evidence: serde_json::json!({
+                    "mark": mark.name,
+                    "delta_bytes": mark.working_set_delta_bytes,
+                }),
+            });
+        }
+
+        // An idle window's frame callbacks throttle well below the display's
+        // rate — measured at ~25Hz against a 102Hz panel. Any scenario step
+        // that settles on a frame then waits for that slower tick, so its wall
+        // time is mostly throttle rather than app work. Worth saying out loud:
+        // it reads exactly like the app being slow, and it is not.
+        if frames.frames > 0 && frames.duration_ms > 0.0 && frames.refresh_interval_ms > 0.0 {
+            let observed_hz = frames.frames as f64 / (frames.duration_ms / 1000.0);
+            let display_hz = 1000.0 / frames.refresh_interval_ms;
+            if observed_hz < display_hz * 0.6 {
+                findings.push(Finding {
+                    severity: Severity::Info,
+                    code: "frame.idle_throttled".into(),
+                    message: format!(
+                        "frame callbacks ran at {observed_hz:.0}Hz against a {display_hz:.0}Hz \
+                         display — the window was idle for much of this run, so per-action wall \
+                         times include that throttle and overstate what the app did",
+                    ),
+                    evidence: serde_json::json!({
+                        "observed_hz": observed_hz,
+                        "display_hz": display_hz,
+                        "ticks": frames.frames,
+                        "draws": self.summary.draws.draws,
+                    }),
+                });
+            }
+        }
+
+        if self.summary.settle_timeouts > 0 {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                code: "replay.settle_timeout".into(),
+                message: format!(
+                    "{} steps waited for a frame that never came and gave up on the timeout — \
+                     their wall times are the timeout, not the app, so treat every mark \
+                     containing one as unmeasured",
+                    self.summary.settle_timeouts
+                ),
+                evidence: serde_json::json!({
+                    "settle_timeouts": self.summary.settle_timeouts,
+                }),
+            });
+        }
+
+        if self.summary.actions_without_a_frame > 0 {
+            findings.push(Finding {
+                severity: Severity::Critical,
+                code: "actions.never_drawn".into(),
+                message: format!(
+                    "{} dispatched commands were never followed by a frame — the app did not \
+                     repaint in response, so any latency or smoothness figure in this run \
+                     describes an idle window rather than the work that was asked for",
+                    self.summary.actions_without_a_frame
+                ),
+                evidence: serde_json::json!({
+                    "actions_without_a_frame": self.summary.actions_without_a_frame,
+                    "actions_answered": self
+                        .actions
+                        .iter()
+                        .map(|action| action.count)
+                        .sum::<u64>(),
+                }),
+            });
+        }
+
+        let draws = &self.summary.draws;
+        if draws.draws > 0 && draws.draws < MIN_DRAWS_FOR_PERCENTILES {
+            // Worth saying rather than staying silent: a reader who sees no
+            // draw finding will assume the draws were fine.
+            findings.push(Finding {
+                severity: Severity::Info,
+                code: "frame.too_few_draws".into(),
+                message: format!(
+                    "only {} draws recorded, so p95 and p99 are among the worst two or three \
+                     samples and are dominated by first-frame warm-up — judge draw cost from a \
+                     scenario that redraws continuously",
+                    draws.draws
+                ),
+                evidence: serde_json::json!({
+                    "draws": draws.draws,
+                    "minimum": MIN_DRAWS_FOR_PERCENTILES,
+                    "draw_p50_ms": draws.draw_p50_ms,
+                    "draw_max_ms": draws.draw_max_ms,
+                }),
+            });
+        }
+
+        if draws.draws >= MIN_DRAWS_FOR_PERCENTILES {
+            // Cadence alone cannot see this. Every frame interval sits on the
+            // refresh period whether a draw took 1ms or 9ms, so an app that has
+            // quietly eaten its whole budget looks exactly like one that has
+            // not — until it runs on slower hardware, where the same work no
+            // longer fits and the cadence collapses all at once.
+            if let Some(headroom) = draws.cpu_slowdown_headroom() {
+                if headroom < thresholds.min_cpu_headroom {
+                    findings.push(Finding {
+                        severity: if headroom < 1.0 {
+                            Severity::Critical
+                        } else {
+                            Severity::Warning
+                        },
+                        code: "frame.cpu_headroom".into(),
+                        message: format!(
+                            "p95 draw takes {:.2}ms of the {:.2}ms frame budget ({:.0}%) — this \
+                             holds 102Hz here but stops fitting on a machine {:.1}x slower",
+                            draws.draw_p95_ms,
+                            draws.refresh_interval_ms,
+                            draws.budget_used_p95_percent(),
+                            headroom
+                        ),
+                        evidence: serde_json::json!({
+                            "draw_p95_ms": draws.draw_p95_ms,
+                            "draw_p50_ms": draws.draw_p50_ms,
+                            "draw_max_ms": draws.draw_max_ms,
+                            "refresh_interval_ms": draws.refresh_interval_ms,
+                            "headroom": headroom,
+                        }),
+                    });
+                }
+            }
+
+            if draws.invalidations_p50 > thresholds.invalidations_per_frame {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    code: "frame.redundant_invalidations".into(),
+                    message: format!(
+                        "the median frame coalesced {:.0} invalidations — the app is asking to \
+                         redraw far more often than it has new state to show",
+                        draws.invalidations_p50
+                    ),
+                    evidence: serde_json::json!({
+                        "invalidations_p50": draws.invalidations_p50,
+                        "invalidations_p95": draws.invalidations_p95,
+                        "invalidations_total": draws.invalidations_total,
+                        "draws": draws.draws,
+                    }),
+                });
+            }
+        }
+
+        if self
+            .summary
+            .unaccounted_bytes
+            .is_some_and(|unaccounted| unaccounted > thresholds.unaccounted_bytes)
+        {
+            let unaccounted = self.summary.unaccounted_bytes.unwrap_or_default();
+            findings.push(Finding {
+                severity: Severity::Warning,
+                code: "memory.unaccounted".into(),
+                message: format!(
+                    "{:.1} MB of process memory is not explained by rgitui's own structures — \
+                     most of it is the graphics driver, loaded DLLs and thread stacks rather \
+                     than the heap, so confirm with a `--features perf-dhat` run before \
+                     treating it as a leak",
+                    bytes_to_mb(unaccounted)
+                ),
+                evidence: serde_json::json!({
+                    "unaccounted_bytes": unaccounted,
+                    "census_bytes": self.summary.peak_census_bytes,
+                    "peak_private_bytes": self.summary.peak_private_bytes,
+                }),
+            });
+        }
+
+        if self.run.heap_profiling {
+            findings.push(Finding {
+                severity: Severity::Info,
+                code: "run.timings_invalid".into(),
+                message: "the dhat allocator was active, so every timing in this report \
+                          describes dhat rather than rgitui — use it for heap data only"
+                    .into(),
+                evidence: serde_json::json!({ "heap_profiling": true }),
+            });
+        }
+
+        findings.sort_by_key(|finding| std::cmp::Reverse(finding.severity));
+        self.findings = findings;
+    }
+
+    /// Trims detail tables to their documented caps.
+    pub fn truncate_tables(&mut self) {
+        self.hot_locations.truncate(MAX_HOT_LOCATIONS);
+        self.heap.truncate(MAX_HEAP_NODES);
+    }
+
+    /// Serialises to pretty JSON.
+    pub fn to_json(&self) -> anyhow::Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Parses a report, rejecting a schema this build cannot read correctly.
+    pub fn from_json(source: &str) -> anyhow::Result<Self> {
+        let report: Self = serde_json::from_str(source)?;
+        anyhow::ensure!(
+            report.schema_version == SCHEMA_VERSION,
+            "report schema v{} cannot be read by this build (expected v{SCHEMA_VERSION})",
+            report.schema_version
+        );
+        Ok(report)
+    }
+
+    /// Renders the human-readable summary.
+    pub fn to_markdown(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("# Performance report — {}\n\n", self.run.scenario));
+        out.push_str(&format!(
+            "- Started: {}\n- Profile: `{}`\n- Corpus: {}\n\n",
+            self.run.started_at,
+            self.run.profile,
+            self.run.corpus.as_deref().unwrap_or("—")
+        ));
+
+        if self.findings.is_empty() {
+            out.push_str("## Findings\n\nNothing crossed a threshold.\n\n");
+        } else {
+            out.push_str("## Findings\n\n");
+            for finding in &self.findings {
+                out.push_str(&format!(
+                    "- **{:?}** (`{}`) — {}\n",
+                    finding.severity, finding.code, finding.message
+                ));
+            }
+            out.push('\n');
+        }
+
+        let frames = &self.summary.frames;
+        out.push_str("## Frames\n\n");
+        out.push_str(&format!(
+            "| Frames | FPS | p50 | p95 | p99 | max | Dropped |\n\
+             |---:|---:|---:|---:|---:|---:|---:|\n\
+             | {} | {:.1} | {:.2}ms | {:.2}ms | {:.2}ms | {:.2}ms | {} |\n\n",
+            frames.frames,
+            frames.fps(),
+            frames.p50_ms,
+            frames.p95_ms,
+            frames.p99_ms,
+            frames.max_ms,
+            frames.dropped_frames
+        ));
+
+        out.push_str("## Memory\n\n");
+        out.push_str(&format!(
+            "- Working set (final): {:.1} MB\n- Working set (peak): {:.1} MB\n\
+             - Census (peak): {:.1} MB\n- Unaccounted: {}\n\n",
+            bytes_to_mb(self.summary.final_process.working_set_bytes as i64),
+            bytes_to_mb(self.summary.peak_working_set_bytes as i64),
+            bytes_to_mb(self.summary.peak_census_bytes as i64),
+            match self.summary.unaccounted_bytes {
+                Some(unaccounted) => format!("{:.1} MB", bytes_to_mb(unaccounted)),
+                None => "not available on this platform".to_string(),
+            }
+        ));
+
+        if !self.heap.is_empty() {
+            out.push_str("### Largest heap nodes\n\n| Path | MB | Count |\n|:--|---:|---:|\n");
+            for node in self.heap.iter().take(15) {
+                out.push_str(&format!(
+                    "| `{}` | {:.1} | {} |\n",
+                    node.path,
+                    bytes_to_mb(node.bytes as i64),
+                    node.count
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "—".into())
+                ));
+            }
+            out.push('\n');
+        }
+
+        if !self.hot_locations.is_empty() {
+            out.push_str(
+                "## Hot task locations\n\n| Location | Thread | Count | Total | p95 | Max |\n\
+                 |:--|:--|---:|---:|---:|---:|\n",
+            );
+            for row in self.hot_locations.iter().take(15) {
+                out.push_str(&format!(
+                    "| `{}:{}` | {} | {} | {:.1}ms | {:.1}ms | {:.1}ms |\n",
+                    row.file,
+                    row.line,
+                    if row.is_foreground {
+                        "**foreground**"
+                    } else {
+                        "background"
+                    },
+                    row.count,
+                    row.total_ms,
+                    row.p95_ms,
+                    row.max_ms
+                ));
+            }
+            out.push('\n');
+        }
+
+        out
+    }
+}
+
+/// Bytes as megabytes, for display only.
+pub fn bytes_to_mb(bytes: i64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_report() -> Report {
+        Report {
+            schema_version: SCHEMA_VERSION,
+            run: RunInfo {
+                started_at: "2026-08-13T00:00:00Z".into(),
+                scenario: "test".into(),
+                corpus: None,
+                revision: None,
+                profile: "perf".into(),
+                heap_profiling: false,
+                cpu_sampling: false,
+                os: "windows".into(),
+                cpu_count: 8,
+            },
+            summary: Summary::default(),
+            findings: Vec::new(),
+            marks: Vec::new(),
+            actions: Vec::new(),
+            hot_locations: Vec::new(),
+            heap: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_clean_run_produces_no_findings() {
+        let mut report = empty_report();
+        report.summary.frames = FrameStats {
+            frames: 600,
+            drawn_frames: 600,
+            duration_ms: 5000.0,
+            p50_ms: 8.3,
+            p95_ms: 8.4,
+            p99_ms: 8.6,
+            max_ms: 9.0,
+            presenting_intervals: 600,
+            dropped_frames: 0,
+            refresh_interval_ms: 8.3,
+        };
+        report.detect_findings(&Thresholds::default());
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn a_p99_past_the_budget_is_critical() {
+        let mut report = empty_report();
+        report.summary.frames = FrameStats {
+            frames: 100,
+            duration_ms: 2000.0,
+            p99_ms: 40.0,
+            max_ms: 60.0,
+            refresh_interval_ms: 8.3,
+            ..FrameStats::default()
+        };
+        report.detect_findings(&Thresholds::default());
+
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.code == "frame.p99_over_budget")
+            .expect("expected a frame budget finding");
+        assert_eq!(finding.severity, Severity::Critical);
+    }
+
+    #[test]
+    fn a_slow_foreground_task_is_reported_but_a_slow_background_one_is_not() {
+        let mut report = empty_report();
+        report.hot_locations = vec![
+            LocationStats {
+                file: "refresh.rs".into(),
+                line: 506,
+                thread: Some("main".into()),
+                is_foreground: true,
+                count: 3,
+                total_ms: 90.0,
+                p95_ms: 41.0,
+                max_ms: 41.0,
+            },
+            LocationStats {
+                file: "worker.rs".into(),
+                line: 1,
+                thread: Some("bg".into()),
+                is_foreground: false,
+                count: 1,
+                total_ms: 900.0,
+                p95_ms: 900.0,
+                max_ms: 900.0,
+            },
+        ];
+        report.detect_findings(&Thresholds::default());
+
+        let stalls: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.code == "task.foreground_stall")
+            .collect();
+        assert_eq!(stalls.len(), 1, "background work must not be flagged");
+        assert!(stalls[0].message.contains("refresh.rs:506"));
+    }
+
+    #[test]
+    fn findings_are_ordered_most_severe_first() {
+        let mut report = empty_report();
+        report.summary.frames = FrameStats {
+            frames: 100,
+            duration_ms: 2000.0,
+            p99_ms: 40.0,
+            dropped_frames: 50,
+            refresh_interval_ms: 8.3,
+            ..FrameStats::default()
+        };
+        report.detect_findings(&Thresholds::default());
+
+        let severities: Vec<_> = report.findings.iter().map(|f| f.severity).collect();
+        let mut sorted = severities.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(severities, sorted);
+        assert_eq!(severities.first(), Some(&Severity::Critical));
+    }
+
+    #[test]
+    fn a_dhat_run_says_its_own_timings_are_meaningless() {
+        let mut report = empty_report();
+        report.run.heap_profiling = true;
+        report.detect_findings(&Thresholds::default());
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.code == "run.timings_invalid"));
+    }
+
+    #[test]
+    fn report_round_trips_through_json() {
+        let mut report = empty_report();
+        report.detect_findings(&Thresholds::default());
+        let parsed = Report::from_json(&report.to_json().unwrap()).unwrap();
+        assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn a_future_schema_is_refused_rather_than_misread() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&empty_report().to_json().unwrap()).unwrap();
+        value["schema_version"] = serde_json::json!(SCHEMA_VERSION + 1);
+
+        let error = Report::from_json(&value.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cannot be read"), "error: {error}");
+    }
+
+    #[test]
+    fn tables_are_truncated_to_their_caps() {
+        let mut report = empty_report();
+        report.heap = (0..MAX_HEAP_NODES + 25)
+            .map(|i| CensusNode {
+                path: format!("node{i}"),
+                bytes: 1,
+                count: None,
+            })
+            .collect();
+        report.truncate_tables();
+        assert_eq!(report.heap.len(), MAX_HEAP_NODES);
+    }
+
+    #[test]
+    fn markdown_leads_with_the_findings() {
+        let mut report = empty_report();
+        report.summary.frames = FrameStats {
+            frames: 100,
+            duration_ms: 2000.0,
+            p99_ms: 40.0,
+            refresh_interval_ms: 8.3,
+            ..FrameStats::default()
+        };
+        report.detect_findings(&Thresholds::default());
+
+        let markdown = report.to_markdown();
+        let findings_at = markdown.find("## Findings").unwrap();
+        let frames_at = markdown.find("## Frames").unwrap();
+        assert!(findings_at < frames_at);
+        assert!(markdown.contains("frame.p99_over_budget"));
+    }
+}

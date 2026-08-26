@@ -40,6 +40,9 @@ Desktop.ini
 # Debug files
 *.pdb
 
+# Heap profile written to the working directory by `--features perf-dhat`
+dhat-heap.json
+
 # Environment files
 .env.local
 MEMORY.md

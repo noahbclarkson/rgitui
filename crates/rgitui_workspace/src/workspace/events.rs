@@ -86,7 +86,7 @@ pub(super) fn active_branch_ahead_behind(
                 .iter()
                 .find(|branch| !branch.is_remote && branch.name == name)
         })
-        .map(|branch| (branch.ahead, branch.behind))
+        .map(|branch| (branch.ahead_count(), branch.behind_count()))
         .unwrap_or((0, 0))
 }
 
@@ -996,10 +996,16 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     let remotes = proj.remotes().to_vec();
                     let stashes = proj.stashes().to_vec();
                     let worktrees = proj.worktrees().to_vec();
-                    let mut seen = std::collections::HashSet::new();
+                    // Deduplicated by borrowed email, not an owned copy of one.
+                    // This runs over every loaded commit on every refresh, and
+                    // cloning the key to test membership allocated once per
+                    // commit — a thousand allocations on the main thread to
+                    // discover a handful of distinct authors.
+                    let mut seen: std::collections::HashSet<&str> =
+                        std::collections::HashSet::new();
                     let authors: Vec<(String, String)> = commits
                         .iter()
-                        .filter(|c| seen.insert(c.author.email.clone()))
+                        .filter(|c| seen.insert(c.author.email.as_str()))
                         .map(|c| (c.author.name.clone(), c.author.email.clone()))
                         .collect();
                     (
@@ -1705,8 +1711,27 @@ pub(super) fn subscribe_sidebar(
 
 type CommitDiffCache = LruCache<git2::Oid, Arc<rgitui_git::CommitDiff>>;
 
-const DIFF_PREFETCH_CONCURRENCY: usize = 4;
+/// How many speculative diffs may compute at once.
+///
+/// Deliberately leaves cores free. This is speculative work competing with the
+/// diff the user is actually looking at, which is spawned on the same
+/// executor; at four wide on a four-core machine the interactive diff waited
+/// behind four stale prefetches, each measured at 25.6ms p95.
+fn diff_prefetch_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|cores| cores.get().saturating_sub(2).max(1))
+        .unwrap_or(1)
+}
+
 const DIFF_PREFETCH_BATCH_SIZE: usize = 32;
+
+/// Hard ceiling on queued speculative diffs.
+///
+/// Every selection offers its 50 nearest neighbours, so holding a key down
+/// offers tens of thousands. Deduplication alone does not bound that — it only
+/// stops the same commit being queued twice — and an unbounded queue drained
+/// oldest-first spends its time on neighbourhoods the cursor left long ago.
+const DIFF_PREFETCH_MAX_PENDING: usize = 64;
 
 #[derive(Default)]
 struct DiffPrefetchState {
@@ -1743,8 +1768,12 @@ impl DiffPrefetchScheduler {
         cx.spawn(async move |_, _| loop {
             let batch: Vec<_> = {
                 let mut state = scheduler.state.lock().unwrap();
-                let count = state.pending.len().min(DIFF_PREFETCH_BATCH_SIZE);
-                let batch: Vec<_> = state.pending.drain(..count).collect();
+                // Newest first. The queue is a record of where the cursor has
+                // been, and the entries most likely to be wanted are the ones
+                // added last — draining oldest-first walks the user's history
+                // in order while they wait for where they are now.
+                let start = state.pending.len().saturating_sub(DIFF_PREFETCH_BATCH_SIZE);
+                let batch: Vec<_> = state.pending.drain(start..).collect();
                 if batch.is_empty() {
                     state.running = false;
                     return;
@@ -1762,7 +1791,7 @@ impl DiffPrefetchScheduler {
                         (oid, result)
                     }
                 })
-                .buffer_unordered(DIFF_PREFETCH_CONCURRENCY)
+                .buffer_unordered(diff_prefetch_concurrency())
                 .collect()
                 .await;
 
@@ -1805,6 +1834,14 @@ impl DiffPrefetchScheduler {
             for oid in uncached {
                 if state.scheduled.insert(oid) {
                     state.pending.push_back((repo_path.clone(), oid));
+                }
+            }
+            // Drop the oldest entries past the cap. They are the furthest from
+            // where the cursor is now, and keeping them would only delay the
+            // work that is still worth doing.
+            while state.pending.len() > DIFF_PREFETCH_MAX_PENDING {
+                if let Some((_, dropped)) = state.pending.pop_front() {
+                    state.scheduled.remove(&dropped);
                 }
             }
             if state.running || state.pending.is_empty() {

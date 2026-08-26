@@ -56,6 +56,16 @@ where
         self.map.contains_key(key)
     }
 
+    /// Number of entries currently held, for the performance census.
+    ///
+    /// The cache is bounded by this count, so a report that gives bytes without
+    /// it cannot show whether the bound or the entry size is what made the
+    /// cache expensive.
+    #[cfg(feature = "perf")]
+    pub(crate) fn census_len(&self) -> usize {
+        self.map.len()
+    }
+
     /// Inspect a cached value without changing its recency.
     pub fn peek(&self, key: &K) -> Option<&V> {
         self.map.get(key)
@@ -94,6 +104,39 @@ where
 
         self.order.push_back(key.clone());
         self.map.insert(key, value);
+    }
+}
+
+/// Measuring a cache needs more of its keys and values than using one does, so
+/// the census lives in its own impl block rather than adding `HeapSize` to the
+/// bounds every caller has to satisfy.
+#[cfg(feature = "perf")]
+impl<K, V> LruCache<K, V>
+where
+    K: Hash + Eq + Clone + rgitui_perf::HeapSize,
+    V: rgitui_perf::HeapSize,
+{
+    /// Heap bytes held by the entries.
+    ///
+    /// A capacity bound counted in entries says nothing about bytes, and these
+    /// caches hold values whose size varies by orders of magnitude — a
+    /// `CommitDiff` for a typo and one for a vendored dependency bump are both
+    /// "one entry". This is what turns that bound into a number.
+    ///
+    /// The recency queue is charged too. It holds a second copy of every key,
+    /// which for a `ViewCacheKey` means a second repository path and file path
+    /// per entry — small individually, and not nothing across 200 of them.
+    pub(crate) fn census_entries(&self, census: &mut rgitui_perf::Census) -> usize {
+        use rgitui_perf::HeapSize as _;
+
+        let mut total = self.map.heap_size(census);
+        total += self.order.capacity() * std::mem::size_of::<K>();
+        total += self
+            .order
+            .iter()
+            .map(|key| key.heap_size(census))
+            .sum::<usize>();
+        total
     }
 }
 

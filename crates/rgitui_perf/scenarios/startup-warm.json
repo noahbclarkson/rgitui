@@ -1,0 +1,17 @@
+{
+  "name": "startup-warm",
+  "description": "The same measurement as `startup`, taken on the second launch of a repository rather than the first. rgitui hydrates the commit list from a persistent history cache before the first refresh runs, so this is the start almost every real launch is — and the only one that shows whether that cache is earning its keep. Run it after `startup`, which is what leaves the cache it needs; run on its own against an empty state directory it is a cold start wearing the wrong name.",
+  "corpus": "medium",
+  "start_from": "warm",
+  "steps": [
+    { "mark": { "mark": "startup-to-idle" } },
+    { "wait_for": { "condition": "operation_idle", "timeout_ms": 180000 } },
+    { "end_mark": { "mark": "startup-to-idle" } },
+    { "snapshot": { "snapshot": "first-idle" } },
+
+    { "mark": { "mark": "settle" } },
+    { "wait": { "ms": 3000 } },
+    { "end_mark": { "mark": "settle" } },
+    { "snapshot": { "snapshot": "settled" } }
+  ]
+}

@@ -426,10 +426,10 @@ fn compute_working_tree_status(
         }
     }
 
-    // TODO(audit): QUAL-06 — run this fan-out on the GPUI BackgroundExecutor
-    // instead of raw OS threads. Blocked by the two-file edit scope: the gather
-    // functions are synchronous and have no executor handle; threading one in
-    // requires async signatures plus touching every external call site.
+    // Scoped OS threads rather than the executor: this whole function already
+    // runs on a background thread and borrows `repo_path`, so a scope keeps the
+    // borrow and costs two thread spawns, where routing through the executor
+    // would make every gather function async up to its call sites.
     let (staged_stats, unstaged_stats) = std::thread::scope(|s| {
         let staged_handle = s.spawn(|| {
             let repo = Repository::open(repo_path).ok();
@@ -569,6 +569,35 @@ pub(super) fn gather_refresh_data_lightweight_cached(
     gather_refresh_data_internal(repo_path, false, commit_limit, Some(cache), author_filter)
 }
 
+/// Every commit reachable from `tip`, including `tip` itself.
+///
+/// A branch is merged into `tip` exactly when its own tip appears in this set,
+/// which is the same answer `merge_base(branch_tip, tip) == branch_tip` gives
+/// and costs one walk for all branches instead of one walk each.
+///
+/// A walk that fails partway returns what it had rather than nothing: the
+/// flags this feeds are a visual hint on a sidebar row, and under-reporting one
+/// branch as unmerged is a far better failure than refusing to open the
+/// repository.
+pub(super) fn reachable_set(repo: &Repository, tip: git2::Oid) -> HashSet<git2::Oid> {
+    let mut reachable = HashSet::new();
+    let Ok(mut walk) = repo.revwalk() else {
+        return reachable;
+    };
+    if walk.push(tip).is_err() {
+        return reachable;
+    }
+    for oid in walk {
+        match oid {
+            Ok(oid) => {
+                reachable.insert(oid);
+            }
+            Err(_) => break,
+        }
+    }
+    reachable
+}
+
 fn gather_refresh_data_internal(
     repo_path: &Path,
     compute_ahead_behind: bool,
@@ -587,7 +616,6 @@ fn gather_refresh_data_internal(
         .ok()
         .and_then(|r| r.shorthand().map(String::from));
     let head_detached = repo.head_detached().unwrap_or(false);
-    let head_tip = repo.head().ok().and_then(|reference| reference.target());
     let repo_state = RepoState::from_git2(repo.state());
 
     // Current user email (for "My Branches" / "My Commits" filtering)
@@ -620,19 +648,21 @@ fn gather_refresh_data_internal(
                 .ok()
                 .and_then(|u| u.name().ok().flatten().map(String::from));
 
+            // `None` rather than `(0, 0)` when the walk did not run: the
+            // deferred pass fills these in, and a snapshot that reported "level
+            // with upstream" here would be indistinguishable from one that had
+            // simply not looked yet.
             let (ahead, behind) = if compute_ahead_behind {
-                if let (Some(local_oid), Ok(upstream_ref)) = (tip_oid, branch.upstream()) {
-                    if let Some(remote_oid) = upstream_ref.get().target() {
-                        repo.graph_ahead_behind(local_oid, remote_oid)
-                            .unwrap_or((0, 0))
-                    } else {
-                        (0, 0)
-                    }
-                } else {
-                    (0, 0)
+                match (tip_oid, branch.upstream()) {
+                    (Some(local_oid), Ok(upstream_ref)) => upstream_ref
+                        .get()
+                        .target()
+                        .and_then(|remote_oid| repo.graph_ahead_behind(local_oid, remote_oid).ok())
+                        .map_or((None, None), |(ahead, behind)| (Some(ahead), Some(behind))),
+                    _ => (None, None),
                 }
             } else {
-                (0, 0)
+                (None, None)
             };
 
             let last_commit_time =
@@ -666,65 +696,16 @@ fn gather_refresh_data_internal(
                 .then(a.name.cmp(&b.name))
         });
 
-        // Find the main branch tip OID.
-        // Priority: local main > local master > remote origin/main > remote origin/master
-        let main_tip = branches
-            .iter()
-            .find(|b| !b.is_remote && b.name == "main")
-            .and_then(|b| b.tip_oid)
-            .or_else(|| {
-                branches
-                    .iter()
-                    .find(|b| !b.is_remote && b.name == "master")
-                    .and_then(|b| b.tip_oid)
-            })
-            .or_else(|| {
-                branches
-                    .iter()
-                    .find(|b| b.is_remote && b.name == "origin/main")
-                    .and_then(|b| b.tip_oid)
-            })
-            .or_else(|| {
-                branches
-                    .iter()
-                    .find(|b| b.is_remote && b.name == "origin/master")
-                    .and_then(|b| b.tip_oid)
-            });
-
-        // Pass 2: compute is_merged_into_main for local branches
-        if let Some(main_tip_oid) = main_tip {
-            for branch in branches.iter_mut() {
-                if branch.is_remote {
-                    continue;
-                }
-                if branch.is_head {
-                    // The HEAD branch: merged if it points to the same commit as main
-                    branch.is_merged_into_main = Some(branch.tip_oid == main_tip);
-                    continue;
-                }
-                // A branch is merged into main if the branch tip is an ancestor of main_tip.
-                // Use merge_base: if merge_base(branch_tip, main_tip) == branch_tip,
-                // then branch_tip is an ancestor of main_tip (branch was merged/fast-forwarded).
-                let is_merged = branch.tip_oid.is_some_and(|tip_oid| {
-                    repo.merge_base(tip_oid, main_tip_oid)
-                        .map(|mb| mb == tip_oid)
-                        .unwrap_or(false)
-                });
-                branch.is_merged_into_main = Some(is_merged);
-            }
-        }
-
-        // Match `git branch --merged`: compare each local tip with the
-        // currently checked-out commit, not only with main/master.
-        if let Some(head_tip_oid) = head_tip {
-            for branch in branches.iter_mut().filter(|branch| !branch.is_remote) {
-                branch.is_merged_into_head = Some(branch.tip_oid.is_some_and(|tip_oid| {
-                    repo.merge_base(tip_oid, head_tip_oid)
-                        .map(|merge_base| merge_base == tip_oid)
-                        .unwrap_or(false)
-                }));
-            }
-        }
+        // `is_merged_into_main` and `is_merged_into_head` are deliberately left
+        // unset. Both need a walk over the repository's history and decide
+        // nothing more than whether a sidebar row is dimmed, so they are filled
+        // in afterwards by `refresh_branch_graph_state`, once the commits the
+        // user is actually waiting for are on screen. Computing them here cost
+        // 139ms of the ~290ms it took to produce the whole snapshot.
+        //
+        // `None` means "not computed", which `apply_refresh_data` reads as
+        // "keep what was already known" — so a refresh never blanks a flag it
+        // simply did not recalculate.
     }
 
     // Tags
@@ -764,11 +745,9 @@ fn gather_refresh_data_internal(
         }
     }
 
-    // Run status, stashes, worktrees in parallel.
-    // Status and stashes open their own repos; worktrees and revwalk use &repo.
-    // TODO(audit): QUAL-06 — dispatch this fan-out through the GPUI
-    // BackgroundExecutor instead of raw OS threads (see the note at the inner
-    // scope in compute_working_tree_status). Same two-file-scope blocker.
+    // Run status, stashes, worktrees in parallel; scoped threads for the same
+    // reason as in `compute_working_tree_status`. Status and stashes open their
+    // own repos, while worktrees and the revwalk share `&repo`.
     let (status, stashes, worktrees) = std::thread::scope(|s| {
         let status_handle = s.spawn(|| compute_working_tree_status(repo_path, worktree_cache));
 
@@ -979,7 +958,12 @@ impl GitProject {
         // toggle instead of showing every author.
         let author_filter = self.commit_author_filter.clone();
 
+        let work = self.track_background_work();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Held for both phases, so a caller waiting for the project to
+            // settle waits for the remaining history too, not just the first
+            // batch that made the window look populated.
+            let _work = work;
             // Phase 1: lightweight refresh (skip ahead/behind) with a small commit batch
             let repo_path_p1 = repo_path.clone();
             let cache_path_p1 = repo_path.clone();
@@ -1027,10 +1011,12 @@ impl GitProject {
                     if this.commit_query_generation != query_generation {
                         return Ok::<(), anyhow::Error>(());
                     }
+                    let reached_ui = t.elapsed();
                     this.apply_refresh_data(data);
                     log::info!(
-                        "refresh phase 1 applied in {:?}: {} commits",
+                        "refresh phase 1 applied in {:?} ({:?} waiting for the UI thread): {} commits",
                         t.elapsed(),
+                        reached_ui,
                         this.recent_commits.len()
                     );
                     cx.emit(GitProjectEvent::StatusChanged);
@@ -1304,6 +1290,98 @@ mod tests {
 }
 
 // ── load_more_commits_from_repo ──────────────────────────────────
+
+#[cfg(test)]
+mod reachable_tests {
+    use super::*;
+    use rgitui_test_support::TempRepo;
+
+    /// The predicate `reachable_set` replaced, kept as the oracle it has to
+    /// agree with. A branch counted as merged when `merge_base(tip, target)`
+    /// was the tip itself.
+    fn merged_by_merge_base(repo: &Repository, tip: git2::Oid, target: git2::Oid) -> bool {
+        repo.merge_base(tip, target)
+            .map(|base| base == tip)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn a_tip_is_reachable_from_itself() {
+        // The old predicate answered true here — merge_base(x, x) == x — and a
+        // walk that excluded its own starting commit would report the checked
+        // out branch as unmerged from itself.
+        let repo = TempRepo::with_commits(3);
+        let head = repo.head_oid();
+        assert!(reachable_set(repo.repo(), head).contains(&head));
+    }
+
+    #[test]
+    fn an_ancestor_is_reachable_and_a_descendant_is_not() {
+        let repo = TempRepo::with_commits(1);
+        let first = repo.head_oid();
+        repo.commit_file("second.txt", "second", "second");
+        let second = repo.head_oid();
+
+        let from_second = reachable_set(repo.repo(), second);
+        assert!(from_second.contains(&first), "ancestor must be reachable");
+
+        let from_first = reachable_set(repo.repo(), first);
+        assert!(
+            !from_first.contains(&second),
+            "a later commit is not reachable from an earlier one"
+        );
+    }
+
+    #[test]
+    fn set_membership_agrees_with_merge_base_across_a_divergent_history() {
+        // Two branches off a shared base, one of them merged back. This is the
+        // shape the flags exist to describe, and the case where a wrong answer
+        // would mislabel a sidebar row.
+        let repo = TempRepo::with_commits(2);
+        let base = repo.head_oid();
+        repo.branch("merged-branch");
+        repo.commit_file("on-main.txt", "main", "main work");
+        let main_tip = repo.head_oid();
+
+        let merged_tip = repo
+            .repo()
+            .find_branch("merged-branch", git2::BranchType::Local)
+            .expect("branch should exist")
+            .get()
+            .target()
+            .expect("branch should have a tip");
+
+        let reachable = reachable_set(repo.repo(), main_tip);
+        for tip in [base, main_tip, merged_tip] {
+            assert_eq!(
+                reachable.contains(&tip),
+                merged_by_merge_base(repo.repo(), tip, main_tip),
+                "set membership disagreed with merge_base for {tip}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_walk_from_every_commit_agrees_with_merge_base() {
+        // Exhaustive over a small history: whatever the old predicate said for
+        // each (tip, target) pair, the set has to say the same.
+        let repo = TempRepo::with_commits(6);
+        let mut walk = repo.repo().revwalk().unwrap();
+        walk.push_head().unwrap();
+        let commits: Vec<git2::Oid> = walk.filter_map(Result::ok).collect();
+
+        for &target in &commits {
+            let reachable = reachable_set(repo.repo(), target);
+            for &tip in &commits {
+                assert_eq!(
+                    reachable.contains(&tip),
+                    merged_by_merge_base(repo.repo(), tip, target),
+                    "disagreement for tip {tip} against target {target}"
+                );
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod load_more_tests {
@@ -1662,23 +1740,117 @@ mod is_merged_tests {
         let repo = fixture.repo();
 
         let a = commit(&fixture, "refs/heads/main", "A", None);
-        let _feature_tip = commit(&fixture, "refs/heads/feature", "B", Some(a));
-        let _diverged_tip = commit(&fixture, "refs/heads/diverged", "D", Some(a));
+        let feature_tip = commit(&fixture, "refs/heads/feature", "B", Some(a));
+        let diverged_tip = commit(&fixture, "refs/heads/diverged", "D", Some(a));
         repo.set_head("refs/heads/feature").unwrap();
 
+        let branches = vec![
+            ("main".to_string(), false, false, Some(a)),
+            ("feature".to_string(), false, true, Some(feature_tip)),
+            ("diverged".to_string(), false, false, Some(diverged_tip)),
+        ];
+        let flags = super::super::merged_flags(repo, &branches);
+        let flag = |wanted: &str| {
+            flags
+                .iter()
+                .find(|(name, _, _, _)| name == wanted)
+                .map(|(_, _, _, into_head)| *into_head)
+                .unwrap()
+        };
+
+        assert_eq!(
+            flag("main"),
+            Some(true),
+            "main is an ancestor of the checked-out feature"
+        );
+        assert_eq!(
+            flag("diverged"),
+            Some(false),
+            "a branch that diverged before HEAD is not merged into it"
+        );
+        assert_eq!(
+            flag("feature"),
+            Some(true),
+            "the checked-out branch is trivially merged into itself"
+        );
+    }
+
+    #[test]
+    fn the_gather_leaves_merged_flags_for_the_deferred_pass() {
+        // The flags are what made opening a repository slow, so the snapshot
+        // must not compute them. `None` is the signal that they are unknown
+        // rather than false, which is what stops `apply_refresh_data` blanking
+        // a previously computed value.
+        let fixture = TempRepo::init();
+        let a = commit(&fixture, "refs/heads/main", "A", None);
+        let _feature = commit(&fixture, "refs/heads/feature", "B", Some(a));
+
         let data = gather_refresh_data_internal(fixture.path(), false, 100, None, None).unwrap();
-        let main = data
-            .branches
-            .iter()
-            .find(|branch| branch.name == "main")
-            .unwrap();
-        let diverged = data
-            .branches
-            .iter()
-            .find(|branch| branch.name == "diverged")
-            .unwrap();
-        assert_eq!(main.is_merged_into_head, Some(true));
-        assert_eq!(diverged.is_merged_into_head, Some(false));
+        assert!(
+            data.branches
+                .iter()
+                .all(|branch| branch.is_merged_into_main.is_none()
+                    && branch.is_merged_into_head.is_none()),
+            "the snapshot must not walk history for these"
+        );
+    }
+
+    #[test]
+    fn a_repository_with_no_trunk_reports_unknown_rather_than_unmerged() {
+        // The trunk here is `develop`, which is not one of the names
+        // `merged_flags` looks for. There is no answer to "is this merged into
+        // main", and saying `false` would have the branch health panel offer
+        // every branch up for deletion as unmerged.
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
+        let a = commit(&fixture, "refs/heads/develop", "A", None);
+        let feature_tip = commit(&fixture, "refs/heads/feature", "B", Some(a));
+        repo.set_head("refs/heads/develop").unwrap();
+
+        let branches = vec![
+            ("develop".to_string(), false, true, Some(a)),
+            ("feature".to_string(), false, false, Some(feature_tip)),
+        ];
+        let flags = super::super::merged_flags(repo, &branches);
+
+        for (name, _, into_main, _) in &flags {
+            assert_eq!(
+                *into_main, None,
+                "{name} has no trunk to be measured against, so the flag is unknown"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreachable_branch_is_reported_as_unmerged_not_unknown() {
+        // The counterpart to the test above: here the walk *did* run and the
+        // tip genuinely is not in it. That is an answer, and it must not be
+        // flattened into the same `None` as "could not ask".
+        let fixture = TempRepo::init();
+        let repo = fixture.repo();
+        let a = commit(&fixture, "refs/heads/main", "A", None);
+        let orphan = commit(&fixture, "refs/heads/orphan", "unrelated", None);
+        repo.set_head("refs/heads/main").unwrap();
+
+        let branches = vec![
+            ("main".to_string(), false, true, Some(a)),
+            ("orphan".to_string(), false, false, Some(orphan)),
+        ];
+        let flags = super::super::merged_flags(repo, &branches);
+        let into_main = |wanted: &str| {
+            flags
+                .iter()
+                .find(|(name, _, _, _)| name == wanted)
+                .map(|(_, _, into_main, _)| *into_main)
+                .unwrap()
+        };
+
+        assert_eq!(into_main("main"), Some(true));
+        assert_eq!(
+            into_main("orphan"),
+            Some(false),
+            "a root commit with no path to main is answerably not merged"
+        );
     }
 }
 

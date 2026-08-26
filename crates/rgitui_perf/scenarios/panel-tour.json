@@ -1,0 +1,176 @@
+{
+  "name": "panel-tour",
+  "description": "Opens every heavyweight view once and takes a census after each. Broad rather than deep: its job is to attribute memory to features, so that a panel which costs 40 MB to open and never gives it back shows up as a named node rather than as unexplained growth in the total.",
+  "corpus": "small",
+  "start_from": "cold",
+  "steps": [
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 120000
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "baseline"
+      }
+    },
+    {
+      "mark": {
+        "mark": "open-blame"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Blame",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "open-blame"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "blame"
+      }
+    },
+    {
+      "mark": {
+        "mark": "open-file-history"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::FileHistory",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "open-file-history"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "file-history"
+      }
+    },
+    {
+      "mark": {
+        "mark": "open-reflog"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::Reflog",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "open-reflog"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "reflog"
+      }
+    },
+    {
+      "mark": {
+        "mark": "open-branch-health"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::ToggleBranchHealth",
+        "settle": "frame"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "open-branch-health"
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "branch-health"
+      }
+    },
+    {
+      "mark": {
+        "mark": "open-stashes"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::ToggleStashes",
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "open-stashes"
+      }
+    },
+    {
+      "mark": {
+        "mark": "open-command-palette"
+      }
+    },
+    {
+      "action": {
+        "action": "rgitui::CommandPalette",
+        "settle": "frame"
+      }
+    },
+    {
+      "action": {
+        "action": "menu::Cancel",
+        "settle": "frame"
+      }
+    },
+    {
+      "end_mark": {
+        "mark": "open-command-palette"
+      }
+    },
+    {
+      "wait_for": {
+        "condition": "operation_idle",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "snapshot": {
+        "snapshot": "end"
+      }
+    }
+  ]
+}

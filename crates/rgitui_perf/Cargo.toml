@@ -1,0 +1,50 @@
+[package]
+name = "rgitui_perf"
+version = "0.4.0"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "rgitui-perf"
+path = "src/main.rs"
+
+[features]
+# Off by default: with no features the public API is inlined no-ops, so call
+# sites in the app need no `#[cfg]` and the shipped binary carries none of this.
+default = []
+# Turns on gpui's own task-timing profiler, which is opt-in upstream: without
+# it gpui records nothing and allocates nothing for it. Reached only through
+# `rgitui/perf`, so a normal build leaves it off and pays nothing.
+enabled = ["gpui/profiler"]
+# Allocation-site heap profiling. Costs roughly 100x runtime, so a session that enables
+# it refuses to also collect frame timings.
+dhat-heap = ["enabled", "dep:dhat"]
+# Routes gpui's existing `#[profiling::function]` instrumentation on
+# draw/present/dispatch_event to Tracy. `profiling` is a plain dependency rather
+# than an optional one so Cargo unifies this feature into gpui's own copy.
+tracy = ["enabled", "profiling/profile-with-tracy"]
+
+[dependencies]
+gpui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+git2.workspace = true
+dhat = { version = "0.3.3", optional = true }
+profiling = "1.0.18"
+backtrace = "0.3.76"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_Debug", "Win32_System_WindowsProgramming", "Win32_System_Kernel", "Win32_Security"] }
+
+[target."cfg(not(windows))".dependencies]
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }

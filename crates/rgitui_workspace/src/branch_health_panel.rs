@@ -183,8 +183,8 @@ impl Render for BranchHealthPanel {
                                 let branch = &filtered[ix];
                                 let is_head = branch.is_head;
                                 let name: SharedString = branch.name.clone().into();
-                                let ahead = branch.ahead;
-                                let behind = branch.behind;
+                                let ahead = branch.ahead_count();
+                                let behind = branch.behind_count();
                                 let is_merged = branch.is_merged_into_main;
                                 let last_time = branch.last_commit_time;
                                 let upstream = branch.upstream.clone();
@@ -339,7 +339,7 @@ fn filter_branches<'a>(
                         false
                     }
                 }
-                BranchHealthFilter::Diverged => b.ahead > 0 && b.behind > 0,
+                BranchHealthFilter::Diverged => b.ahead_count() > 0 && b.behind_count() > 0,
             }
         })
         .collect()
@@ -368,7 +368,10 @@ fn compute_branch_stats(branches: &[BranchInfo]) -> (usize, usize, usize, usize)
             }
         })
         .count();
-    let diverged = local.iter().filter(|b| b.ahead > 0 && b.behind > 0).count();
+    let diverged = local
+        .iter()
+        .filter(|b| b.ahead_count() > 0 && b.behind_count() > 0)
+        .count();
     (total, unmerged, stale, diverged)
 }
 
@@ -483,8 +486,8 @@ mod tests {
             is_head,
             is_remote,
             upstream: None,
-            ahead,
-            behind,
+            ahead: Some(ahead),
+            behind: Some(behind),
             tip_oid: None,
             author_email: None,
             last_commit_time,

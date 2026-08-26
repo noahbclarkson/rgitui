@@ -96,10 +96,7 @@ fn cache_path(repo_path: &Path) -> Result<(PathBuf, String, u64)> {
     let (identity, fingerprint) = repo_identity_and_fingerprint(repo_path)?;
     let mut identity_hasher = DefaultHasher::new();
     identity.hash(&mut identity_hasher);
-    let root = dirs::cache_dir()
-        .context("No user cache directory")?
-        .join("rgitui")
-        .join("history");
+    let root = rgitui_settings::cache_dir().join("history");
     let path = root.join(format!(
         "v{}-{:016x}-{:016x}.json",
         SCHEMA_VERSION,

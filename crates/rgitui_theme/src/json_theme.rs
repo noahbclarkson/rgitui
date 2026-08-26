@@ -168,12 +168,21 @@ pub fn serialize_theme_to_json(theme: &Theme) -> Result<String> {
     serde_json::to_string_pretty(theme).map_err(|e| anyhow!("failed to serialize theme: {}", e))
 }
 
-/// Save a theme to the user's themes directory (~/.config/rgitui/themes/).
+/// Where user-defined themes are read from and written to.
+///
+/// Resolved through `rgitui_settings` rather than from `dirs` directly, so a
+/// run with its state redirected — a measured run, which must not read the
+/// user's themes or write into their config — reads and writes themes under
+/// that root like every other piece of persisted state.
+pub fn themes_dir() -> std::path::PathBuf {
+    rgitui_settings::config_dir().join("themes")
+}
+
+/// Save a theme to the user's themes directory (`<config>/rgitui/themes/`).
 /// Creates the directory if it does not exist.
 pub fn save_theme_to_file(theme: &Theme) -> Result<std::path::PathBuf> {
     let json = serialize_theme_to_json(theme)?;
-    let config_dir = dirs::config_dir().ok_or_else(|| anyhow!("no config directory found"))?;
-    let themes_dir = config_dir.join("rgitui").join("themes");
+    let themes_dir = themes_dir();
     std::fs::create_dir_all(&themes_dir)?;
     let path = themes_dir.join(theme_filename(&theme.name));
     std::fs::write(&path, json)?;

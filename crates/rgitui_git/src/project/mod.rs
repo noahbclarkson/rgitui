@@ -2,6 +2,8 @@ mod argsafe;
 mod auth;
 mod bisect;
 mod blame;
+#[cfg(feature = "perf")]
+mod census;
 mod diff;
 mod file_history;
 mod history_cache;
@@ -21,6 +23,7 @@ use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::types::*;
@@ -325,6 +328,25 @@ pub struct GitProject {
     /// setting is off — so the file list and diff of the worktree the user is
     /// actually looking at stay live.
     inspected_worktree: Option<PathBuf>,
+    /// How many background refreshes are in flight — history paging and the
+    /// ahead/behind walk, neither of which reports through `OperationUpdated`.
+    ///
+    /// Held behind an `Arc` so [`BackgroundWorkGuard`] can decrement it from
+    /// `Drop`: a task cancelled by a newer refresh has to lower the count too,
+    /// or anything waiting for the project to go quiet would wait forever.
+    background_work: Arc<AtomicUsize>,
+}
+
+/// Keeps [`GitProject::has_background_work`] true for as long as it is alive.
+///
+/// Move one into a spawned refresh so the count falls when the task finishes
+/// *or* when its future is dropped part-way through.
+pub(crate) struct BackgroundWorkGuard(Arc<AtomicUsize>);
+
+impl Drop for BackgroundWorkGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
 }
 
 impl EventEmitter<GitProjectEvent> for GitProject {}
@@ -359,6 +381,7 @@ impl GitProject {
             commit_query_generation: 0,
             load_more_in_flight: false,
             inspected_worktree: None,
+            background_work: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -396,6 +419,7 @@ impl GitProject {
             commit_query_generation: 0,
             load_more_in_flight: false,
             inspected_worktree: None,
+            background_work: Arc::new(AtomicUsize::new(0)),
         };
 
         if let Some(cached) = history_cache::load(&project.repo_path, project.commit_limit) {
@@ -533,6 +557,23 @@ impl GitProject {
 
     pub fn repo_path(&self) -> &Path {
         &self.repo_path
+    }
+
+    /// Raise [`GitProject::has_background_work`] until the returned guard drops.
+    pub(crate) fn track_background_work(&self) -> BackgroundWorkGuard {
+        self.background_work.fetch_add(1, Ordering::AcqRel);
+        BackgroundWorkGuard(self.background_work.clone())
+    }
+
+    /// Whether a background refresh is still running.
+    ///
+    /// Neither history paging nor the ahead/behind walk emits an
+    /// `OperationUpdated`, so a caller that only watches operations sees an idle
+    /// project while both are still loading. Anything that waits for the
+    /// repository to settle — a measurement, a snapshot — has to consult this
+    /// as well as the operation list.
+    pub fn has_background_work(&self) -> bool {
+        self.background_work.load(Ordering::Acquire) > 0
     }
 
     /// Resolve the current HEAD commit OID of the given worktree (or the main
@@ -726,11 +767,29 @@ impl GitProject {
     }
 
     /// Apply pre-gathered refresh data to self.
+    /// Whether any local branch is missing graph state it could have.
+    ///
+    /// True right after a reference point moves: the carry-forward drops the
+    /// answers that were derived from it, leaving a hole that only a fresh walk
+    /// can fill. False in the steady state, where nothing moved and everything
+    /// was carried — which is what keeps the watcher from scheduling two
+    /// history walks on every file save.
+    ///
+    /// "Could have" is doing real work. A repository whose trunk is named
+    /// something other than `main` or `master` has no trunk for
+    /// `is_merged_into_main` to be about, and that answer is `None` for as long
+    /// as the repository exists. Reading that as work outstanding would put a
+    /// full history walk and a `git for-each-ref` behind every file save, on
+    /// exactly the repositories that already got the worst of this code.
+    pub fn needs_graph_state_refresh(&self) -> bool {
+        graph_state_is_incomplete(&self.branches, self.head_detached)
+    }
+
     pub(crate) fn apply_refresh_data(&mut self, data: RefreshData) {
         self.head_branch = data.head_branch;
         self.head_detached = data.head_detached;
         self.repo_state = data.repo_state;
-        self.branches = data.branches;
+        self.branches = carry_forward_branch_graph_state(&self.branches, data.branches);
         self.tags = data.tags;
         self.remotes = data.remotes;
         self.stashes = data.stashes;
@@ -752,6 +811,16 @@ impl GitProject {
     /// generation advanced in the meantime (a newer full refresh won).
     pub(crate) fn refresh_generation(&self) -> u64 {
         self.refresh_generation
+    }
+
+    /// Whether a refresh has ever been applied to this project.
+    ///
+    /// The honest test for "there is something to show". Counting commits
+    /// instead treats an empty repository as permanently unloaded, which is a
+    /// real state — a freshly initialised one — and leaves whatever is waiting
+    /// on it waiting until its timeout.
+    pub fn has_loaded(&self) -> bool {
+        self.refresh_generation > 0
     }
 
     /// Whether there are more commits beyond the currently loaded set.
@@ -863,75 +932,88 @@ impl GitProject {
     /// task, then update the branches list and emit `AheadBehindRefreshed` so the
     /// UI refreshes. This is called after the initial refresh so that the
     /// expensive graph walks don't block the first render.
+    ///
+    /// The walk itself is delegated to `git for-each-ref`, which reads the
+    /// commit-graph file; libgit2's `graph_ahead_behind` does not, and one call
+    /// per branch made this the second-largest cost in a refresh.
     pub fn refresh_ahead_behind(&mut self, cx: &mut Context<Self>) {
+        self.refresh_ahead_behind_attempt(0, cx);
+    }
+
+    /// The walk itself, carrying how many times it has already been restarted.
+    ///
+    /// Two full-history walks take long enough that an ordinary file save can
+    /// land a refresh underneath them, and the result then belongs to a
+    /// superseded snapshot. Dropping it silently — which is what this did —
+    /// leaves the flags permanently unset on a repository that is being written
+    /// to, because every attempt loses the same race. Restarting is bounded so
+    /// that sustained churn degrades to "no answer yet" rather than to a task
+    /// that respawns itself forever.
+    fn refresh_ahead_behind_attempt(&mut self, attempt: u8, cx: &mut Context<Self>) {
+        const MAX_ATTEMPTS: u8 = 3;
+
         let repo_path = self.repo_path.clone();
         let query_generation = self.commit_query_generation;
         let refresh_generation = self.refresh_generation;
+        let branch_tips: Vec<BranchTip> = self
+            .branches
+            .iter()
+            .map(|branch| {
+                (
+                    branch.name.clone(),
+                    branch.is_remote,
+                    branch.is_head,
+                    branch.tip_oid,
+                )
+            })
+            .collect();
 
+        let work = self.track_background_work();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let computed = cx
+            let _work = work;
+            let (computed, merged) = cx
                 .background_executor()
                 .spawn(async move {
                     let repo = match git2::Repository::open(&repo_path) {
                         Ok(r) => r,
-                        Err(_) => return Vec::new(),
+                        Err(_) => return (Vec::new(), Vec::new()),
                     };
 
-                    let mut results = Vec::new();
-                    let branches = match repo.branches(None) {
-                        Ok(b) => b,
-                        Err(_) => return Vec::new(),
-                    };
-
-                    for branch_result in branches {
-                        let (branch, branch_type) = match branch_result {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                        if branch_type != git2::BranchType::Local {
-                            continue;
-                        }
-                        let branch_name = match branch.name() {
-                            Ok(Some(n)) => n.to_string(),
-                            _ => continue,
-                        };
-
-                        let upstream = match branch.upstream() {
-                            Ok(u) => u,
-                            Err(_) => continue,
-                        };
-                        let upstream_target = match upstream.get().target() {
-                            Some(t) => t,
-                            None => continue,
-                        };
-                        let local_target = match branch.get().target() {
-                            Some(t) => t,
-                            None => continue,
-                        };
-
-                        if let Ok((ahead, behind)) =
-                            repo.graph_ahead_behind(local_target, upstream_target)
-                        {
-                            results.push((
-                                branch_name,
-                                local_target,
-                                upstream_target,
-                                ahead,
-                                behind,
-                            ));
-                        }
-                    }
-                    results
+                    let ahead_behind = ahead_behind_via_for_each_ref(&repo_path, &repo);
+                    let merged = merged_flags(&repo, &branch_tips);
+                    (ahead_behind, merged)
                 })
                 .await;
 
             cx.update(|cx| {
                 this.update(cx, |this, cx| {
-                    if computed.is_empty()
-                        || this.commit_query_generation != query_generation
+                    // Nothing to apply: the repository would not open, or it
+                    // has no branches. Retrying would not change that.
+                    if computed.is_empty() && merged.is_empty() {
+                        return;
+                    }
+
+                    if this.commit_query_generation != query_generation
                         || this.refresh_generation != refresh_generation
                     {
+                        let next = attempt + 1;
+                        if next < MAX_ATTEMPTS && this.needs_graph_state_refresh() {
+                            log::debug!(
+                                "ahead/behind superseded by a newer refresh; retry {next} of {MAX_ATTEMPTS}"
+                            );
+                            this.refresh_ahead_behind_attempt(next, cx);
+                        }
                         return;
+                    }
+                    for (name, tip, into_main, into_head) in merged {
+                        if let Some(branch) = this
+                            .branches
+                            .iter_mut()
+                            .find(|b| b.name == name && b.tip_oid == tip)
+                        {
+                            branch.is_merged_into_main = into_main;
+                            branch.is_merged_into_head = into_head;
+                        }
                     }
                     // Update ahead/behind values in place
                     for (name, local_oid, _upstream_oid, ahead, behind) in computed {
@@ -940,8 +1022,8 @@ impl GitProject {
                             .iter_mut()
                             .find(|b| b.name == name && b.tip_oid == Some(local_oid))
                         {
-                            branch.ahead = ahead;
-                            branch.behind = behind;
+                            branch.ahead = Some(ahead);
+                            branch.behind = Some(behind);
                         }
                     }
                     cx.emit(GitProjectEvent::AheadBehindRefreshed);
@@ -951,6 +1033,635 @@ impl GitProject {
             .ok();
         })
         .detach();
+    }
+}
+
+/// A branch as the merged-flag walk needs it: name, remote, checked-out, tip.
+type BranchTip = (String, bool, bool, Option<git2::Oid>);
+
+/// One branch's answer: name, tip, merged-into-main, merged-into-HEAD. Each
+/// flag is `None` when the question could not be asked at all.
+type MergedFlags = (String, Option<git2::Oid>, Option<bool>, Option<bool>);
+
+/// Whether each local branch is merged into main, and into HEAD.
+///
+/// Two history walks for the whole repository, rather than one per branch: the
+/// question "is this tip an ancestor of that one" is a set-membership test once
+/// you have walked the target's history, and there are only two targets.
+///
+/// Returns `(name, tip, merged_into_main, merged_into_head)` for local branches
+/// only; a remote branch has neither flag. Each flag is `None` when the question
+/// could not be asked at all — no trunk to compare against, or an unborn HEAD —
+/// so that "unknown" never reaches the UI dressed as "not merged".
+fn merged_flags(repo: &Repository, branches: &[BranchTip]) -> Vec<MergedFlags> {
+    // Priority: local main > local master > remote origin/main > remote origin/master
+    let tip_named = |wanted: &str, remote: bool| {
+        branches
+            .iter()
+            .find(|(name, is_remote, _, _)| *is_remote == remote && name == wanted)
+            .and_then(|(_, _, _, tip)| *tip)
+    };
+    let main_tip = tip_named("main", false)
+        .or_else(|| tip_named("master", false))
+        .or_else(|| tip_named("origin/main", true))
+        .or_else(|| tip_named("origin/master", true));
+    let head_tip = repo.head().ok().and_then(|reference| reference.target());
+
+    let reachable_from_main = main_tip.map(|tip| refresh::reachable_set(repo, tip));
+
+    // When HEAD is the same commit as main the second walk would rebuild an
+    // identical set. Borrowing the first one instead of cloning it matters at
+    // scale: on a repository the size of linux.git each set is tens of
+    // megabytes, and the clone also pays for a full rehash.
+    let head_is_main = matches!((head_tip, main_tip), (Some(head), Some(main)) if head == main);
+    let walked_from_head = match head_tip {
+        Some(head) if !head_is_main => Some(refresh::reachable_set(repo, head)),
+        _ => None,
+    };
+    let reachable_from_head = if head_is_main {
+        reachable_from_main.as_ref()
+    } else {
+        walked_from_head.as_ref()
+    };
+
+    // A tip that is not in the set is genuinely not merged; a set that does not
+    // exist means the question could not be asked. The two must not collapse
+    // together — a repository whose trunk is `develop` has no `main` to walk,
+    // and reporting every branch as unmerged there invites the user to delete
+    // branches that are fully merged.
+    let membership = |set: Option<&std::collections::HashSet<git2::Oid>>,
+                      tip: Option<git2::Oid>| {
+        set.zip(tip)
+            .map(|(reachable, tip)| reachable.contains(&tip))
+    };
+
+    branches
+        .iter()
+        .filter(|(_, is_remote, _, _)| !is_remote)
+        .map(|(name, _, _, tip)| {
+            // The checked-out branch needs no special case: `reachable_set`
+            // includes the commit it starts from, so a branch that *is* main
+            // finds its own tip in the set, and one that was merged into main
+            // finds it there too — which the previous tip-equality test got
+            // wrong for exactly that second case.
+            let into_main = membership(reachable_from_main.as_ref(), *tip);
+            let into_head = membership(reachable_from_head, *tip);
+            (name.clone(), *tip, into_main, into_head)
+        })
+        .collect()
+}
+
+/// Keeps graph-derived branch state that the incoming snapshot did not compute.
+///
+/// A refresh replaces the branch list wholesale, but the fields that need a
+/// history walk — merged flags, ahead/behind — are computed afterwards, off the
+/// path a user is waiting on. Without this, every refresh would blank them and
+/// the sidebar would flicker between "merged" and "unknown" on every watcher
+/// tick until the follow-up landed.
+///
+/// Each answer is carried only when *both* commits it was derived from are
+/// unchanged. A branch's own tip is not enough: "merged into HEAD" is a fact
+/// about the branch and HEAD together, so checking out a different branch
+/// invalidates it even though nothing about the branch moved. The same holds
+/// for ahead/behind against a moved upstream, which is what a push does.
+fn carry_forward_branch_graph_state(
+    previous: &[BranchInfo],
+    mut incoming: Vec<BranchInfo>,
+) -> Vec<BranchInfo> {
+    if previous.is_empty() {
+        return incoming;
+    }
+
+    // An unresolvable reference point counts as changed, so the answer is
+    // dropped rather than carried on an assumption.
+    let trunk_unchanged =
+        trunk_tip(previous).is_some() && trunk_tip(previous) == trunk_tip(&incoming);
+    let head_unchanged = head_tip(previous).is_some() && head_tip(previous) == head_tip(&incoming);
+
+    let known: std::collections::HashMap<(&str, Option<git2::Oid>), &BranchInfo> = previous
+        .iter()
+        .map(|branch| ((branch.name.as_str(), branch.tip_oid), branch))
+        .collect();
+
+    for index in 0..incoming.len() {
+        let Some(before) = known
+            .get(&(incoming[index].name.as_str(), incoming[index].tip_oid))
+            .copied()
+        else {
+            continue;
+        };
+
+        if trunk_unchanged && incoming[index].is_merged_into_main.is_none() {
+            incoming[index].is_merged_into_main = before.is_merged_into_main;
+        }
+        if head_unchanged && incoming[index].is_merged_into_head.is_none() {
+            incoming[index].is_merged_into_head = before.is_merged_into_head;
+        }
+
+        if !incoming[index].has_ahead_behind() {
+            let upstream_moved = match incoming[index].upstream.as_deref() {
+                Some(upstream) => {
+                    upstream_tip(previous, upstream) != upstream_tip(&incoming, upstream)
+                }
+                // No upstream to be ahead or behind of.
+                None => true,
+            };
+            if !upstream_moved {
+                incoming[index].ahead = before.ahead;
+                incoming[index].behind = before.behind;
+            }
+        }
+    }
+
+    incoming
+}
+
+/// Tip of the branch the merged-into-main flag is measured against.
+///
+/// Same priority as [`merged_flags`] uses, so the carry-forward invalidates on
+/// exactly the commit the flag was derived from.
+fn trunk_tip(branches: &[BranchInfo]) -> Option<git2::Oid> {
+    let named = |wanted: &str, remote: bool| {
+        branches
+            .iter()
+            .find(|branch| branch.is_remote == remote && branch.name == wanted)
+            .and_then(|branch| branch.tip_oid)
+    };
+    named("main", false)
+        .or_else(|| named("master", false))
+        .or_else(|| named("origin/main", true))
+        .or_else(|| named("origin/master", true))
+}
+
+/// Tip of the checked-out branch, or `None` when HEAD is detached and no branch
+/// in the list claims it.
+fn head_tip(branches: &[BranchInfo]) -> Option<git2::Oid> {
+    branches
+        .iter()
+        .find(|branch| branch.is_head)
+        .and_then(|branch| branch.tip_oid)
+}
+
+/// Whether any local branch is missing graph state that a walk could supply.
+///
+/// The distinction that matters is between an answer nobody has computed yet
+/// and one that does not exist. A repository whose trunk is neither `main` nor
+/// `master` has nothing for `is_merged_into_main` to be about, and reading that
+/// permanent `None` as outstanding work would put a full history walk and a
+/// `git for-each-ref` behind every file save.
+///
+/// `head_detached` is passed separately because a detached HEAD still resolves
+/// to a commit — the walk answers merged-into-HEAD from the repository, not
+/// from this list — while no branch here claims to be it.
+fn graph_state_is_incomplete(branches: &[BranchInfo], head_detached: bool) -> bool {
+    let trunk = trunk_tip(branches);
+    let head = head_tip(branches).is_some() || head_detached;
+    branches.iter().any(|branch| {
+        if branch.is_remote {
+            return false;
+        }
+        let merged_into_main_pending =
+            trunk.is_some() && branch.is_merged_into_main.is_none() && branch.tip_oid.is_some();
+        let merged_into_head_pending =
+            head && branch.is_merged_into_head.is_none() && branch.tip_oid.is_some();
+        let ahead_behind_pending = branch
+            .upstream
+            .as_deref()
+            .is_some_and(|upstream| upstream_tip(branches, upstream).is_some())
+            && !branch.has_ahead_behind();
+        merged_into_main_pending || merged_into_head_pending || ahead_behind_pending
+    })
+}
+
+/// Tip of the remote-tracking branch `upstream`, by its full name.
+fn upstream_tip(branches: &[BranchInfo], upstream: &str) -> Option<git2::Oid> {
+    branches
+        .iter()
+        .find(|branch| branch.is_remote && branch.name == upstream)
+        .and_then(|branch| branch.tip_oid)
+}
+
+/// Ahead/behind counts for every local branch that has an upstream.
+///
+/// One `git for-each-ref` rather than one `graph_ahead_behind` per branch.
+/// libgit2's version walks both sides without consulting
+/// `.git/objects/info/commit-graph`, so it costs a full object-parsing traversal
+/// per branch; git's own does consult it. The OIDs still come from libgit2,
+/// because the caller matches on them and parsing them back out of the
+/// subprocess would only add a way to disagree.
+fn ahead_behind_via_for_each_ref(
+    repo_path: &Path,
+    repo: &git2::Repository,
+) -> Vec<(String, git2::Oid, git2::Oid, usize, usize)> {
+    let output = git_command()
+        .current_dir(repo_path)
+        .args([
+            "for-each-ref",
+            // Not `%(refname:short)`: that shortens to a *non-ambiguous*
+            // form, so a branch `foo` sharing its name with a tag comes back
+            // as `heads/foo`. Nothing then finds it, and the branch that has
+            // two things named after it is exactly the one whose counts a
+            // user wants. The full name is unambiguous by construction.
+            "--format=%(refname)%09%(upstream:track)",
+            "refs/heads",
+        ])
+        .output();
+
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = Vec::new();
+
+    for line in stdout.lines() {
+        let Some((refname, track)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(name) = local_branch_name(refname) else {
+            continue;
+        };
+        let Some((ahead, behind)) = parse_upstream_track(track) else {
+            continue;
+        };
+        // A branch with no upstream, or a gone one, is not reported at all —
+        // matching what the per-branch version did by skipping it.
+        let Ok(branch) = repo.find_branch(name, git2::BranchType::Local) else {
+            continue;
+        };
+        let (Some(local), Ok(upstream)) = (branch.get().target(), branch.upstream()) else {
+            continue;
+        };
+        let Some(upstream_target) = upstream.get().target() else {
+            continue;
+        };
+        results.push((name.to_string(), local, upstream_target, ahead, behind));
+    }
+
+    results
+}
+
+/// The branch name in a full local refname, spelled as the rest of the
+/// snapshot spells it. Anything outside `refs/heads/` is not our business.
+fn local_branch_name(refname: &str) -> Option<&str> {
+    refname
+        .strip_prefix("refs/heads/")
+        .filter(|name| !name.is_empty())
+}
+
+/// Reads git's `%(upstream:track)` field into ahead/behind counts.
+///
+/// The field is prose, not data: `[ahead 2, behind 1]`, `[ahead 3]`,
+/// `[behind 4]`, `[gone]`, or empty when the branch is level with its upstream.
+/// Returning `None` covers both "no upstream" and "upstream gone", which are the
+/// cases that have no counts to report.
+fn parse_upstream_track(track: &str) -> Option<(usize, usize)> {
+    let track = track.trim();
+    if track.is_empty() {
+        // An upstream that exists and matches exactly prints nothing. Only a
+        // branch that has one is level with it, so this is 0/0 rather than
+        // "not applicable" — but a branch with no upstream also prints nothing,
+        // and the caller filters those out by looking the upstream up.
+        return Some((0, 0));
+    }
+    let inner = track.strip_prefix('[')?.strip_suffix(']')?;
+    if inner == "gone" {
+        return None;
+    }
+
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in inner.split(',') {
+        let part = part.trim();
+        if let Some(count) = part.strip_prefix("ahead ") {
+            ahead = count.trim().parse().ok()?;
+        } else if let Some(count) = part.strip_prefix("behind ") {
+            behind = count.trim().parse().ok()?;
+        }
+    }
+    Some((ahead, behind))
+}
+
+#[cfg(test)]
+mod carry_forward_tests {
+    use super::{carry_forward_branch_graph_state, graph_state_is_incomplete, BranchInfo};
+
+    /// [`graph_state_is_incomplete`] for a repository whose HEAD is on a branch,
+    /// which is every case but the one test that says otherwise.
+    fn needs_refresh(branches: &[BranchInfo]) -> bool {
+        graph_state_is_incomplete(branches, false)
+    }
+
+    fn oid(byte: u8) -> git2::Oid {
+        git2::Oid::from_bytes(&[byte; 20]).unwrap()
+    }
+
+    fn branch(name: &str, tip: u8) -> BranchInfo {
+        BranchInfo {
+            name: name.to_string(),
+            is_head: false,
+            is_remote: false,
+            upstream: None,
+            ahead: None,
+            behind: None,
+            tip_oid: Some(oid(tip)),
+            author_email: None,
+            last_commit_time: None,
+            is_merged_into_main: None,
+            is_merged_into_head: None,
+        }
+    }
+
+    /// `main`, checked out, so both reference points resolve.
+    fn trunk(tip: u8) -> BranchInfo {
+        let mut main = branch("main", tip);
+        main.is_head = true;
+        main
+    }
+
+    fn remote(name: &str, tip: u8) -> BranchInfo {
+        let mut branch = branch(name, tip);
+        branch.is_remote = true;
+        branch
+    }
+
+    /// A `feature` branch tracking `origin/feature`, with every answer known.
+    fn tracked_feature(tip: u8) -> BranchInfo {
+        let mut feature = branch("feature", tip);
+        feature.upstream = Some("origin/feature".to_string());
+        feature.is_merged_into_main = Some(true);
+        feature.is_merged_into_head = Some(true);
+        feature.ahead = Some(3);
+        feature.behind = Some(2);
+        feature
+    }
+
+    /// The same branch after the carry-forward, by name.
+    fn feature_of(branches: &[BranchInfo]) -> &BranchInfo {
+        branches
+            .iter()
+            .find(|branch| branch.name == "feature")
+            .expect("the feature branch survives the carry-forward")
+    }
+
+    #[test]
+    fn a_repository_with_no_trunk_does_not_ask_for_the_walk_forever() {
+        // `develop`, checked out, with no `main` or `master` anywhere. The
+        // merged-into-main answer is unavailable, not outstanding, and reading
+        // it as outstanding would put a full history walk behind every file
+        // save for the life of the repository.
+        let mut develop = branch("develop", 1);
+        develop.is_head = true;
+        develop.is_merged_into_head = Some(true);
+        assert!(!needs_refresh(&[develop]));
+    }
+
+    #[test]
+    fn a_branch_tracking_an_upstream_nothing_lists_does_not_ask_either() {
+        // The upstream ref is gone — deleted on the remote, or never fetched.
+        // Nothing a walk can do will produce counts against it.
+        let mut orphan = branch("feature", 2);
+        orphan.upstream = Some("origin/feature".to_string());
+        orphan.is_merged_into_head = Some(false);
+        assert!(!needs_refresh(&[orphan]));
+    }
+
+    #[test]
+    fn a_detached_head_still_asks_for_the_walk() {
+        // `git checkout <commit>` in a terminal leaves no branch marked
+        // `is_head`, but HEAD still resolves and the walk can still answer.
+        // Treating the missing branch as a missing reference point would strand
+        // every merged-into-current badge as unknown.
+        let feature = branch("feature", 2);
+        assert!(!needs_refresh(std::slice::from_ref(&feature)));
+        assert!(graph_state_is_incomplete(&[feature], true));
+    }
+
+    #[test]
+    fn a_missing_answer_that_a_walk_could_supply_still_asks() {
+        // `main` is present, so merged-into-main is a question with an answer,
+        // and nothing has supplied it.
+        let feature = branch("feature", 2);
+        assert!(needs_refresh(&[trunk(1), feature]));
+    }
+
+    #[test]
+    fn a_fully_answered_repository_asks_for_nothing() {
+        let branches = vec![
+            {
+                let mut main = trunk(1);
+                main.is_merged_into_main = Some(true);
+                main.is_merged_into_head = Some(true);
+                main
+            },
+            tracked_feature(2),
+            remote("origin/feature", 2),
+        ];
+        assert!(!needs_refresh(&branches));
+    }
+
+    /// An incoming `feature` that tracks its upstream and knows nothing else.
+    fn incoming_feature(tip: u8) -> BranchInfo {
+        let mut feature = branch("feature", tip);
+        feature.upstream = Some("origin/feature".to_string());
+        feature
+    }
+
+    #[test]
+    fn answers_the_snapshot_did_not_compute_keep_their_previous_values() {
+        let before = vec![trunk(1), remote("origin/feature", 5), tracked_feature(2)];
+        let incoming = vec![trunk(1), remote("origin/feature", 5), incoming_feature(2)];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
+
+        assert_eq!(feature.is_merged_into_main, Some(true));
+        assert_eq!(feature.is_merged_into_head, Some(true));
+        assert_eq!((feature.ahead, feature.behind), (Some(3), Some(2)));
+    }
+
+    #[test]
+    fn a_moved_tip_discards_what_was_known_about_the_old_one() {
+        // The answers described the previous commit. Showing them against a new
+        // one would be worse than showing nothing.
+        let before = vec![trunk(1), remote("origin/feature", 5), tracked_feature(2)];
+        let incoming = vec![trunk(1), remote("origin/feature", 5), incoming_feature(9)];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
+
+        assert_eq!(feature.is_merged_into_main, None);
+        assert_eq!(feature.ahead, None);
+    }
+
+    #[test]
+    fn checking_out_another_branch_invalidates_merged_into_head_but_not_into_main() {
+        // The branch did not move; the thing it was compared against did. This
+        // is the case a tip-only key cannot see, and it is the common one — it
+        // is what `git checkout` in a terminal looks like from here.
+        let before = vec![trunk(1), tracked_feature(2)];
+
+        let mut moved_head = incoming_feature(2);
+        moved_head.is_head = true;
+        let incoming = vec![branch("main", 1), moved_head];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
+
+        assert_eq!(
+            feature.is_merged_into_head, None,
+            "HEAD moved, so the answer measured against the old HEAD is gone"
+        );
+        assert_eq!(
+            feature.is_merged_into_main,
+            Some(true),
+            "main did not move, so that answer still holds"
+        );
+    }
+
+    #[test]
+    fn a_moved_trunk_invalidates_merged_into_main() {
+        let before = vec![trunk(1), tracked_feature(2)];
+        let incoming = vec![trunk(7), incoming_feature(2)];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        assert_eq!(feature_of(&after).is_merged_into_main, None);
+    }
+
+    #[test]
+    fn pushing_a_branch_does_not_leave_it_reporting_the_old_ahead_count() {
+        // A push moves the upstream and leaves the local tip alone, so a key
+        // built only from the local tip matches and carries "ahead 3" onto a
+        // branch that is now level.
+        let before = vec![trunk(1), remote("origin/feature", 5), tracked_feature(2)];
+        let incoming = vec![trunk(1), remote("origin/feature", 2), incoming_feature(2)];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
+
+        assert_eq!((feature.ahead, feature.behind), (None, None));
+        assert_eq!(
+            feature.is_merged_into_main,
+            Some(true),
+            "the upstream is irrelevant to the merged flags"
+        );
+    }
+
+    #[test]
+    fn a_branch_level_with_its_upstream_is_not_mistaken_for_an_uncomputed_one() {
+        // `Some(0)` is an answer. The sentinel this replaced could not tell it
+        // from "no walk has run", and overwrote it with whatever came before.
+        let before = vec![trunk(1), remote("origin/feature", 2), tracked_feature(2)];
+        let mut level = incoming_feature(2);
+        level.ahead = Some(0);
+        level.behind = Some(0);
+        let incoming = vec![trunk(1), remote("origin/feature", 2), level];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        let feature = feature_of(&after);
+
+        assert_eq!((feature.ahead, feature.behind), (Some(0), Some(0)));
+    }
+
+    #[test]
+    fn a_freshly_computed_flag_wins_over_the_old_one() {
+        let mut stale = tracked_feature(2);
+        stale.is_merged_into_main = Some(false);
+        let before = vec![trunk(1), stale];
+
+        let mut fresh = incoming_feature(2);
+        fresh.is_merged_into_main = Some(true);
+        let incoming = vec![trunk(1), fresh];
+
+        let after = carry_forward_branch_graph_state(&before, incoming);
+        assert_eq!(feature_of(&after).is_merged_into_main, Some(true));
+    }
+
+    #[test]
+    fn a_branch_that_is_new_is_left_alone() {
+        let before = vec![trunk(1), branch("old", 3)];
+        let after = carry_forward_branch_graph_state(&before, vec![trunk(1), branch("new", 9)]);
+
+        assert_eq!(after.len(), 2);
+        let fresh = after
+            .iter()
+            .find(|branch| branch.name == "new")
+            .expect("the new branch is present");
+        assert_eq!(fresh.is_merged_into_main, None);
+    }
+
+    #[test]
+    fn nothing_is_carried_when_the_reference_points_cannot_be_resolved() {
+        // No trunk in the list and no branch claiming HEAD: both answers were
+        // measured against something this snapshot cannot identify, so neither
+        // is safe to keep.
+        let before = vec![tracked_feature(2)];
+        let after = carry_forward_branch_graph_state(&before, vec![incoming_feature(2)]);
+
+        assert_eq!(after[0].is_merged_into_main, None);
+        assert_eq!(after[0].is_merged_into_head, None);
+    }
+}
+
+#[cfg(test)]
+mod ahead_behind_tests {
+    use super::{local_branch_name, parse_upstream_track};
+
+    #[test]
+    fn a_full_refname_gives_the_name_the_snapshot_uses() {
+        assert_eq!(local_branch_name("refs/heads/main"), Some("main"));
+        assert_eq!(
+            local_branch_name("refs/heads/feature/login"),
+            Some("feature/login")
+        );
+    }
+
+    #[test]
+    fn a_branch_sharing_a_tag_s_name_still_resolves() {
+        // This is the case `%(refname:short)` used to lose: with both
+        // `refs/heads/release` and `refs/tags/release` present, git shortens
+        // the branch to `heads/release`, which matches no branch at all and
+        // left the counts unknown for the one branch anybody would be watching.
+        assert_eq!(local_branch_name("refs/heads/release"), Some("release"));
+    }
+
+    #[test]
+    fn anything_that_is_not_a_local_branch_is_declined() {
+        assert_eq!(local_branch_name("refs/tags/v1.0.0"), None);
+        assert_eq!(local_branch_name("refs/remotes/origin/main"), None);
+        assert_eq!(local_branch_name("refs/heads/"), None);
+        assert_eq!(local_branch_name("main"), None);
+    }
+
+    #[test]
+    fn a_level_branch_prints_nothing_and_is_zero_zero() {
+        assert_eq!(parse_upstream_track(""), Some((0, 0)));
+        assert_eq!(parse_upstream_track("   "), Some((0, 0)));
+    }
+
+    #[test]
+    fn both_directions_are_read() {
+        assert_eq!(parse_upstream_track("[ahead 2, behind 1]"), Some((2, 1)));
+    }
+
+    #[test]
+    fn one_direction_leaves_the_other_at_zero() {
+        assert_eq!(parse_upstream_track("[ahead 3]"), Some((3, 0)));
+        assert_eq!(parse_upstream_track("[behind 4]"), Some((0, 4)));
+    }
+
+    #[test]
+    fn a_gone_upstream_has_no_counts() {
+        assert_eq!(parse_upstream_track("[gone]"), None);
+    }
+
+    #[test]
+    fn unparseable_input_is_rejected_rather_than_guessed() {
+        assert_eq!(parse_upstream_track("[ahead many]"), None);
+        assert_eq!(parse_upstream_track("ahead 2"), None);
     }
 }
 
@@ -971,6 +1682,38 @@ mod tests {
             .lines()
             .zip(source.lines().skip(1))
             .any(|(left, right)| is_legacy(left) && is_legacy(right))
+    }
+
+    #[test]
+    fn background_work_is_reported_until_every_guard_drops() {
+        let project = GitProject::empty_at(PathBuf::from("."));
+        assert!(!project.has_background_work());
+
+        let first = project.track_background_work();
+        let second = project.track_background_work();
+        assert!(project.has_background_work());
+
+        drop(first);
+        assert!(
+            project.has_background_work(),
+            "one refresh finishing must not make a project with another in flight look idle"
+        );
+
+        drop(second);
+        assert!(!project.has_background_work());
+    }
+
+    #[test]
+    fn a_dropped_refresh_still_lowers_the_background_count() {
+        // A task cancelled by a newer refresh never reaches its own completion
+        // path, so the count has to come down from `Drop` or anything waiting
+        // for the project to settle waits forever.
+        let project = GitProject::empty_at(PathBuf::from("."));
+        {
+            let _abandoned = project.track_background_work();
+            assert!(project.has_background_work());
+        }
+        assert!(!project.has_background_work());
     }
 
     #[test]

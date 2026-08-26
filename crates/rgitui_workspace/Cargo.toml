@@ -36,9 +36,22 @@ smol.workspace = true
 semver.workspace = true
 urlencoding.workspace = true
 async-channel.workspace = true
+rgitui_perf = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `test-support` unlocks gpui's headless test harness (TestApp, TestAppWindow,
 # keystroke/mouse simulation). Test builds only; normal builds are unaffected.
 gpui = { workspace = true, features = ["test-support"] }
 rgitui_test_support.workspace = true
+
+[features]
+default = []
+# See `rgitui_git`'s `perf` feature. The workspace owns the census roots, so it
+# turns the feature on for every crate holding memory the census reports.
+perf = [
+    "dep:rgitui_perf",
+    "rgitui_git/perf",
+    "rgitui_graph/perf",
+    "rgitui_diff/perf",
+    "rgitui_ui/perf",
+]

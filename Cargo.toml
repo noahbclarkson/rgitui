@@ -10,6 +10,7 @@ members = [
     "crates/rgitui_diff",
     "crates/rgitui_ai",
     "crates/rgitui_settings",
+    "crates/rgitui_perf",
     "crates/rgitui_test_support",
 ]
 default-members = ["crates/rgitui"]
@@ -26,10 +27,10 @@ todo = "deny"
 
 [workspace.dependencies]
 # GPUI framework (from Zed repository)
-gpui = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f", features = ["font-kit", "x11", "wayland"] }
-http_client = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
-reqwest_client = { git = "https://github.com/zed-industries/zed.git", rev = "f3fb4e04aa85dbbde6e83d28f231fc452cd8863f" }
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e", features = ["font-kit", "x11", "wayland"] }
+http_client = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
+reqwest_client = { git = "https://github.com/zed-industries/zed.git", rev = "24e25552b1259d56a6fdd7956a419ed9e8a1a25e" }
 
 # Internal crates
 rgitui_theme = { path = "crates/rgitui_theme" }
@@ -40,6 +41,7 @@ rgitui_graph = { path = "crates/rgitui_graph" }
 rgitui_diff = { path = "crates/rgitui_diff" }
 rgitui_ai = { path = "crates/rgitui_ai" }
 rgitui_settings = { path = "crates/rgitui_settings" }
+rgitui_perf = { path = "crates/rgitui_perf" }
 rgitui_test_support = { path = "crates/rgitui_test_support" }
 
 # Core
@@ -79,7 +81,7 @@ tempfile = "3.27"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 md5 = "0.7"
-rust-embed = "8"
+rust-embed = { version = "8", features = ["include-exclude"] }
 semver = "1"
 urlencoding = "2"
 
@@ -90,13 +92,16 @@ calloop = { git = "https://github.com/zed-industries/calloop" }
 [profile.dev]
 incremental = true
 
-[profile.dev.package]
-gpui_macros = { opt-level = 3 }
-derive_refineable = { opt-level = 3 }
-taffy = { opt-level = 3 }
-resvg = { opt-level = 3 }
-
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# Profile for `rgitui_perf` runs. Debug builds optimise so differently that
+# their timings say nothing about the shipped app, so the harness measures a
+# release build and only adds back the line tables that profilers, dhat
+# backtraces and Tracy need to name a frame.
+[profile.perf]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"

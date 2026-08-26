@@ -11,6 +11,23 @@ workspace = true
 name = "rgitui"
 path = "src/main.rs"
 
+[features]
+default = []
+# Compiles in the performance and memory harness, driven at runtime by the
+# `RGITUI_PERF` environment variable. Off by default: the shipped binary carries
+# none of this, and a normal build does not even resolve the dependency.
+#
+# Measure a release-like build — `cargo run --profile perf --features perf` —
+# because a debug build's timings describe the debug build and nothing else.
+perf = ["dep:rgitui_perf", "rgitui_perf/enabled", "rgitui_workspace/perf"]
+# Replaces the global allocator with dhat's to capture allocation sites. Costs
+# roughly 100x runtime — a 6-second scenario takes over nine minutes — so
+# timings from such a run describe dhat; use it for heap data only. The report
+# says so itself rather than relying on you to remember.
+perf-dhat = ["perf", "rgitui_perf/dhat-heap"]
+# Routes gpui's own draw/present/dispatch instrumentation to Tracy.
+perf-tracy = ["perf", "rgitui_perf/tracy"]
+
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
@@ -20,6 +37,7 @@ rgitui_workspace.workspace = true
 rgitui_git.workspace = true
 rgitui_settings.workspace = true
 rgitui_ai.workspace = true
+rgitui_perf = { workspace = true, optional = true }
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true

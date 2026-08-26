@@ -365,7 +365,7 @@ impl Render for FileHistoryView {
             },
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
-        .flex_grow()
+        .flex_grow(1.0)
         .track_scroll(&self.scroll_handle);
 
         div()
@@ -419,6 +419,20 @@ impl Render for FileHistoryView {
             )
             .child(list)
             .into_any_element()
+    }
+}
+
+/// The file history view's share of the heap census.
+///
+/// A second full commit list, independent of the graph's: `set_history` takes
+/// ownership of what the git layer produced rather than sharing the project's
+/// snapshot, so on a long-lived file this is thousands of `CommitInfo`s that
+/// no other node accounts for.
+#[cfg(feature = "perf")]
+impl FileHistoryView {
+    /// Records the commit list this view retains.
+    pub(crate) fn census(&self, census: &mut rgitui_perf::Census) -> usize {
+        census.enter("commits", &self.commits)
     }
 }
 

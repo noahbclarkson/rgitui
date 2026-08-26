@@ -19,3 +19,9 @@ anyhow.workspace = true
 log.workspace = true
 chrono.workspace = true
 smol.workspace = true
+rgitui_perf = { workspace = true, optional = true }
+
+[features]
+default = []
+# See `rgitui_git`'s `perf` feature.
+perf = ["dep:rgitui_perf", "rgitui_git/perf"]

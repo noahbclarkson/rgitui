@@ -967,17 +967,32 @@ impl Sidebar {
             .extend(self.filtered_remote_indices());
     }
 
-    pub fn update_branches(&mut self, mut branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
-        branches.sort_by(|a, b| {
+    pub fn update_branches(&mut self, branches: Vec<BranchInfo>, cx: &mut Context<Self>) {
+        // Lowercase once per branch, not twice per comparison. A comparison
+        // sort visits O(n log n) pairs, so the old form allocated two strings
+        // for every one of them — on the order of a hundred thousand
+        // allocations for a repository with a few thousand refs, on the main
+        // thread, every time a refresh landed.
+        let mut keyed: Vec<(BranchInfo, String)> = branches
+            .into_iter()
+            .map(|branch| {
+                let key = branch.name.to_lowercase();
+                (branch, key)
+            })
+            .collect();
+        keyed.sort_by(|(a, a_key), (b, b_key)| {
             if a.is_remote != b.is_remote {
                 return a.is_remote.cmp(&b.is_remote);
             }
             if a.is_head != b.is_head {
                 return b.is_head.cmp(&a.is_head);
             }
-            a.name.to_lowercase().cmp(&b.name.to_lowercase())
+            a_key.cmp(b_key)
         });
-        let (local, remote): (Vec<_>, Vec<_>) = branches.into_iter().partition(|b| !b.is_remote);
+        let (local, remote): (Vec<_>, Vec<_>) = keyed
+            .into_iter()
+            .map(|(branch, _)| branch)
+            .partition(|b| !b.is_remote);
         if self.local_branches == local && self.remote_branches == remote {
             return;
         }
@@ -2009,23 +2024,23 @@ impl Render for Sidebar {
                             );
                         }
 
-                        if branch.ahead > 0 || branch.behind > 0 {
+                        if branch.ahead_count() > 0 || branch.behind_count() > 0 {
                             item = item.child(
                                 div()
                                     .h_flex()
                                     .gap(px(4.))
                                     .flex_shrink_0()
                                     .items_center()
-                                    .when(branch.ahead > 0, |el| {
+                                    .when(branch.ahead_count() > 0, |el| {
                                         el.child(
-                                            Badge::new(format!("{}", branch.ahead))
+                                            Badge::new(format!("{}", branch.ahead_count()))
                                                 .color(Color::Success)
                                                 .prefix("+"),
                                         )
                                     })
-                                    .when(branch.behind > 0, |el| {
+                                    .when(branch.behind_count() > 0, |el| {
                                         el.child(
-                                            Badge::new(format!("{}", branch.behind))
+                                            Badge::new(format!("{}", branch.behind_count()))
                                                 .color(Color::Warning)
                                                 .prefix("-"),
                                         )
@@ -4433,6 +4448,164 @@ impl Render for Sidebar {
     }
 }
 
+/// The sidebar's share of the heap census.
+///
+/// Worth measuring because almost nothing here is shared: the sidebar keeps its
+/// own `Vec` of every branch, tag, stash, worktree and changed file, copied out
+/// of the project's snapshot rather than `Arc`d from it. On a repository with
+/// thousands of refs that is a second full copy, and a report that walked only
+/// the project would show half of it.
+#[cfg(feature = "perf")]
+mod census {
+    use rgitui_perf::{Census, HeapSize};
+
+    use super::{FileTreeNode, FlatFileItem, Sidebar, SidebarItem, SidebarSection};
+
+    /// A section marker is a fieldless enum.
+    impl HeapSize for SidebarSection {
+        fn heap_size(&self, _census: &mut Census) -> usize {
+            0
+        }
+    }
+
+    /// A directory row owns its collapse key and its display label; a file row
+    /// is an index and an indent, and owns nothing.
+    impl HeapSize for FlatFileItem {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            match self {
+                FlatFileItem::File { .. } => 0,
+                FlatFileItem::Dir { dir_key, label, .. } => {
+                    dir_key.heap_size(census) + label.heap_size(census)
+                }
+            }
+        }
+    }
+
+    /// Only the two directory variants own anything; the rest are indices into
+    /// lists this walk charges elsewhere.
+    impl HeapSize for SidebarItem {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            match self {
+                SidebarItem::StagedDir(key) | SidebarItem::UnstagedDir(key) => {
+                    key.heap_size(census)
+                }
+                _ => 0,
+            }
+        }
+    }
+
+    /// The tree is recursive, and its cost is the path segment stored at every
+    /// node rather than the indices at the leaves — a deep source tree pays for
+    /// its directory names once per level.
+    impl HeapSize for FileTreeNode {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.file_indices.heap_size(census) + self.children.heap_size(census)
+        }
+
+        fn heap_count(&self) -> Option<usize> {
+            Some(self.file_count)
+        }
+    }
+
+    impl Sidebar {
+        /// Records the sidebar's retained lists under the current census path.
+        pub(crate) fn census(&self, census: &mut Census) -> usize {
+            census.enter("files", &Files(self))
+                + census.enter("branches", &Branches(self))
+                + census.enter("refs", &Refs(self))
+                + census.enter("trees", &Trees(self))
+                + census.enter("nav", &Nav(self))
+        }
+    }
+
+    /// The changed-file lists, copied from the project's status snapshot.
+    struct Files<'a>(&'a Sidebar);
+
+    impl HeapSize for Files<'_> {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.0.staged.heap_size(census) + self.0.unstaged.heap_size(census)
+        }
+
+        fn heap_count(&self) -> Option<usize> {
+            Some(self.0.staged.len() + self.0.unstaged.len())
+        }
+    }
+
+    /// Local and remote branches, pre-partitioned into two owned vectors.
+    struct Branches<'a>(&'a Sidebar);
+
+    impl HeapSize for Branches<'_> {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.0.local_branches.heap_size(census) + self.0.remote_branches.heap_size(census)
+        }
+
+        fn heap_count(&self) -> Option<usize> {
+            Some(self.0.local_branches.len() + self.0.remote_branches.len())
+        }
+    }
+
+    /// Tags, remotes, stashes and worktrees, likewise copied.
+    struct Refs<'a>(&'a Sidebar);
+
+    impl HeapSize for Refs<'_> {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.0.tags.heap_size(census)
+                + self.0.remotes.heap_size(census)
+                + self.0.stashes.heap_size(census)
+                + self.0.worktrees.heap_size(census)
+        }
+
+        fn heap_count(&self) -> Option<usize> {
+            Some(
+                self.0.tags.len()
+                    + self.0.remotes.len()
+                    + self.0.stashes.len()
+                    + self.0.worktrees.len(),
+            )
+        }
+    }
+
+    /// The derived render state: two directory trees and the flattened row
+    /// lists built from them. Rebuilt whenever status changes, so this is the
+    /// node to watch if the sidebar ever starts growing without bound.
+    struct Trees<'a>(&'a Sidebar);
+
+    impl HeapSize for Trees<'_> {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.0.cached_staged_tree.heap_size(census)
+                + self.0.cached_unstaged_tree.heap_size(census)
+                + self.0.flattened_staged.heap_size(census)
+                + self.0.flattened_unstaged.heap_size(census)
+        }
+
+        fn heap_count(&self) -> Option<usize> {
+            Some(self.0.flattened_staged.len() + self.0.flattened_unstaged.len())
+        }
+    }
+
+    /// Keyboard navigation and collapse state: index vectors and the directory
+    /// keys the collapsed set holds as owned strings.
+    struct Nav<'a>(&'a Sidebar);
+
+    impl HeapSize for Nav<'_> {
+        fn heap_size(&self, census: &mut Census) -> usize {
+            self.0.cached_nav_items.heap_size(census)
+                + self.0.collapsed_dirs.heap_size(census)
+                + self.0.flattened_local_branches.heap_size(census)
+                + self.0.flattened_remote_branches.heap_size(census)
+                + self.0.flattened_tags.heap_size(census)
+                + self.0.flattened_stashes.heap_size(census)
+                + self.0.flattened_worktrees.heap_size(census)
+                + self.0.flattened_remotes.heap_size(census)
+                + self.0.expanded_sections.heap_size(census)
+        }
+
+        fn heap_count(&self) -> Option<usize> {
+            Some(self.0.cached_nav_items.len())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4749,8 +4922,8 @@ mod tests {
             is_head: false,
             is_remote: false,
             upstream: None,
-            ahead: 0,
-            behind: 0,
+            ahead: None,
+            behind: None,
             tip_oid: None,
             author_email: None,
             last_commit_time: None,

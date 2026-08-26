@@ -86,6 +86,21 @@ impl AncestorCache {
         commits: &[CommitInfo],
         oid_to_idx: &std::collections::HashMap<git2::Oid, usize>,
     ) -> &std::collections::HashSet<git2::Oid> {
+        // Bounded on both axes. Unbounded, this is quadratic in the loaded
+        // window — a distinct set memoized per row, each holding up to every
+        // OID before it — and the commit limit goes to 100,000. The fast paths
+        // in `find_lane` keep that off most repositories, but the input that
+        // defeats them is many long-lived concurrent branches, which is exactly
+        // the large repository this needs to survive.
+        //
+        // Both bounds trade accuracy for a ceiling, and can only ever make the
+        // answer "not an ancestor". Lane assignment is a visual heuristic, so
+        // the cost of being wrong is a slightly less tidy graph, never a wrong
+        // commit or a wrong edge.
+        if self.sets.len() >= MAX_ANCESTOR_SETS && !self.sets.contains_key(&descendant) {
+            self.sets.clear();
+        }
+
         self.sets.entry(descendant).or_insert_with(|| {
             let mut ancestors = std::collections::HashSet::new();
             let mut queue = match oid_to_idx.get(&descendant) {
@@ -93,6 +108,9 @@ impl AncestorCache {
                 None => Vec::new(),
             };
             while let Some(current) = queue.pop() {
+                if ancestors.len() >= MAX_ANCESTORS_PER_SET {
+                    break;
+                }
                 if ancestors.insert(current) {
                     if let Some(&idx) = oid_to_idx.get(&current) {
                         queue.extend(commits[idx].parent_oids.iter().copied());
@@ -103,6 +121,19 @@ impl AncestorCache {
         })
     }
 }
+
+/// How many ancestor sets are memoized before the cache is dropped wholesale.
+///
+/// Cleared rather than evicted one at a time: entries are cheap to rebuild, the
+/// queries arrive in topological order so the working set moves steadily down
+/// the graph, and a plain `HashMap` clear costs nothing to maintain.
+const MAX_ANCESTOR_SETS: usize = 512;
+
+/// How far back a single ancestor walk will go before giving up.
+///
+/// Deep enough that any realistic lane decision is settled long before it, and
+/// shallow enough that 512 of them cannot become gigabytes.
+const MAX_ANCESTORS_PER_SET: usize = 4096;
 
 /// Find the main branch tip OID by scanning commit refs for "main" or "master".
 ///
@@ -1600,7 +1631,7 @@ mod tests {
                 .collect();
             eprintln!(
                 "  row {:2} [{}]: lane={} color={} incoming={} head={} merge={} lanes={} edges=[{}]",
-                i, &commits[i].short_id, r.node_lane, r.node_color,
+                i, commits[i].short_id, r.node_lane, r.node_color,
                 r.has_incoming, r.is_head, r.is_merge, r.lane_count,
                 edges_str.join(", "),
             );
