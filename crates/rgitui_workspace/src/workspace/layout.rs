@@ -599,16 +599,21 @@ impl Render for Workspace {
                                         .truncate(),
                                 ),
                         )
-                        .child(
-                            Button::new("conflict-continue", "Continue")
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Filled)
-                                .color(Color::Success)
-                                .disabled(has_conflicts)
-                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-                                    this.execute_command(CommandId::ContinueMerge, cx);
-                                })),
-                        )
+                        // Bisect has no continuation — it advances by judging
+                        // the checked-out commit — so it gets no button rather
+                        // than one that can only report why it did nothing.
+                        .when(repo_state.continue_subcommand().is_some(), |el| {
+                            el.child(
+                                Button::new("conflict-continue", "Continue")
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Filled)
+                                    .color(Color::Success)
+                                    .disabled(has_conflicts)
+                                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                        this.execute_command(CommandId::ContinueMerge, cx);
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new("conflict-abort", "Abort")
                                 .size(ButtonSize::Compact)

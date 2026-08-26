@@ -20,6 +20,85 @@ use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent
 //  - BUG-41: `discard_changes_at` directory handling — verifier judged the current
 //    code correct (untracked dirs take the remove_dir_all branch); left unchanged.
 
+/// Commit the resolved merge in `repo` with its stored `MERGE_MSG`, exactly as
+/// `git merge --continue` does: the index is committed as the user staged it,
+/// with `MERGE_HEAD`'s commits as the extra parents. Untracked and unstaged
+/// working-tree changes are deliberately left out of the merge commit.
+fn finish_merge_commit(repo: &Repository) -> Result<String> {
+    let merge_head_path = repo.path().join("MERGE_HEAD");
+    if !merge_head_path.exists() {
+        anyhow::bail!("Repository is not in a merge state (no MERGE_HEAD to continue).");
+    }
+
+    let mut index = repo.index()?;
+    let tree_oid = index.write_tree()?;
+    let tree = repo.find_tree(tree_oid)?;
+
+    let sig = repo.signature()?;
+    let head_commit = repo.head()?.peel_to_commit()?;
+
+    let merge_msg_path = repo.path().join("MERGE_MSG");
+    let message = if merge_msg_path.exists() {
+        std::fs::read_to_string(&merge_msg_path).unwrap_or_else(|_| "Merge commit".to_string())
+    } else {
+        "Merge commit".to_string()
+    };
+
+    let mut parents = vec![head_commit];
+    let contents = std::fs::read_to_string(&merge_head_path)?;
+    for line in contents.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            let oid = git2::Oid::from_str(line)?;
+            parents.push(repo.find_commit(oid)?);
+        }
+    }
+
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parent_refs)?;
+    repo.cleanup_state()?;
+
+    Ok(message.lines().next().unwrap_or("Merge commit").to_string())
+}
+
+/// Run `git <subcommand> --continue` in `worktree_path`.
+///
+/// libgit2 has no sequencer, so cherry-pick, revert, mailbox application and
+/// rebase can only be carried forward by the git CLI. Each of those accepts
+/// `--continue` on its own and rejects any other flag alongside it, so the
+/// editor is suppressed through the environment rather than with `--no-edit`;
+/// the message git already stored for the stopped step is reused as-is.
+fn run_continue_subcommand(worktree_path: &Path, subcommand: &str) -> Result<String> {
+    let output = super::git_command()
+        .current_dir(worktree_path)
+        .args([subcommand, "--continue"])
+        .env("GIT_EDITOR", "true")
+        .env("GIT_SEQUENCE_EDITOR", "true")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| format!("Failed to execute git {} --continue", subcommand))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        anyhow::bail!("git {} --continue failed: {}", subcommand, detail);
+    }
+
+    let summary = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("Operation continued")
+        .to_string();
+    Ok(summary)
+}
+
 /// Renders up to three paths inline, summarising the rest, for error messages.
 fn format_path_list(paths: &[String]) -> String {
     const SHOWN: usize = 3;
@@ -2354,21 +2433,33 @@ impl GitProject {
         })
     }
 
-    /// Continue the merge in progress in `worktree_path` by committing with the
-    /// default merge message.
-    pub fn continue_merge_at(
+    /// Continue whichever operation is paused in `worktree_path`.
+    ///
+    /// A merge is finished here with libgit2. The sequencer states — cherry-pick,
+    /// revert and mailbox application — and rebase have no libgit2 equivalent, so
+    /// they run `git <subcommand> --continue` in that checkout. Dispatching on the
+    /// state is what makes the conflict banner's Continue button finish the
+    /// operation the banner is describing rather than only a merge.
+    pub fn continue_operation_at(
         &mut self,
         worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        log::info!("continue_merge: worktree={}", worktree_path.display());
+        let state = self.repo_state_at(worktree_path);
+        log::info!(
+            "continue_operation: state={} worktree={}",
+            state.label(),
+            worktree_path.display()
+        );
         let worktree_path = worktree_path.to_path_buf();
         let repo_path = self.repo_path.clone();
         let commit_limit = self.commit_limit;
         let branch_name = self.head_branch_at(&worktree_path);
+        let kind = state.operation_kind();
+        let state_label = state.label().to_string();
         let operation_id = self.begin_operation(
-            GitOperationKind::Merge,
-            "Continuing merge...",
+            kind,
+            format!("Continuing {}...", state_label.to_lowercase()),
             None,
             branch_name.clone(),
             cx,
@@ -2378,56 +2469,28 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     let repo = Repository::open(&worktree_path)?;
+                    let state = RepoState::from_git2(repo.state());
 
-                    // Only finalize an actual merge. Other paused operations
-                    // (cherry-pick/revert/rebase/bisect) have no MERGE_HEAD and must
-                    // not be miscommitted here as an ordinary single-parent commit.
-                    if !repo.path().join("MERGE_HEAD").exists() {
-                        anyhow::bail!("Repository is not in a merge state (no MERGE_HEAD to continue).");
-                    }
-
-                    let mut index = repo.index()?;
+                    let index = repo.index()?;
                     if index.has_conflicts() {
                         anyhow::bail!(
                             "There are still unresolved conflicts. Resolve all conflicts before continuing."
                         );
                     }
+                    drop(index);
 
-                    // Commit the index exactly as the user staged it (like
-                    // `git merge --continue`); do NOT sweep untracked or unstaged
-                    // working-tree changes into the merge commit.
-                    let tree_oid = index.write_tree()?;
-                    let tree = repo.find_tree(tree_oid)?;
-
-                    let sig = repo.signature()?;
-                    let head_commit = repo.head()?.peel_to_commit()?;
-
-                    let merge_msg_path = repo.path().join("MERGE_MSG");
-                    let message = if merge_msg_path.exists() {
-                        std::fs::read_to_string(&merge_msg_path)
-                            .unwrap_or_else(|_| "Merge commit".to_string())
-                    } else {
-                        "Merge commit".to_string()
+                    let summary = match state.continue_subcommand() {
+                        Some("merge") => finish_merge_commit(&repo)?,
+                        Some(subcommand) => {
+                            drop(repo);
+                            run_continue_subcommand(&worktree_path, subcommand)?
+                        }
+                        None => anyhow::bail!(
+                            "There is no {} to continue.",
+                            state.label().to_lowercase()
+                        ),
                     };
 
-                    let mut parents = vec![head_commit.clone()];
-                    let merge_head_path = repo.path().join("MERGE_HEAD");
-                    if merge_head_path.exists() {
-                        let contents = std::fs::read_to_string(&merge_head_path)?;
-                        for line in contents.lines() {
-                            let line = line.trim();
-                            if !line.is_empty() {
-                                let oid = git2::Oid::from_str(line)?;
-                                parents.push(repo.find_commit(oid)?);
-                            }
-                        }
-                    }
-
-                    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-                    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parent_refs)?;
-                    repo.cleanup_state()?;
-
-                    let summary = message.lines().next().unwrap_or("Merge commit").to_string();
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
                     Ok((summary, data))
                 })
@@ -2440,8 +2503,8 @@ impl GitProject {
                             this.apply_refresh_data(data);
                             this.complete_op(
                                 operation_id,
-                                GitOperationKind::Merge,
-                                "Merge completed",
+                                kind,
+                                format!("{} completed", state_label),
                                 (Some(summary), None, branch_name.clone()),
                                 cx,
                             );
@@ -2450,8 +2513,8 @@ impl GitProject {
                         Err(e) => {
                             this.fail_op(
                                 operation_id,
-                                GitOperationKind::Merge,
-                                "Continue merge failed",
+                                kind,
+                                format!("Could not continue {}", state_label.to_lowercase()),
                                 e.to_string(),
                                 (None, branch_name.clone(), false),
                                 cx,
@@ -3667,6 +3730,80 @@ mod tests {
     use std::fs;
 
     use rgitui_test_support::TempRepo;
+
+    use super::run_continue_subcommand;
+
+    /// Run a git subcommand in `dir`, asserting nothing about its exit status —
+    /// the conflict-stopping steps these tests set up are expected to fail.
+    fn run_git(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        super::super::git_command()
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_EDITOR", "true")
+            .output()
+            .expect("failed to run git")
+    }
+
+    /// A repo whose `feature` branch and `main` both change `file.txt`'s only
+    /// line, so cherry-picking `feature` onto `main` stops on a conflict.
+    fn make_repo_with_conflicting_pick() -> TempRepo {
+        let fixture = TempRepo::init();
+        fixture.write_file("file.txt", "base\n");
+        fixture.stage("file.txt");
+        fixture.commit("base");
+
+        run_git(fixture.path(), &["checkout", "-b", "feature"]);
+        fixture.write_file("file.txt", "feature\n");
+        fixture.stage("file.txt");
+        fixture.commit("feature change");
+
+        run_git(fixture.path(), &["checkout", "main"]);
+        fixture.write_file("file.txt", "main\n");
+        fixture.stage("file.txt");
+        fixture.commit("main change");
+
+        fixture
+    }
+
+    #[test]
+    fn run_continue_subcommand_finishes_a_resolved_cherry_pick() {
+        let fixture = make_repo_with_conflicting_pick();
+        let path = fixture.path();
+
+        let picked = run_git(path, &["rev-parse", "feature"]);
+        let picked = String::from_utf8_lossy(&picked.stdout).trim().to_string();
+        run_git(path, &["cherry-pick", &picked]);
+
+        let repo = git2::Repository::open(path).unwrap();
+        assert_eq!(repo.state(), git2::RepositoryState::CherryPick);
+        drop(repo);
+
+        // Resolve the conflict the way the user would, then continue.
+        fs::write(path.join("file.txt"), "resolved\n").unwrap();
+        run_git(path, &["add", "file.txt"]);
+
+        let summary = run_continue_subcommand(path, "cherry-pick").unwrap();
+        assert!(!summary.is_empty());
+
+        let repo = git2::Repository::open(path).unwrap();
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.summary(), Some("feature change"));
+    }
+
+    #[test]
+    fn run_continue_subcommand_reports_why_git_refused() {
+        // Nothing is in progress, so `git cherry-pick --continue` fails; the
+        // error has to carry git's reason rather than a bare exit status.
+        let fixture = make_test_repo();
+        let error = run_continue_subcommand(fixture.path(), "cherry-pick").unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("cherry-pick --continue failed"),
+            "unexpected error: {message}"
+        );
+        assert!(message.len() > "git cherry-pick --continue failed: ".len());
+    }
 
     /// A repo whose single commit has an empty tree, so a test is free to create
     /// and stage `file.txt` itself without colliding with an existing entry.

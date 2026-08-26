@@ -37,6 +37,7 @@ impl GitProject {
                     "Fetch could not start",
                     error,
                     true,
+                    worktree_path,
                     cx,
                 )
             }
@@ -59,6 +60,7 @@ impl GitProject {
                         "Pull could not start",
                         error,
                         true,
+                        worktree_path,
                         cx,
                     )
                 }
@@ -86,6 +88,7 @@ impl GitProject {
                         "Push could not start",
                         error,
                         true,
+                        worktree_path,
                         cx,
                     )
                 }
@@ -199,6 +202,7 @@ impl GitProject {
                     "Pull could not start",
                     error,
                     true,
+                    worktree_path,
                     cx,
                 )
             }
@@ -364,6 +368,7 @@ impl GitProject {
                     "Push could not start",
                     error,
                     true,
+                    worktree_path,
                     cx,
                 )
             }

@@ -549,6 +549,17 @@ impl Workspace {
                 let state = tab.project.read(cx).repo_state_at(&worktree_path);
                 if state.is_clean() {
                     self.show_toast("No operation in progress", ToastKind::Warning, cx);
+                } else if state.continue_subcommand().is_none() {
+                    // Bisect is the only in-progress state git cannot continue:
+                    // it advances by judging the checked-out commit instead.
+                    self.show_toast(
+                        format!(
+                            "{} has no continue step -- mark this commit good or bad instead",
+                            state.label()
+                        ),
+                        ToastKind::Warning,
+                        cx,
+                    );
                 } else if tab.project.read(cx).has_conflicts_at(&worktree_path) {
                     self.show_toast(
                         "Cannot continue -- resolve all conflicts first",
@@ -557,7 +568,7 @@ impl Workspace {
                     );
                 } else {
                     tab.project.update(cx, |proj, cx| {
-                        proj.continue_merge_at(&worktree_path, cx).detach();
+                        proj.continue_operation_at(&worktree_path, cx).detach();
                     });
                 }
             }

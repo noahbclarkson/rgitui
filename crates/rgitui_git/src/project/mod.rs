@@ -502,23 +502,30 @@ impl GitProject {
         }));
     }
 
+    /// Report an operation that failed before its task could start. The
+    /// worktree is recorded just as a started operation's is, so a retry offered
+    /// for a preflight failure goes back to the checkout the operation was aimed
+    /// at rather than whichever one the user is looking at when they click it.
     pub(crate) fn fail_to_start_task(
         &mut self,
         kind: GitOperationKind,
         summary: impl Into<String>,
         error: anyhow::Error,
         retryable: bool,
+        worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         let summary = summary.into();
+        let branch_name = self.head_branch_at(worktree_path);
         let operation_id =
-            self.begin_operation(kind, summary.clone(), None, self.head_branch.clone(), cx);
+            self.begin_operation(kind, summary.clone(), None, branch_name.clone(), cx);
+        self.note_operation_worktree(operation_id, worktree_path);
         self.fail_op(
             operation_id,
             kind,
             summary,
             error.to_string(),
-            (None, self.head_branch.clone(), retryable),
+            (None, branch_name, retryable),
             cx,
         );
         cx.spawn(async move |_this: WeakEntity<Self>, _cx: &mut AsyncApp| Err(error))
