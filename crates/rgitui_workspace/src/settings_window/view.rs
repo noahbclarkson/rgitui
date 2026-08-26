@@ -50,6 +50,9 @@ const QUICK_REFERENCE_COMMANDS: &[CommandId] = &[
     CommandId::Settings,
 ];
 
+const SETTINGS_SIDEBAR_WIDTH: f32 = 220.;
+const SETTINGS_CONTENT_PADDING: f32 = 28.;
+
 /// Which section of the settings is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSection {
@@ -1740,7 +1743,7 @@ impl SettingsView {
         let mut sidebar = div()
             .id("settings-sidebar")
             .v_flex()
-            .w(px(220.))
+            .w(px(SETTINGS_SIDEBAR_WIDTH))
             .h_full()
             .bg(colors.surface_background)
             .border_r_1()
@@ -4040,10 +4043,15 @@ impl SettingsView {
     /// `SettingsWindow` host. The host provides its own close affordance.
     pub fn render_window_body(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut content_container = div().v_flex().w_full().min_w_0().gap(px(16.));
+        // Give wrapping text a definite width during GPUI's measurement pass.
+        // A percentage width beneath the scroll container is resolved too late
+        // by the macOS text system and can cache a one-glyph wrap width.
+        let page_width = (window.bounds().size.width - px(SETTINGS_SIDEBAR_WIDTH)).max(px(0.));
+        let content_width = (page_width - px(SETTINGS_CONTENT_PADDING * 2.)).max(px(0.));
+        let mut content_container = div().v_flex().w(content_width).min_w_0().gap(px(16.));
 
         let content = match self.active_section {
             SettingsSection::Theme => self.render_theme_section(cx).into_any_element(),
@@ -4114,7 +4122,7 @@ impl SettingsView {
             .v_flex()
             .w_full()
             .gap(px(12.))
-            .px(px(28.))
+            .px(px(SETTINGS_CONTENT_PADDING))
             .py(px(20.))
             .bg(colors.surface_background)
             .border_b_1()
@@ -4184,7 +4192,7 @@ impl SettingsView {
                 div()
                     .id("settings-page-shell")
                     .v_flex()
-                    .flex_1()
+                    .w(page_width)
                     .min_h_0()
                     .min_w_0()
                     .child(header)
@@ -4195,7 +4203,7 @@ impl SettingsView {
                             .flex_1()
                             .min_h_0()
                             .min_w_0()
-                            .p(px(28.))
+                            .p(px(SETTINGS_CONTENT_PADDING))
                             .overflow_y_scroll()
                             .overflow_x_hidden()
                             .track_scroll(&self.content_scroll)
