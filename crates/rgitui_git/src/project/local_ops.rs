@@ -3864,7 +3864,7 @@ fn apply_conflict_side(
         // reject) that directory; match Git's behavior and leave it as local,
         // untracked worktree state.
         if !conflict_has_gitlink {
-            remove_worktree_file_or_symlink(&full_path)?;
+            remove_worktree_entry_if_matches(&full_path, &original_worktree)?;
         }
         let applied_worktree = (!conflict_has_gitlink)
             .then(|| capture_worktree_entry(&full_path))
@@ -4027,7 +4027,7 @@ fn apply_conflict_resolution(
             }
         }
         None => {
-            remove_worktree_file_or_symlink(&full_path)?;
+            remove_worktree_entry_if_matches(&full_path, &original_worktree)?;
             let applied_worktree = capture_worktree_entry(&full_path)?;
             reload_conflict_index_after_worktree_change(
                 &mut index,
@@ -4487,7 +4487,9 @@ fn write_regular_worktree_file_inner(
         );
     }
 
-    if let Err(publish_error) = std::fs::hard_link(&temp_path, path) {
+    if let Err(publish_error) =
+        publish_regular_file_noclobber(&temp_path, path, bytes, &published_entry)
+    {
         let _ = std::fs::remove_file(&temp_path);
         if let Some(backup_path) = backup_path.as_ref() {
             if std::fs::symlink_metadata(path).is_ok() {
@@ -4505,7 +4507,7 @@ fn write_regular_worktree_file_inner(
                 );
             }
         }
-        return Err(publish_error.into());
+        return Err(publish_error);
     }
     let _ = std::fs::remove_file(&temp_path);
     if let Some(backup_path) = backup_path {
@@ -4521,6 +4523,133 @@ fn write_regular_worktree_file_inner(
     Ok(published_entry)
 }
 
+fn publish_regular_file_noclobber(
+    temp_path: &Path,
+    path: &Path,
+    bytes: &[u8],
+    published_entry: &WorktreeEntryBackup,
+) -> Result<()> {
+    publish_regular_file_noclobber_inner(temp_path, path, bytes, published_entry, true)
+}
+
+fn publish_regular_file_noclobber_inner(
+    temp_path: &Path,
+    path: &Path,
+    bytes: &[u8],
+    published_entry: &WorktreeEntryBackup,
+    try_hard_link: bool,
+) -> Result<()> {
+    if try_hard_link && std::fs::hard_link(temp_path, path).is_ok() {
+        return Ok(());
+    }
+
+    // A hard link is the preferred atomic create-new publication, but it is
+    // unavailable on FAT/exFAT and on some network filesystems. Fall back to a
+    // create-new file so a racing editor save is still never overwritten. The
+    // displaced original remains at its backup path until this copy and its
+    // exact-content check both succeed.
+    if std::fs::symlink_metadata(path).is_ok() {
+        anyhow::bail!(
+            "'{}' changed while the conflict result was being published. The newer entry was preserved.",
+            path.display()
+        );
+    }
+    let mut destination = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    destination.write_all(bytes)?;
+    drop(destination);
+    if let WorktreeEntryBackup::Regular { permissions, .. } = published_entry {
+        std::fs::set_permissions(path, permissions.clone())?;
+    }
+    ensure_worktree_entry_matches(path, published_entry)
+}
+
+fn remove_worktree_entry_if_matches(path: &Path, expected: &WorktreeEntryBackup) -> Result<()> {
+    static NEXT_BACKUP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+    if matches!(expected, WorktreeEntryBackup::Missing) {
+        return ensure_worktree_entry_matches(path, expected);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("'{}' has no parent directory", path.display()))?;
+    let backup_path = loop {
+        let id = NEXT_BACKUP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".rgitui-conflict-delete-{}-{id}.tmp",
+            std::process::id()
+        ));
+        match std::fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break candidate,
+            Ok(_) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+
+    // Moving the pathname aside is the compare-and-swap point: whichever
+    // exact entry occupied the path is captured without first deleting it.
+    std::fs::rename(path, &backup_path)?;
+    let displaced = capture_worktree_entry(&backup_path)?;
+    if !displaced.exactly_matches(expected) {
+        match restore_displaced_entry(&backup_path, path, &displaced) {
+            Ok(()) => anyhow::bail!(
+                "'{}' changed while the conflict resolution was being prepared. Reload it so no edits are overwritten.",
+                path.display()
+            ),
+            Err(error) => anyhow::bail!(
+                "'{}' changed while the conflict resolution was being prepared. Its displaced entry was retained at '{}' because it could not be restored: {error}",
+                path.display(),
+                backup_path.display()
+            ),
+        }
+    }
+    remove_worktree_file_or_symlink(&backup_path).with_context(|| {
+        format!(
+            "The selected deletion was not staged because the displaced entry could not be removed from '{}'.",
+            backup_path.display()
+        )
+    })
+}
+
+fn restore_displaced_entry(
+    backup_path: &Path,
+    path: &Path,
+    displaced: &WorktreeEntryBackup,
+) -> Result<()> {
+    if std::fs::symlink_metadata(path).is_ok() {
+        anyhow::bail!(
+            "a newer entry appeared at '{}'; it was preserved",
+            path.display()
+        );
+    }
+    match displaced {
+        WorktreeEntryBackup::Regular { bytes, permissions } => {
+            if std::fs::hard_link(backup_path, path).is_err() {
+                let mut destination = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)?;
+                destination.write_all(bytes)?;
+                drop(destination);
+                std::fs::set_permissions(path, permissions.clone())?;
+            }
+            remove_worktree_file_or_symlink(backup_path)?;
+        }
+        WorktreeEntryBackup::Symlink(target) => {
+            create_worktree_symlink(target, path)?;
+            remove_worktree_file_or_symlink(backup_path)?;
+        }
+        WorktreeEntryBackup::Missing => {}
+        WorktreeEntryBackup::Other => anyhow::bail!(
+            "unsupported entry remains safely stored at '{}'",
+            backup_path.display()
+        ),
+    }
+    Ok(())
+}
+
 fn ensure_worktree_entry_matches(path: &Path, expected: &WorktreeEntryBackup) -> Result<()> {
     let current = capture_worktree_entry(path)?;
     if !current.exactly_matches(expected) {
@@ -4534,7 +4663,10 @@ fn ensure_worktree_entry_matches(path: &Path, expected: &WorktreeEntryBackup) ->
 
 fn remove_worktree_file_or_symlink(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            remove_worktree_symlink(path, &metadata)?;
+        }
+        Ok(metadata) if metadata.is_file() => {
             std::fs::remove_file(path)?;
         }
         Ok(_) => anyhow::bail!(
@@ -4545,6 +4677,26 @@ fn remove_worktree_file_or_symlink(path: &Path) -> Result<()> {
         Err(error) => return Err(error.into()),
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn remove_worktree_symlink(path: &Path, _metadata: &std::fs::Metadata) -> std::io::Result<()> {
+    std::fs::remove_file(path)
+}
+
+#[cfg(windows)]
+fn remove_worktree_symlink(path: &Path, metadata: &std::fs::Metadata) -> std::io::Result<()> {
+    use std::os::windows::fs::FileTypeExt;
+
+    // Windows records whether a symbolic link was created as a file or a
+    // directory link, even when its target does not exist. Removing the wrong
+    // kind fails with AccessDenied. libgit2 creates a directory link for a
+    // dangling Git symlink, so rollback must preserve that distinction.
+    if metadata.file_type().is_symlink_dir() {
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 fn contains_conflict_markers(content: &[u8]) -> bool {
@@ -5551,6 +5703,63 @@ mod tests {
                 .unwrap_err();
 
         assert!(error.to_string().contains("changed while"));
+        assert_eq!(fs::read(&path).unwrap(), b"saved later\n");
+    }
+
+    #[test]
+    fn deletion_compare_and_swap_preserves_a_later_edit() {
+        let fixture = TempRepo::init();
+        let path = fixture.path().join("file.txt");
+        fs::write(&path, b"captured\n").unwrap();
+        let captured = super::capture_worktree_entry(&path).unwrap();
+        fs::write(&path, b"saved later\n").unwrap();
+
+        let error = super::remove_worktree_entry_if_matches(&path, &captured).unwrap_err();
+
+        assert!(error.to_string().contains("changed while"));
+        assert_eq!(fs::read(&path).unwrap(), b"saved later\n");
+    }
+
+    #[test]
+    fn regular_publication_falls_back_when_hard_links_are_unavailable() {
+        let fixture = TempRepo::init();
+        let temp_path = fixture.path().join("prepared.tmp");
+        let path = fixture.path().join("file.txt");
+        fs::write(&temp_path, b"resolver result\n").unwrap();
+        let prepared = super::capture_worktree_entry(&temp_path).unwrap();
+
+        super::publish_regular_file_noclobber_inner(
+            &temp_path,
+            &path,
+            b"resolver result\n",
+            &prepared,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"resolver result\n");
+        assert_eq!(fs::read(&temp_path).unwrap(), b"resolver result\n");
+    }
+
+    #[test]
+    fn regular_publication_fallback_never_overwrites_a_new_path() {
+        let fixture = TempRepo::init();
+        let temp_path = fixture.path().join("prepared.tmp");
+        let path = fixture.path().join("file.txt");
+        fs::write(&temp_path, b"resolver result\n").unwrap();
+        fs::write(&path, b"saved later\n").unwrap();
+        let prepared = super::capture_worktree_entry(&temp_path).unwrap();
+
+        let error = super::publish_regular_file_noclobber_inner(
+            &temp_path,
+            &path,
+            b"resolver result\n",
+            &prepared,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("newer entry was preserved"));
         assert_eq!(fs::read(&path).unwrap(), b"saved later\n");
     }
 
