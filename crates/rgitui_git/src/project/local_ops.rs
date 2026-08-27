@@ -6289,7 +6289,7 @@ mod tests {
             .is_symlink());
         assert_eq!(
             fs::read_link(&full_path).unwrap(),
-            Path::new("incoming-target")
+            std::path::Path::new("incoming-target")
         );
         let index = git2::Repository::open(fixture.path())
             .unwrap()
