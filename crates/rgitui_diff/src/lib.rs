@@ -1119,6 +1119,7 @@ impl DiffViewer {
         self.diff = None;
         self.file_path = None;
         self.source = DiffSource::Worktree;
+        self.display_mode = DiffDisplayMode::Unified;
         self.display_rows = Arc::new(Vec::new());
         self.sbs_rows = Arc::new(Vec::new());
         self.three_way_rows = Arc::new(Vec::new());
@@ -2045,6 +2046,13 @@ impl DiffViewer {
 
     pub fn has_three_way_diff(&self) -> bool {
         self.three_way_diff.is_some()
+    }
+
+    /// True from the moment a conflict is selected until its three-way view is
+    /// explicitly replaced or cleared. Unlike `has_three_way_diff`, this also
+    /// covers the background-load window before the conflict model arrives.
+    pub fn is_conflict_view_active(&self) -> bool {
+        self.display_mode == DiffDisplayMode::ThreeWay
     }
 
     pub fn unresolved_conflict_count(&self) -> usize {
@@ -6977,6 +6985,30 @@ mod view_tests {
                     }
                 )]
             );
+        });
+    }
+
+    #[test]
+    fn conflict_view_is_active_while_its_model_is_loading() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_conflict_loading(PATH.to_string(), cx);
+            });
+        });
+        probe.read(|probe, cx| {
+            let viewer = probe.viewer.read(cx);
+            assert!(viewer.is_conflict_view_active());
+            assert!(!viewer.has_three_way_diff());
+            assert_eq!(viewer.file_path(), Some(PATH));
+        });
+
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| viewer.clear(cx));
+        });
+        probe.read(|probe, cx| {
+            assert!(!probe.viewer.read(cx).is_conflict_view_active());
         });
     }
 

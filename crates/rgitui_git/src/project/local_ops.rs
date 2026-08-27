@@ -3716,6 +3716,14 @@ fn apply_conflict_side(
         .conflict_get(file_path)
         .map_err(|_| anyhow::anyhow!("Conflict not found for path '{}'", file_path.display()))?;
     verify_conflict_snapshot(&conflict, snapshot, file_path)?;
+    let conflict_has_gitlink = [
+        conflict.ancestor.as_ref(),
+        conflict.our.as_ref(),
+        conflict.their.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|entry| entry.mode & 0o170000 == 0o160000);
     let chosen = match side {
         ConflictSide::Ours => conflict.our.as_ref(),
         ConflictSide::Theirs => conflict.their.as_ref(),
@@ -3782,7 +3790,13 @@ fn apply_conflict_side(
             return Ok(());
         }
     } else {
-        remove_worktree_file_or_symlink(&full_path)?;
+        // A checked-out gitlink is a directory owned by the nested repository.
+        // Resolving its index entry as deleted must not recursively remove (or
+        // reject) that directory; match Git's behavior and leave it as local,
+        // untracked worktree state.
+        if !conflict_has_gitlink {
+            remove_worktree_file_or_symlink(&full_path)?;
+        }
         let index_result = index
             .conflict_remove(file_path)
             .and_then(|_| match index.remove_path(file_path) {
@@ -3792,7 +3806,9 @@ fn apply_conflict_side(
             })
             .and_then(|_| index.write());
         if let Err(error) = index_result {
-            restore_worktree_entry(&full_path, &original_worktree);
+            if !conflict_has_gitlink {
+                restore_worktree_entry(&full_path, &original_worktree);
+            }
             return Err(error.into());
         }
     }
@@ -4488,6 +4504,28 @@ mod tests {
         assert!(child.wait().expect("wait for update-index").success());
     }
 
+    fn install_gitlink_modify_delete_conflict(
+        fixture: &TempRepo,
+        path: &str,
+        ancestor: git2::Oid,
+        ours: git2::Oid,
+    ) {
+        let entries = format!("160000 {ancestor} 1\t{path}\n160000 {ours} 2\t{path}\n");
+        let mut child = super::super::git_command()
+            .current_dir(fixture.path())
+            .args(["update-index", "--index-info"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("start git update-index");
+        child
+            .stdin
+            .take()
+            .expect("update-index stdin")
+            .write_all(entries.as_bytes())
+            .expect("write conflict entries");
+        assert!(child.wait().expect("wait for update-index").success());
+    }
+
     /// A repo whose `feature` branch and `main` both change `file.txt`'s only
     /// line, so cherry-picking `feature` onto `main` stops on a conflict.
     fn make_repo_with_conflicting_pick() -> TempRepo {
@@ -5034,6 +5072,42 @@ mod tests {
         let entry = index.get_path(relative_path, 0).expect("stage-0 gitlink");
         assert_eq!(entry.mode, 0o160000);
         assert_eq!(entry.id, theirs);
+    }
+
+    #[test]
+    fn choosing_deleted_gitlink_side_leaves_checked_out_directory_untracked() {
+        let fixture = TempRepo::init();
+        let ancestor = fixture.commit_file("seed.txt", "ancestor\n", "ancestor");
+        let ours = fixture.commit_file("seed.txt", "ours\n", "ours");
+        install_gitlink_modify_delete_conflict(&fixture, "module", ancestor, ours);
+        let relative_path = std::path::Path::new("module");
+        fs::create_dir(fixture.path().join(relative_path)).unwrap();
+        fs::write(
+            fixture.path().join(relative_path).join("local.txt"),
+            b"local work\n",
+        )
+        .unwrap();
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("gitlink delete conflict model");
+
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Theirs,
+            &diff.snapshot,
+        )
+        .expect("choose deleted gitlink side");
+
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path).join("local.txt")).unwrap(),
+            b"local work\n"
+        );
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        assert!(index.get_path(relative_path, 0).is_none());
     }
 
     #[test]

@@ -1088,7 +1088,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                 let conflict_view_path = {
                     let viewer = diff_viewer.read(cx);
                     viewer
-                        .has_three_way_diff()
+                        .is_conflict_view_active()
                         .then(|| viewer.file_path().map(str::to_string))
                         .flatten()
                 };
@@ -1111,7 +1111,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
 
                 let refresh_state = {
                     let dv = diff_viewer.read(cx);
-                    if dv.has_three_way_diff() || dv.source().is_historical() {
+                    if dv.is_conflict_view_active() || dv.source().is_historical() {
                         None
                     } else {
                         let is_staged = dv.source().offers(DiffOperation::Unstage);
