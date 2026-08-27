@@ -3945,7 +3945,8 @@ fn apply_conflict_resolution(
                     file_path.display()
                 )
             })?;
-            if contains_conflict_markers(&content) {
+            let marker_size = conflict_marker_size(&repo, file_path);
+            if contains_conflict_markers(&content, marker_size) {
                 anyhow::bail!(
                     "'{}' still contains conflict markers. Remove them in your editor before staging the working copy.",
                     file_path.display()
@@ -3960,7 +3961,7 @@ fn apply_conflict_resolution(
                 .unwrap_or(0o100644);
             let mode = regular_worktree_mode(&repo, &full_path, fallback_mode)?;
             let canonical_content = clean_worktree_bytes(worktree_path, file_path, &content)?;
-            if contains_conflict_markers(&canonical_content) {
+            if contains_conflict_markers(&canonical_content, marker_size) {
                 anyhow::bail!(
                     "'{}' still contains conflict markers after applying Git's clean filters. Remove them in your editor before staging the working copy.",
                     file_path.display()
@@ -4699,13 +4700,31 @@ fn remove_worktree_symlink(path: &Path, metadata: &std::fs::Metadata) -> std::io
     }
 }
 
-fn contains_conflict_markers(content: &[u8]) -> bool {
+fn conflict_marker_size(repo: &Repository, path: &Path) -> usize {
+    let value = repo
+        .get_attr(
+            path,
+            "conflict-marker-size",
+            git2::AttrCheckFlags::FILE_THEN_INDEX,
+        )
+        .ok()
+        .flatten();
+    match git2::AttrValue::from_string(value) {
+        git2::AttrValue::String(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|size| *size > 0)
+            .unwrap_or(7),
+        _ => 7,
+    }
+}
+
+fn contains_conflict_markers(content: &[u8], marker_size: usize) -> bool {
     content.split(|byte| *byte == b'\n').any(|line| {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        line.starts_with(b"<<<<<<<")
-            || line.starts_with(b"|||||||")
-            || line.starts_with(b"=======")
-            || line.starts_with(b">>>>>>>")
+        b"<|=>".iter().any(|marker| {
+            line.len() >= marker_size && line[..marker_size].iter().all(|byte| byte == marker)
+        })
     })
 }
 
@@ -5536,9 +5555,46 @@ mod tests {
             b"=======\n".as_slice(),
             b">>>>>>> incoming\n".as_slice(),
         ] {
-            assert!(super::contains_conflict_markers(marker));
+            assert!(super::contains_conflict_markers(marker, 7));
         }
-        assert!(!super::contains_conflict_markers(b"ordinary content\n"));
+        assert!(!super::contains_conflict_markers(b"ordinary content\n", 7));
+    }
+
+    #[test]
+    fn staging_working_copy_honours_custom_conflict_marker_size() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        fs::write(
+            fixture.path().join(".gitattributes"),
+            b"file.txt conflict-marker-size=3\n",
+        )
+        .unwrap();
+        fs::write(
+            fixture.path().join(relative_path),
+            b"<<< current\nours\n===\ntheirs\n>>> incoming\n",
+        )
+        .unwrap();
+
+        let error = super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::WorkingTree {
+                snapshot: diff.snapshot,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("still contains conflict markers"));
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
     }
 
     #[test]
