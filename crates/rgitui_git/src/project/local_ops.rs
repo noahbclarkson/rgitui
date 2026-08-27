@@ -3724,12 +3724,23 @@ impl GitIndexLock {
                     index_path.display()
                 )
             })?;
-        Ok(Self {
+        let lock = Self {
             index_path,
             lock_path,
             file: Some(file),
             committed: false,
-        })
+        };
+        // Git's lockfile commit replaces the index, so the lock must carry the
+        // index's permissions. In particular, preserve group write access for
+        // repositories using core.sharedRepository.
+        let permissions = std::fs::metadata(&lock.index_path)?.permissions();
+        std::fs::set_permissions(&lock.lock_path, permissions).with_context(|| {
+            format!(
+                "Could not preserve permissions for Git index '{}'",
+                lock.index_path.display()
+            )
+        })?;
+        Ok(lock)
     }
 
     fn commit_from(mut self, prepared_index: &Path) -> Result<()> {
@@ -4101,7 +4112,7 @@ fn apply_conflict_resolution(
                     file_path.display()
                 )
             })?;
-            let marker_size = conflict_marker_size(&repo, file_path);
+            let marker_size = conflict_marker_size(&repo, file_path, &snapshot);
             if contains_conflict_markers(&content, marker_size) {
                 anyhow::bail!(
                     "'{}' still contains conflict markers. Remove them in your editor before staging the working copy.",
@@ -5214,7 +5225,17 @@ fn remove_worktree_file_or_symlink_named(path: &AnchoredWorktreePath, name: &Pat
     Ok(())
 }
 
-fn conflict_marker_size(repo: &Repository, path: &Path) -> usize {
+fn conflict_marker_size(repo: &Repository, path: &Path, snapshot: &ConflictSnapshot) -> usize {
+    // Attributes may be edited after Git wrote the conflicted worktree file.
+    // Recover the width from the complete marker grammar captured when the
+    // resolver opened, then fall back to the current attribute for unusual or
+    // incomplete worktree states.
+    if let ConflictWorktreeSnapshot::Regular { bytes, .. } = &snapshot.worktree {
+        if let Some(size) = complete_conflict_marker_size(bytes) {
+            return size;
+        }
+    }
+
     let value = repo
         .get_attr(
             path,
@@ -5231,6 +5252,50 @@ fn conflict_marker_size(repo: &Repository, path: &Path) -> usize {
             .unwrap_or(7),
         _ => 7,
     }
+}
+
+fn complete_conflict_marker_size(content: &[u8]) -> Option<usize> {
+    #[derive(Clone, Copy)]
+    enum State {
+        Resolved,
+        Ours(usize),
+        Ancestor(usize),
+        Theirs(usize),
+    }
+
+    fn labeled_marker_width(line: &[u8], marker: u8) -> Option<usize> {
+        let width = line.iter().take_while(|byte| **byte == marker).count();
+        if width == 0 {
+            return None;
+        }
+        let suffix = &line[width..];
+        (suffix.is_empty()
+            || suffix
+                .first()
+                .is_some_and(|byte| matches!(*byte, b' ' | b'\t')))
+        .then_some(width)
+    }
+
+    fn is_bare_marker(line: &[u8], marker: u8, width: usize) -> bool {
+        line.len() == width && line.iter().all(|byte| *byte == marker)
+    }
+
+    let mut state = State::Resolved;
+    for line in content.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let next_open = labeled_marker_width(line, b'<');
+        state = match state {
+            State::Resolved => next_open.map_or(State::Resolved, State::Ours),
+            State::Ours(width) if is_bare_marker(line, b'|', width) => State::Ancestor(width),
+            State::Ours(width) if is_bare_marker(line, b'=', width) => State::Theirs(width),
+            State::Ancestor(width) if is_bare_marker(line, b'=', width) => State::Theirs(width),
+            State::Theirs(width) if labeled_marker_width(line, b'>') == Some(width) => {
+                return Some(width);
+            }
+            current => next_open.map_or(current, State::Ours),
+        };
+    }
+    None
 }
 
 fn contains_conflict_markers(content: &[u8], marker_size: usize) -> bool {
@@ -6100,6 +6165,42 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn conflict_index_transaction_preserves_index_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let index_path = repo.index().unwrap().path().unwrap().to_path_buf();
+        fs::set_permissions(&index_path, fs::Permissions::from_mode(0o664)).unwrap();
+        let result_oid = repo.blob(b"shared repository result\n").unwrap();
+        let mode = repo
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .unwrap()
+            .our
+            .expect("ours entry")
+            .mode;
+
+        super::write_conflict_index_resolution(
+            fixture.path(),
+            relative_path,
+            &diff.snapshot,
+            Some((mode, result_oid)),
+        )
+        .expect("commit conflict resolution transaction");
+
+        assert_eq!(
+            fs::metadata(index_path).unwrap().permissions().mode() & 0o777,
+            0o664
+        );
+    }
+
     #[test]
     fn locked_conflict_index_transaction_rejects_a_changed_conflict() {
         let fixture = make_repo_with_conflicting_merge();
@@ -6278,6 +6379,50 @@ mod tests {
     fn staging_working_copy_honours_custom_conflict_marker_size() {
         let fixture = make_repo_with_conflicting_merge();
         let relative_path = std::path::Path::new("file.txt");
+        fs::write(
+            fixture.path().join(".gitattributes"),
+            b"file.txt conflict-marker-size=3\n",
+        )
+        .unwrap();
+        assert!(run_git(
+            fixture.path(),
+            &["checkout", "--conflict=merge", "--", "file.txt"]
+        )
+        .status
+        .success());
+        assert_eq!(
+            super::complete_conflict_marker_size(
+                &fs::read(fixture.path().join(relative_path)).unwrap()
+            ),
+            Some(3)
+        );
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+
+        let error = super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::WorkingTree {
+                snapshot: diff.snapshot,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("still contains conflict markers"));
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
+    }
+
+    #[test]
+    fn staging_working_copy_retains_the_conflicts_original_marker_size() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
         let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
             .expect("conflict model");
         fs::write(
@@ -6285,11 +6430,11 @@ mod tests {
             b"file.txt conflict-marker-size=3\n",
         )
         .unwrap();
-        fs::write(
-            fixture.path().join(relative_path),
-            b"<<< current\nours\n===\ntheirs\n>>> incoming\n",
-        )
-        .unwrap();
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        assert_eq!(
+            super::conflict_marker_size(&repo, relative_path, &diff.snapshot),
+            7
+        );
 
         let error = super::apply_conflict_resolution(
             fixture.path(),
