@@ -1297,10 +1297,12 @@ pub fn compute_three_way_conflict_diff(
         )
     };
 
-    let worktree_content = repo
+    let worktree = repo
         .workdir()
         .map(|workdir| workdir.join(file_path))
-        .and_then(|path| read_worktree_entry(&path));
+        .map_or(ConflictWorktreeSnapshot::Missing, |path| {
+            read_worktree_snapshot(&path)
+        });
 
     Ok(ThreeWayFileDiff {
         path: file_path.to_path_buf(),
@@ -1312,7 +1314,7 @@ pub fn compute_three_way_conflict_diff(
             ours_mode: conflict_entry.our.as_ref().map(|entry| entry.mode),
             theirs_oid: conflict_entry.their.as_ref().map(|entry| entry.id),
             theirs_mode: conflict_entry.their.as_ref().map(|entry| entry.mode),
-            worktree_content,
+            worktree,
         },
         ancestor_exists,
         ours_exists,
@@ -1512,18 +1514,43 @@ fn restore_missing_final_newline(
     }
 }
 
-fn read_worktree_entry(path: &Path) -> Option<Vec<u8>> {
-    let metadata = std::fs::symlink_metadata(path).ok()?;
+fn read_worktree_snapshot(path: &Path) -> ConflictWorktreeSnapshot {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ConflictWorktreeSnapshot::Missing;
+        }
+        Err(_) => return ConflictWorktreeSnapshot::Other,
+    };
     if metadata.file_type().is_symlink() {
-        return std::fs::read_link(path)
-            .ok()
-            .map(|target| target.as_os_str().as_encoded_bytes().to_vec());
+        return std::fs::read_link(path).map_or(ConflictWorktreeSnapshot::Other, |target| {
+            ConflictWorktreeSnapshot::Symlink {
+                target: target.as_os_str().as_encoded_bytes().to_vec(),
+            }
+        });
     }
     if metadata.is_file() {
-        std::fs::read(path).ok()
+        std::fs::read(path).map_or(ConflictWorktreeSnapshot::Other, |bytes| {
+            ConflictWorktreeSnapshot::Regular {
+                bytes,
+                executable: worktree_executable(&metadata),
+                readonly: metadata.permissions().readonly(),
+            }
+        })
     } else {
-        None
+        ConflictWorktreeSnapshot::Other
     }
+}
+
+#[cfg(unix)]
+fn worktree_executable(metadata: &std::fs::Metadata) -> Option<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn worktree_executable(_metadata: &std::fs::Metadata) -> Option<bool> {
+    None
 }
 
 fn parse_merge_sections(content: &[u8], markers: &MergeMarkers) -> Result<Vec<MergeSection>> {
@@ -1721,8 +1748,10 @@ mod conflict_diff_tests {
         assert!(diff.supports_text_resolution());
         assert!(!diff.is_binary);
         assert_eq!(
-            diff.snapshot.worktree_content,
-            std::fs::read(repo.path().join("conflict.txt")).ok()
+            diff.snapshot.worktree.bytes(),
+            std::fs::read(repo.path().join("conflict.txt"))
+                .ok()
+                .as_deref()
         );
         assert!(diff.sections.iter().any(|section| matches!(
             section,

@@ -1222,6 +1222,44 @@ impl DiffViewer {
         self.generation
     }
 
+    /// Begin loading an ordinary file diff and return the generation that owns
+    /// the request. A later file or conflict selection invalidates this token,
+    /// preventing an older background result from replacing the newer view.
+    pub fn set_diff_loading(
+        &mut self,
+        path: String,
+        source: DiffSource,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
+        self.loading = true;
+        self.error = None;
+        self.diff = None;
+        self.file_path = Some(path.clone());
+        self.source = source;
+        self.display_mode = DiffDisplayMode::Unified;
+        self.three_way_diff = None;
+        self.three_way_rows = Arc::new(Vec::new());
+        self.conflict_choices.clear();
+        self.display_rows = Arc::new(Vec::new());
+        self.sbs_rows = Arc::new(Vec::new());
+        self.highlighted_row = None;
+        self.selected_lines = None;
+        self.partial_mode = false;
+        self.selection_anchor = None;
+        self.mouse_selecting = false;
+        self.file_menu_open = false;
+        self.sync_wrap_list_state();
+        cx.emit(DiffViewerEvent::DiffChanged {
+            path,
+            commit_id: self.source.commit_id().map(str::to_string),
+            generation: self.generation,
+        });
+        cx.notify();
+        self.generation
+    }
+
     /// Mark that a diff fetch is in progress so the viewer shows a loading
     /// spinner instead of stale content or the empty placeholder.
     pub fn set_loading(&mut self, cx: &mut Context<Self>) {
@@ -5251,7 +5289,7 @@ mod tests {
                 ours_mode: None,
                 theirs_oid: None,
                 theirs_mode: None,
-                worktree_content: None,
+                worktree: rgitui_git::ConflictWorktreeSnapshot::Missing,
             },
             ancestor_exists: true,
             ours_exists: true,
@@ -6937,7 +6975,11 @@ mod view_tests {
             ours_mode: None,
             theirs_oid: None,
             theirs_mode: None,
-            worktree_content: Some(b"markers\n".to_vec()),
+            worktree: rgitui_git::ConflictWorktreeSnapshot::Regular {
+                bytes: b"markers\n".to_vec(),
+                executable: None,
+                readonly: false,
+            },
         };
         let diff = ThreeWayFileDiff {
             path: PATH.into(),
@@ -7019,6 +7061,30 @@ mod view_tests {
     }
 
     #[test]
+    fn conflict_selection_invalidates_an_older_ordinary_diff_load() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        let ordinary_generation = probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_diff_loading("ordinary.txt".to_string(), DiffSource::Worktree, cx)
+            })
+        });
+
+        let conflict_generation = probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_conflict_loading(PATH.to_string(), cx)
+            })
+        });
+
+        probe.read(|probe, cx| {
+            let viewer = probe.viewer.read(cx);
+            assert_ne!(ordinary_generation, conflict_generation);
+            assert_ne!(viewer.generation(), ordinary_generation);
+            assert_eq!(viewer.file_path(), Some(PATH));
+            assert!(viewer.is_conflict_view_active());
+        });
+    }
+
+    #[test]
     fn whole_side_resolution_event_carries_the_loaded_snapshot() {
         let mut probe = ViewTest::open(StagingProbe::new);
         let snapshot = ConflictSnapshot {
@@ -7028,7 +7094,11 @@ mod view_tests {
             ours_mode: None,
             theirs_oid: None,
             theirs_mode: None,
-            worktree_content: Some(b"binary markers\0".to_vec()),
+            worktree: rgitui_git::ConflictWorktreeSnapshot::Regular {
+                bytes: b"binary markers\0".to_vec(),
+                executable: None,
+                readonly: false,
+            },
         };
         let diff = ThreeWayFileDiff {
             path: PATH.into(),

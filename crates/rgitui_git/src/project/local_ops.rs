@@ -3719,7 +3719,7 @@ fn apply_conflict_side(
     };
     let full_path = worktree_path.join(file_path);
     let original_worktree = capture_worktree_entry(&full_path)?;
-    if original_worktree.snapshot_bytes() != snapshot.worktree_content.as_deref() {
+    if !original_worktree.matches_conflict_snapshot(&snapshot.worktree) {
         anyhow::bail!(
             "'{}' changed outside the conflict resolver. Reload it before choosing a side so no edits are overwritten.",
             file_path.display()
@@ -3817,9 +3817,26 @@ fn apply_conflict_side(
             let mut checkout = git2::build::CheckoutBuilder::new();
             checkout.force().path(file_path);
             if let Err(error) = repo.checkout_index(Some(&mut index), Some(&mut checkout)) {
-                return Err(error.into());
+                let current = capture_worktree_entry(&full_path)?;
+                if current.exactly_matches(&original_worktree) {
+                    return Err(error.into());
+                }
+                return Err(rollback_worktree_after_error(
+                    &full_path,
+                    &original_worktree,
+                    &current,
+                    error.into(),
+                ));
             }
-            let refreshed_conflict = reload_conflict_index(&mut index, snapshot, file_path)?;
+            let applied_worktree = capture_worktree_entry(&full_path)?;
+            let refreshed_conflict = reload_conflict_index_after_worktree_change(
+                &mut index,
+                snapshot,
+                file_path,
+                &full_path,
+                &original_worktree,
+                &applied_worktree,
+            )?;
             let refreshed_entry = match side {
                 ConflictSide::Ours => refreshed_conflict.our.as_ref(),
                 ConflictSide::Theirs => refreshed_conflict.their.as_ref(),
@@ -3827,10 +3844,17 @@ fn apply_conflict_side(
             .expect("the verified selected side still exists");
             let mut stage_zero = stage_zero_entry(refreshed_entry, selected_mode);
             stage_zero.id = selected_id;
-            index.conflict_remove(file_path)?;
-            index.add(&stage_zero)?;
-            if let Err(error) = index.write() {
-                return Err(error.into());
+            let index_result = index
+                .conflict_remove(file_path)
+                .and_then(|_| index.add(&stage_zero))
+                .and_then(|_| index.write());
+            if let Err(error) = index_result {
+                return Err(rollback_worktree_after_error(
+                    &full_path,
+                    &original_worktree,
+                    &applied_worktree,
+                    error.into(),
+                ));
             }
             return Ok(());
         }
@@ -3902,7 +3926,7 @@ fn apply_conflict_resolution(
             result_mode,
             snapshot: loaded_snapshot,
         } => {
-            if current_worktree != loaded_snapshot.worktree_content {
+            if !original_worktree.matches_conflict_snapshot(&loaded_snapshot.worktree) {
                 anyhow::bail!(
                     "'{}' changed outside the conflict resolver. Reload it before saving so no edits are overwritten.",
                     file_path.display()
@@ -3936,6 +3960,12 @@ fn apply_conflict_resolution(
                 .unwrap_or(0o100644);
             let mode = regular_worktree_mode(&repo, &full_path, fallback_mode)?;
             let canonical_content = clean_worktree_bytes(worktree_path, file_path, &content)?;
+            if contains_conflict_markers(&canonical_content) {
+                anyhow::bail!(
+                    "'{}' still contains conflict markers after applying Git's clean filters. Remove them in your editor before staging the working copy.",
+                    file_path.display()
+                );
+            }
             (Some(canonical_content), mode, None)
         }
     };
@@ -4222,6 +4252,40 @@ impl WorktreeEntryBackup {
             _ => false,
         }
     }
+
+    fn matches_conflict_snapshot(&self, snapshot: &ConflictWorktreeSnapshot) -> bool {
+        match (self, snapshot) {
+            (Self::Missing, ConflictWorktreeSnapshot::Missing)
+            | (Self::Other, ConflictWorktreeSnapshot::Other) => true,
+            (
+                Self::Regular { bytes, permissions },
+                ConflictWorktreeSnapshot::Regular {
+                    bytes: snapshot_bytes,
+                    executable,
+                    readonly,
+                },
+            ) => {
+                bytes == snapshot_bytes
+                    && permissions_executable(permissions) == *executable
+                    && permissions.readonly() == *readonly
+            }
+            (Self::Symlink(target), ConflictWorktreeSnapshot::Symlink { target: snapshot }) => {
+                target.as_os_str().as_encoded_bytes() == snapshot
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn permissions_executable(permissions: &std::fs::Permissions) -> Option<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(permissions.mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn permissions_executable(_permissions: &std::fs::Permissions) -> Option<bool> {
+    None
 }
 
 #[cfg(unix)]
@@ -4970,6 +5034,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn editor_worktree_result_rejects_markers_created_by_clean_conversion() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        fs::write(
+            fixture.path().join(".gitattributes"),
+            b"file.txt text working-tree-encoding=UTF-16LE\n",
+        )
+        .unwrap();
+        let encoded = super::smudge_canonical_bytes(
+            fixture.path(),
+            relative_path,
+            b"<<<<<<< current\nstill unresolved\n=======\nincoming\n>>>>>>> incoming\n",
+        )
+        .expect("encode marker-bearing worktree file");
+        fs::write(fixture.path().join(relative_path), encoded).unwrap();
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+
+        let error = super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::WorkingTree {
+                snapshot: diff.snapshot,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("after applying Git's clean filters"));
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
+    }
+
     #[cfg(unix)]
     #[test]
     fn editor_worktree_result_uses_the_current_executable_bit() {
@@ -5087,6 +5190,69 @@ mod tests {
             .unwrap()
             .conflict_get(relative_path)
             .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_whole_side_resolution_rejects_a_same_bytes_symlink_replacement() {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::symlink;
+
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let full_path = fixture.path().join(relative_path);
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let target = std::ffi::OsString::from_vec(
+            diff.snapshot
+                .worktree
+                .bytes()
+                .expect("regular worktree bytes")
+                .to_vec(),
+        );
+        fs::remove_file(&full_path).unwrap();
+        symlink(target, &full_path).unwrap();
+
+        let error = super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed outside"));
+        assert!(fs::symlink_metadata(&full_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_whole_side_resolution_rejects_permission_only_changes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let full_path = fixture.path().join(relative_path);
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        fs::set_permissions(&full_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed outside"));
+        assert_ne!(
+            fs::metadata(&full_path).unwrap().permissions().mode() & 0o111,
+            0
+        );
     }
 
     #[test]
@@ -5511,6 +5677,52 @@ mod tests {
             .unwrap();
         assert!(index.conflict_get(relative_path).is_ok());
         assert!(index.get_path(relative_path, 0).is_none());
+    }
+
+    #[test]
+    fn failed_special_entry_index_write_restores_the_worktree() {
+        let fixture = TempRepo::init();
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let ancestor = repo.blob(b"ancestor-target").unwrap();
+        let ours = repo.blob(b"current-target").unwrap();
+        let theirs = repo.blob(b"incoming-target").unwrap();
+        drop(repo);
+        install_index_conflict(&fixture, "link", 0o120000, ancestor, ours, theirs);
+        let relative_path = std::path::Path::new("link");
+        fs::write(fixture.path().join(relative_path), b"original worktree\n").unwrap();
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("special conflict model");
+        let lock_path = git2::Repository::open(fixture.path())
+            .unwrap()
+            .path()
+            .join("index.lock");
+        let lock = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .unwrap();
+
+        let error = super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .unwrap_err();
+
+        drop(lock);
+        fs::remove_file(lock_path).unwrap();
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path)).unwrap(),
+            b"original worktree\n"
+        );
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
     }
 
     #[test]

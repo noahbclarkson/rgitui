@@ -319,6 +319,31 @@ pub enum MergeSection {
     },
 }
 
+/// The kind, bytes and Git-relevant permissions of a conflicted worktree path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictWorktreeSnapshot {
+    Missing,
+    Regular {
+        bytes: Vec<u8>,
+        executable: Option<bool>,
+        readonly: bool,
+    },
+    Symlink {
+        target: Vec<u8>,
+    },
+    Other,
+}
+
+impl ConflictWorktreeSnapshot {
+    pub fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Regular { bytes, .. } => Some(bytes),
+            Self::Symlink { target } => Some(target),
+            Self::Missing | Self::Other => None,
+        }
+    }
+}
+
 /// The index and working-tree state the resolver was built from.
 ///
 /// Resolution compares this snapshot with the repository again immediately
@@ -332,7 +357,7 @@ pub struct ConflictSnapshot {
     pub ours_mode: Option<u32>,
     pub theirs_oid: Option<git2::Oid>,
     pub theirs_mode: Option<u32>,
-    pub worktree_content: Option<Vec<u8>>,
+    pub worktree: ConflictWorktreeSnapshot,
 }
 
 /// A merge-aware conflict model for one unmerged index entry.

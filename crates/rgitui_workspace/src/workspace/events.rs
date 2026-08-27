@@ -1343,6 +1343,11 @@ pub(super) fn subscribe_sidebar(
                 let repo_path = this.effective_worktree_path(cx);
                 let dv = diff_viewer.clone();
                 let dp = detail_panel_ref.clone();
+                let source = DiffSource::working_tree(is_staged);
+                let request_generation = dv.update(cx, |dv, cx| {
+                    dv.set_diff_loading(p.clone(), source.clone(), cx)
+                });
+                dp.update(cx, |panel, cx| panel.clear(cx));
 
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let result = cx
@@ -1354,11 +1359,24 @@ pub(super) fn subscribe_sidebar(
                     cx.update(|cx| match result {
                         Ok(diff) => {
                             dv.update(cx, |dv, cx| {
-                                dv.set_diff(diff, p, DiffSource::working_tree(is_staged), cx)
+                                if dv.generation() != request_generation
+                                    || dv.file_path() != Some(p.as_str())
+                                {
+                                    return;
+                                }
+                                dv.set_diff(diff, p, source, cx)
                             });
-                            dp.update(cx, |dp, cx| dp.clear(cx));
                         }
-                        Err(e) => log::error!("Failed to get diff: {}", e),
+                        Err(error) => {
+                            log::error!("Failed to get diff: {}", error);
+                            dv.update(cx, |dv, cx| {
+                                if dv.generation() == request_generation
+                                    && dv.file_path() == Some(p.as_str())
+                                {
+                                    dv.set_error(format!("Failed to load '{}': {}", p, error), cx);
+                                }
+                            });
+                        }
                     });
                 })
                 .detach();
