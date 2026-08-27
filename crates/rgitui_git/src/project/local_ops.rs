@@ -3759,13 +3759,26 @@ fn apply_conflict_side(
         } else {
             // Let libgit2 materialize symlinks and other supported entry types
             // from the exact chosen stage-0 index entry.
+            if matches!(std::fs::symlink_metadata(&full_path), Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink())
+            {
+                anyhow::bail!(
+                    "Refusing to replace '{}' because it is a directory.",
+                    full_path.display()
+                );
+            }
             stage_zero.id = entry.id;
             index.conflict_remove(file_path)?;
             index.add(&stage_zero)?;
-            index.write()?;
             let mut checkout = git2::build::CheckoutBuilder::new();
             checkout.force().path(file_path);
-            repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
+            if let Err(error) = repo.checkout_index(Some(&mut index), Some(&mut checkout)) {
+                restore_worktree_entry(&full_path, &original_worktree);
+                return Err(error.into());
+            }
+            if let Err(error) = index.write() {
+                restore_worktree_entry(&full_path, &original_worktree);
+                return Err(error.into());
+            }
             return Ok(());
         }
     } else {
@@ -3841,13 +3854,14 @@ fn apply_conflict_resolution(
                     file_path.display()
                 );
             }
-            let mode = conflict
+            let fallback_mode = conflict
                 .our
                 .as_ref()
                 .or(conflict.their.as_ref())
                 .or(conflict.ancestor.as_ref())
                 .map(|entry| entry.mode)
                 .unwrap_or(0o100644);
+            let mode = regular_worktree_mode(&repo, &full_path, fallback_mode)?;
             let canonical_content = clean_worktree_bytes(worktree_path, file_path, &content)?;
             (Some(canonical_content), mode, None)
         }
@@ -3948,6 +3962,36 @@ fn stage_zero_entry(template: &git2::IndexEntry, mode: u32) -> git2::IndexEntry 
         flags_extended: template.flags_extended,
         path: template.path.clone(),
     }
+}
+
+fn regular_worktree_mode(repo: &Repository, path: &Path, fallback_mode: u32) -> Result<u32> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        anyhow::bail!(
+            "'{}' is not a regular file. Choose Current or Incoming as a whole-file resolution.",
+            path.display()
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let tracks_filemode = repo
+            .config()
+            .ok()
+            .and_then(|config| config.get_bool("core.filemode").ok())
+            .unwrap_or(true);
+        if tracks_filemode {
+            return Ok(if metadata.permissions().mode() & 0o111 != 0 {
+                0o100755
+            } else {
+                0o100644
+            });
+        }
+    }
+
+    let _ = repo;
+    Ok(fallback_mode)
 }
 
 fn ensure_repo_relative_path(path: &Path) -> Result<()> {
@@ -4415,8 +4459,19 @@ mod tests {
         ours: git2::Oid,
         theirs: git2::Oid,
     ) {
+        install_index_conflict(fixture, path, 0o160000, ancestor, ours, theirs);
+    }
+
+    fn install_index_conflict(
+        fixture: &TempRepo,
+        path: &str,
+        mode: u32,
+        ancestor: git2::Oid,
+        ours: git2::Oid,
+        theirs: git2::Oid,
+    ) {
         let entries = format!(
-            "160000 {ancestor} 1\t{path}\n160000 {ours} 2\t{path}\n160000 {theirs} 3\t{path}\n"
+            "{mode:o} {ancestor} 1\t{path}\n{mode:o} {ours} 2\t{path}\n{mode:o} {theirs} 3\t{path}\n"
         );
         let mut child = super::super::git_command()
             .current_dir(fixture.path())
@@ -4611,6 +4666,64 @@ mod tests {
             repo.find_blob(entry.id).unwrap().content(),
             b"manual result\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_worktree_result_uses_the_current_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = TempRepo::init();
+        let relative_path = std::path::Path::new("file.txt");
+        fixture.write_file("file.txt", "base\n");
+        fs::set_permissions(
+            fixture.path().join(relative_path),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        fixture.stage(relative_path);
+        fixture.commit("executable base");
+        assert!(
+            run_git(fixture.path(), &["config", "core.filemode", "true"])
+                .status
+                .success()
+        );
+        assert!(run_git(fixture.path(), &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        fixture.commit_file("file.txt", "incoming\n", "incoming change");
+        assert!(run_git(fixture.path(), &["checkout", "main"])
+            .status
+            .success());
+        fixture.commit_file("file.txt", "current\n", "current change");
+        assert!(!run_git(fixture.path(), &["merge", "incoming"])
+            .status
+            .success());
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        fs::write(fixture.path().join(relative_path), b"manual result\n").unwrap();
+        fs::set_permissions(
+            fixture.path().join(relative_path),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
+        super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::WorkingTree {
+                snapshot: diff.snapshot,
+            },
+        )
+        .expect("stage non-executable editor result");
+
+        let entry = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .get_path(relative_path, 0)
+            .expect("stage-0 entry");
+        assert_eq!(entry.mode, 0o100644);
     }
 
     #[test]
@@ -4921,6 +5034,46 @@ mod tests {
         let entry = index.get_path(relative_path, 0).expect("stage-0 gitlink");
         assert_eq!(entry.mode, 0o160000);
         assert_eq!(entry.id, theirs);
+    }
+
+    #[test]
+    fn failed_special_entry_checkout_leaves_the_conflict_unresolved() {
+        let fixture = TempRepo::init();
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let ancestor = repo.blob(b"ancestor-target").unwrap();
+        let ours = repo.blob(b"current-target").unwrap();
+        let theirs = repo.blob(b"incoming-target").unwrap();
+        drop(repo);
+        install_index_conflict(&fixture, "link", 0o120000, ancestor, ours, theirs);
+        let relative_path = std::path::Path::new("link");
+        fs::create_dir(fixture.path().join(relative_path)).unwrap();
+        fs::write(
+            fixture.path().join(relative_path).join("keep.txt"),
+            b"keep\n",
+        )
+        .unwrap();
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("special conflict model");
+
+        let error = super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("directory"));
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path).join("keep.txt")).unwrap(),
+            b"keep\n"
+        );
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(relative_path).is_ok());
+        assert!(index.get_path(relative_path, 0).is_none());
     }
 
     #[test]

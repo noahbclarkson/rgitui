@@ -1255,21 +1255,26 @@ pub fn compute_three_way_conflict_diff(
             .as_ref()
             .or(synthetic_ancestor.as_ref())
             .expect("a real or synthetic ancestor exists");
+        let markers = MergeMarkers::collision_free([
+            ancestor_bytes.as_slice(),
+            ours_bytes.as_slice(),
+            theirs_bytes.as_slice(),
+        ])?;
         let mut options = MergeFileOptions::new();
         options
-            .ancestor_label("rgitui-base")
-            .our_label("rgitui-current")
-            .their_label("rgitui-incoming")
+            .ancestor_label(&markers.ancestor_label)
+            .our_label(&markers.our_label)
+            .their_label(&markers.their_label)
             .style_diff3(true)
             .patience(true)
-            .marker_size(MERGE_MARKER_SIZE as u16);
+            .marker_size(markers.size);
         let merged = repo.merge_file_from_index(
             ancestor_entry,
             conflict_entry.our.as_ref().expect("ours exists"),
             conflict_entry.their.as_ref().expect("theirs exists"),
             Some(&mut options),
         )?;
-        let mut sections = parse_merge_sections(merged.content())?;
+        let mut sections = parse_merge_sections(merged.content(), &markers)?;
         restore_missing_final_newline(&mut sections, &ancestor_bytes, ConflictInputSide::Ancestor);
         restore_missing_final_newline(&mut sections, &ours_bytes, ConflictInputSide::Ours);
         restore_missing_final_newline(&mut sections, &theirs_bytes, ConflictInputSide::Theirs);
@@ -1315,7 +1320,80 @@ pub fn compute_three_way_conflict_diff(
     })
 }
 
-const MERGE_MARKER_SIZE: usize = 23;
+const MIN_MERGE_MARKER_SIZE: u16 = 23;
+
+struct MergeMarkers {
+    size: u16,
+    ancestor_label: String,
+    our_label: String,
+    their_label: String,
+    open: Vec<u8>,
+    bare_base: Vec<u8>,
+    base: Vec<u8>,
+    separator: Vec<u8>,
+    close: Vec<u8>,
+}
+
+impl MergeMarkers {
+    fn collision_free(inputs: [&[u8]; 3]) -> Result<Self> {
+        let size = (MIN_MERGE_MARKER_SIZE..=u16::MAX)
+            .find(|size| {
+                let bare_base = vec![b'|'; usize::from(*size)];
+                let separator = vec![b'='; usize::from(*size)];
+                !input_contains_line(&inputs, &bare_base)
+                    && !input_contains_line(&inputs, &separator)
+            })
+            .ok_or_else(|| anyhow::anyhow!("Could not allocate collision-free merge markers"))?;
+
+        for nonce in 0_u64.. {
+            let suffix = if nonce == 0 {
+                String::new()
+            } else {
+                format!("-{nonce}")
+            };
+            let ancestor_label = format!("rgitui-base{suffix}");
+            let our_label = format!("rgitui-current{suffix}");
+            let their_label = format!("rgitui-incoming{suffix}");
+            let bare_base = vec![b'|'; usize::from(size)];
+            let separator = vec![b'='; usize::from(size)];
+            let open = labeled_merge_marker(b'<', size, &our_label);
+            let base = labeled_merge_marker(b'|', size, &ancestor_label);
+            let close = labeled_merge_marker(b'>', size, &their_label);
+            if [&open, &base, &close]
+                .into_iter()
+                .all(|marker| !input_contains_line(&inputs, marker))
+            {
+                return Ok(Self {
+                    size,
+                    ancestor_label,
+                    our_label,
+                    their_label,
+                    open,
+                    bare_base,
+                    base,
+                    separator,
+                    close,
+                });
+            }
+        }
+        unreachable!("the merge-marker nonce space is exhaustive")
+    }
+}
+
+fn labeled_merge_marker(byte: u8, size: u16, label: &str) -> Vec<u8> {
+    let mut marker = vec![byte; usize::from(size)];
+    marker.push(b' ');
+    marker.extend_from_slice(label.as_bytes());
+    marker
+}
+
+fn input_contains_line(inputs: &[&[u8]], candidate: &[u8]) -> bool {
+    inputs.iter().any(|input| {
+        input
+            .split_inclusive(|byte| *byte == b'\n')
+            .any(|line| line_without_eol(line) == candidate)
+    })
+}
 
 fn entry_bytes(repo: &Repository, entry: Option<&IndexEntry>) -> Result<Vec<u8>> {
     let Some(entry) = entry else {
@@ -1445,7 +1523,7 @@ fn read_worktree_entry(path: &Path) -> Option<Vec<u8>> {
     }
 }
 
-fn parse_merge_sections(content: &[u8]) -> Result<Vec<MergeSection>> {
+fn parse_merge_sections(content: &[u8], markers: &MergeMarkers) -> Result<Vec<MergeSection>> {
     #[derive(Clone, Copy)]
     enum ParseState {
         Resolved,
@@ -1453,16 +1531,6 @@ fn parse_merge_sections(content: &[u8]) -> Result<Vec<MergeSection>> {
         Ancestor,
         Theirs,
     }
-
-    let marker = |byte: u8| std::iter::repeat_n(byte, MERGE_MARKER_SIZE).collect::<Vec<_>>();
-    let mut open = marker(b'<');
-    open.extend_from_slice(b" rgitui-current");
-    let bare_base = marker(b'|');
-    let mut base = bare_base.clone();
-    base.extend_from_slice(b" rgitui-base");
-    let separator = marker(b'=');
-    let mut close = marker(b'>');
-    close.extend_from_slice(b" rgitui-incoming");
 
     let mut state = ParseState::Resolved;
     let mut resolved = Vec::new();
@@ -1474,21 +1542,21 @@ fn parse_merge_sections(content: &[u8]) -> Result<Vec<MergeSection>> {
     for line in content.split_inclusive(|byte| *byte == b'\n') {
         let marker_line = line_without_eol(line);
         match state {
-            ParseState::Resolved if marker_line == open => {
+            ParseState::Resolved if marker_line == markers.open => {
                 if !resolved.is_empty() {
                     sections.push(MergeSection::Resolved(std::mem::take(&mut resolved)));
                 }
                 state = ParseState::Ours;
             }
-            ParseState::Ours if marker_line == base || marker_line == bare_base => {
+            ParseState::Ours if marker_line == markers.base || marker_line == markers.bare_base => {
                 state = ParseState::Ancestor
             }
             // libgit2 may omit the ancestor block for add/add conflicts even
             // when diff3 style was requested. The synthetic ancestor is empty,
             // so the ordinary separator still carries the exact information.
-            ParseState::Ours if marker_line == separator => state = ParseState::Theirs,
-            ParseState::Ancestor if marker_line == separator => state = ParseState::Theirs,
-            ParseState::Theirs if marker_line == close => {
+            ParseState::Ours if marker_line == markers.separator => state = ParseState::Theirs,
+            ParseState::Ancestor if marker_line == markers.separator => state = ParseState::Theirs,
+            ParseState::Theirs if marker_line == markers.close => {
                 sections.push(MergeSection::Conflict {
                     ancestor: std::mem::take(&mut ancestor),
                     ours: std::mem::take(&mut ours),
@@ -1585,7 +1653,8 @@ mod conflict_diff_tests {
 
     #[test]
     fn parse_merge_sections_preserves_crlf_and_missing_final_newline() {
-        let marker = |byte: char| byte.to_string().repeat(MERGE_MARKER_SIZE);
+        let markers = MergeMarkers::collision_free([b"", b"", b""]).unwrap();
+        let marker = |byte: char| byte.to_string().repeat(usize::from(markers.size));
         let content = format!(
             "prefix\r\n{} rgitui-current\r\nours\r\n{} rgitui-base\r\nbase\r\n{}\r\ntheirs\r\n{} rgitui-incoming\r\nsuffix",
             marker('<'),
@@ -1595,7 +1664,7 @@ mod conflict_diff_tests {
         );
 
         assert_eq!(
-            parse_merge_sections(content.as_bytes()).unwrap(),
+            parse_merge_sections(content.as_bytes(), &markers).unwrap(),
             vec![
                 MergeSection::Resolved(b"prefix\r\n".to_vec()),
                 MergeSection::Conflict {
@@ -1605,6 +1674,38 @@ mod conflict_diff_tests {
                 },
                 MergeSection::Resolved(b"suffix".to_vec()),
             ]
+        );
+    }
+
+    #[test]
+    fn conflict_side_lines_that_look_like_generated_markers_remain_byte_exact() {
+        let repo = TempRepo::init();
+        repo.commit_file("conflict.txt", "base\n", "base");
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        repo.commit_file("conflict.txt", "incoming\n", "incoming changes");
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        let collision = format!(
+            "{} rgitui-base\ncurrent\n",
+            "|".repeat(usize::from(MIN_MERGE_MARKER_SIZE))
+        );
+        repo.commit_file("conflict.txt", &collision, "current changes");
+        assert!(!run_git(&repo, &["merge", "incoming"]).status.success());
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("conflict.txt")).unwrap();
+
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Ours),
+            collision.as_bytes()
+        );
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Ancestor),
+            b"base\n"
+        );
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Theirs),
+            b"incoming\n"
         );
     }
 
