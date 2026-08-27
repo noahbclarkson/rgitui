@@ -48,7 +48,7 @@
 | **Tags** | Create (annotated & lightweight), delete, checkout |
 | **Stash** | Save, pop, apply, drop, create branch from stash |
 | **Remote** | Fetch, pull, push, force push; multi-remote support |
-| **Merge** | Merge with conflict detection; accept ours / theirs resolution |
+| **Merge** | Merge with conflict detection; per-conflict three-way resolver, whole-side choices, and editor handoff |
 | **Rebase** | Interactive rebase with pick / squash / reword / fixup / drop |
 | **Bisect** | Start, good, bad, skip, reset |
 | **Worktrees** | Create, list, switch |
@@ -58,7 +58,7 @@
 ### Views
 
 - **Commit graph** — animated lane-based visualization with Bezier-curve edges and commit search
-- **Diff viewer** — unified, side-by-side, and three-way conflict modes with syntax highlighting (syntect)
+- **Diff viewer** — unified and side-by-side diffs plus an interactive Current / Result / Incoming conflict resolver with syntax highlighting (syntect)
 - **Blame view** — per-line author info with avatars
 - **File history** — commit history filtered to a single file
 - **Reflog** — reference log browser

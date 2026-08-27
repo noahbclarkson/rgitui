@@ -28,7 +28,7 @@ use crate::keymap;
 use crate::CommandId;
 
 /// Events from the sidebar.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarEvent {
     BranchSelected(String),
     BranchCheckout(String),
@@ -58,8 +58,6 @@ pub enum SidebarEvent {
     StageAll,
     UnstageAll,
     DiscardFile(String),
-    AcceptConflictOurs(String),
-    AcceptConflictTheirs(String),
     ConflictFileSelected(String),
     OpenRepo,
     ToggleDir(String), // dir_key: "staged:path" or "unstaged:path"
@@ -801,7 +799,7 @@ impl Sidebar {
                 if let Some(file) = self.staged.get(i) {
                     let path = file.path.display().to_string();
                     self.selected_file = Some((path.clone(), true));
-                    cx.emit(SidebarEvent::FileSelected { path, staged: true });
+                    cx.emit(Self::file_selection_event(path, true, file.kind));
                     cx.notify();
                 }
             }
@@ -809,10 +807,7 @@ impl Sidebar {
                 if let Some(file) = self.unstaged.get(i) {
                     let path = file.path.display().to_string();
                     self.selected_file = Some((path.clone(), false));
-                    cx.emit(SidebarEvent::FileSelected {
-                        path,
-                        staged: false,
-                    });
+                    cx.emit(Self::file_selection_event(path, false, file.kind));
                     cx.notify();
                 }
             }
@@ -884,7 +879,12 @@ impl Sidebar {
             }
             SidebarItem::UnstagedFile(i) => {
                 if let Some(file) = self.unstaged.get(i) {
-                    cx.emit(SidebarEvent::StageFile(file.path.display().to_string()));
+                    let path = file.path.display().to_string();
+                    if file.kind == FileChangeKind::Conflicted {
+                        cx.emit(SidebarEvent::ConflictFileSelected(path));
+                    } else {
+                        cx.emit(SidebarEvent::StageFile(path));
+                    }
                 }
             }
             _ => {}
@@ -912,7 +912,12 @@ impl Sidebar {
             }
             SidebarItem::UnstagedFile(i) => {
                 if let Some(file) = self.unstaged.get(i) {
-                    cx.emit(SidebarEvent::DiscardFile(file.path.display().to_string()));
+                    let path = file.path.display().to_string();
+                    if file.kind == FileChangeKind::Conflicted {
+                        cx.emit(SidebarEvent::ConflictFileSelected(path));
+                    } else {
+                        cx.emit(SidebarEvent::DiscardFile(path));
+                    }
                 }
             }
             _ => {}
@@ -1253,6 +1258,14 @@ impl Sidebar {
             FileChangeKind::TypeChange => Color::Warning,
             FileChangeKind::Untracked => Color::Untracked,
             FileChangeKind::Conflicted => Color::Conflict,
+        }
+    }
+
+    fn file_selection_event(path: String, staged: bool, kind: FileChangeKind) -> SidebarEvent {
+        if !staged && kind == FileChangeKind::Conflicted {
+            SidebarEvent::ConflictFileSelected(path)
+        } else {
+            SidebarEvent::FileSelected { path, staged }
         }
     }
 
@@ -3872,6 +3885,8 @@ impl Render for Sidebar {
                                         file.path.display().to_string();
                                     let file_path_clone = file_path_for_emit.clone();
                                     let file_path_stage = file_path_for_emit.clone();
+                                    let file_path_resolve = file_path_for_emit.clone();
+                                    let file_kind = file.kind;
                                     let is_selected = selected_file.as_ref().is_some_and(
                                         |(p, staged)| !*staged && p == &file_path_for_emit,
                                     );
@@ -3905,10 +3920,11 @@ impl Render for Sidebar {
                                             w_sel.clone().update(cx, |this, cx| {
                                                 this.selected_file =
                                                     Some((file_path_clone.clone(), false));
-                                                cx.emit(SidebarEvent::FileSelected {
-                                                    path: file_path_clone.clone(),
-                                                    staged: false,
-                                                });
+                                                cx.emit(Sidebar::file_selection_event(
+                                                    file_path_clone.clone(),
+                                                    false,
+                                                    file_kind,
+                                                ));
                                             }).ok();
                                         }})
                                         .child(
@@ -3923,8 +3939,38 @@ impl Render for Sidebar {
                                                 .truncate(),
                                         )
                                         .child(div().flex_1())
-                                        // Action buttons for unstaged files (wrapped for right padding)
-                                        .child(
+                                        // Unresolved conflicts must never expose generic Stage or
+                                        // Discard controls: both can silently consume marker text.
+                                        .child(if file.kind == FileChangeKind::Conflicted {
+                                            let w_resolve = w.clone();
+                                            Button::new(
+                                                ElementId::NamedInteger(
+                                                    "resolve-conflict-action".into(),
+                                                    i as u64,
+                                                ),
+                                                "Resolve",
+                                            )
+                                            .icon(IconName::FileConflict)
+                                            .size(ButtonSize::Compact)
+                                            .style(ButtonStyle::Tinted(rgitui_ui::TintColor::Warning))
+                                            .tooltip("Open conflict resolver")
+                                            .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                                w_resolve
+                                                    .clone()
+                                                    .update(cx, |this, cx| {
+                                                        this.selected_file = Some((
+                                                            file_path_resolve.clone(),
+                                                            false,
+                                                        ));
+                                                        cx.emit(SidebarEvent::ConflictFileSelected(
+                                                            file_path_resolve.clone(),
+                                                        ));
+                                                        cx.stop_propagation();
+                                                    })
+                                                    .ok();
+                                            })
+                                            .into_any_element()
+                                        } else {
                                             div()
                                                 .pr(px(4.))
                                                 .h_flex()
@@ -3952,6 +3998,7 @@ impl Render for Sidebar {
                                                                 cx.emit(SidebarEvent::DiscardFile(
                                                                     file_path_for_emit.clone(),
                                                                 ));
+                                                                cx.stop_propagation();
                                                             }).ok();
                                                         }})
                                                         .child("x"),
@@ -3979,11 +4026,13 @@ impl Render for Sidebar {
                                                                 cx.emit(SidebarEvent::StageFile(
                                                                     file_path_stage.clone(),
                                                                 ));
+                                                                cx.stop_propagation();
                                                             }).ok();
                                                         }})
                                                         .child(rgitui_ui::Icon::new(IconName::Plus)),
-                                                ),
-                                        )
+                                                )
+                                                .into_any_element()
+                                        })
                                         .into_any_element()
                                 }
                                 FlatFileItem::Dir { dir_key, label, file_count, collapsed, indent } => {
@@ -4664,6 +4713,44 @@ mod tests {
         assert_eq!(Sidebar::file_change_symbol(FileChangeKind::TypeChange), "T");
         assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Untracked), "?");
         assert_eq!(Sidebar::file_change_symbol(FileChangeKind::Conflicted), "!");
+    }
+
+    #[test]
+    fn conflicted_unstaged_files_open_the_resolver() {
+        assert_eq!(
+            Sidebar::file_selection_event(
+                "src/conflicted.rs".to_string(),
+                false,
+                FileChangeKind::Conflicted,
+            ),
+            SidebarEvent::ConflictFileSelected("src/conflicted.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn ordinary_and_staged_files_keep_the_normal_diff_route() {
+        assert_eq!(
+            Sidebar::file_selection_event(
+                "src/modified.rs".to_string(),
+                false,
+                FileChangeKind::Modified,
+            ),
+            SidebarEvent::FileSelected {
+                path: "src/modified.rs".to_string(),
+                staged: false,
+            }
+        );
+        assert_eq!(
+            Sidebar::file_selection_event(
+                "src/staged.rs".to_string(),
+                true,
+                FileChangeKind::Conflicted,
+            ),
+            SidebarEvent::FileSelected {
+                path: "src/staged.rs".to_string(),
+                staged: true,
+            }
+        );
     }
 
     // --- file_kind_counts tests ---

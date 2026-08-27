@@ -191,6 +191,13 @@ impl Workspace {
             CommandId::RevertFile => diff.revert_file(cx),
             CommandId::CopyDiffSelection => diff.copy_selection(cx),
             CommandId::SelectAllDiffLines => diff.select_all_lines(cx),
+            CommandId::ConflictUseCurrent => diff.use_current_for_conflict(cx),
+            CommandId::ConflictUseIncoming => diff.use_incoming_for_conflict(cx),
+            CommandId::ConflictUseBoth => diff.use_both_for_conflict(false, cx),
+            CommandId::ConflictUseBothReverse => diff.use_both_for_conflict(true, cx),
+            CommandId::ConflictReset => diff.reset_conflict_choice(cx),
+            CommandId::ConflictSave => diff.save_conflict_result(cx),
+            CommandId::ConflictOpenEditor => diff.open_conflict_in_editor(cx),
             _ => cx.propagate(),
         });
     }
@@ -850,6 +857,13 @@ impl Workspace {
             | CommandId::RevertFile
             | CommandId::CopyDiffSelection
             | CommandId::SelectAllDiffLines
+            | CommandId::ConflictUseCurrent
+            | CommandId::ConflictUseIncoming
+            | CommandId::ConflictUseBoth
+            | CommandId::ConflictUseBothReverse
+            | CommandId::ConflictReset
+            | CommandId::ConflictSave
+            | CommandId::ConflictOpenEditor
             | CommandId::ToggleFileTree
             | CommandId::PrevCommitDetails
             | CommandId::NextCommitDetails

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use git2::{DiffOptions, Repository};
+use git2::{DiffOptions, IndexEntry, MergeFileOptions, Repository};
 use std::path::{Path, PathBuf};
 
 use crate::types::*;
@@ -1186,10 +1186,7 @@ mod tests {
 
 // ── Three-way conflict diff ───────────────────────────────────
 
-/// Compute a 3-way conflict diff for a conflicted file.
-///
-/// Returns the ancestor (merge-base), ours, and theirs versions along with
-/// detected conflict regions.
+/// Compute Git's lossless three-way merge model for a conflicted file.
 pub fn compute_three_way_conflict_diff(
     repo_path: &Path,
     file_path: &Path,
@@ -1217,102 +1214,738 @@ pub fn compute_three_way_conflict_diff(
         }
     };
 
-    fn read_blob_text(repo: &Repository, entry: &git2::IndexEntry) -> Result<Vec<String>> {
-        let blob = repo.find_blob(entry.id)?;
-        let content = blob.content();
-        let text = String::from_utf8_lossy(content);
-        Ok(text.lines().map(|l| l.to_string()).collect())
-    }
+    let ancestor_exists = conflict_entry.ancestor.is_some();
+    let ours_exists = conflict_entry.our.is_some();
+    let theirs_exists = conflict_entry.their.is_some();
+    let ancestor_bytes = entry_bytes(&repo, conflict_entry.ancestor.as_ref())?;
+    let ours_bytes = entry_bytes(&repo, conflict_entry.our.as_ref())?;
+    let theirs_bytes = entry_bytes(&repo, conflict_entry.their.as_ref())?;
 
-    let ancestor_lines = if let Some(ref entry) = conflict_entry.ancestor {
-        read_blob_text(&repo, entry)?
+    let entries = [
+        conflict_entry.ancestor.as_ref(),
+        conflict_entry.our.as_ref(),
+        conflict_entry.their.as_ref(),
+    ];
+    let is_special_file = entries
+        .iter()
+        .flatten()
+        .any(|entry| entry.mode & 0o170000 != 0o100000);
+    let is_binary = [&ancestor_bytes, &ours_bytes, &theirs_bytes]
+        .into_iter()
+        .any(|bytes| !is_text(bytes));
+
+    // Delete/modify, binary and special-file conflicts need a whole-side
+    // decision. Feeding a synthetic empty blob through the text merger would
+    // make deletion indistinguishable from keeping an empty file.
+    let (sections, result_mode) = if !is_binary && !is_special_file && ours_exists && theirs_exists
+    {
+        let empty_blob = (!ancestor_exists).then(|| repo.blob(&[])).transpose()?;
+        let synthetic_ancestor = empty_blob.map(|oid| {
+            synthetic_empty_entry(
+                conflict_entry
+                    .our
+                    .as_ref()
+                    .or(conflict_entry.their.as_ref())
+                    .expect("both text sides exist"),
+                oid,
+            )
+        });
+        let ancestor_entry = conflict_entry
+            .ancestor
+            .as_ref()
+            .or(synthetic_ancestor.as_ref())
+            .expect("a real or synthetic ancestor exists");
+        let markers = MergeMarkers::collision_free([
+            ancestor_bytes.as_slice(),
+            ours_bytes.as_slice(),
+            theirs_bytes.as_slice(),
+        ])?;
+        let mut options = MergeFileOptions::new();
+        options
+            .ancestor_label(&markers.ancestor_label)
+            .our_label(&markers.our_label)
+            .their_label(&markers.their_label)
+            .style_diff3(true)
+            .patience(true)
+            .marker_size(markers.size);
+        let merged = repo.merge_file_from_index(
+            ancestor_entry,
+            conflict_entry.our.as_ref().expect("ours exists"),
+            conflict_entry.their.as_ref().expect("theirs exists"),
+            Some(&mut options),
+        )?;
+        let mut sections = parse_merge_sections(merged.content(), &markers)?;
+        restore_missing_final_newline(&mut sections, &ancestor_bytes, ConflictInputSide::Ancestor);
+        restore_missing_final_newline(&mut sections, &ours_bytes, ConflictInputSide::Ours);
+        restore_missing_final_newline(&mut sections, &theirs_bytes, ConflictInputSide::Theirs);
+        (sections, merged.mode())
     } else {
-        Vec::new()
+        let mode = conflict_entry
+            .our
+            .as_ref()
+            .or(conflict_entry.their.as_ref())
+            .or(conflict_entry.ancestor.as_ref())
+            .map(|entry| entry.mode)
+            .unwrap_or(0o100644);
+        (
+            vec![MergeSection::Conflict {
+                ancestor: ancestor_bytes.clone(),
+                ours: ours_bytes.clone(),
+                theirs: theirs_bytes.clone(),
+            }],
+            mode,
+        )
     };
 
-    let ours_lines = if let Some(ref entry) = conflict_entry.our {
-        read_blob_text(&repo, entry)?
-    } else {
-        Vec::new()
-    };
-
-    let theirs_lines = if let Some(ref entry) = conflict_entry.their {
-        read_blob_text(&repo, entry)?
-    } else {
-        Vec::new()
-    };
-
-    // Detect conflict regions by comparing each version to the ancestor.
-    // A region is "conflicted" if both ours and theirs differ from ancestor.
-    // A region is "ours-only" if ours differs but theirs matches ancestor.
-    // A region is "theirs-only" if theirs differs but ours matches ancestor.
-    let regions = compute_conflict_regions(&ancestor_lines, &ours_lines, &theirs_lines);
+    let worktree = repo
+        .workdir()
+        .map(|workdir| workdir.join(file_path))
+        .map_or(ConflictWorktreeSnapshot::Missing, |path| {
+            read_worktree_snapshot(&path)
+        });
 
     Ok(ThreeWayFileDiff {
         path: file_path.to_path_buf(),
-        ancestor_lines,
-        ours_lines,
-        theirs_lines,
-        regions,
+        sections,
+        snapshot: ConflictSnapshot {
+            ancestor_oid: conflict_entry.ancestor.as_ref().map(|entry| entry.id),
+            ancestor_mode: conflict_entry.ancestor.as_ref().map(|entry| entry.mode),
+            ours_oid: conflict_entry.our.as_ref().map(|entry| entry.id),
+            ours_mode: conflict_entry.our.as_ref().map(|entry| entry.mode),
+            theirs_oid: conflict_entry.their.as_ref().map(|entry| entry.id),
+            theirs_mode: conflict_entry.their.as_ref().map(|entry| entry.mode),
+            worktree,
+        },
+        ancestor_exists,
+        ours_exists,
+        theirs_exists,
+        is_binary,
+        is_special_file,
+        result_mode,
     })
 }
 
-/// Compute conflict/non-conflict regions between ancestor/ours/theirs.
-fn compute_conflict_regions(
-    ancestor: &[String],
-    ours: &[String],
-    theirs: &[String],
-) -> Vec<ConflictRegion> {
-    let n = ancestor.len().max(ours.len()).max(theirs.len());
-    if n == 0 {
-        return Vec::new();
+const MIN_MERGE_MARKER_SIZE: u16 = 23;
+
+struct MergeMarkers {
+    size: u16,
+    ancestor_label: String,
+    our_label: String,
+    their_label: String,
+    open: Vec<u8>,
+    bare_base: Vec<u8>,
+    base: Vec<u8>,
+    separator: Vec<u8>,
+    close: Vec<u8>,
+}
+
+impl MergeMarkers {
+    fn collision_free(inputs: [&[u8]; 3]) -> Result<Self> {
+        let size = (MIN_MERGE_MARKER_SIZE..=u16::MAX)
+            .find(|size| {
+                let bare_base = vec![b'|'; usize::from(*size)];
+                let separator = vec![b'='; usize::from(*size)];
+                !input_contains_line(&inputs, &bare_base)
+                    && !input_contains_line(&inputs, &separator)
+            })
+            .ok_or_else(|| anyhow::anyhow!("Could not allocate collision-free merge markers"))?;
+
+        for nonce in 0_u64.. {
+            let suffix = if nonce == 0 {
+                String::new()
+            } else {
+                format!("-{nonce}")
+            };
+            let ancestor_label = format!("rgitui-base{suffix}");
+            let our_label = format!("rgitui-current{suffix}");
+            let their_label = format!("rgitui-incoming{suffix}");
+            let bare_base = vec![b'|'; usize::from(size)];
+            let separator = vec![b'='; usize::from(size)];
+            let open = labeled_merge_marker(b'<', size, &our_label);
+            let base = labeled_merge_marker(b'|', size, &ancestor_label);
+            let close = labeled_merge_marker(b'>', size, &their_label);
+            if [&open, &base, &close]
+                .into_iter()
+                .all(|marker| !input_contains_line(&inputs, marker))
+            {
+                return Ok(Self {
+                    size,
+                    ancestor_label,
+                    our_label,
+                    their_label,
+                    open,
+                    bare_base,
+                    base,
+                    separator,
+                    close,
+                });
+            }
+        }
+        unreachable!("the merge-marker nonce space is exhaustive")
+    }
+}
+
+fn labeled_merge_marker(byte: u8, size: u16, label: &str) -> Vec<u8> {
+    let mut marker = vec![byte; usize::from(size)];
+    marker.push(b' ');
+    marker.extend_from_slice(label.as_bytes());
+    marker
+}
+
+fn input_contains_line(inputs: &[&[u8]], candidate: &[u8]) -> bool {
+    inputs.iter().any(|input| {
+        input
+            .split_inclusive(|byte| *byte == b'\n')
+            .any(|line| line_without_eol(line) == candidate)
+    })
+}
+
+fn entry_bytes(repo: &Repository, entry: Option<&IndexEntry>) -> Result<Vec<u8>> {
+    let Some(entry) = entry else {
+        return Ok(Vec::new());
+    };
+    if entry.mode & 0o170000 == 0o160000 {
+        // Gitlink OIDs identify commits, so there is no blob to load. Keeping
+        // the commit ID as display data lets the whole-side resolver show the
+        // exact submodule revision represented by each index stage.
+        return Ok(entry.id.to_string().into_bytes());
+    }
+    Ok(repo.find_blob(entry.id)?.content().to_vec())
+}
+
+fn is_text(bytes: &[u8]) -> bool {
+    !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok()
+}
+
+fn synthetic_empty_entry(template: &IndexEntry, oid: git2::Oid) -> IndexEntry {
+    IndexEntry {
+        ctime: template.ctime,
+        mtime: template.mtime,
+        dev: template.dev,
+        ino: template.ino,
+        mode: template.mode,
+        uid: template.uid,
+        gid: template.gid,
+        file_size: 0,
+        id: oid,
+        flags: template.flags,
+        flags_extended: template.flags_extended,
+        path: template.path.clone(),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ConflictInputSide {
+    Ancestor,
+    Ours,
+    Theirs,
+}
+
+#[cfg(test)]
+fn side_projection(sections: &[MergeSection], side: ConflictInputSide) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for section in sections {
+        match section {
+            MergeSection::Resolved(resolved) => bytes.extend_from_slice(resolved),
+            MergeSection::Conflict {
+                ancestor,
+                ours,
+                theirs,
+            } => bytes.extend_from_slice(match side {
+                ConflictInputSide::Ancestor => ancestor,
+                ConflictInputSide::Ours => ours,
+                ConflictInputSide::Theirs => theirs,
+            }),
+        }
+    }
+    bytes
+}
+
+/// libgit2 has to put marker lines on their own lines. When a conflicting side
+/// reaches EOF without a newline it therefore inserts one byte before the next
+/// marker. Remove only that provably synthetic byte so choosing a side remains
+/// byte-exact.
+fn restore_missing_final_newline(
+    sections: &mut [MergeSection],
+    original: &[u8],
+    side: ConflictInputSide,
+) {
+    if original.ends_with(b"\n") {
+        return;
     }
 
-    // For each line index, determine if ours/theirs differ from ancestor
-    let ours_diffs: Vec<bool> = (0..n)
-        .map(|i| {
-            let a = ancestor.get(i);
-            let o = ours.get(i);
-            // Differ if one is None and the other is Some, or both Some but different
-            match (a, o) {
-                (None, None) | (Some(_), None) | (None, Some(_)) => true,
-                (Some(a), Some(o)) => a != o,
+    for section in sections.iter_mut().rev() {
+        let MergeSection::Conflict {
+            ancestor,
+            ours,
+            theirs,
+        } = section
+        else {
+            // A non-empty resolved suffix proves this conflict did not reach
+            // EOF in the merge output, so its newline is real.
+            if matches!(section, MergeSection::Resolved(bytes) if !bytes.is_empty()) {
+                return;
             }
-        })
-        .collect();
-
-    let theirs_diffs: Vec<bool> = (0..n)
-        .map(|i| {
-            let a = ancestor.get(i);
-            let t = theirs.get(i);
-            match (a, t) {
-                (None, None) | (Some(_), None) | (None, Some(_)) => true,
-                (Some(a), Some(t)) => a != t,
-            }
-        })
-        .collect();
-
-    // Merge consecutive runs into regions
-    let mut regions = Vec::new();
-    let mut i = 0;
-    while i < n {
-        let ours_diff = ours_diffs[i];
-        let theirs_diff = theirs_diffs[i];
-        let start = i;
-        while i < n && ours_diffs[i] == ours_diff && theirs_diffs[i] == theirs_diff {
-            i += 1;
+            continue;
+        };
+        let bytes = match side {
+            ConflictInputSide::Ancestor => ancestor,
+            ConflictInputSide::Ours => ours,
+            ConflictInputSide::Theirs => theirs,
+        };
+        if bytes.is_empty() {
+            continue;
         }
-        let is_conflict = ours_diff && theirs_diff;
-        // Only record regions that are non-empty and actually differ in at least one side
-        if ours_diff || theirs_diff {
-            regions.push(ConflictRegion {
-                start,
-                end: i,
-                is_conflict,
-            });
+
+        // Depending on the input's line-ending style, libgit2 can add LF or
+        // CRLF before its next marker. The conflict must be the final non-empty
+        // merge section and the remaining bytes must match the original side's
+        // actual EOF before either suffix is considered synthetic.
+        let synthetic_len =
+            if bytes.ends_with(b"\r\n") && original.ends_with(&bytes[..bytes.len() - 2]) {
+                2
+            } else if bytes.ends_with(b"\n") && original.ends_with(&bytes[..bytes.len() - 1]) {
+                1
+            } else {
+                return;
+            };
+        bytes.truncate(bytes.len() - synthetic_len);
+        return;
+    }
+}
+
+fn read_worktree_snapshot(path: &Path) -> ConflictWorktreeSnapshot {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ConflictWorktreeSnapshot::Missing;
+        }
+        Err(_) => return ConflictWorktreeSnapshot::Other,
+    };
+    if metadata.file_type().is_symlink() {
+        return std::fs::read_link(path).map_or(ConflictWorktreeSnapshot::Other, |target| {
+            ConflictWorktreeSnapshot::Symlink {
+                target: target.as_os_str().as_encoded_bytes().to_vec(),
+            }
+        });
+    }
+    if metadata.is_file() {
+        std::fs::read(path).map_or(ConflictWorktreeSnapshot::Other, |bytes| {
+            ConflictWorktreeSnapshot::Regular {
+                bytes,
+                executable: worktree_executable(&metadata),
+                readonly: metadata.permissions().readonly(),
+            }
+        })
+    } else {
+        ConflictWorktreeSnapshot::Other
+    }
+}
+
+#[cfg(unix)]
+fn worktree_executable(metadata: &std::fs::Metadata) -> Option<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn worktree_executable(_metadata: &std::fs::Metadata) -> Option<bool> {
+    None
+}
+
+fn parse_merge_sections(content: &[u8], markers: &MergeMarkers) -> Result<Vec<MergeSection>> {
+    #[derive(Clone, Copy)]
+    enum ParseState {
+        Resolved,
+        Ours,
+        Ancestor,
+        Theirs,
+    }
+
+    let mut state = ParseState::Resolved;
+    let mut resolved = Vec::new();
+    let mut ours = Vec::new();
+    let mut ancestor = Vec::new();
+    let mut theirs = Vec::new();
+    let mut sections = Vec::new();
+
+    for line in content.split_inclusive(|byte| *byte == b'\n') {
+        let marker_line = line_without_eol(line);
+        match state {
+            ParseState::Resolved if marker_line == markers.open => {
+                if !resolved.is_empty() {
+                    sections.push(MergeSection::Resolved(std::mem::take(&mut resolved)));
+                }
+                state = ParseState::Ours;
+            }
+            ParseState::Ours if marker_line == markers.base || marker_line == markers.bare_base => {
+                state = ParseState::Ancestor
+            }
+            // libgit2 may omit the ancestor block for add/add conflicts even
+            // when diff3 style was requested. The synthetic ancestor is empty,
+            // so the ordinary separator still carries the exact information.
+            ParseState::Ours if marker_line == markers.separator => state = ParseState::Theirs,
+            ParseState::Ancestor if marker_line == markers.separator => state = ParseState::Theirs,
+            ParseState::Theirs if marker_line == markers.close => {
+                sections.push(MergeSection::Conflict {
+                    ancestor: std::mem::take(&mut ancestor),
+                    ours: std::mem::take(&mut ours),
+                    theirs: std::mem::take(&mut theirs),
+                });
+                state = ParseState::Resolved;
+            }
+            ParseState::Resolved => resolved.extend_from_slice(line),
+            ParseState::Ours => ours.extend_from_slice(line),
+            ParseState::Ancestor => ancestor.extend_from_slice(line),
+            ParseState::Theirs => theirs.extend_from_slice(line),
         }
     }
-    regions
+
+    if !matches!(state, ParseState::Resolved) {
+        anyhow::bail!("Git returned an incomplete conflict section for this file");
+    }
+    if !resolved.is_empty() || sections.is_empty() {
+        sections.push(MergeSection::Resolved(resolved));
+    }
+    Ok(sections)
+}
+
+fn line_without_eol(line: &[u8]) -> &[u8] {
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+#[cfg(test)]
+mod conflict_diff_tests {
+    use super::*;
+    use rgitui_test_support::TempRepo;
+    use std::io::Write;
+    use std::process::Stdio;
+
+    fn run_git(repo: &TempRepo, args: &[&str]) -> std::process::Output {
+        super::super::git_command()
+            .current_dir(repo.path())
+            .args(args)
+            .output()
+            .expect("failed to run git")
+    }
+
+    fn install_gitlink_conflict(
+        repo: &TempRepo,
+        path: &str,
+        ancestor: git2::Oid,
+        ours: git2::Oid,
+        theirs: git2::Oid,
+    ) {
+        let entries = format!(
+            "160000 {ancestor} 1\t{path}\n160000 {ours} 2\t{path}\n160000 {theirs} 3\t{path}\n"
+        );
+        let mut child = super::super::git_command()
+            .current_dir(repo.path())
+            .args(["update-index", "--index-info"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("start git update-index");
+        child
+            .stdin
+            .take()
+            .expect("update-index stdin")
+            .write_all(entries.as_bytes())
+            .expect("write conflict entries");
+        assert!(child.wait().expect("wait for update-index").success());
+    }
+
+    fn make_text_conflict() -> TempRepo {
+        let repo = TempRepo::init();
+        let base = (0..24)
+            .map(|line| format!("base {line}\n"))
+            .collect::<String>();
+        repo.commit_file("conflict.txt", &base, "base");
+
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        let incoming = base
+            .replace("base 3\n", "incoming 3\n")
+            .replace("base 18\n", "incoming 18\n");
+        repo.commit_file("conflict.txt", &incoming, "incoming changes");
+
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        let current = base
+            .replace("base 3\n", "current 3\n")
+            .replace("base 18\n", "current 18\n");
+        repo.commit_file("conflict.txt", &current, "current changes");
+
+        let merge = run_git(&repo, &["merge", "incoming"]);
+        assert!(!merge.status.success(), "merge should stop on a conflict");
+        repo
+    }
+
+    #[test]
+    fn parse_merge_sections_preserves_crlf_and_missing_final_newline() {
+        let markers = MergeMarkers::collision_free([b"", b"", b""]).unwrap();
+        let marker = |byte: char| byte.to_string().repeat(usize::from(markers.size));
+        let content = format!(
+            "prefix\r\n{} rgitui-current\r\nours\r\n{} rgitui-base\r\nbase\r\n{}\r\ntheirs\r\n{} rgitui-incoming\r\nsuffix",
+            marker('<'),
+            marker('|'),
+            marker('='),
+            marker('>')
+        );
+
+        assert_eq!(
+            parse_merge_sections(content.as_bytes(), &markers).unwrap(),
+            vec![
+                MergeSection::Resolved(b"prefix\r\n".to_vec()),
+                MergeSection::Conflict {
+                    ancestor: b"base\r\n".to_vec(),
+                    ours: b"ours\r\n".to_vec(),
+                    theirs: b"theirs\r\n".to_vec(),
+                },
+                MergeSection::Resolved(b"suffix".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn conflict_side_lines_that_look_like_generated_markers_remain_byte_exact() {
+        let repo = TempRepo::init();
+        repo.commit_file("conflict.txt", "base\n", "base");
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        repo.commit_file("conflict.txt", "incoming\n", "incoming changes");
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        let collision = format!(
+            "{} rgitui-base\ncurrent\n",
+            "|".repeat(usize::from(MIN_MERGE_MARKER_SIZE))
+        );
+        repo.commit_file("conflict.txt", &collision, "current changes");
+        assert!(!run_git(&repo, &["merge", "incoming"]).status.success());
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("conflict.txt")).unwrap();
+
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Ours),
+            collision.as_bytes()
+        );
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Ancestor),
+            b"base\n"
+        );
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Theirs),
+            b"incoming\n"
+        );
+    }
+
+    #[test]
+    fn computes_independent_regions_from_gits_merge_engine() {
+        let repo = make_text_conflict();
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("conflict.txt")).unwrap();
+
+        assert_eq!(diff.conflict_count(), 2);
+        assert!(diff.supports_text_resolution());
+        assert!(!diff.is_binary);
+        assert_eq!(
+            diff.snapshot.worktree.bytes(),
+            std::fs::read(repo.path().join("conflict.txt"))
+                .ok()
+                .as_deref()
+        );
+        assert!(diff.sections.iter().any(|section| matches!(
+            section,
+            MergeSection::Resolved(bytes) if bytes.windows(b"base 10\n".len()).any(|window| window == b"base 10\n")
+        )));
+    }
+
+    #[test]
+    fn conflict_sides_without_final_newlines_remain_byte_exact() {
+        let repo = TempRepo::init();
+        repo.commit_file("conflict.txt", "base", "base");
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        repo.commit_file("conflict.txt", "incoming", "incoming changes");
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        repo.commit_file("conflict.txt", "current", "current changes");
+        assert!(!run_git(&repo, &["merge", "incoming"]).status.success());
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("conflict.txt")).unwrap();
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Ancestor),
+            b"base"
+        );
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Ours),
+            b"current"
+        );
+        assert_eq!(
+            side_projection(&diff.sections, ConflictInputSide::Theirs),
+            b"incoming"
+        );
+    }
+
+    #[test]
+    fn eof_conflict_remains_exact_when_resolved_sections_include_other_side_changes() {
+        let repo = TempRepo::init();
+        let base = (0..20)
+            .map(|line| {
+                if line == 19 {
+                    format!("base {line}")
+                } else {
+                    format!("base {line}\n")
+                }
+            })
+            .collect::<String>();
+        repo.commit_file("conflict.txt", &base, "base");
+
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        let incoming = base
+            .replace("base 2\n", "incoming 2\n")
+            .replace("base 19", "incoming 19");
+        repo.commit_file("conflict.txt", &incoming, "incoming changes");
+
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        let current = base
+            .replace("base 8\n", "current 8\n")
+            .replace("base 19", "current 19");
+        repo.commit_file("conflict.txt", &current, "current changes");
+        assert!(!run_git(&repo, &["merge", "incoming"]).status.success());
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("conflict.txt")).unwrap();
+        assert_eq!(diff.conflict_count(), 1);
+        assert!(matches!(
+            diff.sections
+                .iter()
+                .find(|section| matches!(section, MergeSection::Conflict { .. })),
+            Some(MergeSection::Conflict {
+                ancestor,
+                ours,
+                theirs,
+            }) if ancestor == b"base 19"
+                && ours == b"current 19"
+                && theirs == b"incoming 19"
+        ));
+    }
+
+    #[test]
+    fn non_eof_conflict_keeps_real_newline_when_unterminated_suffix_repeats_its_text() {
+        let repo = TempRepo::init();
+        let suffix = (1..20)
+            .map(|line| {
+                if line == 19 {
+                    "X".to_string()
+                } else {
+                    format!("common {line}\n")
+                }
+            })
+            .collect::<String>();
+        repo.commit_file("conflict.txt", &format!("base\n{suffix}"), "base");
+
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        repo.commit_file(
+            "conflict.txt",
+            &format!("incoming\n{suffix}"),
+            "incoming changes",
+        );
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        repo.commit_file("conflict.txt", &format!("X\n{suffix}"), "current changes");
+        assert!(!run_git(&repo, &["merge", "incoming"]).status.success());
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("conflict.txt")).unwrap();
+        assert!(matches!(
+            diff.sections
+                .iter()
+                .find(|section| matches!(section, MergeSection::Conflict { .. })),
+            Some(MergeSection::Conflict { ours, .. }) if ours == b"X\n"
+        ));
+        assert!(matches!(
+            diff.sections.last(),
+            Some(MergeSection::Resolved(bytes)) if bytes.ends_with(b"X")
+        ));
+    }
+
+    #[test]
+    fn add_add_conflict_uses_a_synthetic_empty_ancestor() {
+        let repo = TempRepo::init();
+        repo.commit("base");
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        repo.commit_file("added.txt", "incoming\n", "incoming add");
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        repo.commit_file("added.txt", "current\n", "current add");
+        assert!(!run_git(&repo, &["merge", "incoming"]).status.success());
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("added.txt")).unwrap();
+        assert!(!diff.ancestor_exists);
+        assert!(diff.ours_exists && diff.theirs_exists);
+        assert!(diff.supports_text_resolution());
+        assert_eq!(diff.conflict_count(), 1);
+        assert!(
+            matches!(
+                &diff.sections[0],
+                MergeSection::Conflict { ancestor, ours, theirs }
+                    if ancestor.is_empty() && ours == b"current\n" && theirs == b"incoming\n"
+            ),
+            "unexpected sections: {:?}",
+            diff.sections
+        );
+    }
+
+    #[test]
+    fn binary_conflict_is_kept_as_a_whole_side_decision() {
+        let repo = TempRepo::init();
+        repo.write_file_bytes("image.bin", b"base\0bytes");
+        repo.stage("image.bin");
+        repo.commit("base");
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        repo.write_file_bytes("image.bin", b"incoming\0bytes");
+        repo.stage("image.bin");
+        repo.commit("incoming binary");
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        repo.write_file_bytes("image.bin", b"current\0bytes");
+        repo.stage("image.bin");
+        repo.commit("current binary");
+        assert!(!run_git(&repo, &["merge", "incoming"]).status.success());
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("image.bin")).unwrap();
+        assert!(diff.is_binary);
+        assert!(!diff.supports_text_resolution());
+        assert_eq!(diff.conflict_count(), 1);
+    }
+
+    #[test]
+    fn gitlink_conflict_uses_commit_ids_without_blob_lookup() {
+        let repo = TempRepo::init();
+        let ancestor = repo.commit_file("seed.txt", "ancestor\n", "ancestor");
+        let ours = repo.commit_file("seed.txt", "ours\n", "ours");
+        let theirs = repo.commit_file("seed.txt", "theirs\n", "theirs");
+        install_gitlink_conflict(&repo, "module", ancestor, ours, theirs);
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("module")).unwrap();
+
+        assert!(diff.is_special_file);
+        assert!(!diff.supports_text_resolution());
+        assert_eq!(diff.result_mode, 0o160000);
+        assert!(matches!(
+            &diff.sections[0],
+            MergeSection::Conflict {
+                ancestor: actual_ancestor,
+                ours: actual_ours,
+                theirs: actual_theirs,
+            } if actual_ancestor == ancestor.to_string().as_bytes()
+                && actual_ours == ours.to_string().as_bytes()
+                && actual_theirs == theirs.to_string().as_bytes()
+        ));
+    }
 }
 
 // ── Integration-level diff tests ────────────────────────────────

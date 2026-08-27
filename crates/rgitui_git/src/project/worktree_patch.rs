@@ -939,7 +939,7 @@ fn git_object_bytes(workdir: &Path, oid: &str, description: &str) -> Result<Vec<
 
 /// Convert exact worktree bytes into canonical Git bytes, honoring text/EOL,
 /// working-tree-encoding, clean filters, and LFS.
-fn clean_worktree_bytes(workdir: &Path, path: &Path, bytes: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn clean_worktree_bytes(workdir: &Path, path: &Path, bytes: &[u8]) -> Result<Vec<u8>> {
     let oid_output = run_git_with_input(
         workdir,
         &[
@@ -963,7 +963,7 @@ fn clean_worktree_bytes(workdir: &Path, path: &Path, bytes: &[u8]) -> Result<Vec
 
 /// Convert canonical Git bytes into exact worktree bytes, honoring smudge
 /// filters, working-tree-encoding and configured line endings.
-fn smudge_canonical_bytes(workdir: &Path, path: &Path, bytes: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn smudge_canonical_bytes(workdir: &Path, path: &Path, bytes: &[u8]) -> Result<Vec<u8>> {
     let oid_output = run_git_with_input(
         workdir,
         &[

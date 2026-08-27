@@ -116,6 +116,7 @@ impl StyledRow for ThreeWayRow {
             ThreeWayRow::HunkHeader {
                 header,
                 context_name,
+                ..
             } => header.heap_size(census) + context_name.heap_size(census),
             ThreeWayRow::Triple { .. } => 0,
         }

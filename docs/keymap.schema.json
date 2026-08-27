@@ -481,6 +481,34 @@
           "description": "Select every line in the diff. Command id: `select_all_diff_lines`."
         },
         {
+          "const": "diff::ConflictUseCurrent",
+          "description": "Put Current into the selected conflict's Result. Command id: `conflict_use_current`."
+        },
+        {
+          "const": "diff::ConflictUseIncoming",
+          "description": "Put Incoming into the selected conflict's Result. Command id: `conflict_use_incoming`."
+        },
+        {
+          "const": "diff::ConflictUseBoth",
+          "description": "Put Current followed by Incoming into the selected conflict's Result. Command id: `conflict_use_both`."
+        },
+        {
+          "const": "diff::ConflictUseBothReverse",
+          "description": "Put Incoming followed by Current into the selected conflict's Result. Command id: `conflict_use_both_reverse`."
+        },
+        {
+          "const": "diff::ConflictReset",
+          "description": "Reset the selected conflict to unresolved. Command id: `conflict_reset`."
+        },
+        {
+          "const": "diff::ConflictSave",
+          "description": "Save the complete conflict Result and stage the file. Command id: `conflict_save`."
+        },
+        {
+          "const": "diff::ConflictOpenEditor",
+          "description": "Open the conflicted working file in the configured editor. Command id: `conflict_open_editor`."
+        },
+        {
           "const": "detail::ToggleFileTree",
           "description": "Switch the changed-files list between the flat and tree layouts. Command id: `toggle_file_tree`."
         },
