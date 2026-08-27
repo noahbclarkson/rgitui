@@ -2211,12 +2211,16 @@ impl DiffViewer {
     }
 
     pub fn use_current_for_all_conflicts(&mut self, cx: &mut Context<Self>) {
-        self.conflict_choices.fill(Some(ConflictChoice::Ours));
+        for choice in &mut self.conflict_choices {
+            choice.get_or_insert(ConflictChoice::Ours);
+        }
         self.rebuild_three_way_rows(cx);
     }
 
     pub fn use_incoming_for_all_conflicts(&mut self, cx: &mut Context<Self>) {
-        self.conflict_choices.fill(Some(ConflictChoice::Theirs));
+        for choice in &mut self.conflict_choices {
+            choice.get_or_insert(ConflictChoice::Theirs);
+        }
         self.rebuild_three_way_rows(cx);
     }
 
@@ -6513,7 +6517,7 @@ mod view_tests {
     use rgitui_test_support::ViewTest;
 
     use super::{
-        ConflictResolution, DiffOperation, DiffSource, DiffViewer, DiffViewerEvent,
+        ConflictChoice, ConflictResolution, DiffOperation, DiffSource, DiffViewer, DiffViewerEvent,
         WorktreePatchScope,
     };
 
@@ -7182,6 +7186,58 @@ mod view_tests {
         ));
         probe.read(|probe, cx| {
             assert_eq!(probe.viewer.read(cx).unresolved_conflict_count(), 0);
+        });
+    }
+
+    #[test]
+    fn filling_remaining_conflicts_preserves_existing_choices() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        let diff = ThreeWayFileDiff {
+            path: PATH.into(),
+            sections: vec![
+                MergeSection::Conflict {
+                    ancestor: b"base-a\n".to_vec(),
+                    ours: b"current-a\n".to_vec(),
+                    theirs: b"incoming-a\n".to_vec(),
+                },
+                MergeSection::Conflict {
+                    ancestor: b"base-b\n".to_vec(),
+                    ours: b"current-b\n".to_vec(),
+                    theirs: b"incoming-b\n".to_vec(),
+                },
+            ],
+            snapshot: ConflictSnapshot {
+                ancestor_oid: None,
+                ancestor_mode: None,
+                ours_oid: None,
+                ours_mode: None,
+                theirs_oid: None,
+                theirs_mode: None,
+                worktree: rgitui_git::ConflictWorktreeSnapshot::Missing,
+            },
+            ancestor_exists: true,
+            ours_exists: true,
+            theirs_exists: true,
+            is_binary: false,
+            is_special_file: false,
+            result_mode: 0o100644,
+        };
+
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_three_way_diff(diff, cx);
+                viewer.use_current_for_conflict(cx);
+                viewer.use_incoming_for_all_conflicts(cx);
+            });
+        });
+
+        probe.read(|probe, cx| {
+            let viewer = probe.viewer.read(cx);
+            assert_eq!(
+                viewer.conflict_choices,
+                vec![Some(ConflictChoice::Ours), Some(ConflictChoice::Theirs)]
+            );
+            assert_eq!(viewer.unresolved_conflict_count(), 0);
         });
     }
 

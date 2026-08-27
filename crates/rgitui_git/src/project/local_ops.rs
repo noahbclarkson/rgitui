@@ -5106,7 +5106,25 @@ fn contains_conflict_markers(content: &[u8], marker_size: usize) -> bool {
     content.split(|byte| *byte == b'\n').any(|line| {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         b"<|=>".iter().any(|marker| {
-            line.len() >= marker_size && line[..marker_size].iter().all(|byte| byte == marker)
+            if line.len() < marker_size || !line[..marker_size].iter().all(|byte| byte == marker) {
+                return false;
+            }
+
+            let suffix = &line[marker_size..];
+            if *marker == b'=' {
+                // The separator has no label. Requiring the end of the line
+                // avoids treating longer runs used as prose or headings as
+                // unresolved conflict markers.
+                suffix.is_empty()
+            } else {
+                // Start, ancestor, and end markers may be followed by a label,
+                // which Git separates from the exact-width marker with
+                // whitespace. A longer run of the delimiter is not a marker.
+                suffix.is_empty()
+                    || suffix
+                        .first()
+                        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+            }
         })
     })
 }
@@ -5965,6 +5983,31 @@ mod tests {
     }
 
     #[test]
+    fn staging_working_copy_accepts_longer_delimiter_runs_as_content() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let resolved = b"resolved\n====================\nstill resolved\n";
+        fs::write(fixture.path().join(relative_path), resolved).unwrap();
+
+        super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::WorkingTree {
+                snapshot: diff.snapshot,
+            },
+        )
+        .expect("stage the manually resolved working copy");
+
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let index = repo.index().unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        let staged = index.get_path(relative_path, 0).expect("stage-zero entry");
+        assert_eq!(repo.find_blob(staged.id).unwrap().content(), resolved);
+    }
+
+    #[test]
     fn every_partial_conflict_marker_is_rejected_on_its_own() {
         for marker in [
             b"<<<<<<< current\n".as_slice(),
@@ -5975,6 +6018,23 @@ mod tests {
             assert!(super::contains_conflict_markers(marker, 7));
         }
         assert!(!super::contains_conflict_markers(b"ordinary content\n", 7));
+    }
+
+    #[test]
+    fn longer_delimiter_runs_are_not_conflict_markers() {
+        for content in [
+            b"<<<<<<<< Markdown heading\n".as_slice(),
+            b"|||||||| generated data\n".as_slice(),
+            b"====================\n".as_slice(),
+            b">>>>>>>> Markdown heading\n".as_slice(),
+            b"======= not-a-separator-label\n".as_slice(),
+        ] {
+            assert!(!super::contains_conflict_markers(content, 7));
+        }
+
+        assert!(super::contains_conflict_markers(b"<<<<<<< current\n", 7));
+        assert!(super::contains_conflict_markers(b"=======\n", 7));
+        assert!(super::contains_conflict_markers(b">>>>>>> incoming\n", 7));
     }
 
     #[test]
