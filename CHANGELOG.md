@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+### Added
+
+- **Conflicted files now open a complete three-way resolver.** Each unresolved
+  region shows Current, an editable-by-choice Result, and Incoming side by side.
+  Regions can take either side, both sides in either order, or be reset before
+  the complete byte-preserving result is saved and staged. Whole-file choices
+  handle binary, add/add, modify/delete, executable and special-file conflicts;
+  an editor handoff supports manual resolutions. Stale resolver views and raw
+  conflict markers are rejected instead of silently overwriting or staging
+  them, and ordinary Stage / Stage All no longer bypasses the resolver. (#77)
+
 ## [0.4.1] - 2026-08-26
 
 A performance, correctness and instrumentation release. Opening a large

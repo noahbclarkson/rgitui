@@ -188,6 +188,12 @@ impl GitProject {
                     let repo = Repository::open(&worktree_path)?;
                     let mut index = repo.index()?;
                     for path in &task_paths {
+                        if index.conflict_get(path).is_ok() {
+                            anyhow::bail!(
+                                "'{}' has unresolved conflicts. Open the conflict resolver before staging it.",
+                                path.display()
+                            );
+                        }
                         if worktree_path.join(path).exists() {
                             index.add_path(path)?;
                         } else {
@@ -360,7 +366,26 @@ impl GitProject {
                 .spawn(async move {
                     let repo = Repository::open(&worktree_path)?;
                     let mut index = repo.index()?;
-                    index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+                    let conflicted = index
+                        .conflicts()?
+                        .filter_map(|entry| entry.ok())
+                        .filter_map(|entry| {
+                            entry
+                                .our
+                                .as_ref()
+                                .or(entry.their.as_ref())
+                                .or(entry.ancestor.as_ref())
+                                .map(|entry| entry.path.clone())
+                        })
+                        .collect::<std::collections::HashSet<_>>();
+                    let mut skip_conflicts = |path: &Path, _matched: &[u8]| {
+                        i32::from(conflicted.contains(path.as_os_str().as_encoded_bytes()))
+                    };
+                    index.add_all(
+                        ["*"].iter(),
+                        git2::IndexAddOption::DEFAULT,
+                        Some(&mut skip_conflicts),
+                    )?;
                     index.write()?;
                     gather_refresh_data_lightweight_cached(
                         &refresh_repo_path,
@@ -3443,6 +3468,119 @@ impl GitProject {
         })
     }
 
+    /// Save an assembled conflict result and stage it as the sole stage-0 entry.
+    ///
+    /// The snapshot comes from the resolver load. Both the unmerged index OIDs
+    /// and the working-tree bytes must still match before this method writes,
+    /// so an old resolver cannot overwrite an external edit.
+    pub fn resolve_conflict_at(
+        &mut self,
+        path: String,
+        result: Option<Vec<u8>>,
+        result_mode: u32,
+        snapshot: ConflictSnapshot,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.finish_conflict_resolution(
+            path,
+            ConflictResolutionInput::Draft {
+                result,
+                result_mode,
+                snapshot,
+            },
+            worktree_path,
+            cx,
+        )
+    }
+
+    /// Stage a result edited outside rgitui while keeping the conflict-specific
+    /// safety checks. Literal conflict markers are rejected.
+    pub fn stage_conflict_worktree_at(
+        &mut self,
+        path: String,
+        snapshot: ConflictSnapshot,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.finish_conflict_resolution(
+            path,
+            ConflictResolutionInput::WorkingTree { snapshot },
+            worktree_path,
+            cx,
+        )
+    }
+
+    fn finish_conflict_resolution(
+        &mut self,
+        path: String,
+        input: ConflictResolutionInput,
+        worktree_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let worktree_path = worktree_path.to_path_buf();
+        let repo_path = self.repo_path.clone();
+        let commit_limit = self.commit_limit;
+        let file_path = PathBuf::from(&path);
+        let file_name = file_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        let branch_name = self.head_branch_at(&worktree_path);
+        let operation_id = self.begin_operation(
+            GitOperationKind::ResolveConflict,
+            format!("Saving conflict result for '{}'...", file_name),
+            None,
+            branch_name.clone(),
+            cx,
+        );
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: anyhow::Result<RefreshData> = cx
+                .background_executor()
+                .spawn(async move {
+                    apply_conflict_resolution(&worktree_path, &file_path, input)?;
+                    gather_refresh_data(&repo_path, commit_limit)
+                })
+                .await;
+
+            cx.update(|cx| {
+                this.update(cx, |this, cx| {
+                    match result {
+                        Ok(data) => {
+                            this.apply_refresh_data(data);
+                            this.complete_op(
+                                operation_id,
+                                GitOperationKind::ResolveConflict,
+                                "Conflict resolved and staged",
+                                (
+                                    Some(format!("Saved and staged '{}'.", file_name)),
+                                    None,
+                                    branch_name.clone(),
+                                ),
+                                cx,
+                            );
+                            cx.emit(GitProjectEvent::RepositoryChanged);
+                            cx.emit(GitProjectEvent::StatusChanged);
+                        }
+                        Err(error) => {
+                            this.fail_op(
+                                operation_id,
+                                GitOperationKind::ResolveConflict,
+                                "Conflict resolution failed",
+                                error.to_string(),
+                                (None, branch_name.clone(), false),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                    Ok(())
+                })
+            })?
+        })
+    }
+
     /// Accept the "ours" version of a conflicted file, staging it as resolved.
     pub fn accept_conflict_ours_at(
         &mut self,
@@ -3502,51 +3640,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = Repository::open(&worktree_path)?;
-                    // Find the conflict for this path in the index's conflict iterator
-                    let index = repo.index()?;
-                    let mut conflicts = index.conflicts()?;
-                    let entry_oid = loop {
-                        if let Some(Ok(conflict)) = conflicts.next() {
-                            // Compare path bytes from our/theirs/ancestor entries
-                            let conflict_path_bytes: Option<&[u8]> = conflict
-                                .our
-                                .as_ref()
-                                .map(|e| e.path.as_slice())
-                                .or_else(|| conflict.their.as_ref().map(|e| e.path.as_slice()))
-                                .or_else(|| conflict.ancestor.as_ref().map(|e| e.path.as_slice()));
-                            if conflict_path_bytes.is_some_and(|pb| pb == path.as_bytes()) {
-                                // Get the OID for the chosen side
-                                let chosen_entry: &Option<git2::IndexEntry> = match side {
-                                    ConflictSide::Ours => &conflict.our,
-                                    ConflictSide::Theirs => &conflict.their,
-                                };
-                                let entry = chosen_entry.as_ref().ok_or_else(|| {
-                                    anyhow::anyhow!("no '{}' version available", side_label)
-                                })?;
-                                break entry.id;
-                            }
-                        } else {
-                            anyhow::bail!("conflict not found for path '{}'", path);
-                        }
-                    };
-
-                    // Read the blob content for the chosen side
-                    let blob = repo.find_blob(entry_oid)?;
-                    let content = blob.content();
-
-                    // Write the chosen content to the workdir file
-                    let full_path = worktree_path.join(&file_path);
-                    if let Some(parent) = full_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&full_path, content)?;
-
-                    // Stage the resolved file
-                    let mut index = repo.index()?;
-                    index.add_path(&file_path)?;
-                    index.write()?;
-
+                    apply_conflict_side(&worktree_path, &file_path, side)?;
                     gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
@@ -3590,6 +3684,296 @@ impl GitProject {
             })?
         })
     }
+}
+
+enum ConflictResolutionInput {
+    Draft {
+        result: Option<Vec<u8>>,
+        result_mode: u32,
+        snapshot: ConflictSnapshot,
+    },
+    WorkingTree {
+        snapshot: ConflictSnapshot,
+    },
+}
+
+fn apply_conflict_side(worktree_path: &Path, file_path: &Path, side: ConflictSide) -> Result<()> {
+    ensure_repo_relative_path(file_path)?;
+    let repo = Repository::open(worktree_path)?;
+    let mut index = repo.index()?;
+    let conflict = index
+        .conflict_get(file_path)
+        .map_err(|_| anyhow::anyhow!("Conflict not found for path '{}'", file_path.display()))?;
+    let chosen = match side {
+        ConflictSide::Ours => conflict.our.as_ref(),
+        ConflictSide::Theirs => conflict.their.as_ref(),
+    };
+    let full_path = worktree_path.join(file_path);
+
+    if let Some(entry) = chosen {
+        let content = repo.find_blob(entry.id)?.content().to_vec();
+        let stage_zero = stage_zero_entry(entry, entry.mode);
+        if entry.mode & 0o170000 == 0o100000 {
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&full_path, &content)?;
+            set_executable_bit(&full_path, entry.mode)?;
+        } else {
+            // Let libgit2 materialize symlinks and other supported entry types
+            // from the exact chosen stage-0 index entry.
+            index.add(&stage_zero)?;
+            index.write()?;
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            checkout.force().path(file_path);
+            repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
+            return Ok(());
+        }
+        index.add_frombuffer(&stage_zero, &content)?;
+        index.write()?;
+    } else {
+        if full_path.exists() {
+            std::fs::remove_file(&full_path)?;
+        }
+        index.conflict_remove(file_path)?;
+        if let Err(error) = index.remove_path(file_path) {
+            if error.code() != git2::ErrorCode::NotFound {
+                return Err(error.into());
+            }
+        }
+        index.write()?;
+    }
+    Ok(())
+}
+
+fn apply_conflict_resolution(
+    worktree_path: &Path,
+    file_path: &Path,
+    input: ConflictResolutionInput,
+) -> Result<()> {
+    ensure_repo_relative_path(file_path)?;
+    let repo = Repository::open(worktree_path)?;
+    let mut index = repo.index()?;
+    let conflict = index.conflict_get(file_path).map_err(|_| {
+        anyhow::anyhow!(
+            "'{}' is no longer conflicted. Reload the repository before saving.",
+            file_path.display()
+        )
+    })?;
+    let snapshot = match &input {
+        ConflictResolutionInput::Draft { snapshot, .. }
+        | ConflictResolutionInput::WorkingTree { snapshot } => snapshot,
+    };
+    verify_conflict_snapshot(&conflict, snapshot, file_path)?;
+
+    let full_path = worktree_path.join(file_path);
+    let current_worktree = std::fs::read(&full_path).ok();
+    let (result, result_mode, writes_worktree) = match input {
+        ConflictResolutionInput::Draft {
+            result,
+            result_mode,
+            snapshot,
+        } => {
+            if current_worktree != snapshot.worktree_content {
+                anyhow::bail!(
+                    "'{}' changed outside the conflict resolver. Reload it before saving so no edits are overwritten.",
+                    file_path.display()
+                );
+            }
+            (result, result_mode, true)
+        }
+        ConflictResolutionInput::WorkingTree { .. } => {
+            let content = current_worktree.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "'{}' does not exist in the working tree. Choose the deleted side explicitly instead.",
+                    file_path.display()
+                )
+            })?;
+            if contains_conflict_markers(&content) {
+                anyhow::bail!(
+                    "'{}' still contains conflict markers. Remove them in your editor before staging the working copy.",
+                    file_path.display()
+                );
+            }
+            let mode = conflict
+                .our
+                .as_ref()
+                .or(conflict.their.as_ref())
+                .or(conflict.ancestor.as_ref())
+                .map(|entry| entry.mode)
+                .unwrap_or(0o100644);
+            (Some(content), mode, false)
+        }
+    };
+
+    match result {
+        Some(bytes) => {
+            if result_mode & 0o170000 != 0o100000 {
+                anyhow::bail!(
+                    "'{}' is not a regular file. Choose Current or Incoming as a whole-file resolution.",
+                    file_path.display()
+                );
+            }
+            let template = conflict
+                .our
+                .as_ref()
+                .or(conflict.their.as_ref())
+                .or(conflict.ancestor.as_ref())
+                .ok_or_else(|| anyhow::anyhow!("Conflict has no index entry to resolve"))?;
+            let stage_zero = stage_zero_entry(template, result_mode);
+
+            let original = current_worktree;
+            if writes_worktree {
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&full_path, &bytes)?;
+                set_executable_bit(&full_path, result_mode)?;
+            }
+
+            if let Err(error) = index
+                .add_frombuffer(&stage_zero, &bytes)
+                .and_then(|_| index.write())
+            {
+                if writes_worktree {
+                    restore_worktree_file(&full_path, original.as_deref());
+                }
+                return Err(error.into());
+            }
+        }
+        None => {
+            let original = current_worktree;
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if full_path.exists() {
+                std::fs::remove_file(&full_path)?;
+            }
+            let index_result = index
+                .conflict_remove(file_path)
+                .and_then(|_| match index.remove_path(file_path) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+                    Err(error) => Err(error),
+                })
+                .and_then(|_| index.write());
+            if let Err(error) = index_result {
+                restore_worktree_file(&full_path, original.as_deref());
+                return Err(error.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_conflict_snapshot(
+    conflict: &git2::IndexConflict,
+    snapshot: &ConflictSnapshot,
+    file_path: &Path,
+) -> Result<()> {
+    let actual = (
+        conflict.ancestor.as_ref().map(|entry| entry.id),
+        conflict.our.as_ref().map(|entry| entry.id),
+        conflict.their.as_ref().map(|entry| entry.id),
+    );
+    let expected = (
+        snapshot.ancestor_oid,
+        snapshot.ours_oid,
+        snapshot.theirs_oid,
+    );
+    if actual != expected {
+        anyhow::bail!(
+            "The conflict for '{}' changed while the resolver was open. Reload it before saving.",
+            file_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn stage_zero_entry(template: &git2::IndexEntry, mode: u32) -> git2::IndexEntry {
+    git2::IndexEntry {
+        ctime: template.ctime,
+        mtime: template.mtime,
+        dev: template.dev,
+        ino: template.ino,
+        mode,
+        uid: template.uid,
+        gid: template.gid,
+        file_size: 0,
+        id: git2::Oid::zero(),
+        // Bits 12-13 store the conflict stage. add_frombuffer recalculates the
+        // path-length bits but deliberately preserves everything else.
+        flags: template.flags & !0x3000,
+        flags_extended: template.flags_extended,
+        path: template.path.clone(),
+    }
+}
+
+fn ensure_repo_relative_path(path: &Path) -> Result<()> {
+    use std::path::Component;
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        anyhow::bail!(
+            "Refusing to resolve an invalid repository path: '{}'",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn contains_conflict_markers(content: &[u8]) -> bool {
+    let mut ours = false;
+    let mut separator = false;
+    let mut theirs = false;
+    for line in content.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        ours |= line.starts_with(b"<<<<<<<");
+        separator |= line.starts_with(b"=======");
+        theirs |= line.starts_with(b">>>>>>>");
+    }
+    ours && separator && theirs
+}
+
+fn restore_worktree_file(path: &Path, original: Option<&[u8]>) {
+    let result = match original {
+        Some(bytes) => std::fs::write(path, bytes),
+        None if path.exists() => std::fs::remove_file(path),
+        None => Ok(()),
+    };
+    if let Err(error) = result {
+        log::error!(
+            "Failed to restore '{}' after an index write error: {}",
+            path.display(),
+            error
+        );
+    }
+}
+
+#[cfg(unix)]
+fn set_executable_bit(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    let mut permissions_mode = permissions.mode();
+    if mode & 0o111 != 0 {
+        permissions_mode |= 0o111;
+    } else {
+        permissions_mode &= !0o111;
+    }
+    permissions.set_mode(permissions_mode);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_executable_bit(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
 }
 
 enum ConflictSide {
@@ -3763,6 +4147,158 @@ mod tests {
         fixture.commit("main change");
 
         fixture
+    }
+
+    fn make_repo_with_conflicting_merge() -> TempRepo {
+        let fixture = TempRepo::init();
+        fixture.commit_file("file.txt", "base\n", "base");
+
+        assert!(run_git(fixture.path(), &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        fixture.commit_file("file.txt", "incoming\n", "incoming change");
+
+        assert!(run_git(fixture.path(), &["checkout", "main"])
+            .status
+            .success());
+        fixture.commit_file("file.txt", "current\n", "current change");
+        let merge = run_git(fixture.path(), &["merge", "incoming"]);
+        assert!(
+            !merge.status.success(),
+            "merge unexpectedly succeeded: stdout={} stderr={}",
+            String::from_utf8_lossy(&merge.stdout),
+            String::from_utf8_lossy(&merge.stderr)
+        );
+        fixture
+    }
+
+    #[test]
+    fn assembled_resolution_is_written_and_staged_byte_exactly() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let resolved = b"current\r\nincoming".to_vec();
+
+        super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::Draft {
+                result: Some(resolved.clone()),
+                result_mode: diff.result_mode,
+                snapshot: diff.snapshot,
+            },
+        )
+        .expect("save resolution");
+
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path)).unwrap(),
+            resolved
+        );
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let index = repo.index().unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        let entry = index.get_path(relative_path, 0).expect("stage-0 entry");
+        assert_eq!(repo.find_blob(entry.id).unwrap().content(), resolved);
+    }
+
+    #[test]
+    fn stale_resolver_does_not_overwrite_external_edits() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        fs::write(fixture.path().join(relative_path), b"edited elsewhere\n").unwrap();
+
+        let error = super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::Draft {
+                result: Some(b"resolver result\n".to_vec()),
+                result_mode: diff.result_mode,
+                snapshot: diff.snapshot,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed outside"));
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path)).unwrap(),
+            b"edited elsewhere\n"
+        );
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
+    }
+
+    #[test]
+    fn staging_working_copy_rejects_unresolved_markers() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+
+        let error = super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::WorkingTree {
+                snapshot: diff.snapshot,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("still contains conflict markers"));
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
+    }
+
+    #[test]
+    fn choosing_deleted_side_removes_file_and_index_conflict() {
+        let fixture = TempRepo::init();
+        fixture.commit_file("deleted.txt", "base\n", "base");
+        assert!(run_git(fixture.path(), &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        assert!(run_git(fixture.path(), &["rm", "deleted.txt"])
+            .status
+            .success());
+        assert!(
+            run_git(fixture.path(), &["commit", "-m", "delete incoming"])
+                .status
+                .success()
+        );
+        assert!(run_git(fixture.path(), &["checkout", "main"])
+            .status
+            .success());
+        fixture.commit_file("deleted.txt", "current edit\n", "edit current");
+        let merge = run_git(fixture.path(), &["merge", "incoming"]);
+        assert!(
+            !merge.status.success(),
+            "merge unexpectedly succeeded: stdout={} stderr={}",
+            String::from_utf8_lossy(&merge.stdout),
+            String::from_utf8_lossy(&merge.stderr)
+        );
+
+        let relative_path = std::path::Path::new("deleted.txt");
+        super::apply_conflict_side(fixture.path(), relative_path, super::ConflictSide::Theirs)
+            .expect("choose deleted side");
+
+        assert!(!fixture.path().join(relative_path).exists());
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        assert!(index.get_path(relative_path, 0).is_none());
     }
 
     #[test]

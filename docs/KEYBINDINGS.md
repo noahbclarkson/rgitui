@@ -160,6 +160,13 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | `alt-r` | `DiffViewer && !modal && !TextInput` | `diff::RevertFile` | Revert the whole file in the working tree. |
 | `secondary-c` | `DiffViewer && !modal && !TextInput` | `diff::CopyDiffSelection` | Copy the selected diff lines to the clipboard. |
 | `secondary-a` | `DiffViewer && !modal && !TextInput` | `diff::SelectAllDiffLines` | Select every line in the diff. |
+| `1` | `ConflictResolver && !modal && !TextInput` | `diff::ConflictUseCurrent` | Put Current into the selected conflict's Result. |
+| `3` | `ConflictResolver && !modal && !TextInput` | `diff::ConflictUseIncoming` | Put Incoming into the selected conflict's Result. |
+| `b` | `ConflictResolver && !modal && !TextInput` | `diff::ConflictUseBoth` | Put Current followed by Incoming into the selected conflict's Result. |
+| `shift-b` | `ConflictResolver && !modal && !TextInput` | `diff::ConflictUseBothReverse` | Put Incoming followed by Current into the selected conflict's Result. |
+| `0` | `ConflictResolver && !modal && !TextInput` | `diff::ConflictReset` | Reset the selected conflict to unresolved. |
+| `secondary-enter` | `ConflictResolver && !modal && !TextInput` | `diff::ConflictSave` | Save the complete conflict Result and stage the file. |
+| `e` | `ConflictResolver && !modal && !TextInput` | `diff::ConflictOpenEditor` | Open the conflicted working file in the configured editor. |
 
 ## DetailPanel
 

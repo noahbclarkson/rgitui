@@ -302,29 +302,65 @@ pub struct CommitDiff {
     pub total_deletions: usize,
 }
 
-/// A region within a 3-way conflict diff.
-#[derive(Debug, Clone)]
-pub struct ConflictRegion {
-    /// Line index (0-based) into the ancestor/ours/theirs lines where this region starts.
-    pub start: usize,
-    /// Line index (0-based, exclusive) where this region ends.
-    pub end: usize,
-    /// Whether this region is actually conflicted (differes in both ours and theirs).
-    pub is_conflict: bool,
+/// One lossless section of Git's three-way merge result.
+///
+/// Bytes are retained rather than converted to lines here so CRLF, invalid
+/// UTF-8 and a missing final newline survive a round-trip through the conflict
+/// resolver. Text conversion is a presentation concern in `rgitui_diff`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeSection {
+    /// Content Git merged without user input.
+    Resolved(Vec<u8>),
+    /// A section for which Git needs an explicit result.
+    Conflict {
+        ancestor: Vec<u8>,
+        ours: Vec<u8>,
+        theirs: Vec<u8>,
+    },
 }
 
-/// A 3-way conflict diff for a single conflicted file.
-#[derive(Debug, Clone)]
+/// The index and working-tree state the resolver was built from.
+///
+/// Resolution compares this snapshot with the repository again immediately
+/// before writing. That prevents an old view from overwriting edits or a newer
+/// merge state that appeared while it was open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictSnapshot {
+    pub ancestor_oid: Option<git2::Oid>,
+    pub ours_oid: Option<git2::Oid>,
+    pub theirs_oid: Option<git2::Oid>,
+    pub worktree_content: Option<Vec<u8>>,
+}
+
+/// A merge-aware conflict model for one unmerged index entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreeWayFileDiff {
     pub path: PathBuf,
-    /// Ancestor (merge-base) version — one line per element.
-    pub ancestor_lines: Vec<String>,
-    /// Our version — same length as ancestor_lines.
-    pub ours_lines: Vec<String>,
-    /// Their version — same length as ancestor_lines.
-    pub theirs_lines: Vec<String>,
-    /// Detected conflict regions.
-    pub regions: Vec<ConflictRegion>,
+    pub sections: Vec<MergeSection>,
+    pub snapshot: ConflictSnapshot,
+    pub ancestor_exists: bool,
+    pub ours_exists: bool,
+    pub theirs_exists: bool,
+    /// True when at least one side cannot be represented safely as UTF-8 text.
+    pub is_binary: bool,
+    /// True for symlinks, submodules and other entries that cannot use the text
+    /// result composer. Whole-side resolution remains available for them.
+    pub is_special_file: bool,
+    /// File mode selected by libgit2 for an assembled text result.
+    pub result_mode: u32,
+}
+
+impl ThreeWayFileDiff {
+    pub fn conflict_count(&self) -> usize {
+        self.sections
+            .iter()
+            .filter(|section| matches!(section, MergeSection::Conflict { .. }))
+            .count()
+    }
+
+    pub fn supports_text_resolution(&self) -> bool {
+        !self.is_binary && !self.is_special_file && self.ours_exists && self.theirs_exists
+    }
 }
 
 /// The current state of the repository (normal, mid-merge, mid-rebase, etc).

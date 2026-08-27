@@ -7,7 +7,7 @@ use std::time::Instant;
 use futures::StreamExt;
 use gpui::{AppContext, Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator};
-use rgitui_diff::{DiffOperation, DiffSource, DiffViewer, DiffViewerEvent};
+use rgitui_diff::{ConflictResolution, DiffOperation, DiffSource, DiffViewer, DiffViewerEvent};
 use rgitui_git::{
     CommitInfo, GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
     RebaseEntryAction, RebasePlanEntry, Signature,
@@ -1085,6 +1085,30 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                 // shown with an unstaged working-tree diff of the same path —
                 // emptying the panel when the path has no working-tree
                 // changes (e.g. while viewing a commit diff).
+                let conflict_view_path = {
+                    let viewer = diff_viewer.read(cx);
+                    viewer
+                        .has_three_way_diff()
+                        .then(|| viewer.file_path().map(str::to_string))
+                        .flatten()
+                };
+                if let Some(conflict_path) = conflict_view_path {
+                    let worktree_path = this
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.project == project)
+                        .map(|tab| tab.effective_repo_path(cx))
+                        .unwrap_or_else(|| project.read(cx).repo_path().to_path_buf());
+                    let still_conflicted = project
+                        .read(cx)
+                        .conflicted_files_at(&worktree_path)
+                        .iter()
+                        .any(|file| file.path == std::path::Path::new(&conflict_path));
+                    if !still_conflicted {
+                        diff_viewer.update(cx, |viewer, cx| viewer.clear(cx));
+                    }
+                }
+
                 let refresh_state = {
                     let dv = diff_viewer.read(cx);
                     if dv.has_three_way_diff() || dv.source().is_historical() {
@@ -1305,6 +1329,7 @@ pub(super) fn subscribe_sidebar(
     let diff_viewer = diff_viewer.clone();
     let detail_panel_ref = detail_panel.clone();
     let sidebar_owned = sidebar.clone();
+    let sidebar_ref = sidebar_owned.clone();
     // Shadow the original parameter so the `move` closure doesn't capture it
     let sidebar = sidebar_owned;
 
@@ -1340,8 +1365,19 @@ pub(super) fn subscribe_sidebar(
             }
             SidebarEvent::ConflictFileSelected(path) => {
                 let path_buf = std::path::PathBuf::from(path);
-                let repo_path = this.effective_worktree_path(cx);
+                let path_string = path.clone();
+                let repo_path = this
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.sidebar == sidebar_ref)
+                    .map(|tab| tab.effective_repo_path(cx))
+                    .unwrap_or_else(|| this.effective_worktree_path(cx));
                 let dv = diff_viewer.clone();
+                let dp = detail_panel_ref.clone();
+                let request_generation = dv.update(cx, |dv, cx| {
+                    dv.set_conflict_loading(path_string.clone(), cx)
+                });
+                dp.update(cx, |panel, cx| panel.clear(cx));
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let result = cx
                         .background_executor()
@@ -1349,11 +1385,21 @@ pub(super) fn subscribe_sidebar(
                             rgitui_git::compute_three_way_conflict_diff(&repo_path, &path_buf)
                         })
                         .await;
-                    cx.update(|cx| match result {
-                        Ok(three_way_diff) => {
-                            dv.update(cx, |dv, cx| dv.set_three_way_diff(three_way_diff, cx));
-                        }
-                        Err(e) => log::error!("Failed to get 3-way conflict diff: {}", e),
+                    cx.update(|cx| {
+                        dv.update(cx, |dv, cx| {
+                            if dv.generation() != request_generation
+                                || dv.file_path() != Some(path_string.as_str())
+                            {
+                                return;
+                            }
+                            match result {
+                                Ok(three_way_diff) => dv.set_three_way_diff(three_way_diff, cx),
+                                Err(error) => dv.set_error(
+                                    format!("Failed to load '{}': {}", path_string, error),
+                                    cx,
+                                ),
+                            }
+                        });
                     });
                 })
                 .detach();
@@ -2481,6 +2527,7 @@ pub(super) fn subscribe_diff_viewer(
                     DiffViewerEvent::HunkUnstageRequested(_)
                     | DiffViewerEvent::LineUnstageRequested(_) => Some(DiffOperation::Unstage),
                     DiffViewerEvent::WorktreePatchRequested { operation, .. } => Some(*operation),
+                    DiffViewerEvent::ConflictResolutionRequested(_) => None,
                     DiffViewerEvent::DiffChanged { .. } => None,
                 };
                 if let Some(requested) = requested {
@@ -2561,6 +2608,89 @@ pub(super) fn subscribe_diff_viewer(
                             .detach();
                         });
                     }
+                    DiffViewerEvent::ConflictResolutionRequested(resolution) => match resolution {
+                        ConflictResolution::SaveMerged {
+                            path: event_path,
+                            content,
+                            mode,
+                            snapshot,
+                        } => {
+                            if std::path::Path::new(event_path) != path.as_path() {
+                                return;
+                            }
+                            let event_path = event_path.clone();
+                            let content = content.clone();
+                            let snapshot = snapshot.clone();
+                            project.update(cx, |project, cx| {
+                                project
+                                    .resolve_conflict_at(
+                                        event_path,
+                                        Some(content),
+                                        *mode,
+                                        snapshot,
+                                        &worktree_path,
+                                        cx,
+                                    )
+                                    .detach();
+                            });
+                        }
+                        ConflictResolution::UseOurs { path: event_path } => {
+                            if std::path::Path::new(event_path) != path.as_path() {
+                                return;
+                            }
+                            let event_path = event_path.clone();
+                            project.update(cx, |project, cx| {
+                                project
+                                    .accept_conflict_ours_at(event_path, &worktree_path, cx)
+                                    .detach();
+                            });
+                        }
+                        ConflictResolution::UseTheirs { path: event_path } => {
+                            if std::path::Path::new(event_path) != path.as_path() {
+                                return;
+                            }
+                            let event_path = event_path.clone();
+                            project.update(cx, |project, cx| {
+                                project
+                                    .accept_conflict_theirs_at(event_path, &worktree_path, cx)
+                                    .detach();
+                            });
+                        }
+                        ConflictResolution::StageWorkingTree {
+                            path: event_path,
+                            snapshot,
+                        } => {
+                            if std::path::Path::new(event_path) != path.as_path() {
+                                return;
+                            }
+                            let event_path = event_path.clone();
+                            let snapshot = snapshot.clone();
+                            project.update(cx, |project, cx| {
+                                project
+                                    .stage_conflict_worktree_at(
+                                        event_path,
+                                        snapshot,
+                                        &worktree_path,
+                                        cx,
+                                    )
+                                    .detach();
+                            });
+                        }
+                        ConflictResolution::OpenInEditor { path: event_path } => {
+                            if std::path::Path::new(event_path) != path.as_path() {
+                                return;
+                            }
+                            let editor_command = cx
+                                .global::<rgitui_settings::SettingsState>()
+                                .settings()
+                                .editor_command
+                                .clone();
+                            super::layout::open_editor(
+                                &worktree_path.join(event_path),
+                                &editor_command,
+                            );
+                        }
+                    },
                     DiffViewerEvent::DiffChanged { .. } => {}
                 }
             }

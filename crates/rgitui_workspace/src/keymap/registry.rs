@@ -310,6 +310,20 @@ commands! {
         CopyDiffSelection "secondary-c" [hidden];
         /// Select every line in the diff.
         SelectAllDiffLines "secondary-a" [hidden];
+        /// Put Current into the selected conflict's Result.
+        ConflictUseCurrent "1" in "ConflictResolver && !modal && !TextInput" [hidden];
+        /// Put Incoming into the selected conflict's Result.
+        ConflictUseIncoming "3" in "ConflictResolver && !modal && !TextInput" [hidden];
+        /// Put Current followed by Incoming into the selected conflict's Result.
+        ConflictUseBoth "b" in "ConflictResolver && !modal && !TextInput" [hidden];
+        /// Put Incoming followed by Current into the selected conflict's Result.
+        ConflictUseBothReverse "shift-b" in "ConflictResolver && !modal && !TextInput" [hidden];
+        /// Reset the selected conflict to unresolved.
+        ConflictReset "0" in "ConflictResolver && !modal && !TextInput" [hidden];
+        /// Save the complete conflict Result and stage the file.
+        ConflictSave "secondary-enter" in "ConflictResolver && !modal && !TextInput" [hidden];
+        /// Open the conflicted working file in the configured editor.
+        ConflictOpenEditor "e" in "ConflictResolver && !modal && !TextInput" [hidden];
     }
 
     view DetailPanel in detail context "DetailPanel && !modal && !TextInput" {
@@ -610,8 +624,9 @@ pub const CONTEXT_TREE: &[KeyContextNode] = &[
 ///
 /// `modal` is added to the workspace root by whichever overlay is up — see
 /// [`KeyContextNode::modal`]. `TextInput` is set by [`rgitui_ui::TextInput`],
-/// which can appear under any of the nodes above.
-pub const CONTEXT_MARKERS: &[&str] = &["modal", "TextInput"];
+/// which can appear under any of the nodes above. `ConflictResolver` is a mode
+/// marker on the `DiffViewer` element rather than a separate child view.
+pub const CONTEXT_MARKERS: &[&str] = &["modal", "TextInput", "ConflictResolver"];
 
 /// The node whose element sets `name`, if any.
 pub fn context_node(name: &str) -> Option<&'static KeyContextNode> {
@@ -948,7 +963,7 @@ mod tests {
                 ],
             ),
             ("p", &["diff::TogglePartialSelection", "rebase::RebasePick"]),
-            ("b", &["history::HistoryShowBlame"]),
+            ("b", &["history::HistoryShowBlame", "diff::ConflictUseBoth"]),
             ("h", &["blame::BlameShowHistory"]),
             // The rebase editor's `r` sits behind `modal`, so it never meets a
             // `DiffViewer && !modal` binding.

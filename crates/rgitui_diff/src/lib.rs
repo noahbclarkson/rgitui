@@ -18,8 +18,8 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{
-    DiffLine, FileDiff, ThreeWayFileDiff, WorktreePatchDirection, WorktreePatchScope,
-    WorktreePatchSource,
+    ConflictSnapshot, DiffLine, FileDiff, MergeSection, ThreeWayFileDiff, WorktreePatchDirection,
+    WorktreePatchScope, WorktreePatchSource,
 };
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
 use rgitui_ui::{
@@ -61,6 +61,33 @@ pub enum DiffViewerEvent {
         /// Always [`DiffOperation::Apply`] or [`DiffOperation::Revert`].
         operation: DiffOperation,
         scope: WorktreePatchScope,
+    },
+    /// A conflict resolver action. Unlike ordinary staging requests, each
+    /// variant carries the exact path and/or repository snapshot it was built
+    /// from so the git layer can reject stale work.
+    ConflictResolutionRequested(ConflictResolution),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictResolution {
+    SaveMerged {
+        path: String,
+        content: Vec<u8>,
+        mode: u32,
+        snapshot: ConflictSnapshot,
+    },
+    UseOurs {
+        path: String,
+    },
+    UseTheirs {
+        path: String,
+    },
+    StageWorkingTree {
+        path: String,
+        snapshot: ConflictSnapshot,
+    },
+    OpenInEditor {
+        path: String,
     },
 }
 
@@ -386,9 +413,68 @@ enum SideBySideLineKind {
 
 #[derive(Clone, Copy, PartialEq)]
 enum ThreeWayLineKind {
-    Modified,
     Unchanged,
     Conflict,
+    Resolved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictChoice {
+    Ours,
+    Theirs,
+    BothOursFirst,
+    BothTheirsFirst,
+}
+
+fn assemble_text_resolution(
+    diff: &ThreeWayFileDiff,
+    choices: &[Option<ConflictChoice>],
+) -> Option<Vec<u8>> {
+    if !diff.supports_text_resolution() || choices.len() != diff.conflict_count() {
+        return None;
+    }
+
+    let mut content = Vec::new();
+    let mut conflict_index = 0;
+    for section in &diff.sections {
+        match section {
+            MergeSection::Resolved(bytes) => content.extend_from_slice(bytes),
+            MergeSection::Conflict { ours, theirs, .. } => {
+                match choices.get(conflict_index).copied().flatten()? {
+                    ConflictChoice::Ours => content.extend_from_slice(ours),
+                    ConflictChoice::Theirs => content.extend_from_slice(theirs),
+                    ConflictChoice::BothOursFirst => {
+                        content.extend_from_slice(ours);
+                        content.extend_from_slice(theirs);
+                    }
+                    ConflictChoice::BothTheirsFirst => {
+                        content.extend_from_slice(theirs);
+                        content.extend_from_slice(ours);
+                    }
+                }
+                conflict_index += 1;
+            }
+        }
+    }
+    Some(content)
+}
+
+fn conflict_progress_label(unresolved: usize, total: usize) -> String {
+    match (unresolved, total) {
+        (0, total) => format!("All {total} resolved"),
+        (unresolved, total) if unresolved == total => format!("{total} unresolved"),
+        (unresolved, total) => {
+            format!("{} resolved · {unresolved} remaining", total - unresolved)
+        }
+    }
+}
+
+fn next_line_number(counter: &mut usize, present: bool) -> Option<usize> {
+    present.then(|| {
+        let number = *counter;
+        *counter += 1;
+        number
+    })
 }
 
 #[derive(Clone)]
@@ -396,6 +482,9 @@ enum ThreeWayRow {
     HunkHeader {
         header: String,
         context_name: String,
+        conflict_index: usize,
+        resolved: bool,
+        allow_both: bool,
     },
     Triple {
         left_num: Option<usize>,
@@ -722,6 +811,7 @@ pub struct DiffViewer {
     three_way_rows: Arc<Vec<ThreeWayRow>>,
     display_longest_row_ix: usize,
     three_way_diff: Option<Arc<ThreeWayFileDiff>>,
+    conflict_choices: Vec<Option<ConflictChoice>>,
     scroll_handle: UniformListScrollHandle,
     /// Variable-height virtualized list state used by wrap-mode rendering.
     /// `gpui::list` caches per-row measurements in a SumTree so only the
@@ -793,6 +883,7 @@ impl DiffViewer {
             three_way_rows: Arc::new(Vec::new()),
             display_longest_row_ix: 0,
             three_way_diff: None,
+            conflict_choices: Vec::new(),
             scroll_handle: UniformListScrollHandle::new(),
             wrap_list_state: ListState::new(0, ListAlignment::Top, px(200.)),
             focus_handle: cx.focus_handle(),
@@ -945,6 +1036,7 @@ impl DiffViewer {
         if self.three_way_diff.is_some() {
             self.three_way_diff = None;
             self.three_way_rows = Arc::new(Vec::new());
+            self.conflict_choices.clear();
         }
         if self.display_mode == DiffDisplayMode::ThreeWay {
             self.display_mode = DiffDisplayMode::Unified;
@@ -1030,6 +1122,7 @@ impl DiffViewer {
         self.three_way_rows = Arc::new(Vec::new());
         self.display_longest_row_ix = 0;
         self.three_way_diff = None;
+        self.conflict_choices.clear();
         self.highlighted_row = None;
         self.selected_lines = None;
         self.partial_mode = false;
@@ -1056,6 +1149,7 @@ impl DiffViewer {
         // the content is historical.
         self.source = DiffSource::Worktree;
         let diff = Arc::new(diff);
+        self.conflict_choices = vec![None; diff.conflict_count()];
         self.three_way_diff = Some(Arc::clone(&diff));
         self.three_way_rows = Arc::new(Vec::new());
         // Switch to the three-way renderer. This must precede `sync_wrap_list_state`,
@@ -1075,10 +1169,11 @@ impl DiffViewer {
         self.sync_wrap_list_state();
         cx.notify();
 
+        let choices = self.conflict_choices.clone();
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             let rows = cx
                 .background_executor()
-                .spawn(async move { Self::compute_three_way_rows(&diff) })
+                .spawn(async move { Self::compute_three_way_rows(&diff, &choices) })
                 .await;
             this.update(cx, |this, cx| {
                 if !should_apply_prepared(this.preparation_generation, generation) {
@@ -1092,6 +1187,36 @@ impl DiffViewer {
             .ok();
         })
         .detach();
+    }
+
+    /// Begin loading a conflict and return the generation that owns the request.
+    /// Callers compare it again before applying the background result.
+    pub fn set_conflict_loading(&mut self, path: String, cx: &mut Context<Self>) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
+        self.loading = true;
+        self.error = None;
+        self.diff = None;
+        self.file_path = Some(path.clone());
+        self.source = DiffSource::Worktree;
+        self.display_mode = DiffDisplayMode::ThreeWay;
+        self.three_way_diff = None;
+        self.three_way_rows = Arc::new(Vec::new());
+        self.conflict_choices.clear();
+        self.highlighted_row = None;
+        self.selected_lines = None;
+        self.partial_mode = false;
+        self.selection_anchor = None;
+        self.mouse_selecting = false;
+        self.file_menu_open = false;
+        self.sync_wrap_list_state();
+        cx.emit(DiffViewerEvent::DiffChanged {
+            path,
+            commit_id: None,
+            generation: self.generation,
+        });
+        cx.notify();
+        self.generation
     }
 
     /// Mark that a diff fetch is in progress so the viewer shows a loading
@@ -1920,6 +2045,163 @@ impl DiffViewer {
         self.three_way_diff.is_some()
     }
 
+    pub fn unresolved_conflict_count(&self) -> usize {
+        self.conflict_choices
+            .iter()
+            .filter(|choice| choice.is_none())
+            .count()
+    }
+
+    fn selected_conflict_index(&self) -> Option<usize> {
+        let row_index = self.highlighted_row?;
+        match self.three_way_rows.get(row_index) {
+            Some(ThreeWayRow::HunkHeader { conflict_index, .. }) => Some(*conflict_index),
+            Some(ThreeWayRow::Triple { .. }) => self.three_way_rows[..row_index]
+                .iter()
+                .rev()
+                .find_map(|row| match row {
+                    ThreeWayRow::HunkHeader { conflict_index, .. } => Some(*conflict_index),
+                    ThreeWayRow::Triple { .. } => None,
+                }),
+            None => None,
+        }
+    }
+
+    fn target_conflict_index(&self) -> Option<usize> {
+        self.selected_conflict_index()
+            .or_else(|| self.conflict_choices.iter().position(Option::is_none))
+            .or_else(|| (!self.conflict_choices.is_empty()).then_some(0))
+    }
+
+    fn set_conflict_choice(
+        &mut self,
+        conflict_index: usize,
+        choice: Option<ConflictChoice>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(slot) = self.conflict_choices.get_mut(conflict_index) else {
+            return;
+        };
+        *slot = choice;
+        self.rebuild_three_way_rows(cx);
+    }
+
+    fn rebuild_three_way_rows(&mut self, cx: &mut Context<Self>) {
+        let Some(diff) = self.three_way_diff.as_ref() else {
+            return;
+        };
+        self.three_way_rows = Arc::new(Self::compute_three_way_rows(diff, &self.conflict_choices));
+        self.sync_wrap_list_state();
+        cx.notify();
+    }
+
+    pub fn use_current_for_conflict(&mut self, cx: &mut Context<Self>) {
+        if let Some(index) = self.target_conflict_index() {
+            self.set_conflict_choice(index, Some(ConflictChoice::Ours), cx);
+        }
+    }
+
+    pub fn use_incoming_for_conflict(&mut self, cx: &mut Context<Self>) {
+        if let Some(index) = self.target_conflict_index() {
+            self.set_conflict_choice(index, Some(ConflictChoice::Theirs), cx);
+        }
+    }
+
+    pub fn use_both_for_conflict(&mut self, incoming_first: bool, cx: &mut Context<Self>) {
+        let Some(diff) = self.three_way_diff.as_ref() else {
+            return;
+        };
+        if !diff.supports_text_resolution() {
+            return;
+        }
+        if let Some(index) = self.target_conflict_index() {
+            let choice = if incoming_first {
+                ConflictChoice::BothTheirsFirst
+            } else {
+                ConflictChoice::BothOursFirst
+            };
+            self.set_conflict_choice(index, Some(choice), cx);
+        }
+    }
+
+    pub fn reset_conflict_choice(&mut self, cx: &mut Context<Self>) {
+        if let Some(index) = self.target_conflict_index() {
+            self.set_conflict_choice(index, None, cx);
+        }
+    }
+
+    pub fn use_current_for_all_conflicts(&mut self, cx: &mut Context<Self>) {
+        self.conflict_choices.fill(Some(ConflictChoice::Ours));
+        self.rebuild_three_way_rows(cx);
+    }
+
+    pub fn use_incoming_for_all_conflicts(&mut self, cx: &mut Context<Self>) {
+        self.conflict_choices.fill(Some(ConflictChoice::Theirs));
+        self.rebuild_three_way_rows(cx);
+    }
+
+    pub fn save_conflict_result(&mut self, cx: &mut Context<Self>) {
+        let Some(diff) = self.three_way_diff.as_ref() else {
+            return;
+        };
+        if self.unresolved_conflict_count() > 0 {
+            return;
+        }
+        let path = diff.path.display().to_string();
+        if !diff.supports_text_resolution() {
+            match self.conflict_choices.first().copied().flatten() {
+                Some(ConflictChoice::Ours) => {
+                    cx.emit(DiffViewerEvent::ConflictResolutionRequested(
+                        ConflictResolution::UseOurs { path },
+                    ))
+                }
+                Some(ConflictChoice::Theirs) => {
+                    cx.emit(DiffViewerEvent::ConflictResolutionRequested(
+                        ConflictResolution::UseTheirs { path },
+                    ))
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        let Some(content) = assemble_text_resolution(diff, &self.conflict_choices) else {
+            return;
+        };
+        cx.emit(DiffViewerEvent::ConflictResolutionRequested(
+            ConflictResolution::SaveMerged {
+                path,
+                content,
+                mode: diff.result_mode,
+                snapshot: diff.snapshot.clone(),
+            },
+        ));
+    }
+
+    pub fn stage_conflict_working_copy(&mut self, cx: &mut Context<Self>) {
+        if let Some(diff) = self.three_way_diff.as_ref() {
+            cx.emit(DiffViewerEvent::ConflictResolutionRequested(
+                ConflictResolution::StageWorkingTree {
+                    path: diff.path.display().to_string(),
+                    snapshot: diff.snapshot.clone(),
+                },
+            ));
+        }
+    }
+
+    pub fn open_conflict_in_editor(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self
+            .three_way_diff
+            .as_ref()
+            .map(|diff| diff.path.display().to_string())
+            .or_else(|| self.file_path.clone())
+        {
+            cx.emit(DiffViewerEvent::ConflictResolutionRequested(
+                ConflictResolution::OpenInEditor { path },
+            ));
+        }
+    }
+
     /// True iff `set_diff` with these inputs would produce identical content to
     /// what's already shown. Lets callers skip a refresh that would only churn
     /// state (cleared selection / scroll reset) without visible benefit.
@@ -2487,82 +2769,176 @@ impl DiffViewer {
         rows
     }
 
-    fn compute_three_way_rows(diff: &ThreeWayFileDiff) -> Vec<ThreeWayRow> {
-        let ancestor = &diff.ancestor_lines;
-        let ours = &diff.ours_lines;
-        let theirs = &diff.theirs_lines;
-        let regions = &diff.regions;
-
-        // Build a lookup: line index -> region index (or None)
-        let region_at: Vec<Option<usize>> = {
-            let n = ancestor.len().max(ours.len()).max(theirs.len());
-            let mut v = vec![None; n];
-            for (ri, region) in regions.iter().enumerate() {
-                #[allow(clippy::needless_range_loop)]
-                for j in region.start..region.end.min(n) {
-                    v[j] = Some(ri);
-                }
-            }
-            v
-        };
-
-        let n = ancestor.len().max(ours.len()).max(theirs.len());
+    fn compute_three_way_rows(
+        diff: &ThreeWayFileDiff,
+        choices: &[Option<ConflictChoice>],
+    ) -> Vec<ThreeWayRow> {
         let mut rows = Vec::new();
-        let mut in_hunk = false;
+        let mut conflict_index = 0;
+        let mut left_line = 1;
+        let mut mid_line = 1;
+        let mut right_line = 1;
+        let conflict_count = diff.conflict_count();
+        let context_name = diff
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        for i in 0..n {
-            let region_idx = region_at.get(i).copied().flatten();
-            let is_conflict = region_idx
-                .and_then(|ri| regions.get(ri))
-                .map(|r| r.is_conflict)
-                .unwrap_or(false);
-            let kind = if is_conflict {
-                ThreeWayLineKind::Conflict
-            } else {
-                let a = ancestor.get(i);
-                let o = ours.get(i);
-                let t = theirs.get(i);
-                match (a == o, a == t) {
-                    (true, true) => ThreeWayLineKind::Unchanged,
-                    _ => ThreeWayLineKind::Modified,
+        for section in &diff.sections {
+            match section {
+                MergeSection::Resolved(content) => {
+                    for line in Self::display_lines(content, false) {
+                        let styled = Self::plain_styled(&line);
+                        rows.push(ThreeWayRow::Triple {
+                            left_num: next_line_number(&mut left_line, true),
+                            left_styled: styled.clone(),
+                            left_kind: ThreeWayLineKind::Unchanged,
+                            mid_num: next_line_number(&mut mid_line, true),
+                            mid_styled: styled.clone(),
+                            mid_kind: ThreeWayLineKind::Unchanged,
+                            right_num: next_line_number(&mut right_line, true),
+                            right_styled: styled,
+                            right_kind: ThreeWayLineKind::Unchanged,
+                        });
+                    }
                 }
-            };
+                MergeSection::Conflict {
+                    ancestor: _,
+                    ours,
+                    theirs,
+                } => {
+                    let choice = choices.get(conflict_index).copied().flatten();
+                    let allow_both = diff.supports_text_resolution();
+                    let left_has_real_lines =
+                        diff.ours_exists && !diff.is_binary && !diff.is_special_file;
+                    let right_has_real_lines =
+                        diff.theirs_exists && !diff.is_binary && !diff.is_special_file;
+                    let result_has_real_lines = match choice {
+                        Some(ConflictChoice::Ours) => left_has_real_lines,
+                        Some(ConflictChoice::Theirs) => right_has_real_lines,
+                        Some(ConflictChoice::BothOursFirst | ConflictChoice::BothTheirsFirst) => {
+                            allow_both
+                        }
+                        None => false,
+                    };
+                    let detail = if diff.is_binary {
+                        "Binary file"
+                    } else if diff.is_special_file {
+                        "Special file"
+                    } else if !diff.ours_exists || !diff.theirs_exists {
+                        "Modify/delete conflict"
+                    } else if choice.is_some() {
+                        "Resolved in draft"
+                    } else {
+                        "Choose a result"
+                    };
+                    rows.push(ThreeWayRow::HunkHeader {
+                        header: format!(
+                            "Conflict {} of {}: {}",
+                            conflict_index + 1,
+                            conflict_count,
+                            detail
+                        ),
+                        context_name: context_name.clone(),
+                        conflict_index,
+                        resolved: choice.is_some(),
+                        allow_both,
+                    });
 
-            // Start a hunk header when we enter a changed region
-            if !in_hunk && kind != ThreeWayLineKind::Unchanged {
-                in_hunk = true;
-                rows.push(ThreeWayRow::HunkHeader {
-                    context_name: diff
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                    header: format!(
-                        "@@ -{} +{} @@ (conflict view: ancestor | ours | theirs)",
-                        i.saturating_sub(3).max(1),
-                        i.saturating_sub(3).max(1)
-                    ),
-                });
+                    let mut ours_lines = Self::display_lines(ours, diff.is_binary);
+                    let mut theirs_lines = Self::display_lines(theirs, diff.is_binary);
+                    if !diff.ours_exists {
+                        ours_lines = vec!["<deleted>".to_string()];
+                    }
+                    if !diff.theirs_exists {
+                        theirs_lines = vec!["<deleted>".to_string()];
+                    }
+                    let mut result_lines = match choice {
+                        Some(ConflictChoice::Ours) => ours_lines.clone(),
+                        Some(ConflictChoice::Theirs) => theirs_lines.clone(),
+                        Some(ConflictChoice::BothOursFirst) => ours_lines
+                            .iter()
+                            .chain(theirs_lines.iter())
+                            .cloned()
+                            .collect(),
+                        Some(ConflictChoice::BothTheirsFirst) => theirs_lines
+                            .iter()
+                            .chain(ours_lines.iter())
+                            .cloned()
+                            .collect(),
+                        None => vec!["<unresolved>".to_string()],
+                    };
+                    if ours_lines.is_empty() {
+                        ours_lines.push(String::new());
+                    }
+                    if theirs_lines.is_empty() {
+                        theirs_lines.push(String::new());
+                    }
+                    if result_lines.is_empty() {
+                        result_lines.push(String::new());
+                    }
+                    let line_count = ours_lines
+                        .len()
+                        .max(result_lines.len())
+                        .max(theirs_lines.len());
+                    for line_index in 0..line_count {
+                        rows.push(ThreeWayRow::Triple {
+                            left_num: next_line_number(
+                                &mut left_line,
+                                left_has_real_lines && line_index < ours_lines.len(),
+                            ),
+                            left_styled: Self::plain_styled(
+                                ours_lines.get(line_index).map(String::as_str).unwrap_or(""),
+                            ),
+                            left_kind: ThreeWayLineKind::Conflict,
+                            mid_num: next_line_number(
+                                &mut mid_line,
+                                result_has_real_lines && line_index < result_lines.len(),
+                            ),
+                            mid_styled: Self::plain_styled(
+                                result_lines
+                                    .get(line_index)
+                                    .map(String::as_str)
+                                    .unwrap_or(""),
+                            ),
+                            mid_kind: if choice.is_some() {
+                                ThreeWayLineKind::Resolved
+                            } else {
+                                ThreeWayLineKind::Conflict
+                            },
+                            right_num: next_line_number(
+                                &mut right_line,
+                                right_has_real_lines && line_index < theirs_lines.len(),
+                            ),
+                            right_styled: Self::plain_styled(
+                                theirs_lines
+                                    .get(line_index)
+                                    .map(String::as_str)
+                                    .unwrap_or(""),
+                            ),
+                            right_kind: ThreeWayLineKind::Conflict,
+                        });
+                    }
+                    conflict_index += 1;
+                }
             }
-
-            let left_styled = Self::plain_styled(ancestor.get(i).map(|s| s.as_str()).unwrap_or(""));
-            let mid_styled = Self::plain_styled(ours.get(i).map(|s| s.as_str()).unwrap_or(""));
-            let right_styled = Self::plain_styled(theirs.get(i).map(|s| s.as_str()).unwrap_or(""));
-
-            rows.push(ThreeWayRow::Triple {
-                left_num: ancestor.get(i).is_some().then_some(i + 1),
-                left_styled,
-                left_kind: kind,
-                mid_num: ours.get(i).is_some().then_some(i + 1),
-                mid_styled,
-                mid_kind: kind,
-                right_num: theirs.get(i).is_some().then_some(i + 1),
-                right_styled,
-                right_kind: kind,
-            });
         }
-
         rows
+    }
+
+    fn display_lines(content: &[u8], binary: bool) -> Vec<String> {
+        if binary {
+            return vec![format!("<binary content: {} bytes>", content.len())];
+        }
+        if content.is_empty() {
+            return Vec::new();
+        }
+        String::from_utf8_lossy(content)
+            .split_inclusive('\n')
+            .map(|line| line.strip_suffix('\n').unwrap_or(line))
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+            .collect()
     }
 
     /// Build a plain (no syntax highlighting) StyledLine from a string.
@@ -3042,6 +3418,7 @@ impl Render for DiffViewer {
 
         let has_content = self.diff.is_some() || self.three_way_diff.is_some();
         if self.error.is_some() || self.loading || !has_content {
+            let is_conflict = self.display_mode == DiffDisplayMode::ThreeWay;
             let header = div()
                 .h_flex()
                 .w_full()
@@ -3058,10 +3435,14 @@ impl Render for DiffViewer {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Diff")
-                        .size(LabelSize::XSmall)
-                        .weight(FontWeight::SEMIBOLD)
-                        .color(Color::Muted),
+                    Label::new(if is_conflict {
+                        "Conflict Resolver"
+                    } else {
+                        "Diff"
+                    })
+                    .size(LabelSize::XSmall)
+                    .weight(FontWeight::SEMIBOLD)
+                    .color(Color::Muted),
                 );
 
             let card = div()
@@ -3080,17 +3461,35 @@ impl Render for DiffViewer {
                         .color(Color::Error),
                 )
                 .child(
-                    Label::new("Failed to load diff")
-                        .size(LabelSize::Small)
-                        .color(Color::Error),
+                    Label::new(if is_conflict {
+                        "Couldn't load this conflict"
+                    } else {
+                        "Failed to load diff"
+                    })
+                    .size(LabelSize::Small)
+                    .color(Color::Error),
                 )
                 .child(
                     Label::new(message.clone())
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
+                .when(is_conflict, |element| {
+                    element.child(
+                        Button::new("conflict-error-open", "Open File")
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Outlined)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.open_conflict_in_editor(cx);
+                            })),
+                    )
+                })
             } else if self.loading {
-                card.child(Spinner::new().label("Loading diff..."))
+                card.child(Spinner::new().label(if is_conflict {
+                    "Loading conflict comparison..."
+                } else {
+                    "Loading diff..."
+                }))
             } else {
                 card.child(
                     Icon::new(IconName::File)
@@ -3142,6 +3541,7 @@ impl Render for DiffViewer {
         let border_variant = colors.border_variant;
         let vc_added = colors.vc_added;
         let vc_deleted = colors.vc_deleted;
+        let conflict_color = Color::Conflict.color(cx);
         let element_bg = colors.element_background;
         let toolbar_bg = colors.toolbar_background;
         let border_focused = colors.border_focused;
@@ -4014,6 +4414,9 @@ impl Render for DiffViewer {
                                 ThreeWayRow::HunkHeader {
                                     header,
                                     context_name,
+                                    conflict_index,
+                                    resolved,
+                                    allow_both,
                                 } => {
                                     let is_selected = selected_lines
                                         .as_ref()
@@ -4025,6 +4428,12 @@ impl Render for DiffViewer {
                                     };
                                     let view_hunk = view.clone();
                                     let view_hunk_drag = view.clone();
+                                    let current_view = view.clone();
+                                    let incoming_view = view.clone();
+                                    let both_current_view = view.clone();
+                                    let both_incoming_view = view.clone();
+                                    let reset_view = view.clone();
+                                    let conflict_index = *conflict_index;
                                     div()
                                         .id(ElementId::NamedInteger(
                                             "tw-hunk-header".into(),
@@ -4072,7 +4481,12 @@ impl Render for DiffViewer {
                                             div()
                                                 .text_xs()
                                                 .font_family("Lilex")
-                                                .text_color(text_muted)
+                                                .text_color(if *resolved {
+                                                    vc_added
+                                                } else {
+                                                    conflict_color
+                                                })
+                                                .font_weight(FontWeight::SEMIBOLD)
                                                 .child(header.clone()),
                                         )
                                         .child(
@@ -4083,6 +4497,131 @@ impl Render for DiffViewer {
                                                 .ml(px(8.))
                                                 .child(format!("[{}]", context_name)),
                                         )
+                                        .child(div().flex_1())
+                                        .child(
+                                            Button::new(
+                                                ElementId::NamedInteger(
+                                                    "tw-use-current".into(),
+                                                    conflict_index as u64,
+                                                ),
+                                                "Use Current",
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .style(ButtonStyle::Subtle)
+                                            .tooltip("Put Current into Result")
+                                            .on_click(move |_: &ClickEvent, _, cx| {
+                                                current_view
+                                                    .update(cx, |this, cx| {
+                                                        this.set_conflict_choice(
+                                                            conflict_index,
+                                                            Some(ConflictChoice::Ours),
+                                                            cx,
+                                                        );
+                                                    })
+                                                    .ok();
+                                            }),
+                                        )
+                                        .when(*allow_both, |element| {
+                                            element
+                                                .child(
+                                                    Button::new(
+                                                        ElementId::NamedInteger(
+                                                            "tw-use-both-current".into(),
+                                                            conflict_index as u64,
+                                                        ),
+                                                        "Both C→I",
+                                                    )
+                                                    .size(ButtonSize::Compact)
+                                                    .style(ButtonStyle::Subtle)
+                                                    .tooltip("Current, then Incoming")
+                                                    .on_click(move |_: &ClickEvent, _, cx| {
+                                                        both_current_view
+                                                            .update(cx, |this, cx| {
+                                                                this.set_conflict_choice(
+                                                                    conflict_index,
+                                                                    Some(
+                                                                        ConflictChoice::BothOursFirst,
+                                                                    ),
+                                                                    cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                    }),
+                                                )
+                                                .child(
+                                                    Button::new(
+                                                        ElementId::NamedInteger(
+                                                            "tw-use-both-incoming".into(),
+                                                            conflict_index as u64,
+                                                        ),
+                                                        "Both I→C",
+                                                    )
+                                                    .size(ButtonSize::Compact)
+                                                    .style(ButtonStyle::Subtle)
+                                                    .tooltip("Incoming, then Current")
+                                                    .on_click(move |_: &ClickEvent, _, cx| {
+                                                        both_incoming_view
+                                                            .update(cx, |this, cx| {
+                                                                this.set_conflict_choice(
+                                                                    conflict_index,
+                                                                    Some(
+                                                                        ConflictChoice::BothTheirsFirst,
+                                                                    ),
+                                                                    cx,
+                                                                );
+                                                            })
+                                                            .ok();
+                                                    }),
+                                                )
+                                        })
+                                        .child(
+                                            Button::new(
+                                                ElementId::NamedInteger(
+                                                    "tw-use-incoming".into(),
+                                                    conflict_index as u64,
+                                                ),
+                                                "Use Incoming",
+                                            )
+                                            .size(ButtonSize::Compact)
+                                            .style(ButtonStyle::Subtle)
+                                            .tooltip("Put Incoming into Result")
+                                            .on_click(move |_: &ClickEvent, _, cx| {
+                                                incoming_view
+                                                    .update(cx, |this, cx| {
+                                                        this.set_conflict_choice(
+                                                            conflict_index,
+                                                            Some(ConflictChoice::Theirs),
+                                                            cx,
+                                                        );
+                                                    })
+                                                    .ok();
+                                            }),
+                                        )
+                                        .when(*resolved, |element| {
+                                            element.child(
+                                                Button::new(
+                                                    ElementId::NamedInteger(
+                                                        "tw-reset".into(),
+                                                        conflict_index as u64,
+                                                    ),
+                                                    "Reset",
+                                                )
+                                                .size(ButtonSize::Compact)
+                                                .style(ButtonStyle::Subtle)
+                                                .tooltip("Make this conflict unresolved again")
+                                                .on_click(move |_: &ClickEvent, _, cx| {
+                                                    reset_view
+                                                        .update(cx, |this, cx| {
+                                                            this.set_conflict_choice(
+                                                                conflict_index,
+                                                                None,
+                                                                cx,
+                                                            );
+                                                        })
+                                                        .ok();
+                                                }),
+                                            )
+                                        })
                                         .into_any_element()
                                 }
                                 ThreeWayRow::Triple {
@@ -4102,6 +4641,10 @@ impl Render for DiffViewer {
                                                 ThreeWayLineKind::Conflict => {
                                                     gpui::Hsla { a: 0.2, ..base }
                                                 }
+                                                ThreeWayLineKind::Resolved => gpui::Hsla {
+                                                    a: 0.12,
+                                                    ..vc_added
+                                                },
                                                 _ => base,
                                             }
                                         };
@@ -4121,18 +4664,12 @@ impl Render for DiffViewer {
                                     let left_bg = row_bg(conflict_bg(*left_kind, editor_bg));
                                     let mid_bg = row_bg(conflict_bg(*mid_kind, editor_bg));
                                     let right_bg = row_bg(conflict_bg(*right_kind, editor_bg));
-                                    let conflict_text_color = gpui::Hsla {
-                                        h: 0.0,
-                                        s: 0.8,
-                                        l: 0.65,
-                                        a: 1.0,
-                                    };
                                     let left_text_col = match left_kind {
-                                        ThreeWayLineKind::Conflict => conflict_text_color,
+                                        ThreeWayLineKind::Conflict => conflict_color,
                                         _ => text_color,
                                     };
                                     let right_text_col = match right_kind {
-                                        ThreeWayLineKind::Conflict => conflict_text_color,
+                                        ThreeWayLineKind::Conflict => conflict_color,
                                         _ => text_color,
                                     };
                                     let left_num_str: SharedString =
@@ -4356,7 +4893,11 @@ impl Render for DiffViewer {
             .track_focus(&self.focus_handle)
             // Bindings scoped to `DiffViewer` resolve to `diff::*` actions the
             // workspace root handles; this crate cannot name them itself.
-            .key_context("DiffViewer")
+            .key_context(if self.display_mode == DiffDisplayMode::ThreeWay {
+                "DiffViewer ConflictResolver"
+            } else {
+                "DiffViewer"
+            })
             .on_mouse_up(MouseButton::Left, cx.listener(Self::end_mouse_selection))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::end_mouse_selection))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -4377,16 +4918,13 @@ impl Render for DiffViewer {
             .bg(editor_bg);
 
         if let Some(path) = &self.file_path {
-            let (additions, deletions) = if self.display_mode == DiffDisplayMode::ThreeWay {
-                let conflict_count = self
-                    .three_way_diff
-                    .as_ref()
-                    .map(|d| d.regions.iter().filter(|r| r.is_conflict).count())
-                    .unwrap_or(0);
-                (conflict_count, 0)
-            } else {
-                Self::count_changes(&self.display_rows)
-            };
+            let (additions, deletions) = Self::count_changes(&self.display_rows);
+            let unresolved = self.unresolved_conflict_count();
+            let total_conflicts = self
+                .three_way_diff
+                .as_ref()
+                .map(|diff| diff.conflict_count())
+                .unwrap_or(0);
             let file_icon = Self::icon_for_path(path);
             let path_str: SharedString = path.clone().into();
             let mode_label = match self.display_mode {
@@ -4429,7 +4967,20 @@ impl Render for DiffViewer {
                         Badge::new(badge_label).color(badge_color)
                     })
                     .child(div().flex_1())
-                    .child(
+                    .child(if self.display_mode == DiffDisplayMode::ThreeWay {
+                        Label::new(SharedString::from(conflict_progress_label(
+                            unresolved,
+                            total_conflicts,
+                        )))
+                        .size(LabelSize::XSmall)
+                        .weight(FontWeight::SEMIBOLD)
+                        .color(if unresolved == 0 {
+                            Color::Added
+                        } else {
+                            Color::Conflict
+                        })
+                        .into_any_element()
+                    } else {
                         div()
                             .h_flex()
                             .gap(px(4.))
@@ -4448,8 +4999,9 @@ impl Render for DiffViewer {
                                     .text_color(vc_deleted)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(format!("-{}", deletions))),
-                            ),
-                    )
+                            )
+                            .into_any_element()
+                    })
                     .child(
                         div()
                             .text_xs()
@@ -4496,6 +5048,71 @@ impl Render for DiffViewer {
                                 .into_any_element()
                         }
                     })
+                    .when(self.display_mode == DiffDisplayMode::ThreeWay, |element| {
+                        element
+                            .child(
+                                Button::new("conflict-all-current", "All Current")
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Subtle)
+                                    .tooltip("Use Current for every unresolved section")
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, _, cx| {
+                                            this.use_current_for_all_conflicts(cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                Button::new("conflict-all-incoming", "All Incoming")
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Subtle)
+                                    .tooltip("Use Incoming for every unresolved section")
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, _, cx| {
+                                            this.use_incoming_for_all_conflicts(cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                Button::new("conflict-open-editor", "Open File")
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Subtle)
+                                    .tooltip("Open the working file in your configured editor")
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, _, cx| {
+                                            this.open_conflict_in_editor(cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                Button::new("conflict-stage-working", "Stage Working Copy")
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Outlined)
+                                    .tooltip(
+                                        "Stage a manually edited working copy after checking for conflict markers",
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, _, cx| {
+                                            this.stage_conflict_working_copy(cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                Button::new("conflict-save", "Save & Stage")
+                                    .size(ButtonSize::Compact)
+                                    .style(ButtonStyle::Filled)
+                                    .disabled(unresolved > 0)
+                                    .tooltip(if unresolved > 0 {
+                                        "Choose a result for every conflict first"
+                                    } else {
+                                        "Write the Result and stage this file"
+                                    })
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, _, cx| {
+                                            this.save_conflict_result(cx);
+                                        },
+                                    )),
+                            )
+                    })
                     .child(self.render_file_menu_button(cx))
                     .child({
                         let toggle_tooltip = match self.display_mode {
@@ -4506,11 +5123,49 @@ impl Render for DiffViewer {
                         Button::new("toggle-diff-mode", mode_label)
                             .size(ButtonSize::Compact)
                             .style(ButtonStyle::Subtle)
+                            .disabled(self.display_mode == DiffDisplayMode::ThreeWay)
                             .tooltip(toggle_tooltip)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.toggle_display_mode(cx);
                             }))
                     }),
+            );
+        }
+
+        if self.display_mode == DiffDisplayMode::ThreeWay {
+            let column = |label: &'static str, detail: &'static str, border: bool| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_flex()
+                    .h(px(24.))
+                    .px(px(8.))
+                    .gap(px(5.))
+                    .items_center()
+                    .when(border, |element| {
+                        element.border_r_1().border_color(border_variant)
+                    })
+                    .child(
+                        Label::new(label)
+                            .size(LabelSize::XSmall)
+                            .weight(FontWeight::SEMIBOLD),
+                    )
+                    .child(
+                        Label::new(detail)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    )
+            };
+            container = container.child(
+                div()
+                    .w_full()
+                    .h_flex()
+                    .bg(toolbar_bg)
+                    .border_b_1()
+                    .border_color(border_variant)
+                    .child(column("Current", "Git ours", true))
+                    .child(column("Result", "staged on save", true))
+                    .child(column("Incoming", "Git theirs", false)),
             );
         }
 
@@ -4572,6 +5227,110 @@ impl Render for DiffViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_conflict_diff(sections: Vec<MergeSection>) -> ThreeWayFileDiff {
+        ThreeWayFileDiff {
+            path: std::path::PathBuf::from("conflict.txt"),
+            sections,
+            snapshot: ConflictSnapshot {
+                ancestor_oid: None,
+                ours_oid: None,
+                theirs_oid: None,
+                worktree_content: None,
+            },
+            ancestor_exists: true,
+            ours_exists: true,
+            theirs_exists: true,
+            is_binary: false,
+            is_special_file: false,
+            result_mode: 0o100644,
+        }
+    }
+
+    #[test]
+    fn assembles_independent_conflict_choices_without_normalizing_bytes() {
+        let diff = text_conflict_diff(vec![
+            MergeSection::Resolved(b"prefix\r\n".to_vec()),
+            MergeSection::Conflict {
+                ancestor: b"base-a\r\n".to_vec(),
+                ours: b"current-a\r\n".to_vec(),
+                theirs: b"incoming-a\r\n".to_vec(),
+            },
+            MergeSection::Resolved(b"middle\r\n".to_vec()),
+            MergeSection::Conflict {
+                ancestor: b"base-b".to_vec(),
+                ours: b"current-b".to_vec(),
+                theirs: b"incoming-b".to_vec(),
+            },
+        ]);
+
+        let content = assemble_text_resolution(
+            &diff,
+            &[
+                Some(ConflictChoice::Theirs),
+                Some(ConflictChoice::BothOursFirst),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            content,
+            b"prefix\r\nincoming-a\r\nmiddle\r\ncurrent-bincoming-b"
+        );
+    }
+
+    #[test]
+    fn unresolved_choice_cannot_be_assembled() {
+        let diff = text_conflict_diff(vec![MergeSection::Conflict {
+            ancestor: b"base\n".to_vec(),
+            ours: b"current\n".to_vec(),
+            theirs: b"incoming\n".to_vec(),
+        }]);
+        assert_eq!(assemble_text_resolution(&diff, &[None]), None);
+    }
+
+    #[test]
+    fn conflict_progress_copy_reports_state_directly() {
+        assert_eq!(conflict_progress_label(2, 2), "2 unresolved");
+        assert_eq!(conflict_progress_label(1, 2), "1 resolved · 1 remaining");
+        assert_eq!(conflict_progress_label(0, 2), "All 2 resolved");
+    }
+
+    #[test]
+    fn three_way_line_numbers_continue_across_merge_sections() {
+        let diff = text_conflict_diff(vec![
+            MergeSection::Resolved(b"header\n".to_vec()),
+            MergeSection::Conflict {
+                ancestor: b"base\n".to_vec(),
+                ours: b"current one\ncurrent two\n".to_vec(),
+                theirs: b"incoming\n".to_vec(),
+            },
+            MergeSection::Resolved(b"footer\n".to_vec()),
+        ]);
+        let rows = DiffViewer::compute_three_way_rows(&diff, &[Some(ConflictChoice::Ours)]);
+        let numbers = rows
+            .iter()
+            .filter_map(|row| match row {
+                ThreeWayRow::Triple {
+                    left_num,
+                    mid_num,
+                    right_num,
+                    ..
+                } => Some((*left_num, *mid_num, *right_num)),
+                ThreeWayRow::HunkHeader { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            numbers,
+            vec![
+                (Some(1), Some(1), Some(1)),
+                (Some(2), Some(2), Some(2)),
+                (Some(3), Some(3), None),
+                (Some(4), Some(4), Some(3)),
+            ]
+        );
+    }
 
     #[test]
     fn mouse_selection_range_extends_forward_inclusively() {
@@ -5662,10 +6421,16 @@ mod tests {
 mod view_tests {
     use gpui::prelude::*;
     use gpui::{div, Context, Entity, Render, Window};
-    use rgitui_git::{DiffHunk, DiffLine, FileChangeKind, FileDiff};
+    use rgitui_git::{
+        ConflictSnapshot, DiffHunk, DiffLine, FileChangeKind, FileDiff, MergeSection,
+        ThreeWayFileDiff,
+    };
     use rgitui_test_support::ViewTest;
 
-    use super::{DiffOperation, DiffSource, DiffViewer, DiffViewerEvent, WorktreePatchScope};
+    use super::{
+        ConflictResolution, DiffOperation, DiffSource, DiffViewer, DiffViewerEvent,
+        WorktreePatchScope,
+    };
 
     const OID: &str = "9f2c1ab4d5e6f708192a3b4c5d6e7f8091a2b3c4";
     const PATH: &str = "src/main.rs";
@@ -6145,5 +6910,69 @@ mod view_tests {
             DiffViewerEvent::for_hunk(DiffOperation::Unstage, 3),
             DiffViewerEvent::HunkUnstageRequested(3)
         );
+    }
+
+    #[test]
+    fn independent_conflict_choices_emit_one_complete_staged_result() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        let snapshot = ConflictSnapshot {
+            ancestor_oid: None,
+            ours_oid: None,
+            theirs_oid: None,
+            worktree_content: Some(b"markers\n".to_vec()),
+        };
+        let diff = ThreeWayFileDiff {
+            path: PATH.into(),
+            sections: vec![
+                MergeSection::Conflict {
+                    ancestor: b"base-a\n".to_vec(),
+                    ours: b"current-a\n".to_vec(),
+                    theirs: b"incoming-a\n".to_vec(),
+                },
+                MergeSection::Resolved(b"middle\n".to_vec()),
+                MergeSection::Conflict {
+                    ancestor: b"base-b\n".to_vec(),
+                    ours: b"current-b\n".to_vec(),
+                    theirs: b"incoming-b\n".to_vec(),
+                },
+            ],
+            snapshot: snapshot.clone(),
+            ancestor_exists: true,
+            ours_exists: true,
+            theirs_exists: true,
+            is_binary: false,
+            is_special_file: false,
+            result_mode: 0o100644,
+        };
+
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_three_way_diff(diff, cx);
+            });
+        });
+        probe.read(|probe, cx| {
+            assert_eq!(probe.viewer.read(cx).unresolved_conflict_count(), 2);
+        });
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.use_current_for_conflict(cx);
+                viewer.use_incoming_for_conflict(cx);
+                viewer.save_conflict_result(cx);
+            });
+        });
+
+        probe.read(|probe, _| {
+            assert_eq!(
+                probe.request_events(),
+                vec![DiffViewerEvent::ConflictResolutionRequested(
+                    ConflictResolution::SaveMerged {
+                        path: PATH.to_string(),
+                        content: b"current-a\nmiddle\nincoming-b\n".to_vec(),
+                        mode: 0o100644,
+                        snapshot,
+                    }
+                )]
+            );
+        });
     }
 }
