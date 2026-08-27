@@ -1139,8 +1139,6 @@ impl DiffViewer {
     /// Set a 3-way conflict diff to display.
     pub fn set_three_way_diff(&mut self, diff: ThreeWayFileDiff, cx: &mut Context<Self>) {
         self.generation = self.generation.wrapping_add(1);
-        self.preparation_generation = self.preparation_generation.wrapping_add(1);
-        let generation = self.preparation_generation;
         self.loading = true;
         self.error = None;
         let appearance = cx.theme().appearance;
@@ -1173,6 +1171,17 @@ impl DiffViewer {
         cx.notify();
 
         let choices = self.conflict_choices.clone();
+        self.prepare_three_way_rows(diff, choices, cx);
+    }
+
+    fn prepare_three_way_rows(
+        &mut self,
+        diff: Arc<ThreeWayFileDiff>,
+        choices: Vec<Option<ConflictChoice>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
+        let generation = self.preparation_generation;
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             let rows = cx
                 .background_executor()
@@ -2163,15 +2172,15 @@ impl DiffViewer {
     }
 
     fn rebuild_three_way_rows(&mut self, cx: &mut Context<Self>) {
-        let Some(diff) = self.three_way_diff.as_ref() else {
+        let Some(diff) = self.three_way_diff.as_ref().map(Arc::clone) else {
             return;
         };
-        // A choice is itself a new prepared state. Invalidate the asynchronous
-        // initial render so it cannot later replace these resolved rows with
-        // the all-unresolved snapshot it captured in set_three_way_diff.
-        self.preparation_generation = self.preparation_generation.wrapping_add(1);
-        self.three_way_rows = Arc::new(Self::compute_three_way_rows(diff, &self.conflict_choices));
-        self.sync_wrap_list_state();
+        // Styling and laying out a large conflict is expensive. Keep the last
+        // complete rows visible while this choice is prepared off the UI
+        // thread; the generation guard coalesces rapid choices and prevents an
+        // older preparation from replacing the newest state.
+        let choices = self.conflict_choices.clone();
+        self.prepare_three_way_rows(diff, choices, cx);
         cx.notify();
     }
 
@@ -7170,16 +7179,26 @@ mod view_tests {
             result_mode: 0o100644,
         };
 
-        let (initial_generation, chosen_generation) = probe.update(|probe, _window, cx| {
-            probe.viewer.update(cx, |viewer, cx| {
-                viewer.set_three_way_diff(diff, cx);
-                let initial_generation = viewer.preparation_generation;
-                viewer.use_current_for_conflict(cx);
-                (initial_generation, viewer.preparation_generation)
-            })
-        });
+        let (initial_generation, chosen_generation, rebuilt_inline) =
+            probe.update(|probe, _window, cx| {
+                probe.viewer.update(cx, |viewer, cx| {
+                    viewer.set_three_way_diff(diff, cx);
+                    let initial_generation = viewer.preparation_generation;
+                    let rows_before = std::sync::Arc::clone(&viewer.three_way_rows);
+                    viewer.use_current_for_conflict(cx);
+                    (
+                        initial_generation,
+                        viewer.preparation_generation,
+                        !std::sync::Arc::ptr_eq(&rows_before, &viewer.three_way_rows),
+                    )
+                })
+            });
 
         assert_ne!(initial_generation, chosen_generation);
+        assert!(
+            !rebuilt_inline,
+            "row preparation must not run on the UI thread"
+        );
         assert!(!super::should_apply_prepared(
             chosen_generation,
             initial_generation

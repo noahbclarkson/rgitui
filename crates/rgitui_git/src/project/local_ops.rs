@@ -3702,6 +3702,67 @@ enum ConflictResolutionInput {
     },
 }
 
+fn write_conflict_index_resolution(
+    worktree_path: &Path,
+    file_path: &Path,
+    resolved: Option<(u32, git2::Oid)>,
+) -> Result<()> {
+    #[cfg(windows)]
+    let git_path = file_path
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .map(|byte| if *byte == b'\\' { b'/' } else { *byte })
+        .collect::<Vec<_>>();
+    #[cfg(not(windows))]
+    let git_path = file_path.as_os_str().as_encoded_bytes().to_vec();
+
+    let mut input = Vec::new();
+    write!(input, "0 {}\t", git2::Oid::zero())?;
+    input.extend_from_slice(&git_path);
+    input.push(0);
+    if let Some((mode, oid)) = resolved {
+        write!(input, "{mode:o} {oid}\t")?;
+        input.extend_from_slice(&git_path);
+        input.push(0);
+    }
+
+    let mut command = super::git_command();
+    command
+        .current_dir(worktree_path)
+        .args(["update-index", "-z", "--index-info"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    // `git update-index` holds index.lock while it reads, applies both records,
+    // and commits the index. The object already exists, so this transaction is
+    // independent of result size and preserves unrelated concurrent staging
+    // that landed before the lock was acquired. The leading zero-mode record
+    // removes every conflict stage before the optional stage-zero record.
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "Failed to start Git while updating the conflict index for '{}'",
+            file_path.display()
+        )
+    })?;
+    child
+        .stdin
+        .take()
+        .expect("piped update-index stdin")
+        .write_all(&input)?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let details = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Git could not update the conflict index for '{}': {}",
+            file_path.display(),
+            details.trim()
+        );
+    }
+    Ok(())
+}
+
 fn apply_conflict_side(
     worktree_path: &Path,
     file_path: &Path,
@@ -3736,7 +3797,7 @@ fn apply_conflict_side(
         Some(entry) if entry.mode & 0o170000 == 0o100000 => {
             let canonical = repo.find_blob(entry.id)?.content().to_vec();
             let worktree = smudge_canonical_bytes(worktree_path, file_path, &canonical)?;
-            Some((canonical, worktree))
+            Some(worktree)
         }
         _ => None,
     };
@@ -3764,7 +3825,7 @@ fn apply_conflict_side(
     if let Some(entry) = chosen {
         if entry.mode & 0o170000 == 0o100000 {
             let selected_mode = entry.mode;
-            let (canonical_content, worktree_content) = prepared_regular
+            let worktree_content = prepared_regular
                 .as_ref()
                 .expect("a verified regular side was prepared");
             let applied_worktree = replace_regular_worktree_file(
@@ -3786,27 +3847,27 @@ fn apply_conflict_side(
                 ConflictSide::Theirs => refreshed_conflict.their.as_ref(),
             }
             .expect("the verified selected side still exists");
-            let stage_zero = stage_zero_entry(refreshed_entry, selected_mode);
-            if let Err(error) = index
-                .add_frombuffer(&stage_zero, canonical_content)
-                .and_then(|_| index.write())
-            {
+            if let Err(error) = write_conflict_index_resolution(
+                worktree_path,
+                file_path,
+                Some((selected_mode, refreshed_entry.id)),
+            ) {
                 return Err(rollback_worktree_after_error(
                     &worktree_file,
                     &original_worktree,
                     &applied_worktree,
-                    error.into(),
+                    error,
                 ));
             }
         } else if entry.mode & 0o170000 == 0o160000 {
             // A gitlink's OID names a commit, not a blob. Resolving it means
             // selecting the stage-0 gitlink; the submodule working directory is
             // intentionally left untouched.
-            let mut stage_zero = stage_zero_entry(entry, entry.mode);
-            stage_zero.id = entry.id;
-            index.conflict_remove(file_path)?;
-            index.add(&stage_zero)?;
-            index.write()?;
+            write_conflict_index_resolution(
+                worktree_path,
+                file_path,
+                Some((entry.mode, entry.id)),
+            )?;
         } else if entry.mode & 0o170000 == 0o120000 {
             // A Git symlink blob stores its target verbatim. Materialize it
             // ourselves with create-new semantics so an editor save cannot be
@@ -3836,18 +3897,18 @@ fn apply_conflict_side(
                 ConflictSide::Theirs => refreshed_conflict.their.as_ref(),
             }
             .expect("the verified selected side still exists");
-            let mut stage_zero = stage_zero_entry(refreshed_entry, selected_mode);
-            stage_zero.id = selected_id;
-            let index_result = index
-                .conflict_remove(file_path)
-                .and_then(|_| index.add(&stage_zero))
-                .and_then(|_| index.write());
+            debug_assert_eq!(refreshed_entry.id, selected_id);
+            let index_result = write_conflict_index_resolution(
+                worktree_path,
+                file_path,
+                Some((selected_mode, selected_id)),
+            );
             if let Err(error) = index_result {
                 return Err(rollback_worktree_after_error(
                     &worktree_file,
                     &original_worktree,
                     &applied_worktree,
-                    error.into(),
+                    error,
                 ));
             }
             return Ok(());
@@ -3859,14 +3920,18 @@ fn apply_conflict_side(
             );
         }
     } else {
-        // A checked-out gitlink is a directory owned by the nested repository.
-        // Resolving its index entry as deleted must not recursively remove (or
-        // reject) that directory; match Git's behavior and leave it as local,
-        // untracked worktree state.
-        if !conflict_has_gitlink {
+        // A checked-out gitlink directory is owned by the nested repository and
+        // must remain as local, untracked worktree state. A regular file or
+        // symlink at the same path is not a checked-out submodule, however, and
+        // should be removed like any other selected deletion.
+        let preserve_gitlink_directory = conflict_has_gitlink
+            && worktree_file
+                .symlink_metadata()?
+                .is_some_and(|metadata| metadata.is_dir());
+        if !preserve_gitlink_directory {
             remove_worktree_entry_if_matches(&worktree_file, &original_worktree)?;
         }
-        let applied_worktree = (!conflict_has_gitlink)
+        let applied_worktree = (!preserve_gitlink_directory)
             .then(|| capture_worktree_entry(&worktree_file))
             .transpose()?;
         if let Some(applied_worktree) = applied_worktree.as_ref() {
@@ -3879,24 +3944,20 @@ fn apply_conflict_side(
                 applied_worktree,
             )?;
         }
-        let index_result = index
-            .conflict_remove(file_path)
-            .and_then(|_| match index.remove_path(file_path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
-                Err(error) => Err(error),
-            })
-            .and_then(|_| index.write());
+        if applied_worktree.is_none() {
+            reload_conflict_index(&mut index, snapshot, file_path)?;
+        }
+        let index_result = write_conflict_index_resolution(worktree_path, file_path, None);
         if let Err(error) = index_result {
             if let Some(applied_worktree) = applied_worktree.as_ref() {
                 return Err(rollback_worktree_after_error(
                     &worktree_file,
                     &original_worktree,
                     applied_worktree,
-                    error.into(),
+                    error,
                 ));
             }
-            return Err(error.into());
+            return Err(error);
         }
     }
     Ok(())
@@ -3977,24 +4038,28 @@ fn apply_conflict_resolution(
         }
     };
 
+    // Store the assembled result before the final index validation. Hashing a
+    // large resolution may be expensive; the subsequent update-index command
+    // can now hold the index lock for a short, size-independent transaction.
+    let result_oid = result.as_ref().map(|bytes| repo.blob(bytes)).transpose()?;
+
     ensure_worktree_entry_matches(&worktree_file, &original_worktree)?;
     let conflict = reload_conflict_index(&mut index, &snapshot, file_path)?;
 
-    match result {
-        Some(bytes) => {
+    match result_oid {
+        Some(result_oid) => {
             if result_mode & 0o170000 != 0o100000 {
                 anyhow::bail!(
                     "'{}' is not a regular file. Choose Current or Incoming as a whole-file resolution.",
                     file_path.display()
                 );
             }
-            let template = conflict
+            conflict
                 .our
                 .as_ref()
                 .or(conflict.their.as_ref())
                 .or(conflict.ancestor.as_ref())
                 .ok_or_else(|| anyhow::anyhow!("Conflict has no index entry to resolve"))?;
-            let stage_zero = stage_zero_entry(template, result_mode);
 
             let applied_worktree = worktree_result
                 .as_ref()
@@ -4018,19 +4083,20 @@ fn apply_conflict_resolution(
                 )?;
             }
 
-            if let Err(error) = index
-                .add_frombuffer(&stage_zero, &bytes)
-                .and_then(|_| index.write())
-            {
+            if let Err(error) = write_conflict_index_resolution(
+                worktree_path,
+                file_path,
+                Some((result_mode, result_oid)),
+            ) {
                 if let Some(applied_worktree) = applied_worktree.as_ref() {
                     return Err(rollback_worktree_after_error(
                         &worktree_file,
                         &original_worktree,
                         applied_worktree,
-                        error.into(),
+                        error,
                     ));
                 }
-                return Err(error.into());
+                return Err(error);
             }
         }
         None => {
@@ -4044,20 +4110,13 @@ fn apply_conflict_resolution(
                 &original_worktree,
                 &applied_worktree,
             )?;
-            let index_result = index
-                .conflict_remove(file_path)
-                .and_then(|_| match index.remove_path(file_path) {
-                    Ok(()) => Ok(()),
-                    Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
-                    Err(error) => Err(error),
-                })
-                .and_then(|_| index.write());
+            let index_result = write_conflict_index_resolution(worktree_path, file_path, None);
             if let Err(error) = index_result {
                 return Err(rollback_worktree_after_error(
                     &worktree_file,
                     &original_worktree,
                     &applied_worktree,
-                    error.into(),
+                    error,
                 ));
             }
         }
@@ -4118,25 +4177,6 @@ fn reload_conflict_index_after_worktree_change(
 ) -> Result<git2::IndexConflict> {
     reload_conflict_index(index, snapshot, file_path)
         .map_err(|error| rollback_worktree_after_error(worktree_file, original, applied, error))
-}
-
-fn stage_zero_entry(template: &git2::IndexEntry, mode: u32) -> git2::IndexEntry {
-    git2::IndexEntry {
-        ctime: template.ctime,
-        mtime: template.mtime,
-        dev: template.dev,
-        ino: template.ino,
-        mode,
-        uid: template.uid,
-        gid: template.gid,
-        file_size: 0,
-        id: git2::Oid::zero(),
-        // Bits 12-13 store the conflict stage. add_frombuffer recalculates the
-        // path-length bits but deliberately preserves everything else.
-        flags: template.flags & !0x3000,
-        flags_extended: template.flags_extended,
-        path: template.path.clone(),
-    }
 }
 
 fn regular_worktree_mode(
@@ -5924,34 +5964,86 @@ mod tests {
     }
 
     #[test]
-    fn refreshed_conflict_index_preserves_a_concurrent_unrelated_stage() {
+    fn conflict_index_transaction_preserves_a_stage_after_result_hashing() {
         let fixture = make_repo_with_conflicting_merge();
         let relative_path = std::path::Path::new("file.txt");
         let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
             .expect("conflict model");
         let repo = git2::Repository::open(fixture.path()).unwrap();
-        let mut stale_index = repo.index().unwrap();
+        let result_oid = repo.blob(b"resolved after a large preparation\n").unwrap();
+
+        // This stage lands after result preparation. The transaction must read
+        // it under index.lock rather than overwrite it from a stale Index.
         fs::write(fixture.path().join("unrelated.txt"), b"staged later\n").unwrap();
         assert!(run_git(fixture.path(), &["add", "unrelated.txt"])
             .status
             .success());
+        let mut index = repo.index().unwrap();
+        let conflict = super::reload_conflict_index(&mut index, &diff.snapshot, relative_path)
+            .expect("refresh conflict index");
+        let mode = conflict.our.as_ref().expect("ours entry").mode;
 
-        let conflict =
-            super::reload_conflict_index(&mut stale_index, &diff.snapshot, relative_path)
-                .expect("refresh conflict index");
-        let ours = conflict.our.as_ref().expect("ours entry");
-        let stage_zero = super::stage_zero_entry(ours, ours.mode);
-        let content = repo.find_blob(ours.id).unwrap().content().to_vec();
-        stale_index.add_frombuffer(&stage_zero, &content).unwrap();
-        stale_index.write().unwrap();
+        super::write_conflict_index_resolution(
+            fixture.path(),
+            relative_path,
+            Some((mode, result_oid)),
+        )
+        .expect("commit conflict resolution transaction");
 
-        let index = repo.index().unwrap();
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        assert_eq!(
+            index.get_path(relative_path, 0).expect("resolved entry").id,
+            result_oid
+        );
         let unrelated = index
             .get_path(std::path::Path::new("unrelated.txt"), 0)
             .expect("concurrent stage was preserved");
         assert_eq!(
             repo.find_blob(unrelated.id).unwrap().content(),
             b"staged later\n"
+        );
+    }
+
+    #[test]
+    fn conflict_index_transaction_handles_a_nested_path_with_spaces() {
+        let fixture = TempRepo::init();
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let ancestor = repo.blob(b"ancestor\n").unwrap();
+        let ours = repo.blob(b"current\n").unwrap();
+        let theirs = repo.blob(b"incoming\n").unwrap();
+        let resolved = repo.blob(b"resolved\n").unwrap();
+        install_index_conflict(
+            &fixture,
+            "nested/file with space.txt",
+            0o100644,
+            ancestor,
+            ours,
+            theirs,
+        );
+        let relative_path = std::path::Path::new("nested").join("file with space.txt");
+
+        super::write_conflict_index_resolution(
+            fixture.path(),
+            &relative_path,
+            Some((0o100644, resolved)),
+        )
+        .expect("commit nested conflict resolution transaction");
+
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(&relative_path).is_err());
+        assert_eq!(
+            index
+                .get_path(&relative_path, 0)
+                .expect("resolved nested entry")
+                .id,
+            resolved
         );
     }
 
@@ -6539,6 +6631,38 @@ mod tests {
             fs::read(fixture.path().join(relative_path).join("local.txt")).unwrap(),
             b"local work\n"
         );
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        assert!(index.get_path(relative_path, 0).is_none());
+    }
+
+    #[test]
+    fn choosing_deleted_gitlink_side_removes_a_regular_worktree_file() {
+        let fixture = TempRepo::init();
+        let ancestor = fixture.commit_file("seed.txt", "ancestor\n", "ancestor");
+        let ours = fixture.commit_file("seed.txt", "ours\n", "ours");
+        install_gitlink_modify_delete_conflict(&fixture, "module", ancestor, ours);
+        let relative_path = std::path::Path::new("module");
+        fs::write(
+            fixture.path().join(relative_path),
+            b"not a submodule directory\n",
+        )
+        .unwrap();
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("gitlink delete conflict model");
+
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Theirs,
+            &diff.snapshot,
+        )
+        .expect("choose deleted gitlink side");
+
+        assert!(!fixture.path().join(relative_path).exists());
         let index = git2::Repository::open(fixture.path())
             .unwrap()
             .index()
