@@ -4218,15 +4218,25 @@ enum WorktreeEntryBackup {
         bytes: Vec<u8>,
         permissions: std::fs::Permissions,
     },
-    Symlink(PathBuf),
+    Symlink {
+        target: PathBuf,
+        kind: WorktreeSymlinkKind,
+    },
     Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorktreeSymlinkKind {
+    File,
+    #[cfg(windows)]
+    Directory,
 }
 
 impl WorktreeEntryBackup {
     fn snapshot_bytes(&self) -> Option<&[u8]> {
         match self {
             Self::Regular { bytes, .. } => Some(bytes),
-            Self::Symlink(target) => Some(target.as_os_str().as_encoded_bytes()),
+            Self::Symlink { target, .. } => Some(target.as_os_str().as_encoded_bytes()),
             Self::Missing | Self::Other => None,
         }
     }
@@ -4246,7 +4256,16 @@ impl WorktreeEntryBackup {
             ) => {
                 left_bytes == right_bytes && permissions_match(left_permissions, right_permissions)
             }
-            (Self::Symlink(left), Self::Symlink(right)) => left == right,
+            (
+                Self::Symlink {
+                    target: left_target,
+                    kind: left_kind,
+                },
+                Self::Symlink {
+                    target: right_target,
+                    kind: right_kind,
+                },
+            ) => left_target == right_target && left_kind == right_kind,
             _ => false,
         }
     }
@@ -4267,9 +4286,10 @@ impl WorktreeEntryBackup {
                     && permissions_executable(permissions) == *executable
                     && permissions.readonly() == *readonly
             }
-            (Self::Symlink(target), ConflictWorktreeSnapshot::Symlink { target: snapshot }) => {
-                target.as_os_str().as_encoded_bytes() == snapshot
-            }
+            (
+                Self::Symlink { target, .. },
+                ConflictWorktreeSnapshot::Symlink { target: snapshot },
+            ) => target.as_os_str().as_encoded_bytes() == snapshot,
             _ => false,
         }
     }
@@ -4297,6 +4317,22 @@ fn permissions_match(left: &std::fs::Permissions, right: &std::fs::Permissions) 
     left.readonly() == right.readonly()
 }
 
+#[cfg(unix)]
+fn worktree_symlink_kind(_metadata: &std::fs::Metadata) -> WorktreeSymlinkKind {
+    WorktreeSymlinkKind::File
+}
+
+#[cfg(windows)]
+fn worktree_symlink_kind(metadata: &std::fs::Metadata) -> WorktreeSymlinkKind {
+    use std::os::windows::fs::FileTypeExt;
+
+    if metadata.file_type().is_symlink_dir() {
+        WorktreeSymlinkKind::Directory
+    } else {
+        WorktreeSymlinkKind::File
+    }
+}
+
 fn capture_worktree_entry(path: &Path) -> Result<WorktreeEntryBackup> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -4306,7 +4342,10 @@ fn capture_worktree_entry(path: &Path) -> Result<WorktreeEntryBackup> {
         Err(error) => return Err(error.into()),
     };
     if metadata.file_type().is_symlink() {
-        return Ok(WorktreeEntryBackup::Symlink(std::fs::read_link(path)?));
+        return Ok(WorktreeEntryBackup::Symlink {
+            target: std::fs::read_link(path)?,
+            kind: worktree_symlink_kind(&metadata),
+        });
     }
     if metadata.is_file() {
         return Ok(WorktreeEntryBackup::Regular {
@@ -4579,11 +4618,12 @@ fn replace_worktree_symlink(
     expected: &WorktreeEntryBackup,
 ) -> Result<WorktreeEntryBackup> {
     let target = symlink_target_from_bytes(target)?;
+    let kind = selected_symlink_kind(&target, path)?;
     publish_special_worktree_entry(path, expected, || {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        create_worktree_symlink(&target, path)?;
+        create_worktree_symlink(&target, path, kind)?;
         Ok(())
     })
 }
@@ -4599,6 +4639,30 @@ fn symlink_target_from_bytes(target: &[u8]) -> Result<PathBuf> {
     let target = String::from_utf8(target.to_vec())
         .context("Cannot create a Windows symbolic link with a non-UTF-8 target")?;
     Ok(target.into())
+}
+
+#[cfg(unix)]
+fn selected_symlink_kind(_target: &Path, _path: &Path) -> Result<WorktreeSymlinkKind> {
+    Ok(WorktreeSymlinkKind::File)
+}
+
+#[cfg(windows)]
+fn selected_symlink_kind(target: &Path, path: &Path) -> Result<WorktreeSymlinkKind> {
+    let resolved_target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    match std::fs::metadata(resolved_target) {
+        Ok(metadata) if metadata.is_dir() => Ok(WorktreeSymlinkKind::Directory),
+        Ok(_) => Ok(WorktreeSymlinkKind::File),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // This matches libgit2's Windows checkout fallback for a dangling
+            // Git symlink, whose target type cannot otherwise be inferred.
+            Ok(WorktreeSymlinkKind::Directory)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn publish_special_worktree_entry<F>(
@@ -4807,8 +4871,8 @@ fn restore_displaced_entry(
             }
             remove_worktree_file_or_symlink(backup_path)?;
         }
-        WorktreeEntryBackup::Symlink(target) => {
-            create_worktree_symlink(target, path)?;
+        WorktreeEntryBackup::Symlink { target, kind } => {
+            create_worktree_symlink(target, path, *kind)?;
             remove_worktree_file_or_symlink(backup_path)?;
         }
         WorktreeEntryBackup::Missing => {}
@@ -4915,11 +4979,11 @@ fn restore_worktree_entry_if_unchanged(
         WorktreeEntryBackup::Regular { bytes, permissions } => {
             create_regular_file_noclobber(path, bytes, permissions)
         }
-        WorktreeEntryBackup::Symlink(target) => {
+        WorktreeEntryBackup::Symlink { target, kind } => {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            create_worktree_symlink(target, path).map_err(anyhow::Error::from)
+            create_worktree_symlink(target, path, *kind).map_err(anyhow::Error::from)
         }
         WorktreeEntryBackup::Other => Err(anyhow::anyhow!(
             "Cannot restore unsupported worktree entry '{}'",
@@ -4966,23 +5030,25 @@ fn rollback_worktree_after_error(
 }
 
 #[cfg(unix)]
-fn create_worktree_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+fn create_worktree_symlink(
+    target: &Path,
+    path: &Path,
+    _kind: WorktreeSymlinkKind,
+) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, path)
 }
 
 #[cfg(windows)]
-fn create_worktree_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+fn create_worktree_symlink(
+    target: &Path,
+    path: &Path,
+    kind: WorktreeSymlinkKind,
+) -> std::io::Result<()> {
     use std::os::windows::fs::{symlink_dir, symlink_file};
 
-    let resolved_target = if target.is_absolute() {
-        target.to_path_buf()
-    } else {
-        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
-    };
-    if std::fs::metadata(resolved_target).is_ok_and(|metadata| metadata.is_dir()) {
-        symlink_dir(target, path)
-    } else {
-        symlink_file(target, path)
+    match kind {
+        WorktreeSymlinkKind::Directory => symlink_dir(target, path),
+        WorktreeSymlinkKind::File => symlink_file(target, path),
     }
 }
 
@@ -6108,6 +6174,31 @@ mod tests {
             .to_string()
             .contains("newer worktree entry was preserved"));
         assert_eq!(fs::read(&path).unwrap(), b"saved after resolution\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rollback_restores_a_dangling_windows_directory_symlink() {
+        use std::os::windows::fs::{symlink_dir, FileTypeExt};
+
+        let fixture = TempRepo::init();
+        let path = fixture.path().join("link");
+        if symlink_dir("missing-target", &path).is_err() {
+            return;
+        }
+        let original = super::capture_worktree_entry(&path).unwrap();
+        let applied =
+            super::replace_regular_worktree_file(&path, b"resolver result\n", 0o100644, &original)
+                .unwrap();
+
+        super::restore_worktree_entry_if_unchanged(&path, &original, &applied).unwrap();
+
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        assert!(metadata.file_type().is_symlink_dir());
+        assert_eq!(
+            fs::read_link(&path).unwrap(),
+            std::path::Path::new("missing-target")
+        );
     }
 
     #[test]
