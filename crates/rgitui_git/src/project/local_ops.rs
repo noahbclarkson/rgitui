@@ -3737,6 +3737,12 @@ fn apply_conflict_side(
         }
         _ => None,
     };
+    let prepared_symlink = match initial_chosen {
+        Some(entry) if entry.mode & 0o170000 == 0o120000 => {
+            Some(repo.find_blob(entry.id)?.content().to_vec())
+        }
+        _ => None,
+    };
     ensure_worktree_entry_matches(&full_path, &original_worktree)?;
     let conflict = reload_conflict_index(&mut index, snapshot, file_path)?;
     let conflict_has_gitlink = [
@@ -3798,37 +3804,22 @@ fn apply_conflict_side(
             index.conflict_remove(file_path)?;
             index.add(&stage_zero)?;
             index.write()?;
-        } else {
-            // Let libgit2 materialize symlinks and other supported entry types
-            // from the exact chosen stage-0 index entry.
-            if matches!(std::fs::symlink_metadata(&full_path), Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink())
-            {
-                anyhow::bail!(
-                    "Refusing to replace '{}' because it is a directory.",
-                    full_path.display()
-                );
-            }
+        } else if entry.mode & 0o170000 == 0o120000 {
+            // A Git symlink blob stores its target verbatim. Materialize it
+            // ourselves with create-new semantics so an editor save cannot be
+            // overwritten between snapshot verification and publication.
+            // Repositories with core.symlinks=false use Git's regular-file
+            // representation instead.
             let selected_mode = entry.mode;
             let selected_id = entry.id;
-            let mut stage_zero = stage_zero_entry(entry, selected_mode);
-            stage_zero.id = entry.id;
-            index.conflict_remove(file_path)?;
-            index.add(&stage_zero)?;
-            let mut checkout = git2::build::CheckoutBuilder::new();
-            checkout.force().path(file_path);
-            if let Err(error) = repo.checkout_index(Some(&mut index), Some(&mut checkout)) {
-                let current = capture_worktree_entry(&full_path)?;
-                if current.exactly_matches(&original_worktree) {
-                    return Err(error.into());
-                }
-                return Err(rollback_worktree_after_error(
-                    &full_path,
-                    &original_worktree,
-                    &current,
-                    error.into(),
-                ));
-            }
-            let applied_worktree = capture_worktree_entry(&full_path)?;
+            let target = prepared_symlink
+                .as_deref()
+                .expect("a verified symlink side was prepared");
+            let applied_worktree = if checkout_uses_symlinks(&repo) {
+                replace_worktree_symlink(&full_path, target, &original_worktree)?
+            } else {
+                replace_regular_worktree_file(&full_path, target, 0o100644, &original_worktree)?
+            };
             let refreshed_conflict = reload_conflict_index_after_worktree_change(
                 &mut index,
                 snapshot,
@@ -3857,6 +3848,12 @@ fn apply_conflict_side(
                 ));
             }
             return Ok(());
+        } else {
+            anyhow::bail!(
+                "Cannot resolve '{}' using unsupported Git mode {:o}.",
+                file_path.display(),
+                entry.mode
+            );
         }
     } else {
         // A checked-out gitlink is a directory owned by the nested repository.
@@ -4544,16 +4541,131 @@ fn publish_regular_file_noclobber_inner(
 }
 
 fn remove_worktree_entry_if_matches(path: &Path, expected: &WorktreeEntryBackup) -> Result<()> {
+    if matches!(expected, WorktreeEntryBackup::Other) {
+        anyhow::bail!(
+            "Refusing to remove '{}' because it is a directory or another unsupported entry. Remove it manually after checking for untracked files.",
+            path.display()
+        );
+    }
     let backup_path = displace_worktree_entry_if_matches(path, expected, "delete")?;
     let Some(backup_path) = backup_path else {
         return Ok(());
     };
-    remove_worktree_file_or_symlink(&backup_path).with_context(|| {
-        format!(
-            "The selected deletion was not staged because the displaced entry could not be removed from '{}'.",
-            backup_path.display()
-        )
+    if let Err(remove_error) = remove_worktree_file_or_symlink(&backup_path) {
+        return match restore_displaced_entry(&backup_path, path, expected) {
+            Ok(()) => Err(anyhow::anyhow!(
+                "The selected deletion was not staged because '{}' could not be removed: {remove_error}. The original entry was restored.",
+                path.display()
+            )),
+            Err(restore_error) => Err(anyhow::anyhow!(
+                "The selected deletion was not staged because the displaced entry at '{}' could not be removed ({remove_error}) or restored ({restore_error}).",
+                backup_path.display()
+            )),
+        };
+    }
+    Ok(())
+}
+
+fn checkout_uses_symlinks(repo: &Repository) -> bool {
+    repo.config()
+        .ok()
+        .and_then(|config| config.get_bool("core.symlinks").ok())
+        .unwrap_or(!cfg!(windows))
+}
+
+fn replace_worktree_symlink(
+    path: &Path,
+    target: &[u8],
+    expected: &WorktreeEntryBackup,
+) -> Result<WorktreeEntryBackup> {
+    let target = symlink_target_from_bytes(target)?;
+    publish_special_worktree_entry(path, expected, || {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        create_worktree_symlink(&target, path)?;
+        Ok(())
     })
+}
+
+#[cfg(unix)]
+fn symlink_target_from_bytes(target: &[u8]) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(std::ffi::OsString::from_vec(target.to_vec()).into())
+}
+
+#[cfg(windows)]
+fn symlink_target_from_bytes(target: &[u8]) -> Result<PathBuf> {
+    let target = String::from_utf8(target.to_vec())
+        .context("Cannot create a Windows symbolic link with a non-UTF-8 target")?;
+    Ok(target.into())
+}
+
+fn publish_special_worktree_entry<F>(
+    path: &Path,
+    expected: &WorktreeEntryBackup,
+    publish: F,
+) -> Result<WorktreeEntryBackup>
+where
+    F: FnOnce() -> Result<()>,
+{
+    if matches!(expected, WorktreeEntryBackup::Other) {
+        anyhow::bail!(
+            "Refusing to replace '{}' because it is a directory or another unsupported entry.",
+            path.display()
+        );
+    }
+
+    let original_backup = displace_worktree_entry_if_matches(path, expected, "special")?;
+    let operation = publish().and_then(|()| capture_worktree_entry(path));
+    let applied = match operation {
+        Ok(applied) => applied,
+        Err(operation_error) => {
+            let current = capture_worktree_entry(path);
+            return match (current, original_backup.as_deref()) {
+                (Ok(WorktreeEntryBackup::Missing), Some(backup_path)) => {
+                    match restore_displaced_entry(backup_path, path, expected) {
+                        Ok(()) => Err(operation_error),
+                        Err(restore_error) => Err(anyhow::anyhow!(
+                            "{operation_error}; the original entry remains recoverable at '{}' because it could not be restored: {restore_error}",
+                            backup_path.display()
+                        )),
+                    }
+                }
+                (Ok(WorktreeEntryBackup::Missing), None) => Err(operation_error),
+                (Ok(_), Some(backup_path)) => Err(anyhow::anyhow!(
+                    "{operation_error}; an entry that appeared at '{}' was preserved, and the original remains recoverable at '{}'.",
+                    path.display(),
+                    backup_path.display()
+                )),
+                (Ok(_), None) => Err(anyhow::anyhow!(
+                    "{operation_error}; an entry that appeared at '{}' was preserved.",
+                    path.display()
+                )),
+                (Err(inspect_error), Some(backup_path)) => Err(anyhow::anyhow!(
+                    "{operation_error}; could not inspect '{}': {inspect_error}. The original remains recoverable at '{}'.",
+                    path.display(),
+                    backup_path.display()
+                )),
+                (Err(inspect_error), None) => Err(anyhow::anyhow!(
+                    "{operation_error}; could not inspect '{}': {inspect_error}.",
+                    path.display()
+                )),
+            };
+        }
+    };
+
+    if let Some(backup_path) = original_backup {
+        if let Err(error) = remove_worktree_file_or_symlink(&backup_path) {
+            log::warn!(
+                "Published special conflict result '{}' but could not remove backup '{}': {}",
+                path.display(),
+                backup_path.display(),
+                error
+            );
+        }
+    }
+    Ok(applied)
 }
 
 fn displace_worktree_entry_if_matches(
@@ -5858,6 +5970,57 @@ mod tests {
     }
 
     #[test]
+    fn rejected_directory_deletion_leaves_the_directory_in_place() {
+        let fixture = TempRepo::init();
+        let path = fixture.path().join("directory");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("keep.txt"), b"keep\n").unwrap();
+        let captured = super::capture_worktree_entry(&path).unwrap();
+
+        let error = super::remove_worktree_entry_if_matches(&path, &captured).unwrap_err();
+
+        assert!(error.to_string().contains("directory"));
+        assert_eq!(fs::read(path.join("keep.txt")).unwrap(), b"keep\n");
+        assert!(!fs::read_dir(fixture.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rgitui-conflict-delete-")
+        }));
+    }
+
+    #[test]
+    fn special_publication_preserves_an_entry_that_races_checkout() {
+        let fixture = TempRepo::init();
+        let path = fixture.path().join("link");
+        fs::write(&path, b"original\n").unwrap();
+        let captured = super::capture_worktree_entry(&path).unwrap();
+
+        let error = super::publish_special_worktree_entry(&path, &captured, || {
+            fs::write(&path, b"saved later\n")?;
+            anyhow::bail!("safe checkout refused the racing entry")
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("was preserved"));
+        assert!(error.to_string().contains("remains recoverable"));
+        assert_eq!(fs::read(&path).unwrap(), b"saved later\n");
+        let backup = fs::read_dir(fixture.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".rgitui-conflict-special-")
+            })
+            .expect("original backup");
+        assert_eq!(fs::read(backup).unwrap(), b"original\n");
+    }
+
+    #[test]
     fn regular_publication_falls_back_when_hard_links_are_unavailable() {
         let fixture = TempRepo::init();
         let temp_path = fixture.path().join("prepared.tmp");
@@ -6050,6 +6213,92 @@ mod tests {
             .unwrap();
         assert!(index.conflict_get(relative_path).is_ok());
         assert!(index.get_path(relative_path, 0).is_none());
+    }
+
+    #[test]
+    fn choosing_a_symlink_side_uses_safe_special_publication() {
+        let fixture = TempRepo::init();
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.symlinks", false)
+            .unwrap();
+        let ancestor = repo.blob(b"ancestor-target").unwrap();
+        let ours = repo.blob(b"current-target").unwrap();
+        let theirs = repo.blob(b"incoming-target").unwrap();
+        drop(repo);
+        install_index_conflict(&fixture, "link", 0o120000, ancestor, ours, theirs);
+        let relative_path = std::path::Path::new("link");
+        fs::write(fixture.path().join(relative_path), b"original worktree\n").unwrap();
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("special conflict model");
+
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Theirs,
+            &diff.snapshot,
+        )
+        .expect("choose incoming symlink");
+
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path)).unwrap(),
+            b"incoming-target"
+        );
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        let entry = index.get_path(relative_path, 0).expect("stage-0 symlink");
+        assert_eq!(entry.mode, 0o120000);
+        assert_eq!(entry.id, theirs);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn choosing_a_symlink_side_creates_the_selected_link() {
+        let fixture = TempRepo::init();
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.symlinks", true)
+            .unwrap();
+        let ancestor = repo.blob(b"ancestor-target").unwrap();
+        let ours = repo.blob(b"current-target").unwrap();
+        let theirs = repo.blob(b"incoming-target").unwrap();
+        drop(repo);
+        install_index_conflict(&fixture, "link", 0o120000, ancestor, ours, theirs);
+        let relative_path = std::path::Path::new("link");
+        fs::write(fixture.path().join(relative_path), b"original worktree\n").unwrap();
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("special conflict model");
+
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Theirs,
+            &diff.snapshot,
+        )
+        .expect("choose incoming symlink");
+
+        let full_path = fixture.path().join(relative_path);
+        assert!(fs::symlink_metadata(&full_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(&full_path).unwrap(),
+            Path::new("incoming-target")
+        );
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        let entry = index.get_path(relative_path, 0).expect("stage-0 symlink");
+        assert_eq!(entry.mode, 0o120000);
+        assert_eq!(entry.id, theirs);
     }
 
     #[test]
