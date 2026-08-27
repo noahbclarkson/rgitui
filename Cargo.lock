@@ -5502,6 +5502,7 @@ dependencies = [
  "rgitui_perf",
  "rgitui_settings",
  "rgitui_test_support",
+ "same-file",
  "serde",
  "serde_json",
  "smol",

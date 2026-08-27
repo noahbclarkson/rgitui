@@ -78,6 +78,7 @@ notify = "8"
 tempfile = "3.27"
 
 # Utils
+same-file = "1"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 md5 = "0.7"

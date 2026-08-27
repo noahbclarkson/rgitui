@@ -4320,10 +4320,6 @@ fn capture_worktree_entry(path: &Path) -> Result<WorktreeEntryBackup> {
     Ok(WorktreeEntryBackup::Other)
 }
 
-fn write_regular_worktree_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    write_regular_worktree_file_inner(path, bytes, None, None).map(drop)
-}
-
 fn replace_regular_worktree_file(
     path: &Path,
     bytes: &[u8],
@@ -4466,20 +4462,12 @@ fn write_regular_worktree_file_inner(
     if expected.is_some_and(|expected| !displaced_entry.exactly_matches(expected)) {
         let _ = std::fs::remove_file(&temp_path);
         if let Some(backup_path) = backup_path.as_ref() {
-            if std::fs::symlink_metadata(path).is_ok() {
+            if let Err(error) = restore_displaced_entry(backup_path, path, &displaced_entry) {
                 anyhow::bail!(
-                    "'{}' changed while the conflict resolution was being prepared. The displaced entry was retained at '{}' because a newer path entry appeared.",
-                    path.display(),
-                    backup_path.display()
-                );
-            }
-            match std::fs::rename(backup_path, path) {
-                Ok(()) => {}
-                Err(error) => anyhow::bail!(
                     "'{}' changed while the conflict resolution was being prepared. The displaced entry was retained at '{}' because it could not be restored: {error}",
                     path.display(),
                     backup_path.display()
-                ),
+                );
             }
         }
         anyhow::bail!(
@@ -4493,14 +4481,8 @@ fn write_regular_worktree_file_inner(
     {
         let _ = std::fs::remove_file(&temp_path);
         if let Some(backup_path) = backup_path.as_ref() {
-            if std::fs::symlink_metadata(path).is_ok() {
-                anyhow::bail!(
-                    "Failed to publish '{}' ({publish_error}). Its displaced entry was retained at '{}' because a newer path entry appeared.",
-                    path.display(),
-                    backup_path.display()
-                );
-            }
-            if let Err(restore_error) = std::fs::rename(backup_path, path) {
+            if let Err(restore_error) = restore_displaced_entry(backup_path, path, &displaced_entry)
+            {
                 anyhow::bail!(
                     "Failed to publish '{}' ({publish_error}) and could not restore its backup at '{}' ({restore_error}).",
                     path.display(),
@@ -4555,23 +4537,35 @@ fn publish_regular_file_noclobber_inner(
             path.display()
         );
     }
-    let mut destination = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    destination.write_all(bytes)?;
-    drop(destination);
-    if let WorktreeEntryBackup::Regular { permissions, .. } = published_entry {
-        std::fs::set_permissions(path, permissions.clone())?;
-    }
-    ensure_worktree_entry_matches(path, published_entry)
+    let WorktreeEntryBackup::Regular { permissions, .. } = published_entry else {
+        anyhow::bail!("Prepared conflict result was not a regular file")
+    };
+    create_regular_file_noclobber(path, bytes, permissions)
 }
 
 fn remove_worktree_entry_if_matches(path: &Path, expected: &WorktreeEntryBackup) -> Result<()> {
+    let backup_path = displace_worktree_entry_if_matches(path, expected, "delete")?;
+    let Some(backup_path) = backup_path else {
+        return Ok(());
+    };
+    remove_worktree_file_or_symlink(&backup_path).with_context(|| {
+        format!(
+            "The selected deletion was not staged because the displaced entry could not be removed from '{}'.",
+            backup_path.display()
+        )
+    })
+}
+
+fn displace_worktree_entry_if_matches(
+    path: &Path,
+    expected: &WorktreeEntryBackup,
+    label: &str,
+) -> Result<Option<PathBuf>> {
     static NEXT_BACKUP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
     if matches!(expected, WorktreeEntryBackup::Missing) {
-        return ensure_worktree_entry_matches(path, expected);
+        ensure_worktree_entry_matches(path, expected)?;
+        return Ok(None);
     }
     let parent = path
         .parent()
@@ -4579,7 +4573,7 @@ fn remove_worktree_entry_if_matches(path: &Path, expected: &WorktreeEntryBackup)
     let backup_path = loop {
         let id = NEXT_BACKUP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let candidate = parent.join(format!(
-            ".rgitui-conflict-delete-{}-{id}.tmp",
+            ".rgitui-conflict-{label}-{}-{id}.tmp",
             std::process::id()
         ));
         match std::fs::symlink_metadata(&candidate) {
@@ -4606,12 +4600,81 @@ fn remove_worktree_entry_if_matches(path: &Path, expected: &WorktreeEntryBackup)
             ),
         }
     }
-    remove_worktree_file_or_symlink(&backup_path).with_context(|| {
-        format!(
-            "The selected deletion was not staged because the displaced entry could not be removed from '{}'.",
-            backup_path.display()
-        )
-    })
+    Ok(Some(backup_path))
+}
+
+fn create_regular_file_noclobber(
+    path: &Path,
+    bytes: &[u8],
+    permissions: &std::fs::Permissions,
+) -> Result<()> {
+    let mut destination = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    let identity = same_file::Handle::from_file(destination.try_clone()?)?;
+    let operation = destination
+        .write_all(bytes)
+        .and_then(|_| destination.set_permissions(permissions.clone()));
+    drop(destination);
+
+    let expected = WorktreeEntryBackup::Regular {
+        bytes: bytes.to_vec(),
+        permissions: permissions.clone(),
+    };
+    let operation = operation
+        .map_err(anyhow::Error::from)
+        .and_then(|_| ensure_created_file_matches(path, &identity, &expected));
+    if let Err(error) = operation {
+        return match remove_created_file_if_same(path, &identity) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(anyhow::anyhow!("{error}; {cleanup_error}")),
+        };
+    }
+    Ok(())
+}
+
+fn ensure_created_file_matches(
+    path: &Path,
+    identity: &same_file::Handle,
+    expected: &WorktreeEntryBackup,
+) -> Result<()> {
+    let current_identity = same_file::Handle::from_path(path)?;
+    if &current_identity != identity {
+        anyhow::bail!(
+            "A newer entry replaced '{}' while the conflict result was being written; it was preserved.",
+            path.display()
+        );
+    }
+    ensure_worktree_entry_matches(path, expected)
+}
+
+fn remove_created_file_if_same(path: &Path, identity: &same_file::Handle) -> Result<()> {
+    let current_identity = match same_file::Handle::from_path(path) {
+        Ok(identity) => identity,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if &current_identity != identity {
+        anyhow::bail!(
+            "A newer entry replaced '{}'; it was preserved.",
+            path.display()
+        );
+    }
+
+    let current = capture_worktree_entry(path)?;
+    let backup = displace_worktree_entry_if_matches(path, &current, "failed")?
+        .ok_or_else(|| anyhow::anyhow!("The created file disappeared before cleanup"))?;
+    let displaced_identity = same_file::Handle::from_path(&backup)?;
+    if &displaced_identity != identity {
+        let displaced = capture_worktree_entry(&backup)?;
+        restore_displaced_entry(&backup, path, &displaced)?;
+        anyhow::bail!(
+            "A newer entry replaced '{}' during cleanup; it was preserved.",
+            path.display()
+        );
+    }
+    remove_worktree_file_or_symlink(&backup)
 }
 
 fn restore_displaced_entry(
@@ -4628,13 +4691,7 @@ fn restore_displaced_entry(
     match displaced {
         WorktreeEntryBackup::Regular { bytes, permissions } => {
             if std::fs::hard_link(backup_path, path).is_err() {
-                let mut destination = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)?;
-                destination.write_all(bytes)?;
-                drop(destination);
-                std::fs::set_permissions(path, permissions.clone())?;
+                create_regular_file_noclobber(path, bytes, permissions)?;
             }
             remove_worktree_file_or_symlink(backup_path)?;
         }
@@ -4733,29 +4790,53 @@ fn restore_worktree_entry_if_unchanged(
     original: &WorktreeEntryBackup,
     applied: &WorktreeEntryBackup,
 ) -> Result<()> {
-    ensure_worktree_entry_matches(path, applied).map_err(|error| {
-        anyhow::anyhow!(
-            "Could not roll back '{}': {error} The newer worktree entry was preserved.",
-            path.display()
-        )
-    })?;
-    remove_worktree_file_or_symlink(path)?;
-    match original {
-        WorktreeEntryBackup::Missing => {}
+    let applied_backup =
+        displace_worktree_entry_if_matches(path, applied, "rollback").map_err(|error| {
+            anyhow::anyhow!(
+                "Could not roll back '{}': {error} The newer worktree entry was preserved.",
+                path.display()
+            )
+        })?;
+
+    let restore_result = match original {
+        WorktreeEntryBackup::Missing => Ok(()),
         WorktreeEntryBackup::Regular { bytes, permissions } => {
-            write_regular_worktree_file(path, bytes)?;
-            std::fs::set_permissions(path, permissions.clone())?;
+            create_regular_file_noclobber(path, bytes, permissions)
         }
         WorktreeEntryBackup::Symlink(target) => {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            create_worktree_symlink(target, path)?;
+            create_worktree_symlink(target, path).map_err(anyhow::Error::from)
         }
-        WorktreeEntryBackup::Other => anyhow::bail!(
+        WorktreeEntryBackup::Other => Err(anyhow::anyhow!(
             "Cannot restore unsupported worktree entry '{}'",
             path.display()
-        ),
+        )),
+    };
+    if let Err(error) = restore_result {
+        let recovery = applied_backup
+            .as_ref()
+            .map(|backup| {
+                anyhow::anyhow!(
+                    "The displaced resolver result remains recoverable at '{}'.",
+                    backup.display()
+                )
+            })
+            .unwrap_or_else(|| anyhow::anyhow!("The newer worktree entry, if any, was preserved."));
+        return Err(anyhow::anyhow!(
+            "Could not restore '{}' during rollback: {error} {recovery}",
+            path.display()
+        ));
+    }
+    if let Some(applied_backup) = applied_backup {
+        remove_worktree_file_or_symlink(&applied_backup).with_context(|| {
+            format!(
+                "Rollback restored '{}' but could not remove the displaced resolver result at '{}'",
+                path.display(),
+                applied_backup.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -5817,6 +5898,33 @@ mod tests {
 
         assert!(error.to_string().contains("newer entry was preserved"));
         assert_eq!(fs::read(&path).unwrap(), b"saved later\n");
+    }
+
+    #[test]
+    fn failed_fallback_cleanup_removes_only_the_file_it_created() {
+        let fixture = TempRepo::init();
+        let path = fixture.path().join("file.txt");
+        let displaced = fixture.path().join("displaced.txt");
+        let created = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let identity = same_file::Handle::from_file(created.try_clone().unwrap()).unwrap();
+        drop(created);
+
+        super::remove_created_file_if_same(&path, &identity).unwrap();
+        assert!(fs::symlink_metadata(&path).is_err());
+
+        fs::write(&path, b"first fallback\n").unwrap();
+        let first = same_file::Handle::from_path(&path).unwrap();
+        fs::rename(&path, &displaced).unwrap();
+        fs::write(&path, b"saved later\n").unwrap();
+
+        let error = super::remove_created_file_if_same(&path, &first).unwrap_err();
+        assert!(error.to_string().contains("newer entry"));
+        assert_eq!(fs::read(&path).unwrap(), b"saved later\n");
+        assert_eq!(fs::read(&displaced).unwrap(), b"first fallback\n");
     }
 
     #[test]
