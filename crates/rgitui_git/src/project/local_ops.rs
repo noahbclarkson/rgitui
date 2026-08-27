@@ -3712,10 +3712,33 @@ fn apply_conflict_side(
     ensure_no_symlink_ancestors(worktree_path, file_path)?;
     let repo = Repository::open(worktree_path)?;
     let mut index = repo.index()?;
-    let conflict = index
-        .conflict_get(file_path)
-        .map_err(|_| anyhow::anyhow!("Conflict not found for path '{}'", file_path.display()))?;
-    verify_conflict_snapshot(&conflict, snapshot, file_path)?;
+    let initial_conflict = reload_conflict_index(&mut index, snapshot, file_path)?;
+    let initial_chosen = match side {
+        ConflictSide::Ours => initial_conflict.our.as_ref(),
+        ConflictSide::Theirs => initial_conflict.their.as_ref(),
+    };
+    let full_path = worktree_path.join(file_path);
+    let original_worktree = capture_worktree_entry(&full_path)?;
+    if original_worktree.snapshot_bytes() != snapshot.worktree_content.as_deref() {
+        anyhow::bail!(
+            "'{}' changed outside the conflict resolver. Reload it before choosing a side so no edits are overwritten.",
+            file_path.display()
+        );
+    }
+
+    // Filters may execute arbitrary processes and take long enough for another
+    // editor or Git operation to change state. Prepare bytes first, then reload
+    // both the worktree entry and the on-disk index immediately before writing.
+    let prepared_regular = match initial_chosen {
+        Some(entry) if entry.mode & 0o170000 == 0o100000 => {
+            let canonical = repo.find_blob(entry.id)?.content().to_vec();
+            let worktree = smudge_canonical_bytes(worktree_path, file_path, &canonical)?;
+            Some((canonical, worktree))
+        }
+        _ => None,
+    };
+    ensure_worktree_entry_matches(&full_path, &original_worktree)?;
+    let conflict = reload_conflict_index(&mut index, snapshot, file_path)?;
     let conflict_has_gitlink = [
         conflict.ancestor.as_ref(),
         conflict.our.as_ref(),
@@ -3728,38 +3751,49 @@ fn apply_conflict_side(
         ConflictSide::Ours => conflict.our.as_ref(),
         ConflictSide::Theirs => conflict.their.as_ref(),
     };
-    let full_path = worktree_path.join(file_path);
-    let original_worktree = capture_worktree_entry(&full_path)?;
-    if original_worktree.snapshot_bytes() != snapshot.worktree_content.as_deref() {
-        anyhow::bail!(
-            "'{}' changed outside the conflict resolver. Reload it before choosing a side so no edits are overwritten.",
-            file_path.display()
-        );
-    }
 
     if let Some(entry) = chosen {
-        let mut stage_zero = stage_zero_entry(entry, entry.mode);
         if entry.mode & 0o170000 == 0o100000 {
-            let canonical_content = repo.find_blob(entry.id)?.content().to_vec();
-            let worktree_content =
-                smudge_canonical_bytes(worktree_path, file_path, &canonical_content)?;
-            if let Err(error) = write_regular_worktree_file(&full_path, &worktree_content)
-                .and_then(|_| set_executable_bit(&full_path, entry.mode))
-            {
-                restore_worktree_entry(&full_path, &original_worktree);
-                return Err(error);
+            let selected_mode = entry.mode;
+            let (canonical_content, worktree_content) = prepared_regular
+                .as_ref()
+                .expect("a verified regular side was prepared");
+            let applied_worktree = replace_regular_worktree_file(
+                &full_path,
+                worktree_content,
+                selected_mode,
+                &original_worktree,
+            )?;
+            let refreshed_conflict = reload_conflict_index_after_worktree_change(
+                &mut index,
+                snapshot,
+                file_path,
+                &full_path,
+                &original_worktree,
+                &applied_worktree,
+            )?;
+            let refreshed_entry = match side {
+                ConflictSide::Ours => refreshed_conflict.our.as_ref(),
+                ConflictSide::Theirs => refreshed_conflict.their.as_ref(),
             }
+            .expect("the verified selected side still exists");
+            let stage_zero = stage_zero_entry(refreshed_entry, selected_mode);
             if let Err(error) = index
-                .add_frombuffer(&stage_zero, &canonical_content)
+                .add_frombuffer(&stage_zero, canonical_content)
                 .and_then(|_| index.write())
             {
-                restore_worktree_entry(&full_path, &original_worktree);
-                return Err(error.into());
+                return Err(rollback_worktree_after_error(
+                    &full_path,
+                    &original_worktree,
+                    &applied_worktree,
+                    error.into(),
+                ));
             }
         } else if entry.mode & 0o170000 == 0o160000 {
             // A gitlink's OID names a commit, not a blob. Resolving it means
             // selecting the stage-0 gitlink; the submodule working directory is
             // intentionally left untouched.
+            let mut stage_zero = stage_zero_entry(entry, entry.mode);
             stage_zero.id = entry.id;
             index.conflict_remove(file_path)?;
             index.add(&stage_zero)?;
@@ -3774,17 +3808,28 @@ fn apply_conflict_side(
                     full_path.display()
                 );
             }
+            let selected_mode = entry.mode;
+            let selected_id = entry.id;
+            let mut stage_zero = stage_zero_entry(entry, selected_mode);
             stage_zero.id = entry.id;
             index.conflict_remove(file_path)?;
             index.add(&stage_zero)?;
             let mut checkout = git2::build::CheckoutBuilder::new();
             checkout.force().path(file_path);
             if let Err(error) = repo.checkout_index(Some(&mut index), Some(&mut checkout)) {
-                restore_worktree_entry(&full_path, &original_worktree);
                 return Err(error.into());
             }
+            let refreshed_conflict = reload_conflict_index(&mut index, snapshot, file_path)?;
+            let refreshed_entry = match side {
+                ConflictSide::Ours => refreshed_conflict.our.as_ref(),
+                ConflictSide::Theirs => refreshed_conflict.their.as_ref(),
+            }
+            .expect("the verified selected side still exists");
+            let mut stage_zero = stage_zero_entry(refreshed_entry, selected_mode);
+            stage_zero.id = selected_id;
+            index.conflict_remove(file_path)?;
+            index.add(&stage_zero)?;
             if let Err(error) = index.write() {
-                restore_worktree_entry(&full_path, &original_worktree);
                 return Err(error.into());
             }
             return Ok(());
@@ -3797,6 +3842,19 @@ fn apply_conflict_side(
         if !conflict_has_gitlink {
             remove_worktree_file_or_symlink(&full_path)?;
         }
+        let applied_worktree = (!conflict_has_gitlink)
+            .then(|| capture_worktree_entry(&full_path))
+            .transpose()?;
+        if let Some(applied_worktree) = applied_worktree.as_ref() {
+            reload_conflict_index_after_worktree_change(
+                &mut index,
+                snapshot,
+                file_path,
+                &full_path,
+                &original_worktree,
+                applied_worktree,
+            )?;
+        }
         let index_result = index
             .conflict_remove(file_path)
             .and_then(|_| match index.remove_path(file_path) {
@@ -3806,8 +3864,13 @@ fn apply_conflict_side(
             })
             .and_then(|_| index.write());
         if let Err(error) = index_result {
-            if !conflict_has_gitlink {
-                restore_worktree_entry(&full_path, &original_worktree);
+            if let Some(applied_worktree) = applied_worktree.as_ref() {
+                return Err(rollback_worktree_after_error(
+                    &full_path,
+                    &original_worktree,
+                    applied_worktree,
+                    error.into(),
+                ));
             }
             return Err(error.into());
         }
@@ -3824,17 +3887,11 @@ fn apply_conflict_resolution(
     ensure_no_symlink_ancestors(worktree_path, file_path)?;
     let repo = Repository::open(worktree_path)?;
     let mut index = repo.index()?;
-    let conflict = index.conflict_get(file_path).map_err(|_| {
-        anyhow::anyhow!(
-            "'{}' is no longer conflicted. Reload the repository before saving.",
-            file_path.display()
-        )
-    })?;
     let snapshot = match &input {
         ConflictResolutionInput::Draft { snapshot, .. }
-        | ConflictResolutionInput::WorkingTree { snapshot } => snapshot,
+        | ConflictResolutionInput::WorkingTree { snapshot } => snapshot.clone(),
     };
-    verify_conflict_snapshot(&conflict, snapshot, file_path)?;
+    let conflict = reload_conflict_index(&mut index, &snapshot, file_path)?;
 
     let full_path = worktree_path.join(file_path);
     let original_worktree = capture_worktree_entry(&full_path)?;
@@ -3843,9 +3900,9 @@ fn apply_conflict_resolution(
         ConflictResolutionInput::Draft {
             result,
             result_mode,
-            snapshot,
+            snapshot: loaded_snapshot,
         } => {
-            if current_worktree != snapshot.worktree_content {
+            if current_worktree != loaded_snapshot.worktree_content {
                 anyhow::bail!(
                     "'{}' changed outside the conflict resolver. Reload it before saving so no edits are overwritten.",
                     file_path.display()
@@ -3883,6 +3940,9 @@ fn apply_conflict_resolution(
         }
     };
 
+    ensure_worktree_entry_matches(&full_path, &original_worktree)?;
+    let conflict = reload_conflict_index(&mut index, &snapshot, file_path)?;
+
     match result {
         Some(bytes) => {
             if result_mode & 0o170000 != 0o100000 {
@@ -3899,27 +3959,54 @@ fn apply_conflict_resolution(
                 .ok_or_else(|| anyhow::anyhow!("Conflict has no index entry to resolve"))?;
             let stage_zero = stage_zero_entry(template, result_mode);
 
-            if let Some(worktree_bytes) = worktree_result.as_ref() {
-                if let Err(error) = write_regular_worktree_file(&full_path, worktree_bytes)
-                    .and_then(|_| set_executable_bit(&full_path, result_mode))
-                {
-                    restore_worktree_entry(&full_path, &original_worktree);
-                    return Err(error);
-                }
+            let applied_worktree = worktree_result
+                .as_ref()
+                .map(|worktree_bytes| {
+                    replace_regular_worktree_file(
+                        &full_path,
+                        worktree_bytes,
+                        result_mode,
+                        &original_worktree,
+                    )
+                })
+                .transpose()?;
+            if let Some(applied_worktree) = applied_worktree.as_ref() {
+                reload_conflict_index_after_worktree_change(
+                    &mut index,
+                    &snapshot,
+                    file_path,
+                    &full_path,
+                    &original_worktree,
+                    applied_worktree,
+                )?;
             }
 
             if let Err(error) = index
                 .add_frombuffer(&stage_zero, &bytes)
                 .and_then(|_| index.write())
             {
-                if worktree_result.is_some() {
-                    restore_worktree_entry(&full_path, &original_worktree);
+                if let Some(applied_worktree) = applied_worktree.as_ref() {
+                    return Err(rollback_worktree_after_error(
+                        &full_path,
+                        &original_worktree,
+                        applied_worktree,
+                        error.into(),
+                    ));
                 }
                 return Err(error.into());
             }
         }
         None => {
             remove_worktree_file_or_symlink(&full_path)?;
+            let applied_worktree = capture_worktree_entry(&full_path)?;
+            reload_conflict_index_after_worktree_change(
+                &mut index,
+                &snapshot,
+                file_path,
+                &full_path,
+                &original_worktree,
+                &applied_worktree,
+            )?;
             let index_result = index
                 .conflict_remove(file_path)
                 .and_then(|_| match index.remove_path(file_path) {
@@ -3929,8 +4016,12 @@ fn apply_conflict_resolution(
                 })
                 .and_then(|_| index.write());
             if let Err(error) = index_result {
-                restore_worktree_entry(&full_path, &original_worktree);
-                return Err(error.into());
+                return Err(rollback_worktree_after_error(
+                    &full_path,
+                    &original_worktree,
+                    &applied_worktree,
+                    error.into(),
+                ));
             }
         }
     }
@@ -3943,14 +4034,17 @@ fn verify_conflict_snapshot(
     file_path: &Path,
 ) -> Result<()> {
     let actual = (
-        conflict.ancestor.as_ref().map(|entry| entry.id),
-        conflict.our.as_ref().map(|entry| entry.id),
-        conflict.their.as_ref().map(|entry| entry.id),
+        conflict
+            .ancestor
+            .as_ref()
+            .map(|entry| (entry.id, entry.mode)),
+        conflict.our.as_ref().map(|entry| (entry.id, entry.mode)),
+        conflict.their.as_ref().map(|entry| (entry.id, entry.mode)),
     );
     let expected = (
-        snapshot.ancestor_oid,
-        snapshot.ours_oid,
-        snapshot.theirs_oid,
+        snapshot.ancestor_oid.zip(snapshot.ancestor_mode),
+        snapshot.ours_oid.zip(snapshot.ours_mode),
+        snapshot.theirs_oid.zip(snapshot.theirs_mode),
     );
     if actual != expected {
         anyhow::bail!(
@@ -3959,6 +4053,34 @@ fn verify_conflict_snapshot(
         );
     }
     Ok(())
+}
+
+fn reload_conflict_index(
+    index: &mut git2::Index,
+    snapshot: &ConflictSnapshot,
+    file_path: &Path,
+) -> Result<git2::IndexConflict> {
+    index.read(true)?;
+    let conflict = index.conflict_get(file_path).map_err(|_| {
+        anyhow::anyhow!(
+            "The conflict for '{}' changed while the resolution was being prepared. Reload it before saving.",
+            file_path.display()
+        )
+    })?;
+    verify_conflict_snapshot(&conflict, snapshot, file_path)?;
+    Ok(conflict)
+}
+
+fn reload_conflict_index_after_worktree_change(
+    index: &mut git2::Index,
+    snapshot: &ConflictSnapshot,
+    file_path: &Path,
+    worktree_file: &Path,
+    original: &WorktreeEntryBackup,
+    applied: &WorktreeEntryBackup,
+) -> Result<git2::IndexConflict> {
+    reload_conflict_index(index, snapshot, file_path)
+        .map_err(|error| rollback_worktree_after_error(worktree_file, original, applied, error))
 }
 
 fn stage_zero_entry(template: &git2::IndexEntry, mode: u32) -> git2::IndexEntry {
@@ -4061,6 +4183,7 @@ fn ensure_no_symlink_ancestors(worktree_path: &Path, file_path: &Path) -> Result
     Ok(())
 }
 
+#[derive(Debug)]
 enum WorktreeEntryBackup {
     Missing,
     Regular {
@@ -4079,6 +4202,37 @@ impl WorktreeEntryBackup {
             Self::Missing | Self::Other => None,
         }
     }
+
+    fn exactly_matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Missing, Self::Missing) | (Self::Other, Self::Other) => true,
+            (
+                Self::Regular {
+                    bytes: left_bytes,
+                    permissions: left_permissions,
+                },
+                Self::Regular {
+                    bytes: right_bytes,
+                    permissions: right_permissions,
+                },
+            ) => {
+                left_bytes == right_bytes && permissions_match(left_permissions, right_permissions)
+            }
+            (Self::Symlink(left), Self::Symlink(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn permissions_match(left: &std::fs::Permissions, right: &std::fs::Permissions) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    left.mode() == right.mode()
+}
+
+#[cfg(not(unix))]
+fn permissions_match(left: &std::fs::Permissions, right: &std::fs::Permissions) -> bool {
+    left.readonly() == right.readonly()
 }
 
 fn capture_worktree_entry(path: &Path) -> Result<WorktreeEntryBackup> {
@@ -4102,6 +4256,24 @@ fn capture_worktree_entry(path: &Path) -> Result<WorktreeEntryBackup> {
 }
 
 fn write_regular_worktree_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_regular_worktree_file_inner(path, bytes, None, None).map(drop)
+}
+
+fn replace_regular_worktree_file(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    expected: &WorktreeEntryBackup,
+) -> Result<WorktreeEntryBackup> {
+    write_regular_worktree_file_inner(path, bytes, Some(mode), Some(expected))
+}
+
+fn write_regular_worktree_file_inner(
+    path: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+    expected: Option<&WorktreeEntryBackup>,
+) -> Result<WorktreeEntryBackup> {
     static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
     let parent = path
@@ -4146,75 +4318,154 @@ fn write_regular_worktree_file(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     drop(temp_file);
 
-    #[cfg(windows)]
-    {
-        let original_exists = match std::fs::symlink_metadata(path) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(error.into());
-            }
-        };
-        let backup_path = if original_exists {
-            let backup_path = loop {
-                let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let candidate = parent.join(format!(
-                    ".rgitui-conflict-backup-{}-{id}.tmp",
-                    std::process::id()
-                ));
-                match std::fs::symlink_metadata(&candidate) {
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => break candidate,
-                    Ok(_) => continue,
-                    Err(error) => {
-                        let _ = std::fs::remove_file(&temp_path);
-                        return Err(error.into());
-                    }
-                }
-            };
-            if let Err(error) = std::fs::rename(path, &backup_path) {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(error.into());
-            }
-            Some(backup_path)
-        } else {
-            None
-        };
-
-        if let Err(publish_error) = std::fs::rename(&temp_path, path) {
+    if let Some(mode) = mode {
+        if let Err(error) = set_executable_bit(&temp_path, mode) {
             let _ = std::fs::remove_file(&temp_path);
-            if let Some(backup_path) = backup_path {
-                if let Err(restore_error) = std::fs::rename(&backup_path, path) {
+            return Err(error);
+        }
+    }
+    let published_entry = match capture_worktree_entry(&temp_path) {
+        Ok(entry) => entry,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error);
+        }
+    };
+    if let Some(expected) = expected {
+        if let Err(error) = ensure_worktree_entry_matches(path, expected) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error);
+        }
+    }
+
+    // Reserve the current pathname by moving it aside, then compare the exact
+    // displaced entry with the caller's snapshot. Publishing uses a hard link,
+    // whose create-new semantics cannot overwrite an editor save that races us.
+    let current_exists = match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
+    };
+    let backup_path = if current_exists {
+        let backup_path = loop {
+            let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".rgitui-conflict-backup-{}-{id}.tmp",
+                std::process::id()
+            ));
+            match std::fs::symlink_metadata(&candidate) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break candidate,
+                Ok(_) => continue,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&temp_path);
+                    return Err(error.into());
+                }
+            }
+        };
+        if let Err(error) = std::fs::rename(path, &backup_path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
+        Some(backup_path)
+    } else {
+        None
+    };
+
+    let displaced_entry = match backup_path.as_ref() {
+        Some(backup_path) => match capture_worktree_entry(backup_path) {
+            Ok(entry) => entry,
+            Err(capture_error) => {
+                let _ = std::fs::remove_file(&temp_path);
+                if std::fs::symlink_metadata(path).is_ok() {
                     anyhow::bail!(
-                        "Failed to publish '{}' ({publish_error}) and could not restore its backup at '{}' ({restore_error}).",
+                        "Could not inspect the displaced entry for '{}' ({capture_error}); it was retained at '{}' because a newer path entry appeared.",
                         path.display(),
                         backup_path.display()
                     );
                 }
+                if let Err(restore_error) = std::fs::rename(backup_path, path) {
+                    anyhow::bail!(
+                        "Could not inspect the displaced entry for '{}' ({capture_error}) or restore its backup at '{}' ({restore_error}).",
+                        path.display(),
+                        backup_path.display()
+                    );
+                }
+                return Err(capture_error);
             }
-            return Err(publish_error.into());
-        }
-        if let Some(backup_path) = backup_path {
-            if let Err(error) = remove_worktree_file_or_symlink(&backup_path) {
-                log::warn!(
-                    "Published '{}' but could not remove backup '{}': {}",
+        },
+        None => WorktreeEntryBackup::Missing,
+    };
+    if expected.is_some_and(|expected| !displaced_entry.exactly_matches(expected)) {
+        let _ = std::fs::remove_file(&temp_path);
+        if let Some(backup_path) = backup_path.as_ref() {
+            if std::fs::symlink_metadata(path).is_ok() {
+                anyhow::bail!(
+                    "'{}' changed while the conflict resolution was being prepared. The displaced entry was retained at '{}' because a newer path entry appeared.",
                     path.display(),
-                    backup_path.display(),
-                    error
+                    backup_path.display()
+                );
+            }
+            match std::fs::rename(backup_path, path) {
+                Ok(()) => {}
+                Err(error) => anyhow::bail!(
+                    "'{}' changed while the conflict resolution was being prepared. The displaced entry was retained at '{}' because it could not be restored: {error}",
+                    path.display(),
+                    backup_path.display()
+                ),
+            }
+        }
+        anyhow::bail!(
+            "'{}' changed while the conflict resolution was being prepared. Reload it so no edits are overwritten.",
+            path.display()
+        );
+    }
+
+    if let Err(publish_error) = std::fs::hard_link(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        if let Some(backup_path) = backup_path.as_ref() {
+            if std::fs::symlink_metadata(path).is_ok() {
+                anyhow::bail!(
+                    "Failed to publish '{}' ({publish_error}). Its displaced entry was retained at '{}' because a newer path entry appeared.",
+                    path.display(),
+                    backup_path.display()
+                );
+            }
+            if let Err(restore_error) = std::fs::rename(backup_path, path) {
+                anyhow::bail!(
+                    "Failed to publish '{}' ({publish_error}) and could not restore its backup at '{}' ({restore_error}).",
+                    path.display(),
+                    backup_path.display()
                 );
             }
         }
-        Ok(())
+        return Err(publish_error.into());
     }
-
-    #[cfg(not(windows))]
-    {
-        if let Err(error) = std::fs::rename(&temp_path, path) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error.into());
+    let _ = std::fs::remove_file(&temp_path);
+    if let Some(backup_path) = backup_path {
+        if let Err(error) = remove_worktree_file_or_symlink(&backup_path) {
+            log::warn!(
+                "Published '{}' but could not remove backup '{}': {}",
+                path.display(),
+                backup_path.display(),
+                error
+            );
         }
-        Ok(())
     }
+    Ok(published_entry)
+}
+
+fn ensure_worktree_entry_matches(path: &Path, expected: &WorktreeEntryBackup) -> Result<()> {
+    let current = capture_worktree_entry(path)?;
+    if !current.exactly_matches(expected) {
+        anyhow::bail!(
+            "'{}' changed while the conflict resolution was being prepared. Reload it so no edits are overwritten.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn remove_worktree_file_or_symlink(path: &Path) -> Result<()> {
@@ -4242,34 +4493,47 @@ fn contains_conflict_markers(content: &[u8]) -> bool {
     })
 }
 
-fn restore_worktree_entry(path: &Path, original: &WorktreeEntryBackup) {
-    let result = (|| -> Result<()> {
-        remove_worktree_file_or_symlink(path)?;
-        match original {
-            WorktreeEntryBackup::Missing => {}
-            WorktreeEntryBackup::Regular { bytes, permissions } => {
-                write_regular_worktree_file(path, bytes)?;
-                std::fs::set_permissions(path, permissions.clone())?;
-            }
-            WorktreeEntryBackup::Symlink(target) => {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                create_worktree_symlink(target, path)?;
-            }
-            WorktreeEntryBackup::Other => anyhow::bail!(
-                "Cannot restore unsupported worktree entry '{}'",
-                path.display()
-            ),
+fn restore_worktree_entry_if_unchanged(
+    path: &Path,
+    original: &WorktreeEntryBackup,
+    applied: &WorktreeEntryBackup,
+) -> Result<()> {
+    ensure_worktree_entry_matches(path, applied).map_err(|error| {
+        anyhow::anyhow!(
+            "Could not roll back '{}': {error} The newer worktree entry was preserved.",
+            path.display()
+        )
+    })?;
+    remove_worktree_file_or_symlink(path)?;
+    match original {
+        WorktreeEntryBackup::Missing => {}
+        WorktreeEntryBackup::Regular { bytes, permissions } => {
+            write_regular_worktree_file(path, bytes)?;
+            std::fs::set_permissions(path, permissions.clone())?;
         }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        log::error!(
-            "Failed to restore '{}' after an index write error: {}",
-            path.display(),
-            error
-        );
+        WorktreeEntryBackup::Symlink(target) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            create_worktree_symlink(target, path)?;
+        }
+        WorktreeEntryBackup::Other => anyhow::bail!(
+            "Cannot restore unsupported worktree entry '{}'",
+            path.display()
+        ),
+    }
+    Ok(())
+}
+
+fn rollback_worktree_after_error(
+    path: &Path,
+    original: &WorktreeEntryBackup,
+    applied: &WorktreeEntryBackup,
+    operation_error: anyhow::Error,
+) -> anyhow::Error {
+    match restore_worktree_entry_if_unchanged(path, original, applied) {
+        Ok(()) => operation_error,
+        Err(rollback_error) => anyhow::anyhow!("{operation_error}; {rollback_error}"),
     }
 }
 
@@ -4857,6 +5121,69 @@ mod tests {
     }
 
     #[test]
+    fn whole_side_resolution_rejects_conflict_mode_changes_with_the_same_oid() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        let conflict = index.conflict_get(relative_path).unwrap();
+        let mut replacement = conflict.our.expect("ours entry");
+        replacement.mode = 0o120000;
+        index.add(&replacement).unwrap();
+        index.write().unwrap();
+
+        let error = super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed while"));
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
+    }
+
+    #[test]
+    fn refreshed_conflict_index_preserves_a_concurrent_unrelated_stage() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let mut stale_index = repo.index().unwrap();
+        fs::write(fixture.path().join("unrelated.txt"), b"staged later\n").unwrap();
+        assert!(run_git(fixture.path(), &["add", "unrelated.txt"])
+            .status
+            .success());
+
+        let conflict =
+            super::reload_conflict_index(&mut stale_index, &diff.snapshot, relative_path)
+                .expect("refresh conflict index");
+        let ours = conflict.our.as_ref().expect("ours entry");
+        let stage_zero = super::stage_zero_entry(ours, ours.mode);
+        let content = repo.find_blob(ours.id).unwrap().content().to_vec();
+        stale_index.add_frombuffer(&stage_zero, &content).unwrap();
+        stale_index.write().unwrap();
+
+        let index = repo.index().unwrap();
+        let unrelated = index
+            .get_path(std::path::Path::new("unrelated.txt"), 0)
+            .expect("concurrent stage was preserved");
+        assert_eq!(
+            repo.find_blob(unrelated.id).unwrap().content(),
+            b"staged later\n"
+        );
+    }
+
+    #[test]
     fn staging_working_copy_rejects_unresolved_markers() {
         let fixture = make_repo_with_conflicting_merge();
         let relative_path = std::path::Path::new("file.txt");
@@ -5043,6 +5370,42 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("symbolic-link parent"));
+    }
+
+    #[test]
+    fn regular_worktree_compare_and_swap_preserves_a_later_edit() {
+        let fixture = TempRepo::init();
+        let path = fixture.path().join("file.txt");
+        fs::write(&path, b"captured\n").unwrap();
+        let captured = super::capture_worktree_entry(&path).unwrap();
+        fs::write(&path, b"saved later\n").unwrap();
+
+        let error =
+            super::replace_regular_worktree_file(&path, b"resolver result\n", 0o100644, &captured)
+                .unwrap_err();
+
+        assert!(error.to_string().contains("changed while"));
+        assert_eq!(fs::read(&path).unwrap(), b"saved later\n");
+    }
+
+    #[test]
+    fn guarded_rollback_preserves_an_edit_made_after_resolution() {
+        let fixture = TempRepo::init();
+        let path = fixture.path().join("file.txt");
+        fs::write(&path, b"original\n").unwrap();
+        let original = super::capture_worktree_entry(&path).unwrap();
+        let applied =
+            super::replace_regular_worktree_file(&path, b"resolver result\n", 0o100644, &original)
+                .unwrap();
+        fs::write(&path, b"saved after resolution\n").unwrap();
+
+        let error =
+            super::restore_worktree_entry_if_unchanged(&path, &original, &applied).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("newer worktree entry was preserved"));
+        assert_eq!(fs::read(&path).unwrap(), b"saved after resolution\n");
     }
 
     #[test]

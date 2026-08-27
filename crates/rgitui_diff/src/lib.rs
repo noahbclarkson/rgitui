@@ -5246,8 +5246,11 @@ mod tests {
             sections,
             snapshot: ConflictSnapshot {
                 ancestor_oid: None,
+                ancestor_mode: None,
                 ours_oid: None,
+                ours_mode: None,
                 theirs_oid: None,
+                theirs_mode: None,
                 worktree_content: None,
             },
             ancestor_exists: true,
@@ -6929,8 +6932,11 @@ mod view_tests {
         let mut probe = ViewTest::open(StagingProbe::new);
         let snapshot = ConflictSnapshot {
             ancestor_oid: None,
+            ancestor_mode: None,
             ours_oid: None,
+            ours_mode: None,
             theirs_oid: None,
+            theirs_mode: None,
             worktree_content: Some(b"markers\n".to_vec()),
         };
         let diff = ThreeWayFileDiff {
@@ -7017,8 +7023,11 @@ mod view_tests {
         let mut probe = ViewTest::open(StagingProbe::new);
         let snapshot = ConflictSnapshot {
             ancestor_oid: None,
+            ancestor_mode: None,
             ours_oid: None,
+            ours_mode: None,
             theirs_oid: None,
+            theirs_mode: None,
             worktree_content: Some(b"binary markers\0".to_vec()),
         };
         let diff = ThreeWayFileDiff {

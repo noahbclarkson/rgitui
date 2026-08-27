@@ -327,8 +327,11 @@ pub enum MergeSection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictSnapshot {
     pub ancestor_oid: Option<git2::Oid>,
+    pub ancestor_mode: Option<u32>,
     pub ours_oid: Option<git2::Oid>,
+    pub ours_mode: Option<u32>,
     pub theirs_oid: Option<git2::Oid>,
+    pub theirs_mode: Option<u32>,
     pub worktree_content: Option<Vec<u8>>,
 }
 

@@ -1307,8 +1307,11 @@ pub fn compute_three_way_conflict_diff(
         sections,
         snapshot: ConflictSnapshot {
             ancestor_oid: conflict_entry.ancestor.as_ref().map(|entry| entry.id),
+            ancestor_mode: conflict_entry.ancestor.as_ref().map(|entry| entry.mode),
             ours_oid: conflict_entry.our.as_ref().map(|entry| entry.id),
+            ours_mode: conflict_entry.our.as_ref().map(|entry| entry.mode),
             theirs_oid: conflict_entry.their.as_ref().map(|entry| entry.id),
+            theirs_mode: conflict_entry.their.as_ref().map(|entry| entry.mode),
             worktree_content,
         },
         ancestor_exists,
