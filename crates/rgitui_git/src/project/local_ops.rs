@@ -10,6 +10,7 @@ use crate::types::*;
 
 use super::auth::inject_https_credentials;
 use super::refresh::{gather_refresh_data, gather_refresh_data_lightweight_cached};
+use super::worktree_patch::{clean_worktree_bytes, smudge_canonical_bytes};
 use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent, RefreshData};
 
 // TODO(audit): deferred audit items for this module (tracked, not yet applied):
@@ -3731,11 +3732,17 @@ fn apply_conflict_side(
     if let Some(entry) = chosen {
         let mut stage_zero = stage_zero_entry(entry, entry.mode);
         if entry.mode & 0o170000 == 0o100000 {
-            let content = repo.find_blob(entry.id)?.content().to_vec();
-            write_regular_worktree_file(&full_path, &content)?;
-            set_executable_bit(&full_path, entry.mode)?;
+            let canonical_content = repo.find_blob(entry.id)?.content().to_vec();
+            let worktree_content =
+                smudge_canonical_bytes(worktree_path, file_path, &canonical_content)?;
+            if let Err(error) = write_regular_worktree_file(&full_path, &worktree_content)
+                .and_then(|_| set_executable_bit(&full_path, entry.mode))
+            {
+                restore_worktree_entry(&full_path, &original_worktree);
+                return Err(error);
+            }
             if let Err(error) = index
-                .add_frombuffer(&stage_zero, &content)
+                .add_frombuffer(&stage_zero, &canonical_content)
                 .and_then(|_| index.write())
             {
                 restore_worktree_entry(&full_path, &original_worktree);
@@ -3803,7 +3810,7 @@ fn apply_conflict_resolution(
     let full_path = worktree_path.join(file_path);
     let original_worktree = capture_worktree_entry(&full_path)?;
     let current_worktree = original_worktree.snapshot_bytes().map(<[u8]>::to_vec);
-    let (result, result_mode, writes_worktree) = match input {
+    let (result, result_mode, worktree_result) = match input {
         ConflictResolutionInput::Draft {
             result,
             result_mode,
@@ -3815,7 +3822,11 @@ fn apply_conflict_resolution(
                     file_path.display()
                 );
             }
-            (result, result_mode, true)
+            let worktree_result = result
+                .as_ref()
+                .map(|bytes| smudge_canonical_bytes(worktree_path, file_path, bytes))
+                .transpose()?;
+            (result, result_mode, worktree_result)
         }
         ConflictResolutionInput::WorkingTree { .. } => {
             let content = current_worktree.clone().ok_or_else(|| {
@@ -3837,7 +3848,8 @@ fn apply_conflict_resolution(
                 .or(conflict.ancestor.as_ref())
                 .map(|entry| entry.mode)
                 .unwrap_or(0o100644);
-            (Some(content), mode, false)
+            let canonical_content = clean_worktree_bytes(worktree_path, file_path, &content)?;
+            (Some(canonical_content), mode, None)
         }
     };
 
@@ -3857,16 +3869,20 @@ fn apply_conflict_resolution(
                 .ok_or_else(|| anyhow::anyhow!("Conflict has no index entry to resolve"))?;
             let stage_zero = stage_zero_entry(template, result_mode);
 
-            if writes_worktree {
-                write_regular_worktree_file(&full_path, &bytes)?;
-                set_executable_bit(&full_path, result_mode)?;
+            if let Some(worktree_bytes) = worktree_result.as_ref() {
+                if let Err(error) = write_regular_worktree_file(&full_path, worktree_bytes)
+                    .and_then(|_| set_executable_bit(&full_path, result_mode))
+                {
+                    restore_worktree_entry(&full_path, &original_worktree);
+                    return Err(error);
+                }
             }
 
             if let Err(error) = index
                 .add_frombuffer(&stage_zero, &bytes)
                 .and_then(|_| index.write())
             {
-                if writes_worktree {
+                if worktree_result.is_some() {
                     restore_worktree_entry(&full_path, &original_worktree);
                 }
                 return Err(error.into());
@@ -4071,16 +4087,74 @@ fn write_regular_worktree_file(path: &Path, bytes: &[u8]) -> Result<()> {
     drop(temp_file);
 
     #[cfg(windows)]
-    if let Err(error) = remove_worktree_file_or_symlink(path) {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(error);
+    {
+        let original_exists = match std::fs::symlink_metadata(path) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(error.into());
+            }
+        };
+        let backup_path = if original_exists {
+            let backup_path = loop {
+                let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let candidate = parent.join(format!(
+                    ".rgitui-conflict-backup-{}-{id}.tmp",
+                    std::process::id()
+                ));
+                match std::fs::symlink_metadata(&candidate) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => break candidate,
+                    Ok(_) => continue,
+                    Err(error) => {
+                        let _ = std::fs::remove_file(&temp_path);
+                        return Err(error.into());
+                    }
+                }
+            };
+            if let Err(error) = std::fs::rename(path, &backup_path) {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(error.into());
+            }
+            Some(backup_path)
+        } else {
+            None
+        };
+
+        if let Err(publish_error) = std::fs::rename(&temp_path, path) {
+            let _ = std::fs::remove_file(&temp_path);
+            if let Some(backup_path) = backup_path {
+                if let Err(restore_error) = std::fs::rename(&backup_path, path) {
+                    anyhow::bail!(
+                        "Failed to publish '{}' ({publish_error}) and could not restore its backup at '{}' ({restore_error}).",
+                        path.display(),
+                        backup_path.display()
+                    );
+                }
+            }
+            return Err(publish_error.into());
+        }
+        if let Some(backup_path) = backup_path {
+            if let Err(error) = remove_worktree_file_or_symlink(&backup_path) {
+                log::warn!(
+                    "Published '{}' but could not remove backup '{}': {}",
+                    path.display(),
+                    backup_path.display(),
+                    error
+                );
+            }
+        }
+        Ok(())
     }
 
-    if let Err(error) = std::fs::rename(&temp_path, path) {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(error.into());
+    #[cfg(not(windows))]
+    {
+        if let Err(error) = std::fs::rename(&temp_path, path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn remove_worktree_file_or_symlink(path: &Path) -> Result<()> {
@@ -4403,6 +4477,28 @@ mod tests {
         fixture
     }
 
+    fn make_repo_with_eol_conflicting_merge(eol: &str) -> TempRepo {
+        let fixture = TempRepo::init();
+        fixture.write_file(".gitattributes", &format!("file.txt text eol={eol}\n"));
+        fixture.write_file("file.txt", "base\n");
+        fixture.stage(".gitattributes");
+        fixture.stage("file.txt");
+        fixture.commit("base with attributes");
+
+        assert!(run_git(fixture.path(), &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        fixture.commit_file("file.txt", "incoming\n", "incoming change");
+        assert!(run_git(fixture.path(), &["checkout", "main"])
+            .status
+            .success());
+        fixture.commit_file("file.txt", "current\n", "current change");
+        assert!(!run_git(fixture.path(), &["merge", "incoming"])
+            .status
+            .success());
+        fixture
+    }
+
     #[test]
     fn assembled_resolution_is_written_and_staged_byte_exactly() {
         let fixture = make_repo_with_conflicting_merge();
@@ -4431,6 +4527,90 @@ mod tests {
         assert!(index.conflict_get(relative_path).is_err());
         let entry = index.get_path(relative_path, 0).expect("stage-0 entry");
         assert_eq!(repo.find_blob(entry.id).unwrap().content(), resolved);
+    }
+
+    #[test]
+    fn assembled_canonical_result_is_smudged_for_the_worktree() {
+        let fixture = make_repo_with_eol_conflicting_merge("crlf");
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let canonical = b"resolved\n".to_vec();
+
+        super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::Draft {
+                result: Some(canonical.clone()),
+                result_mode: diff.result_mode,
+                snapshot: diff.snapshot,
+            },
+        )
+        .expect("save filtered resolution");
+
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path)).unwrap(),
+            b"resolved\r\n"
+        );
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let index = repo.index().unwrap();
+        let entry = index.get_path(relative_path, 0).expect("stage-0 entry");
+        assert_eq!(repo.find_blob(entry.id).unwrap().content(), canonical);
+    }
+
+    #[test]
+    fn whole_regular_side_is_smudged_for_the_worktree() {
+        let fixture = make_repo_with_eol_conflicting_merge("crlf");
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .expect("choose filtered current side");
+
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path)).unwrap(),
+            b"current\r\n"
+        );
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let index = repo.index().unwrap();
+        let entry = index.get_path(relative_path, 0).expect("stage-0 entry");
+        assert_eq!(repo.find_blob(entry.id).unwrap().content(), b"current\n");
+    }
+
+    #[test]
+    fn editor_worktree_result_is_cleaned_before_staging() {
+        let fixture = make_repo_with_eol_conflicting_merge("lf");
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        fs::write(fixture.path().join(relative_path), b"manual result\r\n").unwrap();
+
+        super::apply_conflict_resolution(
+            fixture.path(),
+            relative_path,
+            super::ConflictResolutionInput::WorkingTree {
+                snapshot: diff.snapshot,
+            },
+        )
+        .expect("stage filtered editor result");
+
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path)).unwrap(),
+            b"manual result\r\n"
+        );
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let index = repo.index().unwrap();
+        let entry = index.get_path(relative_path, 0).expect("stage-0 entry");
+        assert_eq!(
+            repo.find_blob(entry.id).unwrap().content(),
+            b"manual result\n"
+        );
     }
 
     #[test]
