@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use rgitui_settings::current_git_auth_runtime;
@@ -3702,11 +3702,97 @@ enum ConflictResolutionInput {
     },
 }
 
+struct GitIndexLock {
+    index_path: PathBuf,
+    lock_path: PathBuf,
+    file: Option<std::fs::File>,
+    committed: bool,
+}
+
+impl GitIndexLock {
+    fn acquire(index_path: PathBuf) -> Result<Self> {
+        let mut lock_name = index_path.as_os_str().to_os_string();
+        lock_name.push(".lock");
+        let lock_path = PathBuf::from(lock_name);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .with_context(|| {
+                format!(
+                    "Could not lock Git index '{}'; another Git operation may still be running",
+                    index_path.display()
+                )
+            })?;
+        Ok(Self {
+            index_path,
+            lock_path,
+            file: Some(file),
+            committed: false,
+        })
+    }
+
+    fn commit_from(mut self, prepared_index: &Path) -> Result<()> {
+        let mut source = std::fs::File::open(prepared_index)?;
+        let mut destination = self.file.take().expect("held Git index lock");
+        destination.set_len(0)?;
+        destination.rewind()?;
+        std::io::copy(&mut source, &mut destination)?;
+        destination.sync_all()?;
+        drop(destination);
+
+        // The lock file stays present until this atomic replacement, so every
+        // compliant Git writer is excluded from validation through commit.
+        std::fs::rename(&self.lock_path, &self.index_path).with_context(|| {
+            format!(
+                "Could not commit the locked Git index '{}'",
+                self.index_path.display()
+            )
+        })?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for GitIndexLock {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.file.take();
+            let _ = std::fs::remove_file(&self.lock_path);
+        }
+    }
+}
+
 fn write_conflict_index_resolution(
     worktree_path: &Path,
     file_path: &Path,
+    snapshot: &ConflictSnapshot,
     resolved: Option<(u32, git2::Oid)>,
 ) -> Result<()> {
+    let repo = Repository::open(worktree_path)?;
+    let index_path = repo
+        .index()?
+        .path()
+        .map(Path::to_path_buf)
+        .context("Repository index has no on-disk path")?;
+    let index_lock = GitIndexLock::acquire(index_path.clone())?;
+    let index_parent = index_path
+        .parent()
+        .context("Repository index has no parent directory")?;
+    let prepared_index = tempfile::Builder::new()
+        .prefix("rgitui-index-")
+        .tempfile_in(index_parent)?
+        .into_temp_path();
+    std::fs::copy(&index_path, &prepared_index)?;
+
+    // The real index is locked before this copy is read. Validate the captured
+    // conflict against that immutable snapshot, then let Git mutate only the
+    // private copy. The same real lock remains held until the prepared bytes
+    // atomically replace the index below.
+    let mut locked_snapshot = git2::Index::open(&prepared_index)?;
+    reload_conflict_index(&mut locked_snapshot, snapshot, file_path)?;
+    drop(locked_snapshot);
+
     #[cfg(windows)]
     let git_path = file_path
         .as_os_str()
@@ -3731,15 +3817,14 @@ fn write_conflict_index_resolution(
     command
         .current_dir(worktree_path)
         .args(["update-index", "-z", "--index-info"])
+        .env("GIT_INDEX_FILE", &prepared_index)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    // `git update-index` holds index.lock while it reads, applies both records,
-    // and commits the index. The object already exists, so this transaction is
-    // independent of result size and preserves unrelated concurrent staging
-    // that landed before the lock was acquired. The leading zero-mode record
-    // removes every conflict stage before the optional stage-zero record.
+    // The leading zero-mode record removes every conflict stage before the
+    // optional stage-zero record. Result objects already exist, so this work is
+    // independent of assembled-file size.
     let mut child = command.spawn().with_context(|| {
         format!(
             "Failed to start Git while updating the conflict index for '{}'",
@@ -3760,7 +3845,7 @@ fn write_conflict_index_resolution(
             details.trim()
         );
     }
-    Ok(())
+    index_lock.commit_from(&prepared_index)
 }
 
 fn apply_conflict_side(
@@ -3850,6 +3935,7 @@ fn apply_conflict_side(
             if let Err(error) = write_conflict_index_resolution(
                 worktree_path,
                 file_path,
+                snapshot,
                 Some((selected_mode, refreshed_entry.id)),
             ) {
                 return Err(rollback_worktree_after_error(
@@ -3866,6 +3952,7 @@ fn apply_conflict_side(
             write_conflict_index_resolution(
                 worktree_path,
                 file_path,
+                snapshot,
                 Some((entry.mode, entry.id)),
             )?;
         } else if entry.mode & 0o170000 == 0o120000 {
@@ -3901,6 +3988,7 @@ fn apply_conflict_side(
             let index_result = write_conflict_index_resolution(
                 worktree_path,
                 file_path,
+                snapshot,
                 Some((selected_mode, selected_id)),
             );
             if let Err(error) = index_result {
@@ -3947,7 +4035,8 @@ fn apply_conflict_side(
         if applied_worktree.is_none() {
             reload_conflict_index(&mut index, snapshot, file_path)?;
         }
-        let index_result = write_conflict_index_resolution(worktree_path, file_path, None);
+        let index_result =
+            write_conflict_index_resolution(worktree_path, file_path, snapshot, None);
         if let Err(error) = index_result {
             if let Some(applied_worktree) = applied_worktree.as_ref() {
                 return Err(rollback_worktree_after_error(
@@ -4086,6 +4175,7 @@ fn apply_conflict_resolution(
             if let Err(error) = write_conflict_index_resolution(
                 worktree_path,
                 file_path,
+                &snapshot,
                 Some((result_mode, result_oid)),
             ) {
                 if let Some(applied_worktree) = applied_worktree.as_ref() {
@@ -4110,7 +4200,8 @@ fn apply_conflict_resolution(
                 &original_worktree,
                 &applied_worktree,
             )?;
-            let index_result = write_conflict_index_resolution(worktree_path, file_path, None);
+            let index_result =
+                write_conflict_index_resolution(worktree_path, file_path, &snapshot, None);
             if let Err(error) = index_result {
                 return Err(rollback_worktree_after_error(
                     &worktree_file,
@@ -5986,6 +6077,7 @@ mod tests {
         super::write_conflict_index_resolution(
             fixture.path(),
             relative_path,
+            &diff.snapshot,
             Some((mode, result_oid)),
         )
         .expect("commit conflict resolution transaction");
@@ -6009,6 +6101,49 @@ mod tests {
     }
 
     #[test]
+    fn locked_conflict_index_transaction_rejects_a_changed_conflict() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let result_oid = repo.blob(b"stale resolver result\n").unwrap();
+        let replacement_oid = repo.blob(b"new concurrent side\n").unwrap();
+        let mut index = repo.index().unwrap();
+        let conflict = index.conflict_get(relative_path).unwrap();
+        let mut replacement = conflict.our.expect("ours entry");
+        let mode = replacement.mode;
+        replacement.id = replacement_oid;
+        index.add(&replacement).unwrap();
+        index.write().unwrap();
+
+        let error = super::write_conflict_index_resolution(
+            fixture.path(),
+            relative_path,
+            &diff.snapshot,
+            Some((mode, result_oid)),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed while"));
+        assert!(!repo.path().join("index.lock").exists());
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert_eq!(
+            index
+                .conflict_get(relative_path)
+                .expect("newer conflict remains")
+                .our
+                .expect("newer ours entry")
+                .id,
+            replacement_oid
+        );
+        assert!(index.get_path(relative_path, 0).is_none());
+    }
+
+    #[test]
     fn conflict_index_transaction_handles_a_nested_path_with_spaces() {
         let fixture = TempRepo::init();
         let repo = git2::Repository::open(fixture.path()).unwrap();
@@ -6025,10 +6160,20 @@ mod tests {
             theirs,
         );
         let relative_path = std::path::Path::new("nested").join("file with space.txt");
+        let snapshot = crate::types::ConflictSnapshot {
+            ancestor_oid: Some(ancestor),
+            ancestor_mode: Some(0o100644),
+            ours_oid: Some(ours),
+            ours_mode: Some(0o100644),
+            theirs_oid: Some(theirs),
+            theirs_mode: Some(0o100644),
+            worktree: crate::types::ConflictWorktreeSnapshot::Missing,
+        };
 
         super::write_conflict_index_resolution(
             fixture.path(),
             &relative_path,
+            &snapshot,
             Some((0o100644, resolved)),
         )
         .expect("commit nested conflict resolution transaction");
