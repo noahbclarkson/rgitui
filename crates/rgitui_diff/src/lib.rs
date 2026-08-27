@@ -1260,6 +1260,34 @@ impl DiffViewer {
         self.generation
     }
 
+    /// Claim ownership of a diff request whose file path is not known until
+    /// its repository query completes (for example a commit or stash diff).
+    /// Every later selection invalidates the returned generation.
+    pub fn begin_diff_request(&mut self, cx: &mut Context<Self>) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
+        self.loading = true;
+        self.error = None;
+        self.diff = None;
+        self.file_path = None;
+        self.source = DiffSource::Worktree;
+        self.display_mode = DiffDisplayMode::Unified;
+        self.display_rows = Arc::new(Vec::new());
+        self.sbs_rows = Arc::new(Vec::new());
+        self.three_way_diff = None;
+        self.three_way_rows = Arc::new(Vec::new());
+        self.conflict_choices.clear();
+        self.highlighted_row = None;
+        self.selected_lines = None;
+        self.partial_mode = false;
+        self.selection_anchor = None;
+        self.mouse_selecting = false;
+        self.file_menu_open = false;
+        self.sync_wrap_list_state();
+        cx.notify();
+        self.generation
+    }
+
     /// Mark that a diff fetch is in progress so the viewer shows a loading
     /// spinner instead of stale content or the empty placeholder.
     pub fn set_loading(&mut self, cx: &mut Context<Self>) {
@@ -2138,6 +2166,10 @@ impl DiffViewer {
         let Some(diff) = self.three_way_diff.as_ref() else {
             return;
         };
+        // A choice is itself a new prepared state. Invalidate the asynchronous
+        // initial render so it cannot later replace these resolved rows with
+        // the all-unresolved snapshot it captured in set_three_way_diff.
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
         self.three_way_rows = Arc::new(Self::compute_three_way_rows(diff, &self.conflict_choices));
         self.sync_wrap_list_state();
         cx.notify();
@@ -7081,6 +7113,75 @@ mod view_tests {
             assert_ne!(viewer.generation(), ordinary_generation);
             assert_eq!(viewer.file_path(), Some(PATH));
             assert!(viewer.is_conflict_view_active());
+        });
+    }
+
+    #[test]
+    fn conflict_selection_invalidates_an_older_pathless_diff_request() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        let historical_generation = probe.update(|probe, _window, cx| {
+            probe
+                .viewer
+                .update(cx, |viewer, cx| viewer.begin_diff_request(cx))
+        });
+
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_conflict_loading(PATH.to_string(), cx);
+            });
+        });
+
+        probe.read(|probe, cx| {
+            let viewer = probe.viewer.read(cx);
+            assert_ne!(viewer.generation(), historical_generation);
+            assert_eq!(viewer.file_path(), Some(PATH));
+            assert!(viewer.is_conflict_view_active());
+        });
+    }
+
+    #[test]
+    fn choosing_a_conflict_side_invalidates_initial_row_preparation() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        let diff = ThreeWayFileDiff {
+            path: PATH.into(),
+            sections: vec![MergeSection::Conflict {
+                ancestor: b"base\n".to_vec(),
+                ours: b"current\n".to_vec(),
+                theirs: b"incoming\n".to_vec(),
+            }],
+            snapshot: ConflictSnapshot {
+                ancestor_oid: None,
+                ancestor_mode: None,
+                ours_oid: None,
+                ours_mode: None,
+                theirs_oid: None,
+                theirs_mode: None,
+                worktree: rgitui_git::ConflictWorktreeSnapshot::Missing,
+            },
+            ancestor_exists: true,
+            ours_exists: true,
+            theirs_exists: true,
+            is_binary: false,
+            is_special_file: false,
+            result_mode: 0o100644,
+        };
+
+        let (initial_generation, chosen_generation) = probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_three_way_diff(diff, cx);
+                let initial_generation = viewer.preparation_generation;
+                viewer.use_current_for_conflict(cx);
+                (initial_generation, viewer.preparation_generation)
+            })
+        });
+
+        assert_ne!(initial_generation, chosen_generation);
+        assert!(!super::should_apply_prepared(
+            chosen_generation,
+            initial_generation
+        ));
+        probe.read(|probe, cx| {
+            assert_eq!(probe.viewer.read(cx).unresolved_conflict_count(), 0);
         });
     }
 

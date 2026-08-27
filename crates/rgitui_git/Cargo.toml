@@ -22,6 +22,8 @@ smol.workspace = true
 rgitui_settings.workspace = true
 tempfile.workspace = true
 same-file.workspace = true
+cap-std.workspace = true
+cap-fs-ext.workspace = true
 rgitui_perf = { workspace = true, optional = true }
 
 [dev-dependencies]

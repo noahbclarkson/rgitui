@@ -880,6 +880,9 @@ pub(super) fn subscribe_global_search(
                 let path_buf = std::path::PathBuf::from(&path);
                 let path_for_toast = path.clone();
                 let line_for_toast = *line_number;
+                let request_generation = dv.update(cx, |dv, cx| {
+                    dv.set_diff_loading(path.clone(), DiffSource::Worktree, cx)
+                });
 
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let path_buf_owned = path_buf;
@@ -890,18 +893,29 @@ pub(super) fn subscribe_global_search(
                             rgitui_git::compute_file_diff(&repo_path, &path_buf_owned, false)
                         })
                         .await;
-                    cx.update(|cx| match result {
-                        Ok(diff) => {
-                            let path_str_owned = path_str.clone();
-                            let line_owned = line_for_toast;
-                            dv.update(cx, move |dv, cx| {
-                                dv.set_diff(diff, path_str_owned, DiffSource::Worktree, cx);
-                                dv.scroll_to_line(line_owned, cx);
-                            });
-                            dp.update(cx, |dp, cx| dp.clear(cx));
+                    cx.update(|cx| {
+                        if dv.read(cx).generation() != request_generation {
+                            return;
                         }
-                        Err(e) => {
-                            log::error!("Failed to get diff for search result: {}", e);
+                        match result {
+                            Ok(diff) => {
+                                let path_str_owned = path_str.clone();
+                                let line_owned = line_for_toast;
+                                dv.update(cx, move |dv, cx| {
+                                    dv.set_diff(diff, path_str_owned, DiffSource::Worktree, cx);
+                                    dv.scroll_to_line(line_owned, cx);
+                                });
+                                dp.update(cx, |dp, cx| dp.clear(cx));
+                            }
+                            Err(e) => {
+                                log::error!("Failed to get diff for search result: {}", e);
+                                dv.update(cx, |dv, cx| {
+                                    dv.set_error(
+                                        format!("Failed to load '{}': {}", path_str, e),
+                                        cx,
+                                    )
+                                });
+                            }
                         }
                     });
                 })
@@ -1513,69 +1527,84 @@ pub(super) fn subscribe_sidebar(
                     .stashes()
                     .get(idx)
                     .map(|s| (s.message.clone(), s.oid));
+                let request_generation = dv.update(cx, |dv, cx| dv.begin_diff_request(cx));
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let result = cx
                         .background_executor()
                         .spawn(async move { rgitui_git::compute_stash_diff(&repo_path, idx) })
                         .await;
-                    cx.update(|cx| match result {
-                        Ok(commit_diff) => {
-                            // Show first file in diff viewer immediately. A stash is
-                            // an immutable snapshot, so it must carry `Stash`
-                            // provenance — otherwise the viewer treats it as an
-                            // unstaged working-tree diff and the StatusChanged
-                            // refresh above would clobber it. Without the stash's
-                            // identity there is no honest provenance to attach, so
-                            // show nothing rather than something mislabelled; the
-                            // detail panel is cleared below for the same reason.
-                            match (commit_diff.files.first(), stash_info.as_ref()) {
-                                (Some(first_file), Some((_, oid))) => {
-                                    let path = first_file.path.display().to_string();
-                                    let source = DiffSource::Stash(oid.to_string());
-                                    dv.update(cx, |dv, cx| {
-                                        dv.set_diff(first_file.clone(), path, source, cx)
-                                    });
-                                }
-                                (Some(_), None) => {
-                                    log::warn!(
-                                        "stash {} is missing from the cached stash list; \
+                    cx.update(|cx| {
+                        if dv.read(cx).generation() != request_generation {
+                            return;
+                        }
+                        match result {
+                            Ok(commit_diff) => {
+                                // Show first file in diff viewer immediately. A stash is
+                                // an immutable snapshot, so it must carry `Stash`
+                                // provenance — otherwise the viewer treats it as an
+                                // unstaged working-tree diff and the StatusChanged
+                                // refresh above would clobber it. Without the stash's
+                                // identity there is no honest provenance to attach, so
+                                // show nothing rather than something mislabelled; the
+                                // detail panel is cleared below for the same reason.
+                                match (commit_diff.files.first(), stash_info.as_ref()) {
+                                    (Some(first_file), Some((_, oid))) => {
+                                        let path = first_file.path.display().to_string();
+                                        let source = DiffSource::Stash(oid.to_string());
+                                        dv.update(cx, |dv, cx| {
+                                            dv.set_diff(first_file.clone(), path, source, cx)
+                                        });
+                                    }
+                                    (Some(_), None) => {
+                                        log::warn!(
+                                            "stash {} is missing from the cached stash list; \
                                          skipping its diff",
-                                        idx
-                                    );
-                                    dv.update(cx, |dv, cx| dv.clear(cx));
+                                            idx
+                                        );
+                                        dv.update(cx, |dv, cx| dv.clear(cx));
+                                    }
+                                    (None, _) => {
+                                        dv.update(cx, |dv, cx| dv.clear(cx));
+                                    }
                                 }
-                                (None, _) => {}
+                                // Populate detail panel with the full stash file list so users
+                                // can click any file in the stash to view its diff.
+                                if let Some((msg, oid)) = stash_info {
+                                    let unknown_sig = Signature {
+                                        name: String::from("stash"),
+                                        email: String::new(),
+                                    };
+                                    // git stash messages are "WIP on <branch>: <sha> <subject>" or
+                                    // "On <branch>: <sha> <subject>". We want just the subject.
+                                    // Strip the WIP/On prefix and the trailing hash+subject.
+                                    let summary = extract_stash_summary(&msg);
+                                    let synthetic = CommitInfo {
+                                        oid,
+                                        short_id: oid.to_string()[..7].to_string(),
+                                        summary,
+                                        message: msg,
+                                        author: unknown_sig.clone(),
+                                        committer: unknown_sig,
+                                        co_authors: vec![],
+                                        time: chrono::Utc::now(),
+                                        parent_oids: vec![],
+                                        refs: vec![],
+                                        is_signed: false,
+                                    };
+                                    dp.update(cx, |dp, cx| {
+                                        dp.set_stash(synthetic, commit_diff, cx)
+                                    });
+                                } else {
+                                    dp.update(cx, |dp, cx| dp.clear(cx));
+                                }
                             }
-                            // Populate detail panel with the full stash file list so users
-                            // can click any file in the stash to view its diff.
-                            if let Some((msg, oid)) = stash_info {
-                                let unknown_sig = Signature {
-                                    name: String::from("stash"),
-                                    email: String::new(),
-                                };
-                                // git stash messages are "WIP on <branch>: <sha> <subject>" or
-                                // "On <branch>: <sha> <subject>". We want just the subject.
-                                // Strip the WIP/On prefix and the trailing hash+subject.
-                                let summary = extract_stash_summary(&msg);
-                                let synthetic = CommitInfo {
-                                    oid,
-                                    short_id: oid.to_string()[..7].to_string(),
-                                    summary,
-                                    message: msg,
-                                    author: unknown_sig.clone(),
-                                    committer: unknown_sig,
-                                    co_authors: vec![],
-                                    time: chrono::Utc::now(),
-                                    parent_oids: vec![],
-                                    refs: vec![],
-                                    is_signed: false,
-                                };
-                                dp.update(cx, |dp, cx| dp.set_stash(synthetic, commit_diff, cx));
-                            } else {
-                                dp.update(cx, |dp, cx| dp.clear(cx));
+                            Err(e) => {
+                                log::error!("Failed to get stash diff: {}", e);
+                                dv.update(cx, |dv, cx| {
+                                    dv.set_error(format!("Failed to load stash: {}", e), cx)
+                                });
                             }
                         }
-                        Err(e) => log::error!("Failed to get stash diff: {}", e),
                     });
                 })
                 .detach();
@@ -1964,7 +1993,7 @@ pub(super) fn subscribe_graph(
                         let dv = diff_viewer.clone();
                         let dp = detail_panel_ref.clone();
                         let cached = cached.clone();
-                        if let Some(first_file) = cached.files.first() {
+                        let display_generation = if let Some(first_file) = cached.files.first() {
                             let path = first_file.path.display().to_string();
                             let oid_str = commit_oid.to_string();
                             dv.update(cx, |dv, cx| {
@@ -1975,7 +2004,11 @@ pub(super) fn subscribe_graph(
                                     cx,
                                 )
                             });
-                        }
+                            dv.read(cx).generation()
+                        } else {
+                            dv.update(cx, |dv, cx| dv.clear(cx));
+                            dv.read(cx).generation()
+                        };
                         // Enrich commit info (is_signed, co_authors) in background
                         if let Some(mut info) = commit_info.clone() {
                             let enrich_path = repo_path.clone();
@@ -1991,6 +2024,9 @@ pub(super) fn subscribe_graph(
                                     info.co_authors = co_authors;
                                 }
                                 cx.update(|cx| {
+                                    if dv.read(cx).generation() != display_generation {
+                                        return;
+                                    }
                                     dp.update(cx, |dp, cx| {
                                         dp.set_commit_arc(info, cached, cx)
                                     });
@@ -2006,6 +2042,8 @@ pub(super) fn subscribe_graph(
                         let cache = diff_cache.clone();
                         let oid_str = commit_oid.to_string();
                         let enrich_path = repo_path.clone();
+                        let request_generation =
+                            dv.update(cx, |dv, cx| dv.begin_diff_request(cx));
 
                         cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                             // Compute diff and enrich commit info in parallel
@@ -2031,6 +2069,10 @@ pub(super) fn subscribe_graph(
                                         .unwrap()
                                         .insert(commit_oid, diff_arc.clone());
 
+                                    if dv.read(cx).generation() != request_generation {
+                                        return;
+                                    }
+
                                     if let Some(mut info) = commit_info {
                                         if let Ok((is_signed, co_authors)) = enrich_result {
                                             info.is_signed = is_signed;
@@ -2045,9 +2087,18 @@ pub(super) fn subscribe_graph(
                                         dv.update(cx, |dv, cx| {
                                             dv.set_diff(first_file.clone(), path, DiffSource::Commit(oid_str), cx)
                                         });
+                                    } else {
+                                        dv.update(cx, |dv, cx| dv.clear(cx));
                                     }
                                 }
-                                Err(e) => log::error!("Failed to get commit diff: {}", e),
+                                Err(e) => {
+                                    log::error!("Failed to get commit diff: {}", e);
+                                    if dv.read(cx).generation() == request_generation {
+                                        dv.update(cx, |dv, cx| {
+                                            dv.set_error(format!("Failed to load commit: {}", e), cx)
+                                        });
+                                    }
+                                }
                             });
                         })
                         .detach();
@@ -2423,6 +2474,7 @@ pub(super) fn subscribe_detail_panel(
                 let dv = diff_viewer.clone();
                 let dp = detail_panel_cloned.clone();
                 let project_for_async = project.clone();
+                let request_generation = dv.update(cx, |dv, cx| dv.begin_diff_request(cx));
                 cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
                     let result = cx
                         .background_executor()
@@ -2431,14 +2483,17 @@ pub(super) fn subscribe_detail_panel(
                         )
                         .await;
                     cx.update(|cx| {
+                        if dv.read(cx).generation() != request_generation {
+                            return;
+                        }
                         let commit_info = project_for_async
                             .read(cx)
                             .recent_commits()
                             .iter()
                             .find(|c| c.oid == target_oid)
                             .cloned();
-                        if let Some(info) = commit_info {
-                            if let Ok(commit_diff) = result {
+                        match (commit_info, result) {
+                            (Some(info), Ok(commit_diff)) => {
                                 dp.update(cx, |dp, cx| {
                                     dp.set_commit(info.clone(), commit_diff.clone(), cx)
                                 });
@@ -2453,7 +2508,18 @@ pub(super) fn subscribe_detail_panel(
                                             cx,
                                         )
                                     });
+                                } else {
+                                    dv.update(cx, |dv, cx| dv.clear(cx));
                                 }
+                            }
+                            (_, Err(error)) => {
+                                log::error!("Failed to get commit diff: {}", error);
+                                dv.update(cx, |dv, cx| {
+                                    dv.set_error(format!("Failed to load commit: {}", error), cx)
+                                });
+                            }
+                            (None, Ok(_)) => {
+                                dv.update(cx, |dv, cx| dv.clear(cx));
                             }
                         }
                     });
