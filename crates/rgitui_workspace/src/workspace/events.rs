@@ -1484,22 +1484,6 @@ pub(super) fn subscribe_sidebar(
                     );
                 });
             }
-            SidebarEvent::AcceptConflictOurs(path) => {
-                let path = path.clone();
-                let worktree_path = this.effective_worktree_path(cx);
-                project.update(cx, |proj, cx| {
-                    proj.accept_conflict_ours_at(path, &worktree_path, cx)
-                        .detach();
-                });
-            }
-            SidebarEvent::AcceptConflictTheirs(path) => {
-                let path = path.clone();
-                let worktree_path = this.effective_worktree_path(cx);
-                project.update(cx, |proj, cx| {
-                    proj.accept_conflict_theirs_at(path, &worktree_path, cx)
-                        .detach();
-                });
-            }
             SidebarEvent::StashSelected(index) => {
                 let idx = *index;
                 let repo_path = project.read(cx).repo_path().to_path_buf();
@@ -2634,25 +2618,43 @@ pub(super) fn subscribe_diff_viewer(
                                     .detach();
                             });
                         }
-                        ConflictResolution::UseOurs { path: event_path } => {
+                        ConflictResolution::UseOurs {
+                            path: event_path,
+                            snapshot,
+                        } => {
                             if std::path::Path::new(event_path) != path.as_path() {
                                 return;
                             }
                             let event_path = event_path.clone();
+                            let snapshot = snapshot.clone();
                             project.update(cx, |project, cx| {
                                 project
-                                    .accept_conflict_ours_at(event_path, &worktree_path, cx)
+                                    .accept_conflict_ours_at(
+                                        event_path,
+                                        snapshot,
+                                        &worktree_path,
+                                        cx,
+                                    )
                                     .detach();
                             });
                         }
-                        ConflictResolution::UseTheirs { path: event_path } => {
+                        ConflictResolution::UseTheirs {
+                            path: event_path,
+                            snapshot,
+                        } => {
                             if std::path::Path::new(event_path) != path.as_path() {
                                 return;
                             }
                             let event_path = event_path.clone();
+                            let snapshot = snapshot.clone();
                             project.update(cx, |project, cx| {
                                 project
-                                    .accept_conflict_theirs_at(event_path, &worktree_path, cx)
+                                    .accept_conflict_theirs_at(
+                                        event_path,
+                                        snapshot,
+                                        &worktree_path,
+                                        cx,
+                                    )
                                     .detach();
                             });
                         }

@@ -3585,28 +3585,31 @@ impl GitProject {
     pub fn accept_conflict_ours_at(
         &mut self,
         path: String,
+        snapshot: ConflictSnapshot,
         worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("accept_conflict_ours: path={}", path);
-        self.accept_conflict_side(path, ConflictSide::Ours, worktree_path, cx)
+        self.accept_conflict_side(path, ConflictSide::Ours, snapshot, worktree_path, cx)
     }
 
     /// Accept the "theirs" version of a conflicted file, staging it as resolved.
     pub fn accept_conflict_theirs_at(
         &mut self,
         path: String,
+        snapshot: ConflictSnapshot,
         worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         log::info!("accept_conflict_theirs: path={}", path);
-        self.accept_conflict_side(path, ConflictSide::Theirs, worktree_path, cx)
+        self.accept_conflict_side(path, ConflictSide::Theirs, snapshot, worktree_path, cx)
     }
 
     fn accept_conflict_side(
         &mut self,
         path: String,
         side: ConflictSide,
+        snapshot: ConflictSnapshot,
         worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
@@ -3640,7 +3643,7 @@ impl GitProject {
             let result: anyhow::Result<RefreshData> = cx
                 .background_executor()
                 .spawn(async move {
-                    apply_conflict_side(&worktree_path, &file_path, side)?;
+                    apply_conflict_side(&worktree_path, &file_path, side, &snapshot)?;
                     gather_refresh_data(&repo_path, commit_limit)
                 })
                 .await;
@@ -3697,31 +3700,55 @@ enum ConflictResolutionInput {
     },
 }
 
-fn apply_conflict_side(worktree_path: &Path, file_path: &Path, side: ConflictSide) -> Result<()> {
+fn apply_conflict_side(
+    worktree_path: &Path,
+    file_path: &Path,
+    side: ConflictSide,
+    snapshot: &ConflictSnapshot,
+) -> Result<()> {
     ensure_repo_relative_path(file_path)?;
     let repo = Repository::open(worktree_path)?;
     let mut index = repo.index()?;
     let conflict = index
         .conflict_get(file_path)
         .map_err(|_| anyhow::anyhow!("Conflict not found for path '{}'", file_path.display()))?;
+    verify_conflict_snapshot(&conflict, snapshot, file_path)?;
     let chosen = match side {
         ConflictSide::Ours => conflict.our.as_ref(),
         ConflictSide::Theirs => conflict.their.as_ref(),
     };
     let full_path = worktree_path.join(file_path);
+    if read_worktree_entry(&full_path) != snapshot.worktree_content {
+        anyhow::bail!(
+            "'{}' changed outside the conflict resolver. Reload it before choosing a side so no edits are overwritten.",
+            file_path.display()
+        );
+    }
 
     if let Some(entry) = chosen {
-        let content = repo.find_blob(entry.id)?.content().to_vec();
-        let stage_zero = stage_zero_entry(entry, entry.mode);
+        let mut stage_zero = stage_zero_entry(entry, entry.mode);
         if entry.mode & 0o170000 == 0o100000 {
+            let content = repo.find_blob(entry.id)?.content().to_vec();
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&full_path, &content)?;
             set_executable_bit(&full_path, entry.mode)?;
+            index.add_frombuffer(&stage_zero, &content)?;
+            index.write()?;
+        } else if entry.mode & 0o170000 == 0o160000 {
+            // A gitlink's OID names a commit, not a blob. Resolving it means
+            // selecting the stage-0 gitlink; the submodule working directory is
+            // intentionally left untouched.
+            stage_zero.id = entry.id;
+            index.conflict_remove(file_path)?;
+            index.add(&stage_zero)?;
+            index.write()?;
         } else {
             // Let libgit2 materialize symlinks and other supported entry types
             // from the exact chosen stage-0 index entry.
+            stage_zero.id = entry.id;
+            index.conflict_remove(file_path)?;
             index.add(&stage_zero)?;
             index.write()?;
             let mut checkout = git2::build::CheckoutBuilder::new();
@@ -3729,12 +3756,8 @@ fn apply_conflict_side(worktree_path: &Path, file_path: &Path, side: ConflictSid
             repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
             return Ok(());
         }
-        index.add_frombuffer(&stage_zero, &content)?;
-        index.write()?;
     } else {
-        if full_path.exists() {
-            std::fs::remove_file(&full_path)?;
-        }
+        remove_worktree_file_or_symlink(&full_path)?;
         index.conflict_remove(file_path)?;
         if let Err(error) = index.remove_path(file_path) {
             if error.code() != git2::ErrorCode::NotFound {
@@ -3767,7 +3790,7 @@ fn apply_conflict_resolution(
     verify_conflict_snapshot(&conflict, snapshot, file_path)?;
 
     let full_path = worktree_path.join(file_path);
-    let current_worktree = std::fs::read(&full_path).ok();
+    let current_worktree = read_worktree_entry(&full_path);
     let (result, result_mode, writes_worktree) = match input {
         ConflictResolutionInput::Draft {
             result,
@@ -3846,9 +3869,7 @@ fn apply_conflict_resolution(
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            if full_path.exists() {
-                std::fs::remove_file(&full_path)?;
-            }
+            remove_worktree_file_or_symlink(&full_path)?;
             let index_result = index
                 .conflict_remove(file_path)
                 .and_then(|_| match index.remove_path(file_path) {
@@ -3924,6 +3945,35 @@ fn ensure_repo_relative_path(path: &Path) -> Result<()> {
             "Refusing to resolve an invalid repository path: '{}'",
             path.display()
         );
+    }
+    Ok(())
+}
+
+fn read_worktree_entry(path: &Path) -> Option<Vec<u8>> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if metadata.file_type().is_symlink() {
+        return std::fs::read_link(path)
+            .ok()
+            .map(|target| target.as_os_str().as_encoded_bytes().to_vec());
+    }
+    if metadata.is_file() {
+        std::fs::read(path).ok()
+    } else {
+        None
+    }
+}
+
+fn remove_worktree_file_or_symlink(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+            std::fs::remove_file(path)?;
+        }
+        Ok(_) => anyhow::bail!(
+            "Refusing to remove '{}' because it is a directory. Remove it manually after checking for untracked files.",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     Ok(())
 }
@@ -4112,6 +4162,8 @@ fn count_would_remove(stdout: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write;
+    use std::process::Stdio;
 
     use rgitui_test_support::TempRepo;
 
@@ -4126,6 +4178,31 @@ mod tests {
             .env("GIT_EDITOR", "true")
             .output()
             .expect("failed to run git")
+    }
+
+    fn install_gitlink_conflict(
+        fixture: &TempRepo,
+        path: &str,
+        ancestor: git2::Oid,
+        ours: git2::Oid,
+        theirs: git2::Oid,
+    ) {
+        let entries = format!(
+            "160000 {ancestor} 1\t{path}\n160000 {ours} 2\t{path}\n160000 {theirs} 3\t{path}\n"
+        );
+        let mut child = super::super::git_command()
+            .current_dir(fixture.path())
+            .args(["update-index", "--index-info"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("start git update-index");
+        child
+            .stdin
+            .take()
+            .expect("update-index stdin")
+            .write_all(entries.as_bytes())
+            .expect("write conflict entries");
+        assert!(child.wait().expect("wait for update-index").success());
     }
 
     /// A repo whose `feature` branch and `main` both change `file.txt`'s only
@@ -4235,6 +4312,66 @@ mod tests {
     }
 
     #[test]
+    fn stale_whole_side_resolution_does_not_overwrite_external_edits() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        fs::write(fixture.path().join(relative_path), b"edited elsewhere\n").unwrap();
+
+        let error = super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed outside"));
+        assert_eq!(
+            fs::read(fixture.path().join(relative_path)).unwrap(),
+            b"edited elsewhere\n"
+        );
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
+    }
+
+    #[test]
+    fn whole_side_resolution_rejects_replaced_index_conflict() {
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        let repo = git2::Repository::open(fixture.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        let conflict = index.conflict_get(relative_path).unwrap();
+        let mut replacement = conflict.our.expect("ours entry");
+        replacement.id = repo.blob(b"replacement current\n").unwrap();
+        index.add(&replacement).unwrap();
+        index.write().unwrap();
+
+        let error = super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed while"));
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_ok());
+    }
+
+    #[test]
     fn staging_working_copy_rejects_unresolved_markers() {
         let fixture = make_repo_with_conflicting_merge();
         let relative_path = std::path::Path::new("file.txt");
@@ -4289,8 +4426,15 @@ mod tests {
         );
 
         let relative_path = std::path::Path::new("deleted.txt");
-        super::apply_conflict_side(fixture.path(), relative_path, super::ConflictSide::Theirs)
-            .expect("choose deleted side");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Theirs,
+            &diff.snapshot,
+        )
+        .expect("choose deleted side");
 
         assert!(!fixture.path().join(relative_path).exists());
         let index = git2::Repository::open(fixture.path())
@@ -4299,6 +4443,89 @@ mod tests {
             .unwrap();
         assert!(index.conflict_get(relative_path).is_err());
         assert!(index.get_path(relative_path, 0).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn choosing_deleted_side_removes_a_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TempRepo::init();
+        let relative_path = std::path::Path::new("link");
+        let full_path = fixture.path().join(relative_path);
+        symlink("missing-base", &full_path).unwrap();
+        fixture.stage(relative_path);
+        fixture.commit("base symlink");
+
+        assert!(run_git(fixture.path(), &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        assert!(run_git(fixture.path(), &["rm", "link"]).status.success());
+        assert!(
+            run_git(fixture.path(), &["commit", "-m", "delete incoming"])
+                .status
+                .success()
+        );
+
+        assert!(run_git(fixture.path(), &["checkout", "main"])
+            .status
+            .success());
+        fs::remove_file(&full_path).unwrap();
+        symlink("missing-current", &full_path).unwrap();
+        fixture.stage(relative_path);
+        fixture.commit("change current symlink");
+        assert!(!run_git(fixture.path(), &["merge", "incoming"])
+            .status
+            .success());
+        assert!(!full_path.exists(), "fixture must use a dangling symlink");
+        assert!(fs::symlink_metadata(&full_path).is_ok());
+
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Theirs,
+            &diff.snapshot,
+        )
+        .expect("choose deleted side");
+
+        assert!(fs::symlink_metadata(&full_path).is_err());
+        assert!(git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap()
+            .conflict_get(relative_path)
+            .is_err());
+    }
+
+    #[test]
+    fn choosing_a_gitlink_side_stages_the_commit_without_blob_lookup() {
+        let fixture = TempRepo::init();
+        let ancestor = fixture.commit_file("seed.txt", "ancestor\n", "ancestor");
+        let ours = fixture.commit_file("seed.txt", "ours\n", "ours");
+        let theirs = fixture.commit_file("seed.txt", "theirs\n", "theirs");
+        install_gitlink_conflict(&fixture, "module", ancestor, ours, theirs);
+        let relative_path = std::path::Path::new("module");
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Theirs,
+            &diff.snapshot,
+        )
+        .expect("choose incoming gitlink");
+
+        let index = git2::Repository::open(fixture.path())
+            .unwrap()
+            .index()
+            .unwrap();
+        assert!(index.conflict_get(relative_path).is_err());
+        let entry = index.get_path(relative_path, 0).expect("stage-0 gitlink");
+        assert_eq!(entry.mode, 0o160000);
+        assert_eq!(entry.id, theirs);
     }
 
     #[test]

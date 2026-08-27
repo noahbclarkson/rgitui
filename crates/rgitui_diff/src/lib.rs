@@ -78,9 +78,11 @@ pub enum ConflictResolution {
     },
     UseOurs {
         path: String,
+        snapshot: ConflictSnapshot,
     },
     UseTheirs {
         path: String,
+        snapshot: ConflictSnapshot,
     },
     StageWorkingTree {
         path: String,
@@ -2150,16 +2152,18 @@ impl DiffViewer {
         let path = diff.path.display().to_string();
         if !diff.supports_text_resolution() {
             match self.conflict_choices.first().copied().flatten() {
-                Some(ConflictChoice::Ours) => {
-                    cx.emit(DiffViewerEvent::ConflictResolutionRequested(
-                        ConflictResolution::UseOurs { path },
-                    ))
-                }
-                Some(ConflictChoice::Theirs) => {
-                    cx.emit(DiffViewerEvent::ConflictResolutionRequested(
-                        ConflictResolution::UseTheirs { path },
-                    ))
-                }
+                Some(ConflictChoice::Ours) => cx.emit(
+                    DiffViewerEvent::ConflictResolutionRequested(ConflictResolution::UseOurs {
+                        path,
+                        snapshot: diff.snapshot.clone(),
+                    }),
+                ),
+                Some(ConflictChoice::Theirs) => cx.emit(
+                    DiffViewerEvent::ConflictResolutionRequested(ConflictResolution::UseTheirs {
+                        path,
+                        snapshot: diff.snapshot.clone(),
+                    }),
+                ),
                 _ => {}
             }
             return;
@@ -6969,6 +6973,52 @@ mod view_tests {
                         path: PATH.to_string(),
                         content: b"current-a\nmiddle\nincoming-b\n".to_vec(),
                         mode: 0o100644,
+                        snapshot,
+                    }
+                )]
+            );
+        });
+    }
+
+    #[test]
+    fn whole_side_resolution_event_carries_the_loaded_snapshot() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        let snapshot = ConflictSnapshot {
+            ancestor_oid: None,
+            ours_oid: None,
+            theirs_oid: None,
+            worktree_content: Some(b"binary markers\0".to_vec()),
+        };
+        let diff = ThreeWayFileDiff {
+            path: PATH.into(),
+            sections: vec![MergeSection::Conflict {
+                ancestor: b"base\0".to_vec(),
+                ours: b"current\0".to_vec(),
+                theirs: b"incoming\0".to_vec(),
+            }],
+            snapshot: snapshot.clone(),
+            ancestor_exists: true,
+            ours_exists: true,
+            theirs_exists: true,
+            is_binary: true,
+            is_special_file: false,
+            result_mode: 0o100644,
+        };
+
+        probe.update(|probe, _window, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.set_three_way_diff(diff, cx);
+                viewer.use_current_for_conflict(cx);
+                viewer.save_conflict_result(cx);
+            });
+        });
+
+        probe.read(|probe, _| {
+            assert_eq!(
+                probe.request_events(),
+                vec![DiffViewerEvent::ConflictResolutionRequested(
+                    ConflictResolution::UseOurs {
+                        path: PATH.to_string(),
                         snapshot,
                     }
                 )]

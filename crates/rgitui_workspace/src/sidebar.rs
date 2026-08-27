@@ -58,8 +58,6 @@ pub enum SidebarEvent {
     StageAll,
     UnstageAll,
     DiscardFile(String),
-    AcceptConflictOurs(String),
-    AcceptConflictTheirs(String),
     ConflictFileSelected(String),
     OpenRepo,
     ToggleDir(String), // dir_key: "staged:path" or "unstaged:path"
