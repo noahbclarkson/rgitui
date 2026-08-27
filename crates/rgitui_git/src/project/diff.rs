@@ -1392,35 +1392,42 @@ fn restore_missing_final_newline(
     }
 
     for section in sections.iter_mut().rev() {
-        if let MergeSection::Conflict {
+        let MergeSection::Conflict {
             ancestor,
             ours,
             theirs,
         } = section
-        {
-            let bytes = match side {
-                ConflictInputSide::Ancestor => ancestor,
-                ConflictInputSide::Ours => ours,
-                ConflictInputSide::Theirs => theirs,
-            };
-            if bytes.is_empty() {
-                continue;
+        else {
+            // A non-empty resolved suffix proves this conflict did not reach
+            // EOF in the merge output, so its newline is real.
+            if matches!(section, MergeSection::Resolved(bytes) if !bytes.is_empty()) {
+                return;
             }
-
-            // Depending on the input's line-ending style, libgit2 can add LF
-            // or CRLF before its next marker. Only strip a suffix when the
-            // remaining bytes match the original side's actual EOF.
-            let synthetic_len =
-                if bytes.ends_with(b"\r\n") && original.ends_with(&bytes[..bytes.len() - 2]) {
-                    2
-                } else if bytes.ends_with(b"\n") && original.ends_with(&bytes[..bytes.len() - 1]) {
-                    1
-                } else {
-                    continue;
-                };
-            bytes.truncate(bytes.len() - synthetic_len);
-            return;
+            continue;
+        };
+        let bytes = match side {
+            ConflictInputSide::Ancestor => ancestor,
+            ConflictInputSide::Ours => ours,
+            ConflictInputSide::Theirs => theirs,
+        };
+        if bytes.is_empty() {
+            continue;
         }
+
+        // Depending on the input's line-ending style, libgit2 can add LF or
+        // CRLF before its next marker. The conflict must be the final non-empty
+        // merge section and the remaining bytes must match the original side's
+        // actual EOF before either suffix is considered synthetic.
+        let synthetic_len =
+            if bytes.ends_with(b"\r\n") && original.ends_with(&bytes[..bytes.len() - 2]) {
+                2
+            } else if bytes.ends_with(b"\n") && original.ends_with(&bytes[..bytes.len() - 1]) {
+                1
+            } else {
+                return;
+            };
+        bytes.truncate(bytes.len() - synthetic_len);
+        return;
     }
 }
 
@@ -1688,6 +1695,45 @@ mod conflict_diff_tests {
             }) if ancestor == b"base 19"
                 && ours == b"current 19"
                 && theirs == b"incoming 19"
+        ));
+    }
+
+    #[test]
+    fn non_eof_conflict_keeps_real_newline_when_unterminated_suffix_repeats_its_text() {
+        let repo = TempRepo::init();
+        let suffix = (1..20)
+            .map(|line| {
+                if line == 19 {
+                    "X".to_string()
+                } else {
+                    format!("common {line}\n")
+                }
+            })
+            .collect::<String>();
+        repo.commit_file("conflict.txt", &format!("base\n{suffix}"), "base");
+
+        assert!(run_git(&repo, &["checkout", "-b", "incoming"])
+            .status
+            .success());
+        repo.commit_file(
+            "conflict.txt",
+            &format!("incoming\n{suffix}"),
+            "incoming changes",
+        );
+        assert!(run_git(&repo, &["checkout", "main"]).status.success());
+        repo.commit_file("conflict.txt", &format!("X\n{suffix}"), "current changes");
+        assert!(!run_git(&repo, &["merge", "incoming"]).status.success());
+
+        let diff = compute_three_way_conflict_diff(repo.path(), Path::new("conflict.txt")).unwrap();
+        assert!(matches!(
+            diff.sections
+                .iter()
+                .find(|section| matches!(section, MergeSection::Conflict { .. })),
+            Some(MergeSection::Conflict { ours, .. }) if ours == b"X\n"
+        ));
+        assert!(matches!(
+            diff.sections.last(),
+            Some(MergeSection::Resolved(bytes)) if bytes.ends_with(b"X")
         ));
     }
 

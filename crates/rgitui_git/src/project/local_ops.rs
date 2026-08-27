@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use rgitui_settings::current_git_auth_runtime;
@@ -3707,6 +3708,7 @@ fn apply_conflict_side(
     snapshot: &ConflictSnapshot,
 ) -> Result<()> {
     ensure_repo_relative_path(file_path)?;
+    ensure_no_symlink_ancestors(worktree_path, file_path)?;
     let repo = Repository::open(worktree_path)?;
     let mut index = repo.index()?;
     let conflict = index
@@ -3718,7 +3720,8 @@ fn apply_conflict_side(
         ConflictSide::Theirs => conflict.their.as_ref(),
     };
     let full_path = worktree_path.join(file_path);
-    if read_worktree_entry(&full_path) != snapshot.worktree_content {
+    let original_worktree = capture_worktree_entry(&full_path)?;
+    if original_worktree.snapshot_bytes() != snapshot.worktree_content.as_deref() {
         anyhow::bail!(
             "'{}' changed outside the conflict resolver. Reload it before choosing a side so no edits are overwritten.",
             file_path.display()
@@ -3729,13 +3732,15 @@ fn apply_conflict_side(
         let mut stage_zero = stage_zero_entry(entry, entry.mode);
         if entry.mode & 0o170000 == 0o100000 {
             let content = repo.find_blob(entry.id)?.content().to_vec();
-            if let Some(parent) = full_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&full_path, &content)?;
+            write_regular_worktree_file(&full_path, &content)?;
             set_executable_bit(&full_path, entry.mode)?;
-            index.add_frombuffer(&stage_zero, &content)?;
-            index.write()?;
+            if let Err(error) = index
+                .add_frombuffer(&stage_zero, &content)
+                .and_then(|_| index.write())
+            {
+                restore_worktree_entry(&full_path, &original_worktree);
+                return Err(error.into());
+            }
         } else if entry.mode & 0o170000 == 0o160000 {
             // A gitlink's OID names a commit, not a blob. Resolving it means
             // selecting the stage-0 gitlink; the submodule working directory is
@@ -3758,13 +3763,18 @@ fn apply_conflict_side(
         }
     } else {
         remove_worktree_file_or_symlink(&full_path)?;
-        index.conflict_remove(file_path)?;
-        if let Err(error) = index.remove_path(file_path) {
-            if error.code() != git2::ErrorCode::NotFound {
-                return Err(error.into());
-            }
+        let index_result = index
+            .conflict_remove(file_path)
+            .and_then(|_| match index.remove_path(file_path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+                Err(error) => Err(error),
+            })
+            .and_then(|_| index.write());
+        if let Err(error) = index_result {
+            restore_worktree_entry(&full_path, &original_worktree);
+            return Err(error.into());
         }
-        index.write()?;
     }
     Ok(())
 }
@@ -3775,6 +3785,7 @@ fn apply_conflict_resolution(
     input: ConflictResolutionInput,
 ) -> Result<()> {
     ensure_repo_relative_path(file_path)?;
+    ensure_no_symlink_ancestors(worktree_path, file_path)?;
     let repo = Repository::open(worktree_path)?;
     let mut index = repo.index()?;
     let conflict = index.conflict_get(file_path).map_err(|_| {
@@ -3790,7 +3801,8 @@ fn apply_conflict_resolution(
     verify_conflict_snapshot(&conflict, snapshot, file_path)?;
 
     let full_path = worktree_path.join(file_path);
-    let current_worktree = read_worktree_entry(&full_path);
+    let original_worktree = capture_worktree_entry(&full_path)?;
+    let current_worktree = original_worktree.snapshot_bytes().map(<[u8]>::to_vec);
     let (result, result_mode, writes_worktree) = match input {
         ConflictResolutionInput::Draft {
             result,
@@ -3845,12 +3857,8 @@ fn apply_conflict_resolution(
                 .ok_or_else(|| anyhow::anyhow!("Conflict has no index entry to resolve"))?;
             let stage_zero = stage_zero_entry(template, result_mode);
 
-            let original = current_worktree;
             if writes_worktree {
-                if let Some(parent) = full_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&full_path, &bytes)?;
+                write_regular_worktree_file(&full_path, &bytes)?;
                 set_executable_bit(&full_path, result_mode)?;
             }
 
@@ -3859,16 +3867,12 @@ fn apply_conflict_resolution(
                 .and_then(|_| index.write())
             {
                 if writes_worktree {
-                    restore_worktree_file(&full_path, original.as_deref());
+                    restore_worktree_entry(&full_path, &original_worktree);
                 }
                 return Err(error.into());
             }
         }
         None => {
-            let original = current_worktree;
-            if let Some(parent) = full_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
             remove_worktree_file_or_symlink(&full_path)?;
             let index_result = index
                 .conflict_remove(file_path)
@@ -3879,7 +3883,7 @@ fn apply_conflict_resolution(
                 })
                 .and_then(|_| index.write());
             if let Err(error) = index_result {
-                restore_worktree_file(&full_path, original.as_deref());
+                restore_worktree_entry(&full_path, &original_worktree);
                 return Err(error.into());
             }
         }
@@ -3949,18 +3953,134 @@ fn ensure_repo_relative_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn read_worktree_entry(path: &Path) -> Option<Vec<u8>> {
-    let metadata = std::fs::symlink_metadata(path).ok()?;
+fn ensure_no_symlink_ancestors(worktree_path: &Path, file_path: &Path) -> Result<()> {
+    use std::path::Component;
+
+    let Some(parent) = file_path.parent() else {
+        return Ok(());
+    };
+    let mut current = worktree_path.to_path_buf();
+    for component in parent.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(name) => current.push(name),
+            _ => unreachable!("repository-relative path was validated first"),
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => anyhow::bail!(
+                "Refusing to resolve '{}' because '{}' is a symbolic-link parent.",
+                file_path.display(),
+                current.display()
+            ),
+            Ok(metadata) if !metadata.is_dir() => anyhow::bail!(
+                "Refusing to resolve '{}' because '{}' is not a directory.",
+                file_path.display(),
+                current.display()
+            ),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+enum WorktreeEntryBackup {
+    Missing,
+    Regular {
+        bytes: Vec<u8>,
+        permissions: std::fs::Permissions,
+    },
+    Symlink(PathBuf),
+    Other,
+}
+
+impl WorktreeEntryBackup {
+    fn snapshot_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Regular { bytes, .. } => Some(bytes),
+            Self::Symlink(target) => Some(target.as_os_str().as_encoded_bytes()),
+            Self::Missing | Self::Other => None,
+        }
+    }
+}
+
+fn capture_worktree_entry(path: &Path) -> Result<WorktreeEntryBackup> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WorktreeEntryBackup::Missing);
+        }
+        Err(error) => return Err(error.into()),
+    };
     if metadata.file_type().is_symlink() {
-        return std::fs::read_link(path)
-            .ok()
-            .map(|target| target.as_os_str().as_encoded_bytes().to_vec());
+        return Ok(WorktreeEntryBackup::Symlink(std::fs::read_link(path)?));
     }
     if metadata.is_file() {
-        std::fs::read(path).ok()
-    } else {
-        None
+        return Ok(WorktreeEntryBackup::Regular {
+            bytes: std::fs::read(path)?,
+            permissions: metadata.permissions(),
+        });
     }
+    Ok(WorktreeEntryBackup::Other)
+}
+
+fn write_regular_worktree_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("'{}' has no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent)?;
+    if matches!(std::fs::symlink_metadata(path), Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
+        anyhow::bail!(
+            "Refusing to replace '{}' because it is a directory.",
+            path.display()
+        );
+    }
+
+    let mut temp = None;
+    for _ in 0..128 {
+        let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate = parent.join(format!(".rgitui-conflict-{}-{id}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temp = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let (temp_path, mut temp_file) = temp.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not allocate a temporary conflict result beside '{}'",
+            path.display()
+        )
+    })?;
+    if let Err(error) = temp_file.write_all(bytes) {
+        drop(temp_file);
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error.into());
+    }
+    drop(temp_file);
+
+    #[cfg(windows)]
+    if let Err(error) = remove_worktree_file_or_symlink(path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    if let Err(error) = std::fs::rename(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 fn remove_worktree_file_or_symlink(path: &Path) -> Result<()> {
@@ -3979,30 +4099,64 @@ fn remove_worktree_file_or_symlink(path: &Path) -> Result<()> {
 }
 
 fn contains_conflict_markers(content: &[u8]) -> bool {
-    let mut ours = false;
-    let mut separator = false;
-    let mut theirs = false;
-    for line in content.split(|byte| *byte == b'\n') {
+    content.split(|byte| *byte == b'\n').any(|line| {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        ours |= line.starts_with(b"<<<<<<<");
-        separator |= line.starts_with(b"=======");
-        theirs |= line.starts_with(b">>>>>>>");
-    }
-    ours && separator && theirs
+        line.starts_with(b"<<<<<<<")
+            || line.starts_with(b"|||||||")
+            || line.starts_with(b"=======")
+            || line.starts_with(b">>>>>>>")
+    })
 }
 
-fn restore_worktree_file(path: &Path, original: Option<&[u8]>) {
-    let result = match original {
-        Some(bytes) => std::fs::write(path, bytes),
-        None if path.exists() => std::fs::remove_file(path),
-        None => Ok(()),
-    };
+fn restore_worktree_entry(path: &Path, original: &WorktreeEntryBackup) {
+    let result = (|| -> Result<()> {
+        remove_worktree_file_or_symlink(path)?;
+        match original {
+            WorktreeEntryBackup::Missing => {}
+            WorktreeEntryBackup::Regular { bytes, permissions } => {
+                write_regular_worktree_file(path, bytes)?;
+                std::fs::set_permissions(path, permissions.clone())?;
+            }
+            WorktreeEntryBackup::Symlink(target) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                create_worktree_symlink(target, path)?;
+            }
+            WorktreeEntryBackup::Other => anyhow::bail!(
+                "Cannot restore unsupported worktree entry '{}'",
+                path.display()
+            ),
+        }
+        Ok(())
+    })();
     if let Err(error) = result {
         log::error!(
             "Failed to restore '{}' after an index write error: {}",
             path.display(),
             error
         );
+    }
+}
+
+#[cfg(unix)]
+fn create_worktree_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, path)
+}
+
+#[cfg(windows)]
+fn create_worktree_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+
+    let resolved_target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    if std::fs::metadata(resolved_target).is_ok_and(|metadata| metadata.is_dir()) {
+        symlink_dir(target, path)
+    } else {
+        symlink_file(target, path)
     }
 }
 
@@ -4399,6 +4553,19 @@ mod tests {
     }
 
     #[test]
+    fn every_partial_conflict_marker_is_rejected_on_its_own() {
+        for marker in [
+            b"<<<<<<< current\n".as_slice(),
+            b"||||||| base\n".as_slice(),
+            b"=======\n".as_slice(),
+            b">>>>>>> incoming\n".as_slice(),
+        ] {
+            assert!(super::contains_conflict_markers(marker));
+        }
+        assert!(!super::contains_conflict_markers(b"ordinary content\n"));
+    }
+
+    #[test]
     fn choosing_deleted_side_removes_file_and_index_conflict() {
         let fixture = TempRepo::init();
         fixture.commit_file("deleted.txt", "base\n", "base");
@@ -4497,6 +4664,54 @@ mod tests {
             .unwrap()
             .conflict_get(relative_path)
             .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_side_replaces_symlink_without_writing_through_it() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = make_repo_with_conflicting_merge();
+        let relative_path = std::path::Path::new("file.txt");
+        let full_path = fixture.path().join(relative_path);
+        let target_path = fixture.path().join("outside.txt");
+        fs::write(&target_path, b"must stay unchanged\n").unwrap();
+        fs::remove_file(&full_path).unwrap();
+        symlink("outside.txt", &full_path).unwrap();
+        let diff = super::super::compute_three_way_conflict_diff(fixture.path(), relative_path)
+            .expect("conflict model");
+
+        super::apply_conflict_side(
+            fixture.path(),
+            relative_path,
+            super::ConflictSide::Ours,
+            &diff.snapshot,
+        )
+        .expect("choose regular side");
+
+        assert_eq!(fs::read(&target_path).unwrap(), b"must stay unchanged\n");
+        let metadata = fs::symlink_metadata(&full_path).unwrap();
+        assert!(metadata.is_file());
+        assert!(!metadata.file_type().is_symlink());
+        assert_eq!(fs::read(&full_path).unwrap(), b"current\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conflict_resolution_rejects_symlinked_parent_directory() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TempRepo::init();
+        let target = fixture.path().join("target");
+        fs::create_dir(&target).unwrap();
+        symlink("target", fixture.path().join("linked")).unwrap();
+
+        let error = super::ensure_no_symlink_ancestors(
+            fixture.path(),
+            std::path::Path::new("linked/file.txt"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("symbolic-link parent"));
     }
 
     #[test]
