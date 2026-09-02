@@ -506,6 +506,22 @@ impl Workspace {
         self._settings_window_closed_subscription = Some(subscription);
     }
 
+    /// Open (or focus) the settings window with the AI page already showing.
+    ///
+    /// Everything that reports an AI misconfiguration routes here, so the fix
+    /// is always one click from the complaint rather than a dead end.
+    pub(crate) fn open_ai_settings(&mut self, cx: &mut Context<Self>) {
+        self.open_or_focus_settings(cx);
+        let Some(handle) = self.settings_window else {
+            return;
+        };
+        let _ = handle.update(cx, |settings_window, _window, cx| {
+            settings_window
+                .view()
+                .update(cx, |view, cx| view.show_ai_section(cx));
+        });
+    }
+
     /// Set a status bar message that auto-clears after 5 seconds.
     pub(super) fn set_status_message(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
         self.status_message = Some(msg.into());
@@ -571,6 +587,10 @@ impl Workspace {
                 cx.notify();
             }
             crate::SettingsWindowAction::SettingsChanged => {
+                // `ai_ready` comes from settings, so the palette and keymap
+                // predicates go stale the moment AI is toggled or a key is
+                // added.
+                self.update_command_context(cx);
                 self.on_settings_changed(cx);
             }
             crate::SettingsWindowAction::Toast(kind, message) => {
@@ -744,6 +764,25 @@ impl Workspace {
         let message = text.into();
         self.toast_layer
             .update(cx, |layer, cx| layer.show_toast(message.clone(), kind, cx));
+    }
+
+    /// Show a toast that carries a single action.
+    ///
+    /// An error that names the fix but does not offer it makes the user go
+    /// find it; `[Open Settings]` and `[Retry]` belong on the toast itself.
+    pub(super) fn show_toast_with_action(
+        &mut self,
+        text: impl Into<String>,
+        kind: ToastKind,
+        action_label: impl Into<String>,
+        on_action: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let message = text.into();
+        let action_label = action_label.into();
+        self.toast_layer.update(cx, |layer, cx| {
+            layer.show_toast_with_action(message, kind, action_label, on_action, cx)
+        });
     }
 
     pub fn active_project(&self) -> Option<&Entity<GitProject>> {

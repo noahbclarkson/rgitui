@@ -3,6 +3,7 @@ use gpui::{
     div, px, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, Render,
     SharedString, Window,
 };
+use rgitui_ai::CommitStyle;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, IconButton, IconName, Label, LabelSize,
@@ -34,9 +35,103 @@ impl CoAuthor {
 
 #[derive(Debug, Clone)]
 pub enum CommitPanelEvent {
-    CommitRequested { message: String, amend: bool },
+    CommitRequested {
+        message: String,
+        amend: bool,
+    },
     GenerateAiMessage,
+    /// Regenerate, optionally overriding the configured commit style for this
+    /// one request. Belongs at the moment of dissatisfaction, not in a
+    /// settings page in another window.
+    RegenerateAiMessage {
+        style: Option<CommitStyle>,
+    },
+    CancelAiMessage,
+    /// Nothing is configured for AI yet, and the user asked to fix that.
+    OpenAiSettings,
     CollapsedChanged,
+}
+
+/// Why the AI button cannot be used right now, or `None` when it can.
+///
+/// Every entry point (button, Ctrl+G, command palette) resolves through this
+/// one predicate, so the keyboard and the mouse cannot disagree about whether
+/// the feature is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiBlocker {
+    Disabled,
+    NoApiKey,
+    NothingStaged,
+}
+
+impl AiBlocker {
+    /// The button's own label. The reason belongs in the control, not only in
+    /// a hover tooltip on something that reads as inert.
+    pub fn button_label(self) -> &'static str {
+        match self {
+            AiBlocker::Disabled => "AI is off",
+            AiBlocker::NoApiKey => "Add an API key",
+            AiBlocker::NothingStaged => "Stage files to use AI",
+        }
+    }
+
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            AiBlocker::Disabled => "AI is turned off — enable it in Settings > AI",
+            AiBlocker::NoApiKey => "No API key for the selected provider. Opens Settings > AI.",
+            AiBlocker::NothingStaged => "Stage changes first to generate an AI message",
+        }
+    }
+
+    /// Whether the button stays clickable.
+    ///
+    /// Never render a dead end when the fix is one click away: a missing key
+    /// and a disabled feature both route to Settings. Only "nothing staged" is
+    /// truly inert, and it is self-correcting — the user is about to stage.
+    pub fn is_actionable(self) -> bool {
+        matches!(self, AiBlocker::Disabled | AiBlocker::NoApiKey)
+    }
+}
+
+/// Split a commit message into its summary line and body.
+pub(crate) fn split_message(message: &str) -> (String, String) {
+    match message.find('\n') {
+        Some(index) => (
+            message[..index].trim().to_string(),
+            message[index + 1..].trim().to_string(),
+        ),
+        None => (message.trim().to_string(), String::new()),
+    }
+}
+
+/// Resolve whether AI generation can run. Pure, so all three entry points can
+/// share it and it is testable without a display.
+pub fn ai_blocker(enabled: bool, has_api_key: bool, staged_count: usize) -> Option<AiBlocker> {
+    if !enabled {
+        return Some(AiBlocker::Disabled);
+    }
+    if !has_api_key {
+        return Some(AiBlocker::NoApiKey);
+    }
+    if staged_count == 0 {
+        return Some(AiBlocker::NothingStaged);
+    }
+    None
+}
+
+/// What the panel is doing about AI right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AiState {
+    Idle,
+    /// Running, with the latest tool-progress line if there is one.
+    Generating {
+        progress: Option<String>,
+    },
+    /// Just finished. Offers Regenerate and Undo for a short window.
+    Completed,
+    /// Failed, and the panel keeps saying so — a dismissed toast leaves no
+    /// trace of why the field is still empty.
+    Failed,
 }
 
 pub struct CommitPanel {
@@ -44,13 +139,34 @@ pub struct CommitPanel {
     description_editor: Entity<TextInput>,
     amend: bool,
     staged_count: usize,
-    is_ai_generating: bool,
+    ai_state: AiState,
+    /// The message the AI replaced, so the overwrite can be undone.
+    /// `UndoStack` covers git operations, not the commit editor.
+    ai_undo: Option<PreviousMessage>,
+    /// Open state of the regenerate style menu.
+    regenerate_menu_open: bool,
     focus_handle: FocusHandle,
     co_authors: Vec<CoAuthor>,
     adding_co_author: bool,
     new_author_name: Entity<TextInput>,
     new_author_email: Entity<TextInput>,
     collapsed: bool,
+}
+
+/// A snapshot of the commit editors, taken before the AI overwrites them.
+#[derive(Debug, Clone, Default)]
+struct PreviousMessage {
+    summary: String,
+    description: String,
+    co_authors: Vec<CoAuthor>,
+}
+
+impl PreviousMessage {
+    fn is_empty(&self) -> bool {
+        self.summary.trim().is_empty()
+            && self.description.trim().is_empty()
+            && self.co_authors.is_empty()
+    }
 }
 
 impl EventEmitter<CommitPanelEvent> for CommitPanel {}
@@ -100,7 +216,9 @@ impl CommitPanel {
             description_editor,
             amend: false,
             staged_count: 0,
-            is_ai_generating: false,
+            ai_state: AiState::Idle,
+            ai_undo: None,
+            regenerate_menu_open: false,
             focus_handle: cx.focus_handle(),
             co_authors: Vec::new(),
             adding_co_author: false,
@@ -121,13 +239,7 @@ impl CommitPanel {
     }
 
     pub fn set_message(&mut self, message: String, cx: &mut Context<Self>) {
-        let (summary, description) = match message.find('\n') {
-            Some(idx) => (
-                message[..idx].trim().to_string(),
-                message[idx + 1..].trim().to_string(),
-            ),
-            None => (message, String::new()),
-        };
+        let (summary, description) = split_message(&message);
         self.summary_editor
             .update(cx, |e: &mut TextInput, cx| e.set_text(summary, cx));
         self.description_editor
@@ -185,14 +297,104 @@ impl CommitPanel {
         msg
     }
 
+    pub fn staged_count(&self) -> usize {
+        self.staged_count
+    }
+
     pub fn set_staged_count(&mut self, count: usize, cx: &mut Context<Self>) {
         self.staged_count = count;
         cx.notify();
     }
 
-    pub fn set_ai_generating(&mut self, generating: bool, cx: &mut Context<Self>) {
-        self.is_ai_generating = generating;
+    pub fn is_ai_generating(&self) -> bool {
+        matches!(self.ai_state, AiState::Generating { .. })
+    }
+
+    /// A generation has started for this panel.
+    ///
+    /// The editors go read-only for the duration, so the user cannot type a
+    /// message that the response is about to silently destroy.
+    pub fn begin_ai_generation(&mut self, cx: &mut Context<Self>) {
+        self.ai_state = AiState::Generating { progress: None };
+        self.regenerate_menu_open = false;
+        self.set_editors_read_only(true, cx);
         cx.notify();
+    }
+
+    /// Report what the model is doing right now ("Reading diff.rs").
+    pub fn set_ai_progress(&mut self, progress: Option<String>, cx: &mut Context<Self>) {
+        if let AiState::Generating { progress: slot } = &mut self.ai_state {
+            *slot = progress;
+            cx.notify();
+        }
+    }
+
+    /// Apply a generated message, preserving anything the user had already
+    /// written.
+    ///
+    /// The old behaviour overwrote both editors and cleared every co-author
+    /// with no undo, so typing while waiting lost the work outright.
+    pub fn apply_ai_message(&mut self, message: String, cx: &mut Context<Self>) {
+        let previous = self.snapshot(cx);
+        self.set_editors_read_only(false, cx);
+
+        let (summary, description) = split_message(&message);
+        self.summary_editor
+            .update(cx, |e: &mut TextInput, cx| e.set_text(summary, cx));
+        self.description_editor
+            .update(cx, |e: &mut TextInput, cx| e.set_text(description, cx));
+        // Co-authors are the user's own attribution, never the model's to
+        // remove.
+        self.adding_co_author = false;
+
+        self.ai_undo = (!previous.is_empty()).then_some(previous);
+        self.ai_state = AiState::Completed;
+        cx.notify();
+    }
+
+    /// The generation failed or was cancelled.
+    pub fn fail_ai_generation(&mut self, cx: &mut Context<Self>) {
+        self.set_editors_read_only(false, cx);
+        self.ai_state = AiState::Failed;
+        cx.notify();
+    }
+
+    /// Restore the message the AI replaced.
+    pub fn undo_ai_message(&mut self, cx: &mut Context<Self>) {
+        let Some(previous) = self.ai_undo.take() else {
+            return;
+        };
+        self.summary_editor
+            .update(cx, |e: &mut TextInput, cx| e.set_text(previous.summary, cx));
+        self.description_editor.update(cx, |e: &mut TextInput, cx| {
+            e.set_text(previous.description, cx)
+        });
+        self.co_authors = previous.co_authors;
+        self.ai_state = AiState::Idle;
+        cx.notify();
+    }
+
+    /// Dismiss the post-generation controls without changing the message.
+    pub fn dismiss_ai_state(&mut self, cx: &mut Context<Self>) {
+        self.ai_state = AiState::Idle;
+        self.ai_undo = None;
+        self.regenerate_menu_open = false;
+        cx.notify();
+    }
+
+    fn snapshot(&self, cx: &Context<Self>) -> PreviousMessage {
+        PreviousMessage {
+            summary: self.summary_editor.read(cx).text().to_string(),
+            description: self.description_editor.read(cx).text().to_string(),
+            co_authors: self.co_authors.clone(),
+        }
+    }
+
+    fn set_editors_read_only(&self, read_only: bool, cx: &mut Context<Self>) {
+        self.summary_editor
+            .update(cx, |e: &mut TextInput, _cx| e.set_read_only(read_only));
+        self.description_editor
+            .update(cx, |e: &mut TextInput, _cx| e.set_read_only(read_only));
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -214,6 +416,256 @@ impl CommitPanel {
         } else {
             "Commit"
         }
+    }
+
+    /// The AI control in the panel header.
+    ///
+    /// Four states, and none of them is "absent": a vanishing control is
+    /// worse than a disabled one, and a user who turned AI off previously saw
+    /// no AI affordance at all and no route back.
+    fn render_ai_control(
+        &self,
+        blocker: Option<AiBlocker>,
+        use_tools: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let colors = cx.colors().clone();
+
+        match &self.ai_state {
+            AiState::Generating { progress } => {
+                // The tool progress line goes here, not only to the status
+                // bar: "Reading diff.rs" turns an opaque spinner into a
+                // legible trace of what the model is actually doing.
+                let label: SharedString = match progress {
+                    Some(description) => description.clone().into(),
+                    None if use_tools => "Generating (with tools)…".into(),
+                    None => "Generating…".into(),
+                };
+                div()
+                    .h_flex()
+                    .flex_shrink_0()
+                    .h(px(22.))
+                    .pl(px(8.))
+                    .pr(px(2.))
+                    .rounded(px(3.))
+                    .bg(colors.ghost_element_selected)
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        rgitui_ui::Icon::new(IconName::Sparkle)
+                            .size(rgitui_ui::IconSize::XSmall)
+                            .color(Color::Accent),
+                    )
+                    .child(
+                        Label::new(label)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Accent),
+                    )
+                    // Required, not decorative: with tools on a generation
+                    // runs 30s or more, and there was previously no way to
+                    // stop one short of restarting the app.
+                    .child(
+                        IconButton::new("ai-cancel", IconName::X)
+                            .size(ButtonSize::Compact)
+                            .color(Color::Muted)
+                            .tooltip("Stop generating")
+                            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                cx.emit(CommitPanelEvent::CancelAiMessage);
+                            })),
+                    )
+                    .into_any_element()
+            }
+
+            AiState::Completed => self.render_post_generation_controls(cx),
+
+            AiState::Failed => div()
+                .h_flex()
+                .flex_shrink_0()
+                .gap(px(4.))
+                .items_center()
+                .child(
+                    // A dismissed toast leaves no trace of why the field is
+                    // still empty, so the panel keeps the marker.
+                    rgitui_ui::Icon::new(IconName::AlertTriangle)
+                        .size(rgitui_ui::IconSize::XSmall)
+                        .color(Color::Error),
+                )
+                .child(
+                    Button::new("ai-retry", "AI failed — retry")
+                        .icon(IconName::Refresh)
+                        .size(ButtonSize::Compact)
+                        .style(ButtonStyle::Outlined)
+                        .color(Color::Error)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.ai_state = AiState::Idle;
+                            cx.emit(CommitPanelEvent::GenerateAiMessage);
+                        })),
+                )
+                .into_any_element(),
+
+            AiState::Idle => self.render_ai_trigger(blocker, cx),
+        }
+    }
+
+    /// The idle AI button, carrying its own reason when it cannot be used.
+    fn render_ai_trigger(
+        &self,
+        blocker: Option<AiBlocker>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let summary_present = !self.summary_editor.read(cx).is_empty();
+        let label = match blocker {
+            Some(blocker) => blocker.button_label(),
+            // Say plainly that this will replace what is already written.
+            None if summary_present => "Rewrite message",
+            None => "AI Message",
+        };
+
+        let mut button = Button::new("ai-btn", label)
+            .icon(IconName::Sparkle)
+            .size(ButtonSize::Compact)
+            .style(ButtonStyle::Outlined)
+            .color(Color::Accent)
+            // Disabled buttons are dropped from the tab order, so anything
+            // that stays disabled becomes unreachable without a mouse. Only
+            // the self-correcting case does.
+            .disabled(blocker.is_some_and(|blocker| !blocker.is_actionable()));
+
+        button = match blocker {
+            Some(blocker) => button.tooltip(blocker.tooltip()),
+            // Surface the shortcut. It was registered all along and never
+            // shown, so the fastest path to the feature was invisible.
+            None => button.tooltip_fn(crate::keymap::command_tooltip(
+                "Generate a commit message from the staged diff",
+                crate::CommandId::AiMessage,
+            )),
+        };
+
+        button
+            .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                match blocker {
+                    // The fix is one click away; take the user to it rather
+                    // than rendering a dead end.
+                    Some(AiBlocker::Disabled) | Some(AiBlocker::NoApiKey) => {
+                        cx.emit(CommitPanelEvent::OpenAiSettings)
+                    }
+                    Some(AiBlocker::NothingStaged) => {}
+                    None => cx.emit(CommitPanelEvent::GenerateAiMessage),
+                }
+            }))
+            .into_any_element()
+    }
+
+    /// Regenerate (with an optional style override) and Undo, offered right
+    /// where dissatisfaction happens rather than in a settings page in another
+    /// window.
+    fn render_post_generation_controls(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let colors = cx.colors().clone();
+        let mut row = div()
+            .h_flex()
+            .flex_shrink_0()
+            .gap(px(4.))
+            .items_center()
+            .child(
+                Button::new("ai-regenerate", "Regenerate")
+                    .icon(IconName::Refresh)
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Outlined)
+                    .color(Color::Accent)
+                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                        cx.emit(CommitPanelEvent::RegenerateAiMessage { style: None });
+                    })),
+            )
+            .child(
+                IconButton::new("ai-regenerate-menu", IconName::ChevronDown)
+                    .size(ButtonSize::Compact)
+                    .color(Color::Muted)
+                    .tooltip("Regenerate in a different style")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.regenerate_menu_open = !this.regenerate_menu_open;
+                        cx.notify();
+                    })),
+            );
+
+        if self.ai_undo.is_some() {
+            row = row.child(
+                Button::new("ai-undo", "Undo")
+                    .icon(IconName::Undo)
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Subtle)
+                    .color(Color::Muted)
+                    .tooltip("Restore the message the AI replaced")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.undo_ai_message(cx);
+                    })),
+            );
+        }
+
+        row = row.child(
+            IconButton::new("ai-dismiss", IconName::X)
+                .size(ButtonSize::Compact)
+                .color(Color::Muted)
+                .tooltip("Dismiss")
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.dismiss_ai_state(cx);
+                })),
+        );
+
+        if !self.regenerate_menu_open {
+            return row.into_any_element();
+        }
+
+        let mut menu = div()
+            .flex()
+            .flex_col()
+            .min_w(px(150.))
+            .py(px(4.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.elevated_surface_background)
+            .elevation_2(cx);
+
+        for style in CommitStyle::ALL {
+            let style = *style;
+            menu = menu.child(
+                div()
+                    .id(ElementId::Name(format!("ai-style-{}", style.id()).into()))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h(px(26.))
+                    .mx(px(4.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colors.ghost_element_hover))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.regenerate_menu_open = false;
+                        cx.emit(CommitPanelEvent::RegenerateAiMessage { style: Some(style) });
+                    }))
+                    .child(
+                        Label::new(style.display_name())
+                            .size(LabelSize::XSmall)
+                            .color(Color::Default),
+                    ),
+            );
+        }
+
+        div()
+            .relative()
+            .child(row)
+            .child(gpui::deferred(
+                gpui::anchored()
+                    .snap_to_window_with_margin(px(8.))
+                    .child(div().absolute().top(px(26.)).right(px(0.)).child(menu)),
+            ))
+            .into_any_element()
     }
 
     fn start_adding_co_author(&mut self, cx: &mut Context<Self>) {
@@ -250,7 +702,7 @@ impl CommitPanel {
 
 impl Render for CommitPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let summary_empty = self.summary_editor.read(cx).is_empty();
         let can_commit = !summary_empty && self.staged_count > 0;
         let summary_len = self.summary_editor.read(cx).text().chars().count();
@@ -298,18 +750,28 @@ impl Render for CommitPanel {
 
         let commit_label = self.commit_button_label(summary_empty);
 
+        // `has_ai_api_key()` reads the cached flag. The old
+        // `ai_api_key().is_some()` deep-cloned the AI key, the HTTPS token and
+        // every git provider token into fresh heap strings on every frame —
+        // ~120 copies a second of every secret the app holds, dropped without
+        // zeroization — purely to evaluate `.is_some()`.
         let ai_settings = cx
             .try_global::<rgitui_settings::SettingsState>()
             .map(|s| {
                 let settings = s.settings();
                 (
                     settings.ai.enabled,
-                    s.ai_api_key().is_some(),
+                    s.has_ai_api_key(),
                     settings.ai.use_tools,
                 )
             })
             .unwrap_or((false, false, false));
         let (ai_enabled, has_api_key, ai_use_tools) = ai_settings;
+        let blocker = ai_blocker(ai_enabled, has_api_key, self.staged_count);
+        // Built before the tree so it can take `&mut Context` without
+        // conflicting with the immutable borrows the layout holds.
+        let ai_control =
+            (!self.collapsed).then(|| self.render_ai_control(blocker, ai_use_tools, cx));
 
         div()
             .v_flex()
@@ -385,55 +847,9 @@ impl Render for CommitPanel {
                                     )),
                             ),
                     )
-                    // Right group: AI button or generating indicator
-                    .when(!self.collapsed && self.is_ai_generating, |el| {
-                        el.child(
-                            div()
-                                .h_flex()
-                                .flex_shrink_0()
-                                .h(px(20.))
-                                .px(px(8.))
-                                .rounded(px(3.))
-                                .bg(colors.ghost_element_selected)
-                                .items_center()
-                                .gap(px(4.))
-                                .child(
-                                    rgitui_ui::Icon::new(IconName::Sparkle)
-                                        .size(rgitui_ui::IconSize::XSmall)
-                                        .color(Color::Accent),
-                                )
-                                .child(
-                                    Label::new(if ai_use_tools {
-                                        "Generating (with tools)..."
-                                    } else {
-                                        "Generating..."
-                                    })
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Accent),
-                                ),
-                        )
-                    })
-                    .when(
-                        !self.collapsed && !self.is_ai_generating && ai_enabled,
-                        |el| {
-                            let no_staged = self.staged_count == 0;
-                            let is_disabled = no_staged || !has_api_key;
-                            let mut btn = Button::new("ai-btn", "AI Message")
-                                .icon(IconName::Sparkle)
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Outlined)
-                                .color(Color::Accent)
-                                .disabled(is_disabled);
-                            if !has_api_key {
-                                btn = btn.tooltip("Set an API key in Settings to use AI");
-                            } else if no_staged {
-                                btn = btn.tooltip("Stage changes first to generate an AI message");
-                            }
-                            el.child(btn.on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                                cx.emit(CommitPanelEvent::GenerateAiMessage);
-                            })))
-                        },
-                    ),
+                    // Right group: the AI control, in whichever of its four
+                    // states applies.
+                    .when_some(ai_control, |el, control| el.child(control)),
             )
             .child(
                 div()
@@ -820,5 +1236,114 @@ mod tests {
         let trailer = ca.trailer();
         assert!(trailer.contains("Jane Doe"));
         assert!(trailer.contains("<jane@example.org>"));
+    }
+
+    // ── the shared AI guard ───────────────────────────────────────
+
+    /// The one predicate the button, Ctrl+G and the command palette all share.
+    /// Only the button used to check `enabled` and `has_api_key`, so Ctrl+G
+    /// with AI turned off still fired a full request and spent tokens.
+    #[test]
+    fn generation_is_allowed_only_when_everything_is_in_place() {
+        assert_eq!(ai_blocker(true, true, 3), None);
+    }
+
+    #[test]
+    fn each_missing_precondition_is_reported_in_priority_order() {
+        // Disabled outranks everything: with AI off, "add a key" would be the
+        // wrong instruction.
+        assert_eq!(ai_blocker(false, false, 0), Some(AiBlocker::Disabled));
+        assert_eq!(ai_blocker(false, true, 3), Some(AiBlocker::Disabled));
+        assert_eq!(ai_blocker(true, false, 3), Some(AiBlocker::NoApiKey));
+        assert_eq!(ai_blocker(true, true, 0), Some(AiBlocker::NothingStaged));
+    }
+
+    /// Never render a dead end when the fix is one click away — and disabled
+    /// buttons drop out of the tab order, so anything left disabled becomes
+    /// unreachable without a mouse.
+    #[test]
+    fn only_the_self_correcting_blocker_actually_disables_the_button() {
+        assert!(AiBlocker::Disabled.is_actionable());
+        assert!(AiBlocker::NoApiKey.is_actionable());
+        assert!(!AiBlocker::NothingStaged.is_actionable());
+    }
+
+    #[test]
+    fn every_blocker_states_its_reason_in_the_control_and_the_tooltip() {
+        for blocker in [
+            AiBlocker::Disabled,
+            AiBlocker::NoApiKey,
+            AiBlocker::NothingStaged,
+        ] {
+            assert!(!blocker.button_label().is_empty());
+            assert!(!blocker.tooltip().is_empty());
+            assert_ne!(blocker.button_label(), blocker.tooltip());
+        }
+    }
+
+    // ── message splitting ─────────────────────────────────────────
+
+    #[test]
+    fn a_single_line_message_is_all_summary() {
+        assert_eq!(
+            split_message("feat: do the thing"),
+            ("feat: do the thing".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn a_body_is_separated_from_the_summary_and_trimmed() {
+        assert_eq!(
+            split_message(
+                "feat: do it
+
+Because reasons.
+"
+            ),
+            ("feat: do it".to_string(), "Because reasons.".to_string())
+        );
+    }
+
+    #[test]
+    fn an_empty_message_splits_into_two_empty_halves() {
+        assert_eq!(split_message(""), (String::new(), String::new()));
+        assert_eq!(split_message("   "), (String::new(), String::new()));
+    }
+
+    // ── the AI overwrite snapshot ─────────────────────────────────
+
+    /// Typing while a generation ran used to lose the work outright: both
+    /// editors were overwritten and every co-author cleared, with no undo.
+    #[test]
+    fn a_snapshot_with_any_content_is_worth_restoring() {
+        let empty = PreviousMessage::default();
+        assert!(empty.is_empty());
+
+        let with_summary = PreviousMessage {
+            summary: "wip".into(),
+            ..PreviousMessage::default()
+        };
+        assert!(!with_summary.is_empty());
+
+        let with_co_author = PreviousMessage {
+            co_authors: vec![CoAuthor {
+                name: "Jane Doe".into(),
+                email: "jane@example.org".into(),
+            }],
+            ..PreviousMessage::default()
+        };
+        assert!(!with_co_author.is_empty());
+    }
+
+    #[test]
+    fn whitespace_alone_is_not_worth_restoring() {
+        let blank = PreviousMessage {
+            summary: "  ".into(),
+            description: "
+"
+            .into(),
+            ..PreviousMessage::default()
+        };
+        assert!(blank.is_empty());
     }
 }

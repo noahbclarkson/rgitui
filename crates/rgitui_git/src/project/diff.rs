@@ -628,10 +628,14 @@ pub fn compute_staged_diff_text(repo_path: &Path) -> Result<String> {
     let diff = repo.diff_tree_to_index(head_tree.as_ref(), None, None)?;
     let mut text = String::new();
     diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
-        if let Ok(s) = std::str::from_utf8(line.content()) {
-            text.push(line.origin());
-            text.push_str(s);
-        }
+        // Lossy rather than skip-on-error: a Latin-1 or Shift-JIS source file
+        // used to have its lines vanish from the diff with no marker, leaving
+        // the AI to reason about an incomplete change set and write a
+        // confidently wrong message. A mangled line is far better than a
+        // missing one. (Binary content is unaffected — libgit2 defaults to
+        // `show_binary = false` and renders "Binary files ... differ".)
+        text.push(line.origin());
+        text.push_str(&String::from_utf8_lossy(line.content()));
         true
     })?;
     Ok(text)

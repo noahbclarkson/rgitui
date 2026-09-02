@@ -52,7 +52,7 @@ pub fn normalize_repo_path(path: PathBuf) -> PathBuf {
 
 /// Create a `git` [`Command`] with `CREATE_NO_WINDOW` set on Windows so that
 /// spawning it from a GUI application never flashes a visible console window.
-pub(crate) fn git_command() -> Command {
+pub fn git_command() -> Command {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

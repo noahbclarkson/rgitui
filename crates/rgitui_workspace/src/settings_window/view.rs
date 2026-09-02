@@ -18,15 +18,17 @@ use gpui::{
     div, point, px, AnyElement, ClickEvent, Context, ElementId, Entity, EventEmitter, FontWeight,
     ScrollHandle, SharedString, Task, Window,
 };
+use rgitui_ai::catalog::{CatalogSource, ModelInfo};
 use rgitui_settings::{
-    config_dir, AiSettings, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
+    config_dir, AiProvider, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
     GitProviderSettings, GraphStyle, SettingsState,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
-    Button, ButtonSize, ButtonStyle, CheckState, Checkbox, Icon, IconButton, IconName, IconSize,
-    Label, LabelSize, TextInput, TextInputEvent,
+    Button, ButtonSize, ButtonStyle, CheckState, Checkbox, ConnectionState, Icon, IconName,
+    IconSize, Label, LabelSize, Picker, TextInput, TextInputEvent,
 };
+use std::collections::BTreeMap;
 
 use super::events::SettingsViewEvent;
 use super::{SettingsWindowAction, SettingsWindowActionGlobal};
@@ -50,12 +52,100 @@ const QUICK_REFERENCE_COMMANDS: &[CommandId] = &[
     CommandId::Settings,
 ];
 
+/// Where the AI page's tab order starts.
+///
+/// `tab_index` appeared zero times across this file, so roughly nine of ten
+/// controls on the page were mouse-only even though `Button`, `Checkbox` and
+/// `Disclosure` all already supported it.
+pub(super) const SETTINGS_TAB_INDEX_BASE: isize = 100;
+
 const SETTINGS_SIDEBAR_WIDTH: f32 = 220.;
 const SETTINGS_CONTENT_PADDING: f32 = 28.;
 
+/// Clean up a secret pasted from the clipboard, or say why it was refused.
+///
+/// Pure and testable. The old code took `text.lines().next()`, so a key that
+/// arrived wrapped across lines was silently truncated while the UI reported a
+/// successful import — and then failed with a 401 at request time.
+pub(super) fn sanitize_pasted_secret(text: &str) -> Result<String, &'static str> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("The clipboard did not contain any text.");
+    }
+    if trimmed.lines().count() > 1 {
+        return Err("That looks like more than one line. Copy just the key and try again.");
+    }
+    if trimmed.contains(char::is_whitespace) {
+        return Err("That contains spaces. Copy just the key and try again.");
+    }
+    Ok(trimmed.to_string())
+}
+
+/// The last four characters of a secret, masked — `••••ZK7q`.
+///
+/// This is what makes "is this the right key?" answerable without unmasking
+/// the whole thing.
+pub(super) fn masked_tail(secret: &str) -> String {
+    let trimmed = secret.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let tail: String = trimmed
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("••••{tail}")
+}
+
+/// A coarse "2 min ago" for a verification timestamp.
+pub(super) fn relative_age(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    match seconds {
+        0..=44 => "just now".to_string(),
+        45..=5399 => format!("{} min ago", (seconds + 30) / 60),
+        5400..=86_399 => format!("{} h ago", (seconds + 1800) / 3600),
+        _ => format!("{} d ago", (seconds + 43_200) / 86_400),
+    }
+}
+
+/// The option `delta` steps away from `selected`, or `None` when the move
+/// would run off either end.
+///
+/// Clamps rather than wrapping: a radio group that jumps from the last option
+/// back to the first makes it easy to overshoot a setting without noticing.
+pub(super) fn adjacent_option(options: &[String], selected: &str, delta: isize) -> Option<String> {
+    let current = options.iter().position(|option| option == selected)?;
+    let next = current as isize + delta;
+    if next < 0 || next >= options.len() as isize {
+        return None;
+    }
+    options.get(next as usize).cloned()
+}
+
+/// The name of the OS credential store, for the reassurance line under the key
+/// field.
+pub(super) fn credential_store_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "Windows Credential Manager"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "the macOS Keychain"
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        "your system keyring"
+    }
+}
+
 /// Which section of the settings is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SettingsSection {
+pub(super) enum SettingsSection {
     Theme,
     Ai,
     Auth,
@@ -63,8 +153,9 @@ enum SettingsSection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MaskedField {
-    AiApiKey,
+pub(super) enum MaskedField {
+    /// Each provider owns its own key field, so the variant carries which.
+    AiApiKey(AiProvider),
     GitHttpsToken,
     ProviderToken,
 }
@@ -249,22 +340,55 @@ fn detect_available_editors() -> Vec<DetectedApp> {
 
 /// The settings view.
 pub struct SettingsView {
-    active_section: SettingsSection,
+    pub(super) active_section: SettingsSection,
 
     // Theme state
     selected_theme: String,
     available_themes: Vec<String>,
 
     // AI state
-    ai_provider: String,
-    ai_model: String,
-    ai_commit_style: String,
-    ai_enabled: bool,
-    ai_inject_project_context: bool,
-    ai_use_tools: bool,
+    pub(super) ai_provider: AiProvider,
+    pub(super) ai_model: String,
+    pub(super) ai_commit_style: String,
+    pub(super) ai_enabled: bool,
+    pub(super) ai_inject_project_context: bool,
+    pub(super) ai_use_tools: bool,
+    pub(super) ai_base_url_override: String,
+    pub(super) ai_openrouter_attribution: bool,
 
-    // AI text editors
-    ai_api_key_editor: Entity<TextInput>,
+    /// One key editor per provider. A single shared field is what let
+    /// switching provider overwrite the previous provider's key.
+    pub(super) ai_key_editors: BTreeMap<AiProvider, Entity<TextInput>>,
+    /// The key text as loaded, so an unchanged field can skip the keychain
+    /// write entirely — which is most of the cost of a save.
+    pub(super) ai_keys_loaded: BTreeMap<AiProvider, String>,
+    pub(super) ai_keys_unmasked: BTreeMap<AiProvider, bool>,
+    /// Exactly one provider expands at a time, mirroring the Git page's
+    /// accordion.
+    pub(super) expanded_ai_provider: Option<AiProvider>,
+    pub(super) ai_advanced_open: bool,
+    pub(super) ai_base_url_editor: Entity<TextInput>,
+
+    /// Result of the last connection test, per provider.
+    pub(super) ai_connection: BTreeMap<AiProvider, ConnectionState>,
+    pub(super) ai_connection_error: BTreeMap<AiProvider, String>,
+    pub(super) ai_verified_at: BTreeMap<AiProvider, std::time::Instant>,
+    pub(super) ai_test_task: Option<Task<()>>,
+
+    /// The live model catalogue, per provider, with where it came from.
+    pub(super) ai_catalog: BTreeMap<AiProvider, Vec<ModelInfo>>,
+    pub(super) ai_catalog_source: BTreeMap<AiProvider, CatalogSource>,
+    pub(super) ai_catalog_loading: bool,
+    pub(super) ai_catalog_error: Option<String>,
+    /// Drops superseded catalogue results, the same guard `apply_refresh_data`
+    /// uses in `rgitui_git`.
+    pub(super) ai_catalog_generation: u64,
+    pub(super) ai_catalog_task: Option<Task<()>>,
+    pub(super) ai_model_picker: Entity<Picker>,
+    pub(super) ai_model_picker_open: bool,
+    /// Debounces the keychain write so it happens once per pause in typing
+    /// rather than once per keystroke.
+    pub(super) pending_secret_save: Option<Task<()>>,
 
     // Git state
     git_sign_commits: bool,
@@ -272,7 +396,6 @@ pub struct SettingsView {
     selected_provider_index: usize,
     expanded_provider_kind: Option<String>,
     pending_browser_auth_provider_id: Option<String>,
-    show_ai_api_key: bool,
     show_git_https_token: bool,
     show_provider_token: bool,
 
@@ -288,6 +411,8 @@ pub struct SettingsView {
     provider_token_editor: Entity<TextInput>,
 
     // General state
+    /// Auto-fetch interval, chosen from a dropdown rather than a pill row.
+    auto_fetch_select: Entity<rgitui_ui::Select>,
     max_recent_repos: usize,
     compactness: Compactness,
     font_size: u32,
@@ -372,10 +497,6 @@ impl SettingsView {
             (settings, themes)
         });
 
-        let ai_api_key_val = cx
-            .global::<SettingsState>()
-            .ai_api_key()
-            .unwrap_or_default();
         let git_https_token_val = cx
             .global::<SettingsState>()
             .git_https_token()
@@ -406,15 +527,121 @@ impl SettingsView {
             })
             .collect();
 
-        let ai_api_key_editor = cx.new(|cx| {
-            let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Click to enter API key...");
-            ti.set_masked(true);
-            if !ai_api_key_val.is_empty() {
-                ti.set_text(&ai_api_key_val, cx);
+        // One editor per provider, each populated from that provider's own
+        // keychain slot. Sharing a single field is what made a provider switch
+        // destroy the previous provider's key and then assert "connected" for
+        // one it had no credential for.
+        let mut ai_key_editors = BTreeMap::new();
+        let mut ai_keys_loaded = BTreeMap::new();
+        for provider in AiProvider::ALL {
+            let existing = cx
+                .global::<SettingsState>()
+                .ai_api_key_for(*provider)
+                .unwrap_or_default();
+            let placeholder = format!("Paste your {} API key", provider.display_name());
+            let editor = cx.new(|cx| {
+                let mut input = TextInput::new(cx);
+                input.set_placeholder(placeholder);
+                input.set_masked(true);
+                if !existing.is_empty() {
+                    input.set_text(&existing, cx);
+                }
+                input
+            });
+            cx.subscribe(&editor, {
+                let provider = *provider;
+                move |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                    // Debounced rather than per-keystroke, so the OS keychain
+                    // is not round-tripped for every character typed.
+                    TextInputEvent::Changed(_) => this.schedule_secret_save(cx),
+                    // Enter and blur both flush: typing a key and clicking away
+                    // used to discard it silently, while pasting the same key
+                    // saved it immediately.
+                    TextInputEvent::Submit | TextInputEvent::Blurred => {
+                        this.flush_secret_save(cx);
+                        if let TextInputEvent::Submit = event {
+                            this.test_ai_connection(provider, cx);
+                        }
+                    }
+                }
+            })
+            .detach();
+            ai_keys_loaded.insert(*provider, existing);
+            ai_key_editors.insert(*provider, editor);
+        }
+
+        let ai_base_url_editor = cx.new(|cx| {
+            let mut input = TextInput::new(cx);
+            input.set_placeholder("https://my-gateway.example.com/v1");
+            if !settings.ai.base_url_override.is_empty() {
+                input.set_text(&settings.ai.base_url_override, cx);
             }
-            ti
+            input
         });
+        cx.subscribe(
+            &ai_base_url_editor,
+            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
+                TextInputEvent::Changed(text) => {
+                    this.ai_base_url_override = text.clone();
+                    cx.notify();
+                }
+                TextInputEvent::Submit | TextInputEvent::Blurred => {
+                    this.commit_base_url_override(cx);
+                }
+            },
+        )
+        .detach();
+
+        let auto_fetch_select = cx.new(|cx| {
+            let mut select = rgitui_ui::Select::new("auto-fetch-select", cx);
+            select.set_options(
+                AutoFetchInterval::ALL
+                    .iter()
+                    .map(|interval| {
+                        rgitui_ui::SelectOption::new(interval.to_string(), interval.to_string())
+                    })
+                    .collect(),
+                cx,
+            );
+            select.set_selected(Some(settings.auto_fetch_interval.to_string().into()), cx);
+            select
+        });
+        cx.subscribe(
+            &auto_fetch_select,
+            |this: &mut Self, _, event: &rgitui_ui::SelectEvent, cx| {
+                if let rgitui_ui::SelectEvent::Changed(id) = event {
+                    // An unparseable id can only mean the option list and this
+                    // handler have drifted, so keep the current value rather
+                    // than silently resetting the user's choice.
+                    if let Ok(interval) = id.parse::<AutoFetchInterval>() {
+                        this.auto_fetch_interval = interval;
+                        this.save_settings(cx);
+                    }
+                }
+            },
+        )
+        .detach();
+
+        let ai_model_picker = cx.new(Picker::new);
+        cx.subscribe(
+            &ai_model_picker,
+            |this: &mut Self, _, event: &rgitui_ui::PickerEvent, cx| match event {
+                rgitui_ui::PickerEvent::Selected(id) => {
+                    this.select_ai_model(id.to_string(), cx);
+                }
+                rgitui_ui::PickerEvent::Dismissed => {
+                    this.ai_model_picker_open = false;
+                    cx.notify();
+                }
+                rgitui_ui::PickerEvent::RefreshRequested => {
+                    this.refresh_ai_catalog(this.ai_provider, true, cx);
+                }
+                rgitui_ui::PickerEvent::ChipChanged(_) => {
+                    this.sync_model_picker(cx);
+                }
+            },
+        )
+        .detach();
 
         let git_https_token_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
@@ -534,16 +761,6 @@ impl SettingsView {
         .detach();
 
         cx.subscribe(
-            &ai_api_key_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| {
-                if let TextInputEvent::Submit = event {
-                    this.save_settings(cx);
-                }
-            },
-        )
-        .detach();
-
-        cx.subscribe(
             &git_https_token_editor,
             |this: &mut Self, _, event: &TextInputEvent, cx| {
                 if let TextInputEvent::Submit = event {
@@ -582,7 +799,10 @@ impl SettingsView {
                         provider.display_name = text.clone();
                     }
                 }
-                TextInputEvent::Submit => {
+                // Blur commits as well as Enter: the page autosaved every
+                // checkbox but discarded typed text on close, so the same
+                // value persisted or vanished depending on how it arrived.
+                TextInputEvent::Submit | TextInputEvent::Blurred => {
                     this.save_settings(cx);
                 }
             },
@@ -598,7 +818,10 @@ impl SettingsView {
                         provider.host = text.clone();
                     }
                 }
-                TextInputEvent::Submit => {
+                // Blur commits as well as Enter: the page autosaved every
+                // checkbox but discarded typed text on close, so the same
+                // value persisted or vanished depending on how it arrived.
+                TextInputEvent::Submit | TextInputEvent::Blurred => {
                     this.save_settings(cx);
                 }
             },
@@ -614,7 +837,10 @@ impl SettingsView {
                         provider.username = text.clone();
                     }
                 }
-                TextInputEvent::Submit => {
+                // Blur commits as well as Enter: the page autosaved every
+                // checkbox but discarded typed text on close, so the same
+                // value persisted or vanished depending on how it arrived.
+                TextInputEvent::Submit | TextInputEvent::Blurred => {
                     this.save_settings(cx);
                 }
             },
@@ -631,7 +857,7 @@ impl SettingsView {
                         provider.has_token = !provider.token.is_empty();
                     }
                 }
-                TextInputEvent::Submit => {
+                TextInputEvent::Submit | TextInputEvent::Blurred => {
                     this.complete_browser_onboarding_for_current_provider();
                     this.save_settings(cx);
                 }
@@ -656,7 +882,10 @@ impl SettingsView {
                             .position(|app| app.command == *text);
                     }
                 }
-                TextInputEvent::Submit => {
+                // Blur commits as well as Enter: the page autosaved every
+                // checkbox but discarded typed text on close, so the same
+                // value persisted or vanished depending on how it arrived.
+                TextInputEvent::Submit | TextInputEvent::Blurred => {
                     this.save_settings(cx);
                 }
             },
@@ -680,7 +909,10 @@ impl SettingsView {
                             .position(|app| app.command == *text);
                     }
                 }
-                TextInputEvent::Submit => {
+                // Blur commits as well as Enter: the page autosaved every
+                // checkbox but discarded typed text on close, so the same
+                // value persisted or vanished depending on how it arrived.
+                TextInputEvent::Submit | TextInputEvent::Blurred => {
                     this.save_settings(cx);
                 }
             },
@@ -691,19 +923,38 @@ impl SettingsView {
             active_section: SettingsSection::Theme,
             selected_theme: settings.theme.clone(),
             available_themes,
-            ai_provider: settings.ai.provider.clone(),
+            ai_provider: settings.ai.provider,
             ai_model: settings.ai.model.clone(),
             ai_commit_style: settings.ai.commit_style.clone(),
             ai_enabled: settings.ai.enabled,
             ai_inject_project_context: settings.ai.inject_project_context,
             ai_use_tools: settings.ai.use_tools,
-            ai_api_key_editor,
+            ai_base_url_override: settings.ai.base_url_override.clone(),
+            ai_openrouter_attribution: settings.ai.openrouter_attribution,
+            ai_key_editors,
+            ai_keys_loaded,
+            ai_keys_unmasked: BTreeMap::new(),
+            expanded_ai_provider: None,
+            ai_advanced_open: false,
+            ai_base_url_editor,
+            ai_connection: BTreeMap::new(),
+            ai_connection_error: BTreeMap::new(),
+            ai_verified_at: BTreeMap::new(),
+            ai_test_task: None,
+            ai_catalog: BTreeMap::new(),
+            ai_catalog_source: BTreeMap::new(),
+            ai_catalog_loading: false,
+            ai_catalog_error: None,
+            ai_catalog_generation: 0,
+            ai_catalog_task: None,
+            ai_model_picker,
+            ai_model_picker_open: false,
+            pending_secret_save: None,
             git_sign_commits: settings.git.sign_commits,
             git_providers,
             selected_provider_index: 0,
             expanded_provider_kind: None,
             pending_browser_auth_provider_id: None,
-            show_ai_api_key: false,
             show_git_https_token: false,
             show_provider_token: false,
             git_https_token_editor,
@@ -722,6 +973,7 @@ impl SettingsView {
             graph_style: settings.graph_style,
             show_subject_column: settings.show_subject_column,
             auto_fetch_interval: settings.auto_fetch_interval,
+            auto_fetch_select,
             confirm_destructive_operations: settings.confirm_destructive_operations,
             auto_check_updates: settings.auto_check_updates,
             watch_all_worktrees: settings.watch_all_worktrees,
@@ -743,16 +995,25 @@ impl SettingsView {
     }
 
     pub(super) fn reload_from_settings(&mut self, cx: &mut Context<Self>) {
-        let (ai_api_key_val, git_https_token_val, git_ssh_key_path_val, git_gpg_key_id_val) =
-            cx.read_global::<SettingsState, _>(|state, _cx| {
+        let mut ai_keys: BTreeMap<AiProvider, String> = BTreeMap::new();
+        let (git_https_token_val, git_ssh_key_path_val, git_gpg_key_id_val) = cx
+            .read_global::<SettingsState, _>(|state, _cx| {
                 let s = state.settings();
                 self.selected_theme = s.theme.clone();
-                self.ai_provider = s.ai.provider.clone();
+                self.ai_provider = s.ai.provider;
                 self.ai_model = s.ai.model.clone();
                 self.ai_commit_style = s.ai.commit_style.clone();
                 self.ai_enabled = s.ai.enabled;
                 self.ai_inject_project_context = s.ai.inject_project_context;
                 self.ai_use_tools = s.ai.use_tools;
+                self.ai_base_url_override = s.ai.base_url_override.clone();
+                self.ai_openrouter_attribution = s.ai.openrouter_attribution;
+                for provider in AiProvider::ALL {
+                    ai_keys.insert(
+                        *provider,
+                        state.ai_api_key_for(*provider).unwrap_or_default(),
+                    );
+                }
                 self.git_sign_commits = s.git.sign_commits;
                 self.git_providers = s
                     .git
@@ -779,8 +1040,9 @@ impl SettingsView {
                     .selected_provider_index
                     .min(self.git_providers.len().saturating_sub(1));
                 self.expanded_provider_kind = None;
+                self.expanded_ai_provider = None;
                 self.pending_browser_auth_provider_id = None;
-                self.show_ai_api_key = false;
+                self.ai_keys_unmasked.clear();
                 self.show_git_https_token = false;
                 self.show_provider_token = false;
                 self.max_recent_repos = s.max_recent_repos;
@@ -799,7 +1061,6 @@ impl SettingsView {
                 self.feedback_message = None;
                 self.feedback_is_error = false;
                 (
-                    state.ai_api_key().unwrap_or_default(),
                     state.git_https_token().unwrap_or_default(),
                     s.git.ssh_key_path.clone().unwrap_or_default(),
                     s.git.gpg_key_id.clone().unwrap_or_default(),
@@ -818,8 +1079,19 @@ impl SettingsView {
 
         self.recompute_selected_indices(&terminal_cmd, &editor_cmd);
 
-        self.ai_api_key_editor
-            .update(cx, |e, cx| e.set_text(ai_api_key_val, cx));
+        for (provider, key) in ai_keys {
+            if let Some(editor) = self.ai_key_editors.get(&provider).cloned() {
+                editor.update(cx, |e, cx| e.set_text(key.clone(), cx));
+            }
+            self.ai_keys_loaded.insert(provider, key);
+        }
+        let base_url = self.ai_base_url_override.clone();
+        self.ai_base_url_editor
+            .update(cx, |e, cx| e.set_text(base_url, cx));
+        let interval = self.auto_fetch_interval.to_string();
+        self.auto_fetch_select.update(cx, |select, cx| {
+            select.set_selected(Some(interval.into()), cx)
+        });
         self.git_https_token_editor
             .update(cx, |e, cx| e.set_text(git_https_token_val, cx));
         self.git_ssh_key_path_editor
@@ -895,7 +1167,12 @@ impl SettingsView {
     /// Show a feedback message in the header banner. Informational and success
     /// messages auto-dismiss after a few seconds; errors stay until replaced or
     /// dismissed so the user has time to read them.
-    fn set_feedback(&mut self, message: impl Into<String>, is_error: bool, cx: &mut Context<Self>) {
+    pub(super) fn set_feedback(
+        &mut self,
+        message: impl Into<String>,
+        is_error: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.feedback_generation = self.feedback_generation.wrapping_add(1);
         self.feedback_message = Some(message.into());
         self.feedback_is_error = is_error;
@@ -949,8 +1226,20 @@ impl SettingsView {
 
     /// Persist all settings. Returns `true` when the save succeeded so callers
     /// can surface explicit confirmation.
-    fn save_settings(&mut self, cx: &mut Context<Self>) -> bool {
-        let ai_api_key = self.ai_api_key_editor.read(cx).text().to_string();
+    pub(super) fn save_settings(&mut self, cx: &mut Context<Self>) -> bool {
+        // Collect only the keys whose editor text differs from what was
+        // loaded. Skipping the unchanged ones removes almost the whole cost of
+        // a save: every checkbox click used to issue a dozen synchronous
+        // credential-store operations on the render thread.
+        let changed_keys: Vec<(AiProvider, String)> = AiProvider::ALL
+            .iter()
+            .filter_map(|provider| {
+                let editor = self.ai_key_editors.get(provider)?;
+                let text = editor.read(cx).text().trim().to_string();
+                let loaded = self.ai_keys_loaded.get(provider).map(String::as_str);
+                (loaded != Some(text.as_str())).then_some((*provider, text))
+            })
+            .collect();
         let git_https_token = self.git_https_token_editor.read(cx).text().to_string();
         let git_ssh_key_path = self.git_ssh_key_path_editor.read(cx).text().to_string();
         let git_gpg_key_id = self.git_gpg_key_id_editor.read(cx).text().to_string();
@@ -958,16 +1247,35 @@ impl SettingsView {
         let editor_command = self.editor_command_editor.read(cx).text().to_string();
 
         let result = cx.update_global::<SettingsState, _>(|state, _cx| -> anyhow::Result<()> {
-            state.settings_mut().ai = AiSettings {
-                provider: self.ai_provider.clone(),
-                legacy_api_key: None,
-                has_api_key: !ai_api_key.trim().is_empty(),
-                model: self.ai_model.clone(),
-                commit_style: self.ai_commit_style.clone(),
-                enabled: self.ai_enabled,
-                inject_project_context: self.ai_inject_project_context,
-                use_tools: self.ai_use_tools,
-            };
+            // Every keychain write happens first. Mutating the global before
+            // the write meant a failed `set_password` left the in-memory
+            // provider pointing at one vendor while the resolved key was still
+            // the previous vendor's — and the next request sent that live
+            // credential to the wrong host.
+            for (provider, key) in &changed_keys {
+                state
+                    .set_ai_api_key_for(*provider, Some(key.as_str()).filter(|k| !k.is_empty()))?;
+            }
+            state.set_git_https_token(Some(git_https_token.trim()).filter(|v| !v.is_empty()))?;
+
+            {
+                let ai = &mut state.settings_mut().ai;
+                ai.legacy_api_key = None;
+                ai.provider = self.ai_provider;
+                ai.model = self.ai_model.clone();
+                ai.models_by_provider
+                    .insert(self.ai_provider.id().to_string(), self.ai_model.clone());
+                ai.commit_style = self.ai_commit_style.clone();
+                ai.enabled = self.ai_enabled;
+                ai.inject_project_context = self.ai_inject_project_context;
+                ai.use_tools = self.ai_use_tools;
+                ai.base_url_override = self.ai_base_url_override.trim().to_string();
+                ai.openrouter_attribution = self.ai_openrouter_attribution;
+                // `has_api_key` mirrors the active provider's flag, which
+                // `set_ai_api_key_for` has already recorded from what the
+                // keychain actually accepted.
+                ai.has_api_key = ai.has_key_for(self.ai_provider);
+            }
             state.settings_mut().max_recent_repos = self.max_recent_repos;
             state.settings_mut().compactness = self.compactness;
             state.settings_mut().font_size = self.font_size;
@@ -999,9 +1307,6 @@ impl SettingsView {
                 };
                 git.git.sign_commits = self.git_sign_commits;
             }
-
-            state.set_ai_api_key(Some(ai_api_key.trim()).filter(|v| !v.is_empty()))?;
-            state.set_git_https_token(Some(git_https_token.trim()).filter(|v| !v.is_empty()))?;
 
             // Write provider tokens to keychain BEFORE replacing providers,
             // so that sync_auth_runtime inside replace_git_providers can
@@ -1040,6 +1345,12 @@ impl SettingsView {
 
         let succeeded = match result {
             Ok(()) => {
+                // Only now that the keychain accepted them does the "loaded"
+                // baseline move, so a failed write is retried next save rather
+                // than being skipped as unchanged.
+                for (provider, key) in changed_keys {
+                    self.ai_keys_loaded.insert(provider, key);
+                }
                 self.clear_feedback(cx);
                 SettingsWindowActionGlobal::try_send(cx, SettingsWindowAction::SettingsChanged);
                 true
@@ -1269,21 +1580,26 @@ impl SettingsView {
         self.save_settings(cx);
     }
 
-    fn is_field_unmasked(&self, field: MaskedField) -> bool {
+    pub(super) fn is_field_unmasked(&self, field: MaskedField) -> bool {
         match field {
-            MaskedField::AiApiKey => self.show_ai_api_key,
+            MaskedField::AiApiKey(provider) => self
+                .ai_keys_unmasked
+                .get(&provider)
+                .copied()
+                .unwrap_or(false),
             MaskedField::GitHttpsToken => self.show_git_https_token,
             MaskedField::ProviderToken => self.show_provider_token,
         }
     }
 
-    fn toggle_mask_visibility(&mut self, field: MaskedField, cx: &mut Context<Self>) {
+    pub(super) fn toggle_mask_visibility(&mut self, field: MaskedField, cx: &mut Context<Self>) {
         match field {
-            MaskedField::AiApiKey => {
-                self.show_ai_api_key = !self.show_ai_api_key;
-                let masked = !self.show_ai_api_key;
-                self.ai_api_key_editor
-                    .update(cx, |e, _cx| e.set_masked(masked));
+            MaskedField::AiApiKey(provider) => {
+                let unmasked = !self.is_field_unmasked(field);
+                self.ai_keys_unmasked.insert(provider, unmasked);
+                if let Some(editor) = self.ai_key_editors.get(&provider).cloned() {
+                    editor.update(cx, |e, _cx| e.set_masked(!unmasked));
+                }
             }
             MaskedField::GitHttpsToken => {
                 self.show_git_https_token = !self.show_git_https_token;
@@ -1301,7 +1617,7 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn import_from_clipboard(&mut self, field: MaskedField, cx: &mut Context<Self>) {
+    pub(super) fn import_from_clipboard(&mut self, field: MaskedField, cx: &mut Context<Self>) {
         let Some(clipboard) = cx.read_from_clipboard() else {
             self.set_feedback("Clipboard did not contain text.", true, cx);
             return;
@@ -1312,11 +1628,21 @@ impl SettingsView {
             return;
         };
 
-        let imported = text.lines().next().unwrap_or("").trim().to_string();
+        // A multi-line paste used to be silently truncated to its first line
+        // while reporting success, so a wrapped key looked accepted and then
+        // 401'd at request time.
+        let imported = match sanitize_pasted_secret(&text) {
+            Ok(secret) => secret,
+            Err(message) => {
+                self.set_feedback(message, true, cx);
+                return;
+            }
+        };
         match field {
-            MaskedField::AiApiKey => {
-                self.ai_api_key_editor
-                    .update(cx, |e, cx| e.set_text(&imported, cx));
+            MaskedField::AiApiKey(provider) => {
+                if let Some(editor) = self.ai_key_editors.get(&provider).cloned() {
+                    editor.update(cx, |e, cx| e.set_text(&imported, cx));
+                }
             }
             MaskedField::GitHttpsToken => {
                 self.git_https_token_editor
@@ -1564,13 +1890,15 @@ impl SettingsView {
     }
 
     // ── Helper: setting group card ──────────────────────────────────────
-    fn setting_card(cx: &Context<Self>) -> gpui::Div {
+    pub(super) fn setting_card(cx: &Context<Self>) -> gpui::Div {
         let colors = cx.colors().clone();
         div()
             .v_flex()
             .w_full()
             .min_w_0()
-            .w_full()
+            // Clip at the card, so the next overflow reads as a card bug
+            // rather than escaping to be sliced at the window edge.
+            .overflow_hidden()
             .p(px(16.))
             .gap(px(12.))
             .rounded(px(8.))
@@ -1579,13 +1907,13 @@ impl SettingsView {
             .border_color(colors.border_variant)
     }
 
-    fn section_divider(cx: &Context<Self>) -> gpui::Div {
+    pub(super) fn section_divider(cx: &Context<Self>) -> gpui::Div {
         let colors = cx.colors().clone();
         div().w_full().h(px(1.)).bg(colors.border_variant)
     }
 
     // ── Helper: setting row label ───────────────────────────────────────
-    fn setting_label(title: &str, description: &str) -> impl IntoElement {
+    pub(super) fn setting_label(title: &str, description: &str) -> impl IntoElement {
         div()
             .v_flex()
             .gap(px(2.))
@@ -1602,7 +1930,11 @@ impl SettingsView {
     }
 
     // ── Helper: pill toggle group ───────────────────────────────────────
-    fn pill_group(
+    ///
+    /// The container is a single tab stop and Left/Right move within it, which
+    /// is the radio-group convention — putting every pill in the tab order
+    /// would make a four-option row cost four tabs to skip.
+    pub(super) fn pill_group(
         &self,
         group_id: &str,
         options: &[&str],
@@ -1613,14 +1945,52 @@ impl SettingsView {
         let on_select = std::rc::Rc::new(on_select);
         let options_vec: Vec<String> = options.iter().map(|o| o.to_string()).collect();
         let selected_str = selected.to_string();
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
+
+        // `flex_wrap()`, and `div().flex().flex_row()` rather than `h_flex()`.
+        //
+        // Flex children default to `min-width: auto`, so a `Label` cannot
+        // shrink below its min-content width: without wrapping, this row grew
+        // past its card and was finally sliced at the window edge. The default
+        // window could not render the default provider's own model list.
+        // `h_flex()` is `flex_row().items_center()`, and once a row wraps that
+        // forced centring breaks the moment any pill grows a second line.
+        let keyboard_options = options_vec.clone();
+        let keyboard_selected = selected_str.clone();
+        let keyboard_select = on_select.clone();
 
         let mut row = div()
-            .h_flex()
+            .id(ElementId::Name(SharedString::from(format!(
+                "pill-group-{group_id}"
+            ))))
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_start()
             .gap(px(4.))
             .p(px(3.))
             .rounded(px(8.))
-            .bg(colors.element_background);
+            .bg(colors.element_background)
+            .tab_index(0)
+            .focus_visible({
+                let focused = colors.border_focused;
+                move |style: gpui::StyleRefinement| style.border_color(focused)
+            })
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                let delta: isize = match event.keystroke.key.as_str() {
+                    "left" | "up" => -1,
+                    "right" | "down" => 1,
+                    _ => return,
+                };
+                let Some(next) = adjacent_option(&keyboard_options, &keyboard_selected, delta)
+                else {
+                    return;
+                };
+                cx.stop_propagation();
+                keyboard_select(this, next, cx);
+            }));
 
         for (idx, option) in options_vec.into_iter().enumerate() {
             let is_selected = option == selected_str;
@@ -1774,7 +2144,7 @@ impl SettingsView {
                 ),
         );
 
-        for (section, icon, label) in sections {
+        for (index, (section, icon, label)) in sections.into_iter().enumerate() {
             let is_active = section == self.active_section;
             let label_str: SharedString = label.into();
 
@@ -1792,6 +2162,13 @@ impl SettingsView {
                     .items_center()
                     .rounded(px(6.))
                     .cursor_pointer()
+                    // The nav comes before the page body in the tab order, so
+                    // Tab from the top reaches the sections first.
+                    .tab_index(index as isize + 1)
+                    .focus_visible({
+                        let focused = colors.border_focused;
+                        move |style: gpui::StyleRefinement| style.border_color(focused)
+                    })
                     .when(is_active, |el| {
                         el.bg(colors.ghost_element_selected)
                             .border_l_2()
@@ -2025,253 +2402,6 @@ impl SettingsView {
             );
             card
         });
-
-        section
-    }
-
-    // ── AI section ──────────────────────────────────────────────────────
-    fn render_ai_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut section = div().v_flex().w_full().gap(px(16.));
-
-        section = section.child(Self::section_header(
-            IconName::Sparkle,
-            "AI Configuration",
-            "Configure AI-powered commit message generation.",
-        ));
-
-        // Enable/disable card
-        let ai_enabled = self.ai_enabled;
-        let mut enable_card = Self::setting_card(cx);
-        enable_card = enable_card.child(
-            div()
-                .h_flex()
-                .w_full()
-                .items_center()
-                .child(
-                    div()
-                        .v_flex()
-                        .flex_1()
-                        .gap(px(2.))
-                        .child(
-                            Label::new("Enable AI")
-                                .size(LabelSize::Small)
-                                .weight(FontWeight::SEMIBOLD),
-                        )
-                        .child(
-                            Label::new("Generate commit messages using AI")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("ai-toggle")
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.ai_enabled = !this.ai_enabled;
-                            this.save_settings(cx);
-                        }))
-                        .child(Checkbox::new(
-                            "ai-enabled-cb",
-                            if ai_enabled {
-                                CheckState::Checked
-                            } else {
-                                CheckState::Unchecked
-                            },
-                        )),
-                ),
-        );
-        section = section.child(enable_card);
-
-        // Inject project context card
-        let inject_ctx = self.ai_inject_project_context;
-        let mut inject_ctx_card = Self::setting_card(cx);
-        inject_ctx_card = inject_ctx_card.child(
-            div()
-                .h_flex()
-                .w_full()
-                .items_center()
-                .child(
-                    div()
-                        .v_flex()
-                        .flex_1()
-                        .gap(px(2.))
-                        .child(
-                            Label::new("Inject project context")
-                                .size(LabelSize::Small)
-                                .weight(FontWeight::SEMIBOLD),
-                        )
-                        .child(
-                            Label::new(
-                                "Include README.md, CLAUDE.md, and AGENTS.md in the AI prompt",
-                            )
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("ai-inject-ctx-toggle")
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.ai_inject_project_context = !this.ai_inject_project_context;
-                            this.save_settings(cx);
-                        }))
-                        .child(Checkbox::new(
-                            "ai-inject-ctx-cb",
-                            if inject_ctx {
-                                CheckState::Checked
-                            } else {
-                                CheckState::Unchecked
-                            },
-                        )),
-                ),
-        );
-        section = section.child(inject_ctx_card);
-
-        // Use tools card
-        let use_tools = self.ai_use_tools;
-        let mut use_tools_card = Self::setting_card(cx);
-        use_tools_card = use_tools_card.child(
-            div()
-                .h_flex()
-                .w_full()
-                .items_center()
-                .child(
-                    div()
-                        .v_flex()
-                        .flex_1()
-                        .gap(px(2.))
-                        .child(
-                            Label::new("Use AI tools")
-                                .size(LabelSize::Small)
-                                .weight(FontWeight::SEMIBOLD),
-                        )
-                        .child(
-                            Label::new(
-                                "Allow the AI to request file contents and commit history for better messages",
-                            )
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("ai-use-tools-toggle")
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.ai_use_tools = !this.ai_use_tools;
-                            this.save_settings(cx);
-                        }))
-                        .child(Checkbox::new(
-                            "ai-use-tools-cb",
-                            if use_tools {
-                                CheckState::Checked
-                            } else {
-                                CheckState::Unchecked
-                            },
-                        )),
-                ),
-        );
-        section = section.child(use_tools_card);
-
-        // Provider + Model card
-        let mut provider_card = Self::setting_card(cx);
-        provider_card = provider_card
-            .child(Self::setting_label("Provider", "Choose your AI provider."))
-            .child(self.pill_group(
-                "provider",
-                &["gemini", "openai", "anthropic", "deepseek"],
-                &self.ai_provider,
-                |this, value, cx| {
-                    this.ai_provider = value;
-                    // Reset model when provider changes
-                    this.ai_model = match this.ai_provider.as_str() {
-                        "gemini" => "gemini-3-flash-preview".into(),
-                        "openai" => "gpt-5-mini".into(),
-                        "anthropic" => "claude-sonnet-4-6".into(),
-                        "deepseek" => "deepseek-v4-flash".into(),
-                        _ => "gemini-3-flash-preview".into(),
-                    };
-                    this.save_settings(cx);
-                },
-                cx,
-            ));
-
-        // Model selector
-        let models: Vec<&str> = match self.ai_provider.as_str() {
-            "gemini" => vec![
-                "gemini-3.1-pro-preview",
-                "gemini-3-flash-preview",
-                "gemini-2.5-flash",
-                "gemini-2.5-pro",
-            ],
-            "openai" => vec![
-                "gpt-5.4",
-                "gpt-5",
-                "gpt-5-mini",
-                "gpt-5-nano",
-                "o3",
-                "o4-mini",
-            ],
-            "anthropic" => vec![
-                "claude-opus-4-6",
-                "claude-sonnet-4-6",
-                "claude-sonnet-4-5-20241022",
-                "claude-haiku-4-5",
-            ],
-            "deepseek" => vec!["deepseek-v4-flash", "deepseek-v4-pro"],
-            _ => vec!["gemini-2.5-flash"],
-        };
-        provider_card = provider_card
-            .child(Self::setting_label("Model", "Select the model to use."))
-            .child(self.pill_group(
-                "model",
-                &models,
-                &self.ai_model,
-                |this, value, cx| {
-                    this.ai_model = value;
-                    this.save_settings(cx);
-                },
-                cx,
-            ));
-
-        section = section.child(provider_card);
-
-        // Commit style card
-        let mut style_card = Self::setting_card(cx);
-        style_card = style_card
-            .child(Self::setting_label(
-                "Commit Style",
-                "How the AI should format commit messages.",
-            ))
-            .child(self.pill_group(
-                "commit-style",
-                &["conventional", "descriptive", "brief"],
-                &self.ai_commit_style,
-                |this, value, cx| {
-                    this.ai_commit_style = value;
-                    this.save_settings(cx);
-                },
-                cx,
-            ));
-        section = section.child(style_card);
-
-        // API Key card
-        let mut key_card = Self::setting_card(cx);
-        key_card = key_card
-            .child(Self::setting_label(
-                "API Key",
-                "Stored in your OS keychain and only materialized in memory when needed.",
-            ))
-            .child(self.masked_editor_row(
-                "ai-api-key-input",
-                &self.ai_api_key_editor,
-                MaskedField::AiApiKey,
-                IconName::Eye,
-                cx,
-            ));
-        section = section.child(key_card);
 
         section
     }
@@ -3487,23 +3617,10 @@ impl SettingsView {
                     "Auto-Fetch Interval",
                     "How often to automatically fetch from remotes in the background.",
                 ))
-                .child(self.pill_group(
-                    "auto-fetch",
-                    &["Disabled", "1 min", "5 min", "15 min", "30 min"],
-                    &self.auto_fetch_interval.to_string(),
-                    |this, value, cx| {
-                        this.auto_fetch_interval = match value.as_str() {
-                            "Disabled" => AutoFetchInterval::Disabled,
-                            "1 min" => AutoFetchInterval::OneMinute,
-                            "5 min" => AutoFetchInterval::FiveMinutes,
-                            "15 min" => AutoFetchInterval::FifteenMinutes,
-                            "30 min" => AutoFetchInterval::ThirtyMinutes,
-                            _ => AutoFetchInterval::Disabled,
-                        };
-                        this.save_settings(cx);
-                    },
-                    cx,
-                )),
+                // A `Select`, not a pill row: five fixed-width pills is the
+                // widest closed choice on the page, and unlike commit style
+                // there is nothing to compare side by side.
+                .child(self.auto_fetch_select.clone()),
         );
         section = section.child(fetch_card);
 
@@ -4063,21 +4180,24 @@ impl SettingsView {
 
         let sidebar = self.render_sidebar(cx);
         let colors = cx.colors();
+        // The title names the page. Every section previously rendered the
+        // literal string "Preferences", so the most prominent text on screen
+        // carried no information at all.
         let (page_title, page_subtitle) = match self.active_section {
             SettingsSection::Theme => (
-                "Preferences",
+                "Appearance",
                 "Theme, layout, and visual defaults for the application.",
             ),
             SettingsSection::Ai => (
-                "Preferences",
-                "Provider, model, and keychain-backed AI settings.",
+                "AI",
+                "Providers, models, and how commit messages get written.",
             ),
             SettingsSection::Auth => (
-                "Preferences",
+                "Accounts",
                 "Account profiles, HTTPS tokens, and SSH configuration.",
             ),
             SettingsSection::General => (
-                "Preferences",
+                "General",
                 "General application behavior and workspace defaults.",
             ),
         };
@@ -4106,16 +4226,36 @@ impl SettingsView {
                             .truncate(),
                     ),
             )
+            // A fixed-height slot, so the confirmation cannot shift the page.
+            // The old banner was injected into the header column and pushed
+            // the whole scroll body down on every save.
+            //
+            // There is no Save button: every control on this page commits on
+            // change, and text inputs now flush on Enter and on blur. A
+            // prominent button devoted to one input's event wiring described a
+            // bug rather than a feature.
             .child(
-                Button::new("settings-save", "Save")
-                    .style(ButtonStyle::Filled)
-                    .color(Color::Accent)
-                    .size(ButtonSize::Default)
-                    .icon(IconName::Check)
-                    .tooltip("Commit any unsubmitted text fields and save all settings")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.commit_pending_edits(cx);
-                    })),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_end()
+                    .flex_shrink_0()
+                    .w(px(200.))
+                    .h(px(20.))
+                    .when_some(self.feedback_message.clone(), |el, message| {
+                        let is_error = self.feedback_is_error;
+                        el.child(
+                            Label::new(if is_error {
+                                message
+                            } else {
+                                "Saved".to_string()
+                            })
+                            .size(LabelSize::XSmall)
+                            .color(if is_error { Color::Error } else { Color::Muted })
+                            .truncate(),
+                        )
+                    }),
             );
 
         let mut header = div()
@@ -4129,58 +4269,12 @@ impl SettingsView {
             .border_color(colors.border_variant)
             .child(title_row);
 
-        if let Some(message) = &self.feedback_message {
-            let is_error = self.feedback_is_error;
-            header = header.child(
-                div()
-                    .w_full()
-                    .h_flex()
-                    .gap(px(8.))
-                    .items_center()
-                    .p(px(10.))
-                    .rounded(px(8.))
-                    .bg(if is_error {
-                        cx.status().error_background
-                    } else {
-                        cx.status().success_background
-                    })
-                    .border_1()
-                    .border_color(if is_error {
-                        cx.status().error
-                    } else {
-                        cx.status().success
-                    })
-                    .child(
-                        Icon::new(if is_error {
-                            IconName::X
-                        } else {
-                            IconName::Check
-                        })
-                        .size(IconSize::Small)
-                        .color(if is_error {
-                            Color::Error
-                        } else {
-                            Color::Success
-                        }),
-                    )
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Label::new(message.clone())
-                                .size(LabelSize::Small)
-                                .color(Color::Default),
-                        ),
-                    )
-                    .child(
-                        IconButton::new("dismiss-feedback", IconName::Close)
-                            .style(ButtonStyle::Transparent)
-                            .size(ButtonSize::Compact)
-                            .color(Color::Muted)
-                            .tooltip("Dismiss")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.clear_feedback(cx);
-                            })),
-                    ),
-            );
+        // The sticky status strip lives here, in the header block outside the
+        // scroll child, so it never scrolls away and never shifts the layout.
+        // The inline banner it replaces was injected into this column and
+        // pushed the whole scroll body down on every save.
+        if self.active_section == SettingsSection::Ai {
+            header = header.child(self.render_ai_status_strip(cx));
         }
 
         div()
@@ -4211,5 +4305,134 @@ impl SettingsView {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── pasted secrets ────────────────────────────────────────────
+
+    #[test]
+    fn a_clean_secret_is_trimmed_and_accepted() {
+        assert_eq!(
+            sanitize_pasted_secret("  sk-ant-abc123  "),
+            Ok("sk-ant-abc123".to_string())
+        );
+    }
+
+    /// The old code took `text.lines().next()`, so a key that arrived wrapped
+    /// across lines was silently truncated while the UI reported success — and
+    /// then 401'd at request time.
+    #[test]
+    fn a_multi_line_paste_is_refused_rather_than_silently_truncated() {
+        let result = sanitize_pasted_secret("sk-ant-abc\n123def");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("more than one line"));
+    }
+
+    #[test]
+    fn a_paste_with_embedded_spaces_is_refused() {
+        assert!(sanitize_pasted_secret("sk-ant abc").is_err());
+    }
+
+    #[test]
+    fn an_empty_paste_says_so() {
+        assert!(sanitize_pasted_secret("").is_err());
+        assert!(sanitize_pasted_secret("   \n  ").is_err());
+    }
+
+    #[test]
+    fn a_trailing_newline_alone_does_not_make_a_paste_multi_line() {
+        assert_eq!(
+            sanitize_pasted_secret("sk-ant-abc123\n"),
+            Ok("sk-ant-abc123".to_string())
+        );
+    }
+
+    // ── masked tail ───────────────────────────────────────────────
+
+    /// The last four characters are what make "is this the right key?"
+    /// answerable without unmasking the whole secret.
+    #[test]
+    fn the_masked_tail_shows_only_the_last_four_characters() {
+        assert_eq!(masked_tail("sk-ant-api03-longvalueZK7q"), "••••ZK7q");
+    }
+
+    #[test]
+    fn a_short_secret_still_masks_its_prefix() {
+        assert_eq!(masked_tail("ab"), "••••ab");
+    }
+
+    #[test]
+    fn an_absent_secret_renders_nothing_rather_than_bare_dots() {
+        assert_eq!(masked_tail(""), "");
+        assert_eq!(masked_tail("   "), "");
+    }
+
+    #[test]
+    fn a_multibyte_secret_does_not_split_a_character() {
+        // Four chars, not four bytes.
+        assert_eq!(masked_tail("key-日本語で"), "••••日本語で");
+    }
+
+    // ── relative age ──────────────────────────────────────────────
+
+    #[test]
+    fn a_verification_age_reads_the_way_a_person_would_say_it() {
+        use std::time::Duration;
+        assert_eq!(relative_age(Duration::from_secs(0)), "just now");
+        assert_eq!(relative_age(Duration::from_secs(44)), "just now");
+        assert_eq!(relative_age(Duration::from_secs(60)), "1 min ago");
+        assert_eq!(relative_age(Duration::from_secs(120)), "2 min ago");
+        assert_eq!(relative_age(Duration::from_secs(3 * 3600)), "3 h ago");
+        assert_eq!(relative_age(Duration::from_secs(3 * 86_400)), "3 d ago");
+    }
+
+    #[test]
+    fn relative_age_rounds_to_the_nearest_unit_rather_than_truncating() {
+        use std::time::Duration;
+        assert_eq!(relative_age(Duration::from_secs(90)), "2 min ago");
+        assert_eq!(relative_age(Duration::from_secs(100 * 60)), "2 h ago");
+    }
+
+    // ── pill-group keyboard navigation ────────────────────────────
+
+    #[test]
+    fn arrow_keys_step_through_a_pill_group() {
+        let options: Vec<String> = ["conventional", "descriptive", "brief"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            adjacent_option(&options, "conventional", 1).as_deref(),
+            Some("descriptive")
+        );
+        assert_eq!(
+            adjacent_option(&options, "brief", -1).as_deref(),
+            Some("descriptive")
+        );
+    }
+
+    /// Clamping rather than wrapping: jumping from the last option back to the
+    /// first makes it easy to overshoot a setting without noticing.
+    #[test]
+    fn arrow_keys_clamp_at_both_ends() {
+        let options: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(adjacent_option(&options, "b", 1), None);
+        assert_eq!(adjacent_option(&options, "a", -1), None);
+    }
+
+    #[test]
+    fn a_selection_that_is_not_in_the_group_has_no_neighbour() {
+        let options: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(adjacent_option(&options, "z", 1), None);
+        assert_eq!(adjacent_option(&[], "a", 1), None);
+    }
+
+    #[test]
+    fn the_credential_store_is_named_for_this_platform() {
+        assert!(!credential_store_name().is_empty());
     }
 }

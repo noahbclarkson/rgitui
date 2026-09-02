@@ -46,6 +46,7 @@ impl BranchDialog {
                 TextInputEvent::Submit => {
                     this.try_create(cx);
                 }
+                TextInputEvent::Blurred => {}
                 TextInputEvent::Changed(text) => {
                     this.error_message = if text.is_empty() {
                         None

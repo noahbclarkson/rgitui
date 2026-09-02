@@ -791,8 +791,7 @@ impl DetailPanel {
             .enumerate()
             .filter_map(|(i, file)| {
                 let path = file.path.to_string_lossy();
-                crate::command_palette::CommandPalette::fuzzy_score(query, &path)
-                    .map(|score| (score, i))
+                rgitui_ui::fuzzy_score(query, &path).map(|score| (score, i))
             })
             .collect();
         // Sort by score descending — higher score = better (earlier char match)
@@ -2627,10 +2626,9 @@ mod tests {
 
     #[test]
     fn test_filtered_files_relevance_order() {
-        use crate::command_palette::CommandPalette;
         // "sh" matches "Show" (pos 0) higher than "Fish" (pos 1)
-        let score_show = CommandPalette::fuzzy_score("sh", "Show").unwrap();
-        let score_fish = CommandPalette::fuzzy_score("sh", "Fish").unwrap();
+        let score_show = rgitui_ui::fuzzy_score("sh", "Show").unwrap();
+        let score_fish = rgitui_ui::fuzzy_score("sh", "Fish").unwrap();
         assert!(
             score_show > score_fish,
             "earlier match should score higher: {score_show} vs {score_fish}"

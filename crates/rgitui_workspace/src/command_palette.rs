@@ -36,6 +36,12 @@ pub struct CommandContext {
     /// True when the commit graph has more than one commit selected, which is
     /// what the multi-commit operations (squash, for one) need.
     pub has_multi_commit_selection: bool,
+    /// True when AI is enabled and the active provider has a key.
+    ///
+    /// The AI button checked this all along; Ctrl+G and the palette entry
+    /// checked only `has_staged`, so turning AI off still let the keyboard
+    /// fire a full request and spend tokens.
+    pub ai_ready: bool,
 }
 
 impl CommandContext {
@@ -52,7 +58,18 @@ impl CommandContext {
             in_progress_operation: false,
             has_github_token: false,
             has_multi_commit_selection: false,
+            ai_ready: false,
         }
+    }
+
+    /// Records whether AI generation is currently possible: the feature is on
+    /// and the active provider holds a key.
+    ///
+    /// Kept off [`Self::from_parts`], which maps *repository* state: this comes
+    /// from settings, not from the repo.
+    pub fn with_ai_ready(mut self, ready: bool) -> Self {
+        self.ai_ready = ready;
+        self
     }
 
     /// Records whether the commit graph has more than one commit selected.
@@ -95,6 +112,7 @@ impl CommandContext {
             ),
             has_github_token,
             has_multi_commit_selection: false,
+            ai_ready: false,
         }
     }
 }
@@ -137,6 +155,15 @@ pub(crate) const fn has_stashes(ctx: CommandContext) -> bool {
 /// Show only when there are staged files to commit.
 pub(crate) const fn has_staged(ctx: CommandContext) -> bool {
     ctx.has_staged
+}
+
+/// Show only when AI generation can actually run: something is staged, the
+/// feature is enabled, and the active provider has a key.
+///
+/// The single predicate the button, the keybinding and the palette all share,
+/// so the keyboard and the mouse cannot disagree about availability.
+pub(crate) const fn ai_ready(ctx: CommandContext) -> bool {
+    ctx.has_staged && ctx.ai_ready
 }
 
 /// Show only when in a merge, rebase, cherry-pick, or revert in-progress state.
@@ -459,7 +486,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             Some("Use AI to generate a commit message based on staged changes"),
             "AI",
         )
-        .with_predicate(has_staged),
+        .with_predicate(ai_ready),
         PaletteCommand::new(
             CommandId::Refresh,
             "Git: Refresh",
@@ -642,6 +669,7 @@ impl CommandPalette {
                 TextInputEvent::Submit => {
                     this.select_current(cx);
                 }
+                TextInputEvent::Blurred => {}
             },
         )
         .detach();
@@ -689,35 +717,6 @@ impl CommandPalette {
         self.context = context;
     }
 
-    /// Fuzzy subsequence match. Returns a score (higher = better) or None if
-    /// query chars don't all appear in target in order.
-    pub(crate) fn fuzzy_score(query: &str, target: &str) -> Option<usize> {
-        if query.is_empty() {
-            return Some(0);
-        }
-        let target_len = target.len();
-        let mut score: usize = 0;
-        let mut t_chars = target.char_indices().peekable();
-        // query is already lowercased by caller (update_filter); targets are also lowercased by caller.
-        // We still do case-insensitive for safety in direct calls.
-        let query_lc = query.to_lowercase();
-        for q_char in query_lc.chars() {
-            loop {
-                match t_chars.next() {
-                    Some((pos, t_char)) => {
-                        if t_char.to_ascii_lowercase() == q_char {
-                            // Prefer matches at earlier positions → higher score
-                            score += target_len.saturating_sub(pos);
-                            break;
-                        }
-                    }
-                    None => return None, // query char not found
-                }
-            }
-        }
-        Some(score)
-    }
-
     fn update_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.query_editor.read(cx).text().to_lowercase();
 
@@ -744,7 +743,7 @@ impl CommandPalette {
                     let cat_lc = cmd.category.to_lowercase();
                     let score = [label_lc.as_str(), id_lc.as_str(), cat_lc.as_str()]
                         .iter()
-                        .filter_map(|target| Self::fuzzy_score(&query, target))
+                        .filter_map(|target| rgitui_ui::fuzzy_score(&query, target))
                         .max();
                     score.map(|s| (i, s))
                 })
@@ -1087,99 +1086,6 @@ impl Render for CommandPalette {
 
 #[cfg(test)]
 mod tests {
-    use super::CommandPalette;
-
-    #[test]
-    fn fuzzy_score_exact_match_returns_score() {
-        assert!(CommandPalette::fuzzy_score("push", "Push to Remote").is_some());
-    }
-
-    #[test]
-    fn fuzzy_score_case_insensitive() {
-        assert!(CommandPalette::fuzzy_score("push", "PUSH").is_some());
-        assert!(CommandPalette::fuzzy_score("PUSH", "push").is_some());
-    }
-
-    #[test]
-    fn fuzzy_score_missing_char_returns_none() {
-        assert_eq!(CommandPalette::fuzzy_score("xyz", "Push"), None);
-    }
-
-    #[test]
-    fn fuzzy_score_empty_query_returns_zero() {
-        assert_eq!(CommandPalette::fuzzy_score("", "Push to Remote"), Some(0));
-    }
-
-    #[test]
-    fn fuzzy_score_earlier_match_higher_score() {
-        let score_early = CommandPalette::fuzzy_score("sh", "Show").unwrap();
-        let score_late = CommandPalette::fuzzy_score("sh", "Fish").unwrap();
-        assert!(
-            score_early > score_late,
-            "earlier match should score higher: {score_early} vs {score_late}"
-        );
-    }
-
-    #[test]
-    fn fuzzy_score_subsequence_in_order() {
-        assert!(CommandPalette::fuzzy_score("pd", "Push and Delete").is_some());
-        assert_eq!(CommandPalette::fuzzy_score("dp", "Push and Delete"), None);
-    }
-
-    #[test]
-    fn fuzzy_score_longer_target_scores_higher_when_same_prefix() {
-        // Same query "co", same positions, longer target gives higher score
-        // because score = sum(target_len - matched_pos)
-        let score_short = CommandPalette::fuzzy_score("co", "Commit").unwrap();
-        let score_long = CommandPalette::fuzzy_score("co", "Commit Message").unwrap();
-        assert!(
-            score_long > score_short,
-            "longer matching target should score higher: {score_long} vs {score_short}"
-        );
-    }
-
-    #[test]
-    fn fuzzy_score_repeated_chars() {
-        assert_eq!(CommandPalette::fuzzy_score("pp", "Push"), None);
-        assert!(CommandPalette::fuzzy_score("ps", "Push").is_some());
-    }
-
-    #[test]
-    fn fuzzy_score_single_char_query() {
-        // Single char should match first occurrence
-        assert!(CommandPalette::fuzzy_score("a", "Push").is_none());
-        assert!(CommandPalette::fuzzy_score("p", "Push").is_some());
-        assert!(CommandPalette::fuzzy_score("u", "Push").is_some());
-        assert!(CommandPalette::fuzzy_score("s", "Push").is_some());
-    }
-
-    #[test]
-    fn fuzzy_score_query_longer_than_target() {
-        // Query longer than target: should fail
-        assert_eq!(CommandPalette::fuzzy_score("pushit", "Push"), None);
-    }
-
-    #[test]
-    fn fuzzy_score_empty_target() {
-        // Non-empty query with empty target should fail
-        assert_eq!(CommandPalette::fuzzy_score("abc", ""), None);
-    }
-
-    #[test]
-    fn fuzzy_score_numbers_and_special_chars() {
-        // Numbers in query and target
-        assert!(CommandPalette::fuzzy_score("42", "Answer 42").is_some());
-        assert!(CommandPalette::fuzzy_score("v2", "version2").is_some());
-        // Special characters
-        assert!(CommandPalette::fuzzy_score("rmrf", "rm -rf").is_some());
-    }
-
-    #[test]
-    fn fuzzy_score_unicode() {
-        // Unicode characters
-        assert!(CommandPalette::fuzzy_score("caf", "Café").is_some());
-        assert!(CommandPalette::fuzzy_score("日本語", "日本語テスト").is_some());
-    }
 
     #[test]
     fn command_id_stash_branch() {
