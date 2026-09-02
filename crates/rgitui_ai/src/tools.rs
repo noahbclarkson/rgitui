@@ -4,6 +4,7 @@
 //! to generate more accurate commit messages.
 
 use anyhow::Result;
+use rgitui_git::git_command;
 use std::path::Path;
 
 /// Maximum number of commits to return for history tools.
@@ -17,6 +18,113 @@ const MAX_DIFF_SIZE: usize = 100_000;
 
 /// Maximum directory depth for file tree.
 const MAX_TREE_DEPTH: usize = 5;
+
+/// Total tool output a single generation may accumulate.
+///
+/// The per-call caps above are not a budget: three iterations of `get_diff`
+/// could add 300 KB on top of the base prompt. Once this is exhausted the
+/// remaining calls are refused with a message the model can act on.
+pub const MAX_TOOL_OUTPUT_BUDGET: usize = 200_000;
+
+/// Filenames that must never be uploaded to a third-party API, regardless of
+/// how the model asks for them.
+///
+/// The path-traversal check alone was not enough: `get_file_content("../.env")`
+/// was correctly rejected, but `get_file_content(".env")` was accepted, and a
+/// `DATABASE_URL=postgres://user:pass@…` went to the provider and was echoed
+/// back into the conversation for every remaining iteration. There is no
+/// consent step for that, so the only safe answer is not to read them.
+const DENIED_FILE_NAMES: &[&str] = &[
+    ".npmrc",
+    ".netrc",
+    "_netrc",
+    ".pgpass",
+    ".htpasswd",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+];
+
+/// Filename prefixes that are denied wherever they appear.
+const DENIED_FILE_PREFIXES: &[&str] = &[".env", "credentials", "secrets", "id_rsa", "id_ed25519"];
+
+/// Extensions that carry keys or certificates.
+const DENIED_FILE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pfx", "jks", "keystore", "asc"];
+
+/// Why a path was refused. Each maps to a sentence the model can act on rather
+/// than a bare I/O error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeniedReason {
+    GitInternals,
+    Credentials,
+}
+
+impl DeniedReason {
+    fn message(self, path: &str) -> String {
+        match self {
+            DeniedReason::GitInternals => format!(
+                "Refused: {} is inside .git/, which can contain remote URLs with embedded tokens.",
+                path
+            ),
+            DeniedReason::Credentials => format!(
+                "Refused: {} looks like a credentials file and is never sent to an AI provider.",
+                path
+            ),
+        }
+    }
+}
+
+/// Whether a repo-relative path is one the AI must never read.
+///
+/// Pure and case-insensitive, and it inspects every path component so a
+/// denied file cannot be reached through a subdirectory.
+pub fn denied_path(relative_path: &str) -> Option<DeniedReason> {
+    let normalized = relative_path.replace('\\', "/");
+    let components: Vec<&str> = normalized
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+
+    if components
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case(".git"))
+    {
+        return Some(DeniedReason::GitInternals);
+    }
+
+    let file_name = components.last()?.to_ascii_lowercase();
+
+    if DENIED_FILE_NAMES.contains(&file_name.as_str()) {
+        return Some(DeniedReason::Credentials);
+    }
+    if DENIED_FILE_PREFIXES
+        .iter()
+        .any(|prefix| file_name.starts_with(prefix))
+    {
+        return Some(DeniedReason::Credentials);
+    }
+    if let Some((_, extension)) = file_name.rsplit_once('.') {
+        if DENIED_FILE_EXTENSIONS.contains(&extension) {
+            return Some(DeniedReason::Credentials);
+        }
+    }
+
+    None
+}
+
+/// Whether git ignores this path. A file the repository deliberately excludes
+/// is not part of the change being described, and is the usual home for local
+/// secrets that no denylist can enumerate.
+fn is_git_ignored(repo_path: &Path, relative_path: &str) -> bool {
+    git_command()
+        .args(["check-ignore", "-q", "--no-index", "--"])
+        .arg(relative_path)
+        .current_dir(repo_path)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
 
 /// Truncate a string to at most `max` bytes without splitting a multi-byte
 /// UTF-8 character. Returns a prefix whose length is the largest char boundary
@@ -378,13 +486,73 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub struct ToolResult {
     pub call_id: String,
-    pub name: String,
     pub result: Result<String, String>,
+}
+
+/// Tracks how much tool output a single generation has accumulated, so the
+/// per-call caps add up to a bounded whole.
+#[derive(Debug, Default)]
+pub struct ToolBudget {
+    used: usize,
+}
+
+impl ToolBudget {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn remaining(&self) -> usize {
+        MAX_TOOL_OUTPUT_BUDGET.saturating_sub(self.used)
+    }
+
+    /// Charge `output` against the budget, trimming it to what is left. The
+    /// model is told when a result was cut short so it does not treat a
+    /// truncated listing as complete.
+    pub fn charge(&mut self, output: String) -> String {
+        let remaining = self.remaining();
+        if remaining == 0 {
+            return "Tool output budget exhausted for this generation. Answer with what you \
+                    already have."
+                .to_string();
+        }
+        if output.len() <= remaining {
+            self.used += output.len();
+            return output;
+        }
+        self.used = MAX_TOOL_OUTPUT_BUDGET;
+        let trimmed = safe_truncate(&output, remaining);
+        let cut = trimmed.rfind('\n').unwrap_or(trimmed.len());
+        format!(
+            "{}\n\n[tool output truncated -- the budget for this generation is spent]",
+            &trimmed[..cut]
+        )
+    }
 }
 
 /// Execute a tool call and return the result.
 pub fn execute_tool(call: &ToolCall, repo_path: &Path) -> ToolResult {
-    let result = match call.name.as_str() {
+    execute_tool_within(call, repo_path, &mut ToolBudget::new())
+}
+
+/// Execute a tool call, charging its output against a per-generation budget.
+pub fn execute_tool_within(
+    call: &ToolCall,
+    repo_path: &Path,
+    budget: &mut ToolBudget,
+) -> ToolResult {
+    let result = match execute_tool_uncharged(call, repo_path) {
+        Ok(output) => Ok(budget.charge(output)),
+        Err(error) => Err(error),
+    };
+
+    ToolResult {
+        call_id: call.id.clone(),
+        result,
+    }
+}
+
+fn execute_tool_uncharged(call: &ToolCall, repo_path: &Path) -> Result<String, String> {
+    match call.name.as_str() {
         TOOL_GET_FILE_CONTENT => {
             let path = call.arguments["path"].as_str().unwrap_or("");
             execute_get_file_content(repo_path, path)
@@ -413,17 +581,25 @@ pub fn execute_tool(call: &ToolCall, repo_path: &Path) -> ToolResult {
             execute_get_file_tree(repo_path, path, max_depth.min(MAX_TREE_DEPTH))
         }
         _ => Err(format!("Unknown tool: {}", call.name)),
-    };
-
-    ToolResult {
-        call_id: call.id.clone(),
-        name: call.name.clone(),
-        result,
     }
 }
 
 /// Get the content of a file in the repository.
+///
+/// Denial happens before the read, in order: git internals, then the
+/// credentials denylist, then git-ignored files, then the traversal check.
+/// Only after all four does anything touch the file.
 fn execute_get_file_content(repo_path: &Path, relative_path: &str) -> Result<String, String> {
+    if let Some(reason) = denied_path(relative_path) {
+        return Err(reason.message(relative_path));
+    }
+    if is_git_ignored(repo_path, relative_path) {
+        return Err(format!(
+            "Refused: {} is git-ignored, so it is not part of the change and may hold local secrets.",
+            relative_path
+        ));
+    }
+
     let file_path = repo_path.join(relative_path);
 
     // Security check: ensure path is within repo
@@ -438,6 +614,15 @@ fn execute_get_file_content(repo_path: &Path, relative_path: &str) -> Result<Str
         return Err(format!("Path outside repository: {}", relative_path));
     }
 
+    // The canonical path is what is actually read, so re-check it: a symlink
+    // inside the repo that resolves onto `.git/config` would otherwise pass
+    // the name check above.
+    if let Ok(resolved) = canonical_file.strip_prefix(&canonical_repo) {
+        if let Some(reason) = denied_path(&resolved.to_string_lossy()) {
+            return Err(reason.message(relative_path));
+        }
+    }
+
     // Check file size
     let metadata = std::fs::metadata(&canonical_file)
         .map_err(|e| format!("Failed to read file metadata: {}", e))?;
@@ -450,16 +635,17 @@ fn execute_get_file_content(repo_path: &Path, relative_path: &str) -> Result<Str
         ));
     }
 
-    // Read and return content
-    let content = std::fs::read_to_string(&canonical_file)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let bytes =
+        std::fs::read(&canonical_file).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    Ok(content)
+    // Say "not text" explicitly rather than surfacing a raw `read_to_string`
+    // encoding error, which reads like a bug in rgitui.
+    String::from_utf8(bytes).map_err(|_| format!("{} is not a UTF-8 text file.", relative_path))
 }
 
 /// Get recent commit messages from the repository.
 fn execute_get_recent_commits(repo_path: &Path, count: usize) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    let output = git_command()
         .args([
             "log",
             &format!("-{}", count),
@@ -485,7 +671,7 @@ fn execute_get_file_history(
     relative_path: &str,
     count: usize,
 ) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    let output = git_command()
         .args([
             "log",
             &format!("-{}", count),
@@ -537,7 +723,7 @@ fn execute_get_diff(repo_path: &Path, kind: &str, commit: &str) -> Result<String
         }
     };
 
-    let output = std::process::Command::new("git")
+    let output = git_command()
         .args(&args)
         .current_dir(repo_path)
         .output()
@@ -577,7 +763,7 @@ fn execute_get_branch_list(repo_path: &Path, include_remote: bool) -> Result<Str
         args.push("-a");
     }
 
-    let output = std::process::Command::new("git")
+    let output = git_command()
         .args(&args)
         .current_dir(repo_path)
         .output()
@@ -763,6 +949,127 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ── the H4 sandbox ────────────────────────────────────────────
+
+    /// The traversal check alone was not enough. `../.env` was correctly
+    /// rejected while a plain `.env` was read and uploaded to the provider,
+    /// with no consent step and nothing in the UI but "Reading .env".
+    #[test]
+    fn credentials_files_are_denied_by_name() {
+        for path in [
+            ".env",
+            ".env.local",
+            ".env.production",
+            "app/.env",
+            "config/credentials.yml",
+            "secrets.yaml",
+            "deploy/id_rsa",
+            "certs/server.pem",
+            "certs/server.key",
+            "keys/bundle.p12",
+            ".npmrc",
+            ".netrc",
+        ] {
+            assert_eq!(
+                denied_path(path),
+                Some(DeniedReason::Credentials),
+                "{path} was not denied"
+            );
+        }
+    }
+
+    #[test]
+    fn git_internals_are_denied_at_any_depth_and_in_any_case() {
+        for path in [
+            ".git/config",
+            ".git/hooks/pre-commit",
+            "sub/.git/config",
+            ".GIT/config",
+            r".git\config",
+        ] {
+            assert_eq!(
+                denied_path(path),
+                Some(DeniedReason::GitInternals),
+                "{path} was not denied"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_source_files_are_not_denied() {
+        for path in [
+            "src/main.rs",
+            "crates/rgitui_ai/src/lib.rs",
+            "README.md",
+            "environment.rs",
+            "docs/keyboard.md",
+            "src/env_utils.rs",
+        ] {
+            assert_eq!(denied_path(path), None, "{path} was wrongly denied");
+        }
+    }
+
+    #[test]
+    fn a_denied_file_is_refused_before_it_is_ever_read() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(".env"),
+            "DATABASE_URL=postgres://user:pass@host/db",
+        )
+        .unwrap();
+        let result = execute_get_file_content(dir.path(), ".env");
+        let error = result.unwrap_err();
+        assert!(error.contains("Refused"));
+        // The refusal must not itself leak the content it refused to read.
+        assert!(!error.contains("postgres://"));
+    }
+
+    #[test]
+    fn non_utf8_content_is_reported_as_such_rather_than_as_an_io_error() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        let error = execute_get_file_content(dir.path(), "blob.bin").unwrap_err();
+        assert!(error.contains("not a UTF-8 text file"));
+    }
+
+    // ── tool output budget ────────────────────────────────────────
+
+    #[test]
+    fn the_budget_passes_small_outputs_through_untouched() {
+        let mut budget = ToolBudget::new();
+        assert_eq!(budget.charge("hello".into()), "hello");
+        assert_eq!(budget.remaining(), MAX_TOOL_OUTPUT_BUDGET - 5);
+    }
+
+    #[test]
+    fn the_budget_truncates_once_it_is_spent_and_says_so() {
+        let mut budget = ToolBudget::new();
+        let big = format!("{}\ntail", "x".repeat(MAX_TOOL_OUTPUT_BUDGET));
+        let charged = budget.charge(big);
+        assert!(charged.contains("[tool output truncated"));
+        assert_eq!(budget.remaining(), 0);
+
+        // Three iterations of `get_diff` can no longer add 300 KB on top of
+        // the base prompt.
+        let next = budget.charge("more output".into());
+        assert!(next.contains("budget exhausted"));
+    }
+
+    #[test]
+    fn a_charged_execution_reports_the_call_id_it_was_given() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "body").unwrap();
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: TOOL_GET_FILE_CONTENT.into(),
+            arguments: serde_json::json!({ "path": "a.txt" }),
+        };
+        let mut budget = ToolBudget::new();
+        let result = execute_tool_within(&call, dir.path(), &mut budget);
+        assert_eq!(result.call_id, "call-1");
+        assert_eq!(result.result.unwrap(), "body");
+    }
+
     #[test]
     fn file_content_rejects_path_traversal() {
         let (_dir, repo) = make_repo_with_file("x");
@@ -856,7 +1163,6 @@ mod tests {
         };
         let result = execute_tool(&call, dir.path());
         assert_eq!(result.call_id, "42");
-        assert_eq!(result.name, TOOL_GET_FILE_CONTENT);
         assert_eq!(result.result.unwrap(), "test content");
     }
 

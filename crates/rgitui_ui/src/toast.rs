@@ -42,6 +42,22 @@ impl ToastLevel {
             ToastLevel::Info => "Info",
         }
     }
+
+    /// How long a toast of this level stays on screen, or `None` when it must
+    /// wait to be dismissed.
+    ///
+    /// A single hardcoded three seconds meant errors vanished before they
+    /// could be read, and a "Generating..." notice expired mid-operation on a
+    /// tool-calling generation that runs 30s or more.
+    pub fn auto_dismiss_after(&self) -> Option<std::time::Duration> {
+        match self {
+            ToastLevel::Success | ToastLevel::Info => Some(std::time::Duration::from_secs(3)),
+            ToastLevel::Warning => Some(std::time::Duration::from_secs(6)),
+            // Sticky. An error the user never saw is an error they cannot act
+            // on.
+            ToastLevel::Error => None,
+        }
+    }
 }
 
 /// A compact toast notification pill component.
@@ -54,6 +70,7 @@ pub struct Toast {
     message: SharedString,
     level: ToastLevel,
     on_dismiss: Option<crate::ClickHandler>,
+    action: Option<(SharedString, crate::ClickHandler)>,
 }
 
 impl Toast {
@@ -67,7 +84,21 @@ impl Toast {
             message: message.into(),
             level,
             on_dismiss: None,
+            action: None,
         }
+    }
+
+    /// Attach a single action, rendered as a button beside the message.
+    ///
+    /// This is what lets an error carry `[Open Settings]` or `[Retry]` rather
+    /// than telling the user what went wrong and leaving them to find the fix.
+    pub fn action(
+        mut self,
+        label: impl Into<SharedString>,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.action = Some((label.into(), Box::new(handler)));
+        self
     }
 
     /// Attach a dismiss handler. When set, the toast renders a close button
@@ -160,6 +191,15 @@ impl RenderOnce for Toast {
                                 ),
                             ),
                     )
+                    .when_some(self.action, |this, (label, on_click)| {
+                        this.child(
+                            crate::Button::new("toast-action", label)
+                                .style(crate::ButtonStyle::Subtle)
+                                .size(ButtonSize::Compact)
+                                .color(level_color)
+                                .on_click(on_click),
+                        )
+                    })
                     .when_some(self.on_dismiss, |this, on_dismiss| {
                         this.child(
                             IconButton::new("toast-dismiss", IconName::X)

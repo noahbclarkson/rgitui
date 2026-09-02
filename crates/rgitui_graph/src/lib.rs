@@ -751,6 +751,7 @@ impl GraphView {
                 rgitui_ui::TextInputEvent::Submit => {
                     this.jump_to_next_match(cx);
                 }
+                rgitui_ui::TextInputEvent::Blurred => {}
             },
         )
         .detach();

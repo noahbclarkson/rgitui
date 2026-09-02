@@ -44,6 +44,7 @@ impl RepoOpener {
                 TextInputEvent::Submit => {
                     this.try_open(cx);
                 }
+                TextInputEvent::Blurred => {}
                 TextInputEvent::Changed(_) => {
                     this.update_filter(cx);
                     cx.notify();

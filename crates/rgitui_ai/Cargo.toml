@@ -9,13 +9,13 @@ workspace = true
 
 [dependencies]
 gpui.workspace = true
-http_client.workspace = true
 rgitui_settings.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 futures.workspace = true
-uuid.workspace = true
+rgitui_git.workspace = true
+log.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

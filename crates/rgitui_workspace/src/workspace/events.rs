@@ -5,8 +5,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use futures::StreamExt;
-use gpui::{AppContext, Context, Entity, SharedString};
-use rgitui_ai::{AiEvent, AiGenerator};
+use gpui::{AppContext, BorrowAppContext, Context, Entity, SharedString};
+use rgitui_ai::{AiEvent, AiGenerator, GenerationId};
 use rgitui_diff::{ConflictResolution, DiffOperation, DiffSource, DiffViewer, DiffViewerEvent};
 use rgitui_git::{
     CommitInfo, GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
@@ -325,34 +325,94 @@ pub(super) fn subscribe_interactive_rebase(
     .detach();
 }
 
+/// The commit panel a generation was started for, found by the repo path the
+/// request carried.
+///
+/// Routing by `active_tab` meant that switching tabs mid-generation wrote the
+/// message describing repo `foo`'s staged diff into repo `bar`'s commit box,
+/// and left `foo`'s spinner running forever.
+fn commit_panel_for(
+    workspace: &Workspace,
+    id: &GenerationId,
+    cx: &gpui::App,
+) -> Option<Entity<CommitPanel>> {
+    workspace
+        .tabs
+        .iter()
+        .find(|tab| tab.effective_repo_path(cx) == id.repo_path)
+        .map(|tab| tab.commit_panel.clone())
+}
+
 pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>) {
-    cx.subscribe(ai, |this, _ai, event: &AiEvent, cx| match event {
-        AiEvent::GenerationCompleted(message) => {
-            if let Some(tab) = this.tabs.get(this.active_tab) {
-                let msg = message.clone();
-                tab.commit_panel.update(cx, |cp, cx| {
-                    cp.set_message(msg, cx);
-                    cp.set_ai_generating(false, cx);
-                });
+    cx.subscribe(ai, |this, ai, event: &AiEvent, cx| match event {
+        AiEvent::GenerationStarted(id) => {
+            if let Some(panel) = commit_panel_for(this, id, cx) {
+                panel.update(cx, |cp, cx| cp.begin_ai_generation(cx));
             }
+            // The status bar alone. A toast here was a third signal for one
+            // event, and it expired at 3s while a tool-calling generation runs
+            // 30s or more.
+            this.set_status_message("Generating AI commit message...", cx);
         }
-        AiEvent::GenerationFailed(err) => {
-            log::error!("AI generation failed: {}", err);
-            let msg = format!("AI error: {}", err);
-            this.set_status_message(msg.clone(), cx);
-            this.show_toast(msg, ToastKind::Error, cx);
-            if let Some(tab) = this.tabs.get(this.active_tab) {
-                tab.commit_panel.update(cx, |cp, cx| {
-                    cp.set_ai_generating(false, cx);
-                });
+        AiEvent::ToolCallStarted(id, description) => {
+            // Routed to the chip as well as the status bar: this text is the
+            // real progress trace ("Reading diff.rs"), and it used to go only
+            // to the least-watched surface in the app.
+            if let Some(panel) = commit_panel_for(this, id, cx) {
+                let description = description.clone();
+                panel.update(cx, |cp, cx| cp.set_ai_progress(Some(description), cx));
             }
-        }
-        AiEvent::ToolCallStarted(description) => {
             this.set_status_message(format!("AI: {}", description), cx);
         }
-        AiEvent::GenerationStarted => {
-            this.set_status_message("Generating AI commit message...", cx);
-            this.show_toast("Generating AI commit message...", ToastKind::Info, cx);
+        AiEvent::GenerationCompleted(id, message) => {
+            let Some(panel) = commit_panel_for(this, id, cx) else {
+                // The tab closed mid-flight. Nothing to write to, and nothing
+                // to report.
+                return;
+            };
+            let message = message.clone();
+            panel.update(cx, |cp, cx| cp.apply_ai_message(message, cx));
+            this.set_status_message("AI commit message ready.", cx);
+        }
+        AiEvent::GenerationFailed(id, error) => {
+            log::error!("AI generation failed: {}", error);
+            if let Some(panel) = commit_panel_for(this, id, cx) {
+                panel.update(cx, |cp, cx| cp.fail_ai_generation(cx));
+            }
+            this.set_status_message(error.clone(), cx);
+            // Sticky, and carrying the fix: an AI failure is almost always a
+            // key or a model choice, both of which live one click away.
+            let workspace = cx.entity().downgrade();
+            this.show_toast_with_action(
+                error.clone(),
+                ToastKind::Error,
+                "Open Settings",
+                move |_event, _window, cx| {
+                    workspace
+                        .update(cx, |this, cx| this.open_ai_settings(cx))
+                        .ok();
+                },
+                cx,
+            );
+        }
+        AiEvent::GenerationCancelled(id) => {
+            if let Some(panel) = commit_panel_for(this, id, cx) {
+                panel.update(cx, |cp, cx| cp.fail_ai_generation(cx));
+            }
+            this.set_status_message("AI generation cancelled.", cx);
+        }
+        AiEvent::RateLimited { wait } => {
+            // Info, not an error, and deliberately without touching any
+            // panel's spinner: reporting the cooldown as a failure used to
+            // clear the indicator of a request that was still running.
+            let _ = ai;
+            this.set_status_message(
+                format!(
+                    "Waiting {}s before the next AI request.",
+                    wait.as_secs() + 1
+                ),
+                cx,
+            );
         }
     })
     .detach();
@@ -2821,41 +2881,114 @@ pub(super) fn subscribe_commit_panel(
                 }
             }
             CommitPanelEvent::GenerateAiMessage => {
-                commit_panel_ref.update(cx, |cp, cx| {
-                    cp.set_ai_generating(true, cx);
-                });
-
-                // Describe the checkout the commit will land in. Reading the
-                // main repository here made "generate message" summarise the main
-                // checkout's staged changes while the commit went to the worktree.
-                let repo_path = this.effective_worktree_path(cx);
-                let summary = project.read(cx).staged_summary_at(&repo_path);
-                let ai_entity = ai.clone();
-                let diff_repo_path = repo_path.clone();
-                let settings_state = cx.global::<rgitui_settings::SettingsState>();
-                let use_tools = settings_state.settings().ai.use_tools;
-                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                    let diff_text = cx
-                        .background_executor()
-                        .spawn(async move {
-                            rgitui_git::compute_staged_diff_text(&diff_repo_path)
-                                .unwrap_or_default()
-                        })
-                        .await;
-                    cx.update(|cx| {
-                        ai_entity.update(cx, |ai_gen, cx| {
-                            ai_gen
-                                .generate_commit_message_with_tools(
-                                    diff_text, summary, repo_path, use_tools, cx,
-                                )
-                                .detach();
-                        });
-                    });
-                })
-                .detach();
+                start_ai_generation(this, &project, &ai, None, cx);
+            }
+            CommitPanelEvent::RegenerateAiMessage { style } => {
+                start_ai_generation(this, &project, &ai, *style, cx);
+            }
+            CommitPanelEvent::CancelAiMessage => {
+                ai.update(cx, |generator, cx| generator.cancel(cx));
+            }
+            CommitPanelEvent::OpenAiSettings => {
+                this.open_ai_settings(cx);
             }
             CommitPanelEvent::CollapsedChanged => cx.notify(),
         }
+    })
+    .detach();
+}
+
+/// Start a generation for the active tab.
+///
+/// The one place a request is built, so the button, Ctrl+G and the command
+/// palette cannot disagree about the guards. Previously only the button
+/// checked `ai.enabled` and `has_api_key`, so Ctrl+G with AI turned off still
+/// fired a full request and spent tokens.
+///
+/// `style_override` regenerates in a different commit style for this one
+/// request without changing the saved preference.
+pub(super) fn start_ai_generation(
+    workspace: &mut Workspace,
+    project: &Entity<GitProject>,
+    ai: &Entity<AiGenerator>,
+    style_override: Option<rgitui_ai::CommitStyle>,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(tab) = workspace.tabs.get(workspace.active_tab) else {
+        return;
+    };
+    let commit_panel = tab.commit_panel.clone();
+
+    let settings_state = cx.global::<rgitui_settings::SettingsState>();
+    let settings = settings_state.settings();
+    let blocker = crate::commit_panel::ai_blocker(
+        settings.ai.enabled,
+        settings_state.has_ai_api_key(),
+        commit_panel.read(cx).staged_count(),
+    );
+    let use_tools = settings.ai.use_tools;
+
+    match blocker {
+        Some(crate::commit_panel::AiBlocker::NothingStaged) => {
+            workspace.set_status_message("Stage some changes first.", cx);
+            return;
+        }
+        Some(blocker) => {
+            // Both remaining cases are one click from fixed, so say so and
+            // offer the click rather than only reporting the problem.
+            let handle = cx.entity().downgrade();
+            workspace.show_toast_with_action(
+                blocker.tooltip(),
+                ToastKind::Warning,
+                "Open Settings",
+                move |_event, _window, cx| {
+                    handle.update(cx, |this, cx| this.open_ai_settings(cx)).ok();
+                },
+                cx,
+            );
+            return;
+        }
+        None => {}
+    }
+
+    // Describe the checkout the commit will land in. Reading the main
+    // repository here made "generate message" summarise the main checkout's
+    // staged changes while the commit went to the worktree.
+    let repo_path = workspace.effective_worktree_path(cx);
+    let summary = project.read(cx).staged_summary_at(&repo_path);
+    let ai_entity = ai.clone();
+    let diff_repo_path = repo_path.clone();
+
+    if let Some(style) = style_override {
+        // A regenerate-in-this-style is a one-request override, so it is
+        // written through to settings and left there: the user asked for that
+        // style, and silently reverting it next time would be surprising.
+        cx.update_global::<rgitui_settings::SettingsState, _>(|state, _cx| {
+            state.settings_mut().ai.commit_style = style.id().to_string();
+            if let Err(error) = state.save() {
+                log::warn!("Failed to persist the commit style override: {}", error);
+            }
+        });
+    }
+
+    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+        let diff_text = cx
+            .background_executor()
+            .spawn(async move {
+                rgitui_git::compute_staged_diff_text(&diff_repo_path).unwrap_or_default()
+            })
+            .await;
+        cx.update(|cx| {
+            ai_entity.update(cx, |generator, cx| {
+                // The generator owns the in-flight and cooldown guards and
+                // returns `None` when it refuses, emitting its own event; the
+                // panel's spinner is driven by `GenerationStarted`, so nothing
+                // here needs to pre-set it.
+                generator.generate_commit_message_with_tools(
+                    diff_text, summary, repo_path, use_tools, cx,
+                );
+            });
+        });
     })
     .detach();
 }

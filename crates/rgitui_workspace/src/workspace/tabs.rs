@@ -258,6 +258,12 @@ impl Workspace {
             has_token,
         )
         .with_multi_commit_selection(tab.graph.read(cx).selected_commit_count() > 1)
+        .with_ai_ready(
+            cx.try_global::<rgitui_settings::SettingsState>()
+                .is_some_and(|settings| {
+                    settings.settings().ai.enabled && settings.has_ai_api_key()
+                }),
+        )
     }
 
     /// Update the command palette's context with fresh data from the active tab.

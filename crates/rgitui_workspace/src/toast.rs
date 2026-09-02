@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{div, px, Context, ElementId, Render, WeakEntity, Window};
@@ -12,6 +12,8 @@ struct ToastEntry {
     id: usize,
     message: String,
     kind: ToastKind,
+    /// An optional single action, e.g. `[Open Settings]` or `[Retry]`.
+    action: Option<(String, Rc<rgitui_ui::ClickHandler>)>,
 }
 
 /// Manages a stack of transient toast notifications.
@@ -28,11 +30,41 @@ impl ToastLayer {
         }
     }
 
-    /// Show a new toast notification. It will auto-dismiss after 3 seconds.
+    /// Show a new toast notification.
+    ///
+    /// How long it stays is decided by its level: an error is sticky, because
+    /// one hardcoded three-second timeout meant errors vanished before they
+    /// could be read.
     pub fn show_toast(
         &mut self,
         message: impl Into<String>,
         kind: ToastKind,
+        cx: &mut Context<Self>,
+    ) {
+        self.push(message.into(), kind, None, cx);
+    }
+
+    /// Show a toast carrying a single action.
+    pub fn show_toast_with_action(
+        &mut self,
+        message: impl Into<String>,
+        kind: ToastKind,
+        action_label: impl Into<String>,
+        on_action: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let action = Some((
+            action_label.into(),
+            Rc::new(Box::new(on_action) as rgitui_ui::ClickHandler),
+        ));
+        self.push(message.into(), kind, action, cx);
+    }
+
+    fn push(
+        &mut self,
+        message: String,
+        kind: ToastKind,
+        action: Option<(String, Rc<rgitui_ui::ClickHandler>)>,
         cx: &mut Context<Self>,
     ) {
         let id = self.next_id;
@@ -40,24 +72,27 @@ impl ToastLayer {
 
         self.toasts.push(ToastEntry {
             id,
-            message: message.into(),
+            message,
             kind,
+            action,
         });
 
         while self.toasts.len() > 3 {
             self.toasts.remove(0);
         }
 
-        cx.spawn(
-            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                cx.background_executor().timer(Duration::from_secs(3)).await;
-                this.update(cx, |this, cx| {
-                    this.dismiss_toast(id, cx);
-                })
-                .ok();
-            },
-        )
-        .detach();
+        if let Some(after) = kind.auto_dismiss_after() {
+            cx.spawn(
+                async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                    cx.background_executor().timer(after).await;
+                    this.update(cx, |this, cx| {
+                        this.dismiss_toast(id, cx);
+                    })
+                    .ok();
+                },
+            )
+            .detach();
+        }
 
         cx.notify();
     }
@@ -88,17 +123,31 @@ impl Render for ToastLayer {
             let toast_id = entry.id;
             let entity = cx.entity().downgrade();
 
+            let mut toast = Toast::new(
+                ElementId::NamedInteger("toast".into(), toast_id as u64),
+                entry.message.clone(),
+                entry.kind,
+            );
+            if let Some((label, handler)) = &entry.action {
+                let handler = handler.clone();
+                let dismiss_entity = cx.entity().downgrade();
+                toast = toast.action(label.clone(), move |event, window, cx| {
+                    handler(event, window, cx);
+                    // Acting on a toast is also dismissing it; leaving it on
+                    // screen would invite a second, now-pointless click.
+                    dismiss_entity
+                        .update(cx, |this, cx| this.dismiss_toast(toast_id, cx))
+                        .ok();
+                });
+            }
+
             stack = stack.child(
                 div()
                     .id(ElementId::NamedInteger("toast-row".into(), toast_id as u64))
                     .h_flex()
                     .items_center()
                     .gap(px(0.))
-                    .child(div().flex_1().min_w_0().child(Toast::new(
-                        ElementId::NamedInteger("toast".into(), toast_id as u64),
-                        entry.message.clone(),
-                        entry.kind,
-                    )))
+                    .child(div().flex_1().min_w_0().child(toast))
                     .child(
                         div()
                             .id(ElementId::NamedInteger(
@@ -137,51 +186,62 @@ impl Render for ToastLayer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_toast_entry_kinds() {
-        // ToastEntry carries a message and kind; verify the kind field works
-        // ToastKind is an alias for ToastLevel, which has Success/Error/Warning/Info
-        let entry = ToastEntry {
-            id: 0,
-            message: "test message".to_string(),
-            kind: ToastKind::Success,
-        };
-        assert_eq!(entry.message, "test message");
-        assert_eq!(entry.kind, ToastKind::Success);
-
-        let entry_err = ToastEntry {
-            id: 1,
-            message: "error occurred".to_string(),
-            kind: ToastKind::Error,
-        };
-        assert_eq!(entry_err.kind, ToastKind::Error);
+    fn entry(id: usize, message: &str, kind: ToastKind) -> ToastEntry {
+        ToastEntry {
+            id,
+            message: message.to_string(),
+            kind,
+            action: None,
+        }
     }
 
     #[test]
-    fn test_toast_layer_new_is_empty() {
-        // Cannot construct ToastLayer without Context, but we can verify
-        // ToastKind and ToastEntry structural correctness
-        let entry = ToastEntry {
-            id: 0,
-            message: "loading".to_string(),
-            kind: ToastKind::Info,
-        };
-        assert_eq!(entry.id, 0);
-        assert_eq!(entry.message, "loading");
-        assert_eq!(entry.kind, ToastKind::Info);
+    fn a_toast_entry_carries_its_message_and_level() {
+        let success = entry(0, "test message", ToastKind::Success);
+        assert_eq!(success.message, "test message");
+        assert_eq!(success.kind, ToastKind::Success);
+        assert!(success.action.is_none());
+
+        assert_eq!(
+            entry(1, "error occurred", ToastKind::Error).kind,
+            ToastKind::Error
+        );
+    }
+
+    /// A three-second timeout on every level meant errors vanished before
+    /// they could be read, and a "Generating..." notice expired mid-operation
+    /// on a tool-calling generation that runs 30s or more.
+    #[test]
+    fn errors_stay_until_dismissed_while_lesser_levels_expire() {
+        assert_eq!(ToastKind::Error.auto_dismiss_after(), None);
+        assert_eq!(
+            ToastKind::Warning.auto_dismiss_after(),
+            Some(std::time::Duration::from_secs(6))
+        );
+        assert_eq!(
+            ToastKind::Info.auto_dismiss_after(),
+            Some(std::time::Duration::from_secs(3))
+        );
+        assert_eq!(
+            ToastKind::Success.auto_dismiss_after(),
+            Some(std::time::Duration::from_secs(3))
+        );
     }
 
     #[test]
-    fn test_toast_level_color_mapping() {
-        // ToastKind is ToastLevel from rgitui_ui; verify the color() method exists
+    fn a_warning_lingers_longer_than_an_info() {
+        let warning = ToastKind::Warning.auto_dismiss_after().unwrap();
+        let info = ToastKind::Info.auto_dismiss_after().unwrap();
+        assert!(warning > info);
+    }
+
+    #[test]
+    fn every_level_maps_to_a_distinct_colour_and_icon() {
         assert_eq!(ToastKind::Success.color(), Color::Success);
         assert_eq!(ToastKind::Error.color(), Color::Error);
         assert_eq!(ToastKind::Warning.color(), Color::Warning);
         assert_eq!(ToastKind::Info.color(), Color::Info);
-    }
 
-    #[test]
-    fn test_toast_level_icon_mapping() {
         assert_eq!(ToastKind::Success.icon(), IconName::CheckCircle);
         assert_eq!(ToastKind::Error.icon(), IconName::XCircle);
         assert_eq!(ToastKind::Warning.icon(), IconName::AlertTriangle);
