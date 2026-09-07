@@ -141,11 +141,11 @@ impl SettingsView {
         {
             self.ai_catalog.remove(&provider);
             self.ai_catalog_source.remove(&provider);
+            self.ai_catalog_error.remove(&provider);
             self.ai_connection.remove(&provider);
             self.ai_connection_error.remove(&provider);
             self.ai_verified_at.remove(&provider);
         }
-        self.ai_catalog_error = None;
         if let Some(provider) = self
             .expanded_ai_provider
             .filter(|provider| provider.is_openai_compatible())
@@ -268,7 +268,7 @@ impl SettingsView {
             // yet, and the bundled list is already showing.
             return;
         }
-        if !force && self.ai_catalog_loading {
+        if !force && self.ai_catalog_in_flight.contains_key(&provider) {
             return;
         }
 
@@ -276,10 +276,10 @@ impl SettingsView {
         let base_url = self.ai_base_url_override.clone();
         let generation = self.ai_catalog_generation.wrapping_add(1);
         self.ai_catalog_generation = generation;
-        self.ai_catalog_loading = true;
+        self.ai_catalog_in_flight.insert(provider, generation);
         cx.notify();
 
-        self.ai_catalog_task = Some(cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        let task = cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             // Send, parse and cache-write, all off the UI thread: the
             // unfiltered OpenRouter payload is around 700 KB.
             let fetched = cx
@@ -302,23 +302,26 @@ impl SettingsView {
             this.update(cx, |this, cx| {
                 // Drop a superseded result, the same guard `apply_refresh_data`
                 // uses in `rgitui_git`.
-                if this.ai_catalog_generation != generation {
+                if this.ai_catalog_in_flight.get(&provider) != Some(&generation) {
                     return;
                 }
-                this.ai_catalog_loading = false;
+                this.ai_catalog_in_flight.remove(&provider);
                 match fetched {
                     Ok(models) => {
-                        this.ai_catalog_error = None;
+                        this.ai_catalog_error.remove(&provider);
                         this.apply_ai_catalog(provider, models, CatalogSource::Live, cx);
                     }
                     Err(error) => {
-                        this.ai_catalog_error = Some(error.to_string());
+                        this.ai_catalog_error.insert(provider, error.to_string());
                     }
                 }
                 cx.notify();
             })
             .ok();
-        }));
+        });
+        // Keyed by provider: a single slot dropped — and so cancelled — the
+        // request the previously expanded row was still waiting on.
+        self.ai_catalog_tasks.insert(provider, task);
     }
 
     fn apply_ai_catalog(
@@ -350,7 +353,7 @@ impl SettingsView {
             .ai_catalog_source
             .get(&provider)
             .map(|source| catalog_source_label(*source));
-        let status = self.ai_catalog_error.clone().map(|error| {
+        let status = self.ai_catalog_error.get(&provider).map(|error| {
             format!(
                 "Couldn't refresh the model list — showing the last known {} models. {error}",
                 models.len()
@@ -963,6 +966,7 @@ impl SettingsView {
             PinnedModelStatus::Unverified | PinnedModelStatus::Known(_) => {}
         }
 
+        let refreshing = self.ai_catalog_in_flight.contains_key(&provider);
         column = column.child(
             div()
                 .flex()
@@ -982,7 +986,7 @@ impl SettingsView {
                 .child(
                     Button::new(
                         ElementId::Name(format!("ai-model-refresh-{}", provider.id()).into()),
-                        if self.ai_catalog_loading {
+                        if refreshing {
                             "Refreshing…"
                         } else {
                             "Refresh"
@@ -992,7 +996,7 @@ impl SettingsView {
                     .size(ButtonSize::Compact)
                     .icon(IconName::Refresh)
                     .color(Color::Muted)
-                    .disabled(self.ai_catalog_loading)
+                    .disabled(refreshing)
                     .tab_index(tab_base + 5)
                     .on_click(cx.listener(
                         move |this, _: &ClickEvent, _, cx| {

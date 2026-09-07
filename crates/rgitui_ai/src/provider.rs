@@ -94,7 +94,15 @@ pub(crate) fn openai_compat_endpoint(
 /// no trailing slash, and no trailing `/chat/completions` the user may have
 /// pasted from a curl example. Returns `None` for an empty field, which means
 /// "use the built-in URL".
+///
+/// A value that would be rejected in Settings is treated the same way. This is
+/// the one choke point every consumer goes through, so a plain-`http` gateway
+/// cannot become a live endpoint by a route that skips the field's validation
+/// — a hand-edited `settings.json` included.
 fn normalize_base_url(base_url_override: &str) -> Option<String> {
+    if validate_base_url(base_url_override).is_err() {
+        return None;
+    }
     let trimmed = base_url_override.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
@@ -574,6 +582,34 @@ mod tests {
             openai_compat_models_url(AiProvider::Gemini, "https://gw.example.com/v1"),
             None
         );
+    }
+
+    /// Nothing that Settings would refuse may reach a request by another
+    /// route: the field is not the only way a value lands in `settings.json`.
+    #[test]
+    fn an_invalid_override_falls_back_to_the_built_in_endpoint() {
+        for invalid in [
+            "http://gateway.example.com/v1",
+            "gateway.example.com",
+            "ftp://gateway.example.com/v1",
+            "https://gateway.example.com/v1?key=abc",
+        ] {
+            assert_eq!(
+                openai_compat_endpoint(AiProvider::OpenAi, invalid, true).url,
+                "https://api.openai.com/v1/chat/completions",
+                "input {invalid}"
+            );
+            assert_eq!(
+                openai_compat_models_url(AiProvider::OpenAi, invalid),
+                None,
+                "input {invalid}"
+            );
+            assert_eq!(
+                effective_host(AiProvider::OpenAi, invalid),
+                "api.openai.com",
+                "input {invalid}"
+            );
+        }
     }
 
     #[test]

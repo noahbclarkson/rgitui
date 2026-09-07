@@ -378,12 +378,17 @@ pub struct SettingsView {
     /// The live model catalogue, per provider, with where it came from.
     pub(super) ai_catalog: BTreeMap<AiProvider, Vec<ModelInfo>>,
     pub(super) ai_catalog_source: BTreeMap<AiProvider, CatalogSource>,
-    pub(super) ai_catalog_loading: bool,
-    pub(super) ai_catalog_error: Option<String>,
-    /// Drops superseded catalogue results, the same guard `apply_refresh_data`
-    /// uses in `rgitui_git`.
+    pub(super) ai_catalog_error: BTreeMap<AiProvider, String>,
+    /// Monotonic id for the next catalogue request. Drops superseded results,
+    /// the same guard `apply_refresh_data` uses in `rgitui_git`.
     pub(super) ai_catalog_generation: u64,
-    pub(super) ai_catalog_task: Option<Task<()>>,
+    /// The in-flight request per provider, by that id; presence means the row
+    /// is refreshing. One shared flag and one shared task slot meant expanding
+    /// a second provider cancelled the first's fetch and then suppressed its
+    /// own, leaving the newly opened row on its bundled list until the user
+    /// pressed Refresh by hand.
+    pub(super) ai_catalog_in_flight: BTreeMap<AiProvider, u64>,
+    pub(super) ai_catalog_tasks: BTreeMap<AiProvider, Task<()>>,
     pub(super) ai_model_picker: Entity<Picker>,
     pub(super) ai_model_picker_open: bool,
     /// Debounces the keychain write so it happens once per pause in typing
@@ -580,12 +585,13 @@ impl SettingsView {
         });
         cx.subscribe(
             &ai_base_url_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
-                TextInputEvent::Changed(text) => {
-                    this.ai_base_url_override = text.clone();
-                    cx.notify();
-                }
-                TextInputEvent::Submit | TextInputEvent::Blurred => {
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                // The draft lives in the editor until Enter or blur, and only a
+                // validated value is copied out. Mirroring every keystroke into
+                // the field that `save_settings` writes meant a URL the UI had
+                // just rejected still reached `settings.json` on the next
+                // unrelated save — and then the provider's API key.
+                if matches!(event, TextInputEvent::Submit | TextInputEvent::Blurred) {
                     this.commit_base_url_override(cx);
                 }
             },
@@ -943,10 +949,10 @@ impl SettingsView {
             ai_test_task: None,
             ai_catalog: BTreeMap::new(),
             ai_catalog_source: BTreeMap::new(),
-            ai_catalog_loading: false,
-            ai_catalog_error: None,
+            ai_catalog_error: BTreeMap::new(),
             ai_catalog_generation: 0,
-            ai_catalog_task: None,
+            ai_catalog_in_flight: BTreeMap::new(),
+            ai_catalog_tasks: BTreeMap::new(),
             ai_model_picker,
             ai_model_picker_open: false,
             pending_secret_save: None,
