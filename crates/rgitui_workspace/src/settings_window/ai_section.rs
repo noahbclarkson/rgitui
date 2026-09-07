@@ -126,8 +126,33 @@ impl SettingsView {
             self.set_feedback(error.message(), true, cx);
             return;
         }
+        if value == self.ai_base_url_override {
+            return;
+        }
         self.ai_base_url_override = value;
         self.save_settings(cx);
+
+        // A catalogue and a connection result describe the endpoint they came
+        // from, so retargeting the OpenAI-compatible family invalidates both.
+        for provider in AiProvider::ALL
+            .iter()
+            .copied()
+            .filter(|provider| provider.is_openai_compatible())
+        {
+            self.ai_catalog.remove(&provider);
+            self.ai_catalog_source.remove(&provider);
+            self.ai_connection.remove(&provider);
+            self.ai_connection_error.remove(&provider);
+            self.ai_verified_at.remove(&provider);
+        }
+        self.ai_catalog_error = None;
+        if let Some(provider) = self
+            .expanded_ai_provider
+            .filter(|provider| provider.is_openai_compatible())
+        {
+            self.load_ai_catalog(provider, cx);
+        }
+        cx.notify();
     }
 
     /// The one honest answer the settings page can give about a key.
@@ -154,11 +179,16 @@ impl SettingsView {
         cx.notify();
 
         let client = cx.http_client();
+        // Probe the endpoint generation will actually use. Testing the
+        // official host instead sent a gateway-only key to the provider and
+        // then called a working configuration broken.
+        let base_url = self.ai_base_url_override.clone();
         self.ai_test_task = Some(cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             // The round-trip and the parse both run off the UI thread.
             let executor = cx.background_executor().clone();
-            let probe = executor
-                .spawn(async move { catalog::fetch_models(provider, &client, Some(&key)).await });
+            let probe = executor.spawn(async move {
+                catalog::fetch_models(provider, &client, Some(&key), &base_url).await
+            });
             let timeout = cx.background_executor().timer(CONNECTION_TEST_TIMEOUT);
             let result = futures::future::select(Box::pin(probe), Box::pin(timeout)).await;
 
@@ -197,8 +227,9 @@ impl SettingsView {
     /// Read `provider`'s cached catalogue and render it at once, revalidating
     /// in the background only when it is not fresh.
     pub(super) fn load_ai_catalog(&mut self, provider: AiProvider, cx: &mut Context<Self>) {
+        let base_url = self.ai_base_url_override.clone();
         if let std::collections::btree_map::Entry::Vacant(e) = self.ai_catalog.entry(provider) {
-            let cached = catalog::read_cached(provider);
+            let cached = catalog::read_cached(provider, &base_url);
             let fresh = cached.as_ref().map(|cached| {
                 catalog::freshness(cached.fetched_at, catalog::now_unix())
                     == catalog::CatalogFreshness::Fresh
@@ -242,6 +273,7 @@ impl SettingsView {
         }
 
         let client = cx.http_client();
+        let base_url = self.ai_base_url_override.clone();
         let generation = self.ai_catalog_generation.wrapping_add(1);
         self.ai_catalog_generation = generation;
         self.ai_catalog_loading = true;
@@ -253,13 +285,14 @@ impl SettingsView {
             let fetched = cx
                 .background_executor()
                 .spawn(async move {
-                    let models = catalog::fetch_models(provider, &client, key.as_deref()).await?;
+                    let models =
+                        catalog::fetch_models(provider, &client, key.as_deref(), &base_url).await?;
                     let envelope = catalog::CachedCatalog {
                         schema: catalog::CATALOG_SCHEMA,
                         fetched_at: catalog::now_unix(),
                         models: models.clone(),
                     };
-                    if let Err(error) = catalog::write_cached(provider, &envelope) {
+                    if let Err(error) = catalog::write_cached(provider, &base_url, &envelope) {
                         log::warn!("Failed to cache the {} model list: {}", provider, error);
                     }
                     anyhow::Ok(models)

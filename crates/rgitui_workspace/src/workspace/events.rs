@@ -28,8 +28,8 @@ use crate::{
 };
 
 use super::{
-    ActiveOperation, BottomPanelMode, OperationOutput, UndoAction, ViewCacheKey, ViewCaches,
-    Workspace,
+    ActiveOperation, AiGenerationTarget, BottomPanelMode, OperationOutput, UndoAction,
+    ViewCacheKey, ViewCaches, Workspace,
 };
 
 pub(super) fn build_worktree_graph_infos(
@@ -325,28 +325,40 @@ pub(super) fn subscribe_interactive_rebase(
     .detach();
 }
 
-/// The commit panel a generation was started for, found by the repo path the
-/// request carried.
+/// The commit panel a generation was started from.
 ///
 /// Routing by `active_tab` meant that switching tabs mid-generation wrote the
-/// message describing repo `foo`'s staged diff into repo `bar`'s commit box,
-/// and left `foo`'s spinner running forever.
-fn commit_panel_for(
-    workspace: &Workspace,
-    id: &GenerationId,
-    cx: &gpui::App,
-) -> Option<Entity<CommitPanel>> {
+/// message describing repo `foo`'s staged diff into repo `bar`'s commit box.
+/// Looking the panel up by repo path fixed that but replaced it with a subtler
+/// one: `effective_repo_path` moves when the user enters or leaves an inspected
+/// worktree, so a generation that outlived that click matched no tab at all.
+/// The panel handle is therefore captured at dispatch, in
+/// [`register_ai_target`], and matched by sequence.
+fn commit_panel_for(workspace: &Workspace, id: &GenerationId) -> Option<Entity<CommitPanel>> {
     workspace
-        .tabs
-        .iter()
-        .find(|tab| tab.effective_repo_path(cx) == id.repo_path)
-        .map(|tab| tab.commit_panel.clone())
+        .operations
+        .ai_target
+        .as_ref()
+        .filter(|target| target.sequence == id.sequence)
+        .and_then(|target| target.panel.upgrade())
+}
+
+/// Forget the captured panel once a generation reaches a terminal event.
+fn clear_ai_target(workspace: &mut Workspace, id: &GenerationId) {
+    if workspace
+        .operations
+        .ai_target
+        .as_ref()
+        .is_some_and(|target| target.sequence == id.sequence)
+    {
+        workspace.operations.ai_target = None;
+    }
 }
 
 pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>) {
     cx.subscribe(ai, |this, ai, event: &AiEvent, cx| match event {
         AiEvent::GenerationStarted(id) => {
-            if let Some(panel) = commit_panel_for(this, id, cx) {
+            if let Some(panel) = commit_panel_for(this, id) {
                 panel.update(cx, |cp, cx| cp.begin_ai_generation(cx));
             }
             // The status bar alone. A toast here was a third signal for one
@@ -358,14 +370,16 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
             // Routed to the chip as well as the status bar: this text is the
             // real progress trace ("Reading diff.rs"), and it used to go only
             // to the least-watched surface in the app.
-            if let Some(panel) = commit_panel_for(this, id, cx) {
+            if let Some(panel) = commit_panel_for(this, id) {
                 let description = description.clone();
                 panel.update(cx, |cp, cx| cp.set_ai_progress(Some(description), cx));
             }
             this.set_status_message(format!("AI: {}", description), cx);
         }
         AiEvent::GenerationCompleted(id, message) => {
-            let Some(panel) = commit_panel_for(this, id, cx) else {
+            let panel = commit_panel_for(this, id);
+            clear_ai_target(this, id);
+            let Some(panel) = panel else {
                 // The tab closed mid-flight. Nothing to write to, and nothing
                 // to report.
                 return;
@@ -376,9 +390,10 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
         }
         AiEvent::GenerationFailed(id, error) => {
             log::error!("AI generation failed: {}", error);
-            if let Some(panel) = commit_panel_for(this, id, cx) {
+            if let Some(panel) = commit_panel_for(this, id) {
                 panel.update(cx, |cp, cx| cp.fail_ai_generation(cx));
             }
+            clear_ai_target(this, id);
             this.set_status_message(error.clone(), cx);
             // Sticky, and carrying the fix: an AI failure is almost always a
             // key or a model choice, both of which live one click away.
@@ -396,9 +411,12 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
             );
         }
         AiEvent::GenerationCancelled(id) => {
-            if let Some(panel) = commit_panel_for(this, id, cx) {
-                panel.update(cx, |cp, cx| cp.fail_ai_generation(cx));
+            // Back to idle, not to failed: the user asked for this, and a red
+            // "AI failed — retry" control is the wrong answer to it.
+            if let Some(panel) = commit_panel_for(this, id) {
+                panel.update(cx, |cp, cx| cp.cancel_ai_generation(cx));
             }
+            clear_ai_target(this, id);
             this.set_status_message("AI generation cancelled.", cx);
         }
         AiEvent::RateLimited { wait } => {
@@ -2971,7 +2989,8 @@ pub(super) fn start_ai_generation(
         });
     }
 
-    cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+    let target_panel = commit_panel.downgrade();
+    cx.spawn(async move |workspace, cx: &mut gpui::AsyncApp| {
         let diff_text = cx
             .background_executor()
             .spawn(async move {
@@ -2979,18 +2998,38 @@ pub(super) fn start_ai_generation(
             })
             .await;
         cx.update(|cx| {
-            ai_entity.update(cx, |generator, cx| {
+            let started = ai_entity.update(cx, |generator, cx| {
                 // The generator owns the in-flight and cooldown guards and
                 // returns `None` when it refuses, emitting its own event; the
                 // panel's spinner is driven by `GenerationStarted`, so nothing
                 // here needs to pre-set it.
                 generator.generate_commit_message_with_tools(
                     diff_text, summary, repo_path, use_tools, cx,
-                );
+                )
             });
+            if let Some(id) = started {
+                // Emitted events are queued and delivered when this update
+                // cycle ends, so the subscription still sees this target when
+                // `GenerationStarted` arrives.
+                register_ai_target(&workspace, id.sequence, target_panel, cx);
+            }
         });
     })
     .detach();
+}
+
+/// Record which panel the generation just dispatched belongs to.
+fn register_ai_target(
+    workspace: &gpui::WeakEntity<Workspace>,
+    sequence: u64,
+    panel: gpui::WeakEntity<CommitPanel>,
+    cx: &mut gpui::App,
+) {
+    workspace
+        .update(cx, |workspace, _cx| {
+            workspace.operations.ai_target = Some(AiGenerationTarget { sequence, panel });
+        })
+        .ok();
 }
 
 pub(super) fn subscribe_toolbar(

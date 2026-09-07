@@ -168,9 +168,22 @@ pub fn validate_base_url(value: &str) -> Result<(), BaseUrlError> {
     }
 }
 
+/// The host of an authority, with any port removed.
+///
+/// Cannot simply split at the first colon: `[::1]:11434` is a bracketed IPv6
+/// literal, and splitting that way yields `"["`, which then fails every
+/// loopback comparison and rejects a valid local gateway.
+fn host_without_port(authority: &str) -> &str {
+    match authority.strip_prefix('[') {
+        Some(rest) => rest.split_once(']').map_or(rest, |(inner, _)| inner),
+        None => authority
+            .split_once(':')
+            .map_or(authority, |(host, _)| host),
+    }
+}
+
 fn is_loopback_host(host: &str) -> bool {
-    let bare = host.split(':').next().unwrap_or(host);
-    matches!(bare, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+    matches!(host_without_port(host), "localhost" | "127.0.0.1" | "::1")
 }
 
 /// The host a request will actually reach, for the settings warning that says
@@ -183,6 +196,23 @@ pub fn effective_host(provider: AiProvider, base_url_override: &str) -> String {
             .unwrap_or(base),
         _ => provider.default_host().to_string(),
     }
+}
+
+/// The `/models` URL for an OpenAI-compatible provider pointed at a gateway,
+/// or `None` when the provider's built-in catalogue URL applies.
+///
+/// The catalogue used to be fetched from the official host unconditionally,
+/// so opening the AI settings sent a gateway-only key to OpenAI and then
+/// reported the provider as unreachable — while generation itself was
+/// correctly reaching the gateway all along.
+pub(crate) fn openai_compat_models_url(
+    provider: AiProvider,
+    base_url_override: &str,
+) -> Option<String> {
+    if !provider.is_openai_compatible() {
+        return None;
+    }
+    normalize_base_url(base_url_override).map(|base| format!("{base}/models"))
 }
 
 /// The Gemini `generateContent` URL. The key travels in a header, never here.
@@ -482,6 +512,19 @@ mod tests {
         );
     }
 
+    /// `[::1]` is the address an IPv6-only Ollama binds to. Splitting the
+    /// authority at the first colon yields `"["`, which used to fail every
+    /// loopback comparison and reject a valid local gateway as insecure.
+    #[test]
+    fn a_bracketed_ipv6_loopback_counts_as_local() {
+        assert_eq!(validate_base_url("http://[::1]:11434/v1"), Ok(()));
+        assert_eq!(validate_base_url("http://[::1]/v1"), Ok(()));
+        assert_eq!(
+            validate_base_url("http://[2001:db8::1]:11434/v1"),
+            Err(BaseUrlError::InsecureScheme)
+        );
+    }
+
     #[test]
     fn a_query_string_or_fragment_is_rejected() {
         assert_eq!(
@@ -505,6 +548,32 @@ mod tests {
             Err(BaseUrlError::NotAUrl)
         );
         assert_eq!(validate_base_url("https://"), Err(BaseUrlError::NotAUrl));
+    }
+
+    /// The catalogue used to be fetched from the official host regardless of
+    /// the override, sending a gateway-only key to OpenAI and reporting a
+    /// working configuration as unreachable.
+    #[test]
+    fn the_model_list_follows_the_gateway_the_chat_endpoint_uses() {
+        assert_eq!(
+            openai_compat_models_url(AiProvider::OpenAi, "https://gw.example.com/v1"),
+            Some("https://gw.example.com/v1/models".to_string())
+        );
+        // A pasted chat endpoint is trimmed the same way the chat URL is.
+        assert_eq!(
+            openai_compat_models_url(
+                AiProvider::OpenRouter,
+                "https://gw.example.com/v1/chat/completions"
+            ),
+            Some("https://gw.example.com/v1/models".to_string())
+        );
+        // No override, or a provider that does not honour one, keeps the
+        // built-in catalogue URL.
+        assert_eq!(openai_compat_models_url(AiProvider::OpenAi, ""), None);
+        assert_eq!(
+            openai_compat_models_url(AiProvider::Gemini, "https://gw.example.com/v1"),
+            None
+        );
     }
 
     #[test]

@@ -415,6 +415,7 @@ impl Workspace {
                 last_operation_output: None,
                 is_loading: false,
                 loading_message: None,
+                ai_target: None,
             },
             focus: FocusState {
                 last_focused_panel: None,

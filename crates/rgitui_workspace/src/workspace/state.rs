@@ -1,8 +1,8 @@
-use gpui::{Bounds, Entity, Pixels};
+use gpui::{Bounds, Entity, Pixels, WeakEntity};
 use rgitui_git::GitOperationUpdate;
 
 use crate::{
-    BranchDialog, CommandPalette, ConfirmDialog, CreatePrDialog, GlobalSearchView,
+    BranchDialog, CommandPalette, CommitPanel, ConfirmDialog, CreatePrDialog, GlobalSearchView,
     InteractiveRebase, RenameDialog, RepoCloneDialog, RepoOpener, ShortcutsHelp, StashBranchDialog,
     StashSaveDialog, TagDialog, ThemeEditorDialog, WorktreeDialog,
 };
@@ -43,6 +43,18 @@ pub(crate) struct OverlayState {
     pub theme_editor: Entity<ThemeEditorDialog>,
 }
 
+/// The commit panel one AI generation belongs to, captured when the request is
+/// dispatched.
+///
+/// The panel used to be looked up by comparing each tab's `effective_repo_path`
+/// against the id's, which is mutable inspection state: entering or leaving a
+/// worktree mid-generation made every subsequent event match no tab, so the
+/// result was dropped and the originating panel spun forever.
+pub(crate) struct AiGenerationTarget {
+    pub sequence: u64,
+    pub panel: WeakEntity<CommitPanel>,
+}
+
 /// Git operation tracking state.
 pub(crate) struct OperationState {
     pub active_git_operation: Option<GitOperationUpdate>,
@@ -51,6 +63,10 @@ pub(crate) struct OperationState {
     pub last_operation_output: Option<OperationOutput>,
     pub is_loading: bool,
     pub loading_message: Option<String>,
+    /// The panel the in-flight AI generation writes to. The generator refuses
+    /// to start a second generation while one is running, so one slot is all
+    /// there can ever be.
+    pub ai_target: Option<AiGenerationTarget>,
 }
 
 /// Focus management state.

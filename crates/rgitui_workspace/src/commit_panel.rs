@@ -352,10 +352,21 @@ impl CommitPanel {
         cx.notify();
     }
 
-    /// The generation failed or was cancelled.
+    /// The generation failed.
     pub fn fail_ai_generation(&mut self, cx: &mut Context<Self>) {
         self.set_editors_read_only(false, cx);
         self.ai_state = AiState::Failed;
+        cx.notify();
+    }
+
+    /// The user cancelled the generation.
+    ///
+    /// Returns to idle rather than to [`AiState::Failed`]: routing a cancel
+    /// through `fail_ai_generation` left a red "AI failed — retry" control on
+    /// screen after the user had done exactly what they intended.
+    pub fn cancel_ai_generation(&mut self, cx: &mut Context<Self>) {
+        self.set_editors_read_only(false, cx);
+        self.ai_state = AiState::Idle;
         cx.notify();
     }
 

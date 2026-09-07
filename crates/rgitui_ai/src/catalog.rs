@@ -203,24 +203,44 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-fn catalog_path(provider: AiProvider) -> PathBuf {
-    cache_dir()
-        .join("models")
-        .join(format!("{}.json", provider.id()))
+/// Where a provider's catalogue is cached.
+///
+/// A gateway serves a different model list from the provider's own host, so
+/// an overridden base URL gets its own file: sharing one would leave the
+/// gateway's models on screen after the override is removed.
+fn catalog_path(provider: AiProvider, base_url_override: &str) -> PathBuf {
+    let file = match crate::provider::openai_compat_models_url(provider, base_url_override) {
+        Some(url) => format!("{}-{:016x}.json", provider.id(), stable_hash(&url)),
+        None => format!("{}.json", provider.id()),
+    };
+    cache_dir().join("models").join(file)
+}
+
+/// A filename-safe digest of a gateway URL. Only needs to separate one
+/// endpoint's cache from another's, never to be cryptographic.
+fn stable_hash(value: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Read a provider's cached catalogue. A few KB of JSON — cheap enough to read
 /// synchronously when the picker opens.
-pub fn read_cached(provider: AiProvider) -> Option<CachedCatalog> {
-    let json = std::fs::read_to_string(catalog_path(provider)).ok()?;
+pub fn read_cached(provider: AiProvider, base_url_override: &str) -> Option<CachedCatalog> {
+    let json = std::fs::read_to_string(catalog_path(provider, base_url_override)).ok()?;
     let catalog: CachedCatalog = serde_json::from_str(&json).ok()?;
     (catalog.schema == CATALOG_SCHEMA).then_some(catalog)
 }
 
 /// Write a provider's catalogue, temp-file-then-rename so a crash mid-write
 /// cannot leave a truncated file that then fails to parse forever.
-pub fn write_cached(provider: AiProvider, catalog: &CachedCatalog) -> Result<()> {
-    let path = catalog_path(provider);
+pub fn write_cached(
+    provider: AiProvider,
+    base_url_override: &str,
+    catalog: &CachedCatalog,
+) -> Result<()> {
+    let path = catalog_path(provider, base_url_override);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -259,8 +279,9 @@ pub async fn fetch_models(
     provider: AiProvider,
     client: &Arc<dyn HttpClient>,
     api_key: Option<&str>,
+    base_url_override: &str,
 ) -> Result<Vec<ModelInfo>> {
-    fetch_models_inner(provider, client, api_key, false).await
+    fetch_models_inner(provider, client, api_key, base_url_override, false).await
 }
 
 /// As [`fetch_models`], but asks OpenRouter for its entire catalogue rather
@@ -269,14 +290,16 @@ pub async fn fetch_all_models(
     provider: AiProvider,
     client: &Arc<dyn HttpClient>,
     api_key: Option<&str>,
+    base_url_override: &str,
 ) -> Result<Vec<ModelInfo>> {
-    fetch_models_inner(provider, client, api_key, true).await
+    fetch_models_inner(provider, client, api_key, base_url_override, true).await
 }
 
 async fn fetch_models_inner(
     provider: AiProvider,
     client: &Arc<dyn HttpClient>,
     api_key: Option<&str>,
+    base_url_override: &str,
     load_all: bool,
 ) -> Result<Vec<ModelInfo>> {
     if catalog_needs_key(provider) && api_key.map(str::trim).unwrap_or("").is_empty() {
@@ -286,33 +309,40 @@ async fn fetch_models_inner(
         );
     }
 
-    let (url, mut builder) = match provider {
-        AiProvider::OpenRouter => {
-            let url = if load_all {
-                OPENROUTER_ALL_MODELS_URL
-            } else {
-                OPENROUTER_MODELS_URL
-            };
-            (url.to_string(), Request::builder())
-        }
-        AiProvider::Anthropic => (
-            // The default limit is 20; without this the list renders silently
-            // truncated.
-            "https://api.anthropic.com/v1/models?limit=100".to_string(),
-            Request::builder().header("anthropic-version", crate::provider::ANTHROPIC_VERSION),
-        ),
-        AiProvider::Gemini => (
-            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200".to_string(),
-            Request::builder(),
-        ),
-        AiProvider::OpenAi => (
-            "https://api.openai.com/v1/models".to_string(),
-            Request::builder(),
-        ),
-        AiProvider::DeepSeek => (
-            "https://api.deepseek.com/models".to_string(),
-            Request::builder(),
-        ),
+    // A gateway serves its own catalogue at `<base>/models`. Sending the key
+    // to the official host instead would disclose a gateway-only credential
+    // and report a connection failure for a provider that generates fine.
+    let gateway_url = crate::provider::openai_compat_models_url(provider, base_url_override);
+    let (url, mut builder) = match gateway_url {
+        Some(url) => (url, Request::builder()),
+        None => match provider {
+            AiProvider::OpenRouter => {
+                let url = if load_all {
+                    OPENROUTER_ALL_MODELS_URL
+                } else {
+                    OPENROUTER_MODELS_URL
+                };
+                (url.to_string(), Request::builder())
+            }
+            AiProvider::Anthropic => (
+                // The default limit is 20; without this the list renders silently
+                // truncated.
+                "https://api.anthropic.com/v1/models?limit=100".to_string(),
+                Request::builder().header("anthropic-version", crate::provider::ANTHROPIC_VERSION),
+            ),
+            AiProvider::Gemini => (
+                "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200".to_string(),
+                Request::builder(),
+            ),
+            AiProvider::OpenAi => (
+                "https://api.openai.com/v1/models".to_string(),
+                Request::builder(),
+            ),
+            AiProvider::DeepSeek => (
+                "https://api.deepseek.com/models".to_string(),
+                Request::builder(),
+            ),
+        },
     };
 
     if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
@@ -332,10 +362,12 @@ async fn fetch_models_inner(
         .body(AsyncBody::from(Vec::new()))
         .with_context(|| format!("Failed to build the {} model-list request", provider))?;
 
-    let mut response = client
-        .send(request)
-        .await
-        .with_context(|| format!("Couldn't reach {}", provider.default_host()))?;
+    let mut response = client.send(request).await.with_context(|| {
+        format!(
+            "Couldn't reach {}",
+            crate::provider::effective_host(provider, base_url_override)
+        )
+    })?;
 
     let status = response.status();
     let body = read_response_body(&mut response).await?;
