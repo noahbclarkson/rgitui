@@ -58,8 +58,8 @@ use tools::execute_tool_within;
 pub struct GenerationId {
     /// Monotonic per-`AiGenerator`. The same guard `apply_refresh_data` uses.
     pub sequence: u64,
-    /// The checkout the request describes. Routing by this rather than by
-    /// `active_tab` is what keeps a message for repo `foo` out of repo `bar`.
+    /// The checkout the request describes: the root the prompt's diff, the
+    /// project context and every tool call are read from.
     pub repo_path: PathBuf,
 }
 
