@@ -259,9 +259,10 @@ pub fn write_cached(
 // ============================================================================
 
 /// Whether fetching this provider's catalogue requires the user's API key.
-/// Only OpenRouter's is public.
-pub fn catalog_needs_key(provider: AiProvider) -> bool {
+/// Only OpenRouter's is public — and a custom endpoint may be keyless.
+pub fn catalog_needs_key(provider: AiProvider, base_url_override: &str) -> bool {
     !matches!(provider, AiProvider::OpenRouter)
+        && crate::provider::requires_api_key(provider, base_url_override)
 }
 
 /// The recommended OpenRouter query: tool-capable text models sorted by coding
@@ -302,7 +303,9 @@ async fn fetch_models_inner(
     base_url_override: &str,
     load_all: bool,
 ) -> Result<Vec<ModelInfo>> {
-    if catalog_needs_key(provider) && api_key.map(str::trim).unwrap_or("").is_empty() {
+    if catalog_needs_key(provider, base_url_override)
+        && api_key.map(str::trim).unwrap_or("").is_empty()
+    {
         anyhow::bail!(
             "{} needs an API key before its model list can be loaded.",
             provider.display_name()
@@ -1197,14 +1200,19 @@ mod tests {
 
     #[test]
     fn only_openrouters_catalogue_is_public() {
-        assert!(!catalog_needs_key(AiProvider::OpenRouter));
+        assert!(!catalog_needs_key(AiProvider::OpenRouter, ""));
+        // A keyless local gateway serves its own list without a credential.
+        assert!(!catalog_needs_key(
+            AiProvider::OpenAi,
+            "http://localhost:11434/v1"
+        ));
         for provider in [
             AiProvider::Gemini,
             AiProvider::OpenAi,
             AiProvider::Anthropic,
             AiProvider::DeepSeek,
         ] {
-            assert!(catalog_needs_key(provider));
+            assert!(catalog_needs_key(provider, ""));
         }
     }
 

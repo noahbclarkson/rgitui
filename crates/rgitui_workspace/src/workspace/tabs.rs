@@ -260,8 +260,10 @@ impl Workspace {
         .with_multi_commit_selection(tab.graph.read(cx).selected_commit_count() > 1)
         .with_ai_ready(
             cx.try_global::<rgitui_settings::SettingsState>()
-                .is_some_and(|settings| {
-                    settings.settings().ai.enabled && settings.has_ai_api_key()
+                .is_some_and(|state| {
+                    let settings = state.settings();
+                    settings.ai.enabled
+                        && rgitui_ai::ai_credentials_ready(&settings.ai, state.has_ai_api_key())
                 }),
         )
     }

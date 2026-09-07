@@ -373,7 +373,9 @@ pub struct SettingsView {
     pub(super) ai_connection: BTreeMap<AiProvider, ConnectionState>,
     pub(super) ai_connection_error: BTreeMap<AiProvider, String>,
     pub(super) ai_verified_at: BTreeMap<AiProvider, std::time::Instant>,
-    pub(super) ai_test_task: Option<Task<()>>,
+    /// The running connection test per provider. A single slot dropped — and
+    /// so cancelled — the test another row was still showing as in progress.
+    pub(super) ai_test_tasks: BTreeMap<AiProvider, Task<()>>,
 
     /// The live model catalogue, per provider, with where it came from.
     pub(super) ai_catalog: BTreeMap<AiProvider, Vec<ModelInfo>>,
@@ -633,7 +635,8 @@ impl SettingsView {
             &ai_model_picker,
             |this: &mut Self, _, event: &rgitui_ui::PickerEvent, cx| match event {
                 rgitui_ui::PickerEvent::Selected(id) => {
-                    this.select_ai_model(id.to_string(), cx);
+                    let provider = this.ai_provider;
+                    this.select_ai_model(provider, id.to_string(), cx);
                 }
                 rgitui_ui::PickerEvent::Dismissed => {
                     this.ai_model_picker_open = false;
@@ -946,7 +949,7 @@ impl SettingsView {
             ai_connection: BTreeMap::new(),
             ai_connection_error: BTreeMap::new(),
             ai_verified_at: BTreeMap::new(),
-            ai_test_task: None,
+            ai_test_tasks: BTreeMap::new(),
             ai_catalog: BTreeMap::new(),
             ai_catalog_source: BTreeMap::new(),
             ai_catalog_error: BTreeMap::new(),

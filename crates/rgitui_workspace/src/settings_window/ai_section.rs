@@ -110,11 +110,30 @@ impl SettingsView {
         cx.notify();
     }
 
-    pub(super) fn select_ai_model(&mut self, model: String, cx: &mut Context<Self>) {
-        self.ai_model = model.clone();
+    /// Pin `model` to `provider`.
+    ///
+    /// The provider is explicit because a suggestion can be accepted from an
+    /// expanded row that is not the active one: writing it through
+    /// `set_active_model` pinned that row's model to whichever provider
+    /// happened to be active and left the row's own broken pin in place.
+    pub(super) fn select_ai_model(
+        &mut self,
+        provider: AiProvider,
+        model: String,
+        cx: &mut Context<Self>,
+    ) {
         self.ai_model_picker_open = false;
+        if provider == self.ai_provider {
+            self.ai_model = model.clone();
+        }
         cx.update_global::<SettingsState, _>(|state, _cx| {
-            state.settings_mut().ai.set_active_model(model);
+            let ai = &mut state.settings_mut().ai;
+            if provider == ai.provider {
+                ai.set_active_model(model);
+            } else {
+                ai.models_by_provider
+                    .insert(provider.id().to_string(), model);
+            }
         });
         self.save_settings(cx);
         cx.notify();
@@ -166,7 +185,7 @@ impl SettingsView {
             .get(&provider)
             .map(|editor| editor.read(cx).text().trim().to_string())
             .unwrap_or_default();
-        if key.is_empty() {
+        if key.is_empty() && rgitui_ai::requires_api_key(provider, &self.ai_base_url_override) {
             self.ai_connection
                 .insert(provider, ConnectionState::Unconfigured);
             cx.notify();
@@ -183,11 +202,12 @@ impl SettingsView {
         // official host instead sent a gateway-only key to the provider and
         // then called a working configuration broken.
         let base_url = self.ai_base_url_override.clone();
-        self.ai_test_task = Some(cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        let task = cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             // The round-trip and the parse both run off the UI thread.
             let executor = cx.background_executor().clone();
             let probe = executor.spawn(async move {
-                catalog::fetch_models(provider, &client, Some(&key), &base_url).await
+                let key = Some(key.as_str()).filter(|key| !key.is_empty());
+                catalog::fetch_models(provider, &client, key, &base_url).await
             });
             let timeout = cx.background_executor().timer(CONNECTION_TEST_TIMEOUT);
             let result = futures::future::select(Box::pin(probe), Box::pin(timeout)).await;
@@ -221,7 +241,10 @@ impl SettingsView {
                 }
             })
             .ok();
-        }));
+        });
+        // Keyed by provider: a single slot cancelled the test already running
+        // for another row, which then stayed on "Testing" forever.
+        self.ai_test_tasks.insert(provider, task);
     }
 
     /// Read `provider`'s cached catalogue and render it at once, revalidating
@@ -263,7 +286,7 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         let key = cx.read_global::<SettingsState, _>(|state, _cx| state.ai_api_key_for(provider));
-        if catalog::catalog_needs_key(provider) && key.is_none() {
+        if catalog::catalog_needs_key(provider, &self.ai_base_url_override) && key.is_none() {
             // Not an error: the user simply has not connected this provider
             // yet, and the bundled list is already showing.
             return;
@@ -944,7 +967,7 @@ impl SettingsView {
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
-                                this.select_ai_model(suggestion.clone(), cx);
+                                this.select_ai_model(provider, suggestion.clone(), cx);
                             },
                         )),
                     );

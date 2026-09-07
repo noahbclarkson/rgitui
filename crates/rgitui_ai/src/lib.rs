@@ -36,7 +36,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use prompt::CommitStyle;
-pub use provider::{effective_host, validate_base_url, BaseUrlError};
+pub use provider::{
+    ai_credentials_ready, effective_host, requires_api_key, uses_custom_endpoint,
+    validate_base_url, BaseUrlError,
+};
 pub use tools::{
     anthropic_tool_definitions, denied_path, execute_tool, gemini_tool_definitions,
     openai_tool_definitions, DeniedReason, ToolBudget, ToolCall, ToolResult,
@@ -364,17 +367,21 @@ async fn dispatch(req: &GenerateRequest, status: &StatusSender) -> Result<String
     }
 }
 
-fn api_key(req: &GenerateRequest) -> Result<&str> {
-    req.api_key
+/// The key to present, or `None` when the request targets a keyless custom
+/// endpoint. Only a configuration that genuinely needs a credential fails here.
+fn api_key(req: &GenerateRequest) -> Result<Option<&str>> {
+    let key = req
+        .api_key
         .as_deref()
         .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .with_context(|| {
-            format!(
-                "No {} API key. Add one in Settings > AI.",
-                req.provider.display_name()
-            )
-        })
+        .filter(|key| !key.is_empty());
+    if key.is_none() && requires_api_key(req.provider, &req.base_url_override) {
+        anyhow::bail!(
+            "No {} API key. Add one in Settings > AI.",
+            req.provider.display_name()
+        );
+    }
+    Ok(key)
 }
 
 /// Send one request, retrying rate limits and transient server errors with
@@ -400,14 +407,19 @@ async fn send_json(
             // then stalls leaves the spinner running until the app restarts.
             .timeout(REQUEST_TIMEOUT);
 
-        builder = match auth_style(req.provider) {
-            AuthStyle::Bearer => builder.header("Authorization", format!("Bearer {key}")),
-            AuthStyle::AnthropicHeader => builder
+        builder = match (auth_style(req.provider), key) {
+            // A keyless gateway gets no authorization header at all rather
+            // than an empty one, which some servers reject outright.
+            (_, None) => builder,
+            (AuthStyle::Bearer, Some(key)) => {
+                builder.header("Authorization", format!("Bearer {key}"))
+            }
+            (AuthStyle::AnthropicHeader, Some(key)) => builder
                 .header("x-api-key", key)
                 .header("anthropic-version", ANTHROPIC_VERSION),
             // A header, not `?key=`: query strings land in proxy logs,
             // TLS-inspecting middleboxes, and any error path that prints a URL.
-            AuthStyle::GoogleHeader => builder.header("x-goog-api-key", key),
+            (AuthStyle::GoogleHeader, Some(key)) => builder.header("x-goog-api-key", key),
         };
         for (name, value) in extra_headers {
             builder = builder.header(*name, *value);

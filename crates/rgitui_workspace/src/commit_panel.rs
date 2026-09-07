@@ -772,7 +772,9 @@ impl Render for CommitPanel {
                 let settings = s.settings();
                 (
                     settings.ai.enabled,
-                    s.has_ai_api_key(),
+                    // A custom endpoint may be a keyless local service, so a
+                    // stored key is not the only way to be configured.
+                    rgitui_ai::ai_credentials_ready(&settings.ai, s.has_ai_api_key()),
                     settings.ai.use_tools,
                 )
             })

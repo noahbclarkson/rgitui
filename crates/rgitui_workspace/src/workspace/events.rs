@@ -2941,7 +2941,7 @@ pub(super) fn start_ai_generation(
     let settings = settings_state.settings();
     let blocker = crate::commit_panel::ai_blocker(
         settings.ai.enabled,
-        settings_state.has_ai_api_key(),
+        rgitui_ai::ai_credentials_ready(&settings.ai, settings_state.has_ai_api_key()),
         commit_panel.read(cx).staged_count(),
     );
     let use_tools = settings.ai.use_tools;

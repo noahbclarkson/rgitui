@@ -206,6 +206,28 @@ pub fn effective_host(provider: AiProvider, base_url_override: &str) -> String {
     }
 }
 
+/// Whether `base_url_override` actually redirects this provider's requests.
+pub fn uses_custom_endpoint(provider: AiProvider, base_url_override: &str) -> bool {
+    provider.is_openai_compatible() && normalize_base_url(base_url_override).is_some()
+}
+
+/// Whether a request can be sent at all without a stored API key.
+///
+/// A custom endpoint may be a keyless local service — Ollama's `/v1` is the
+/// motivating case — so demanding a credential there turns a configuration the
+/// app supports into one reachable only by inventing a dummy key.
+pub fn requires_api_key(provider: AiProvider, base_url_override: &str) -> bool {
+    !uses_custom_endpoint(provider, base_url_override)
+}
+
+/// Whether the saved AI configuration has the credential it needs to run.
+///
+/// The three entry points that gate the AI button share this so they cannot
+/// disagree about whether a keyless gateway counts as configured.
+pub fn ai_credentials_ready(settings: &rgitui_settings::AiSettings, has_stored_key: bool) -> bool {
+    has_stored_key || !requires_api_key(settings.provider, &settings.base_url_override)
+}
+
 /// The `/models` URL for an OpenAI-compatible provider pointed at a gateway,
 /// or `None` when the provider's built-in catalogue URL applies.
 ///
@@ -610,6 +632,26 @@ mod tests {
                 "input {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn only_a_custom_endpoint_may_be_keyless() {
+        assert!(requires_api_key(AiProvider::OpenAi, ""));
+        assert!(!requires_api_key(
+            AiProvider::OpenAi,
+            "http://localhost:11434/v1"
+        ));
+        // Gemini and Anthropic never honour an override, so nothing about one
+        // can excuse them from needing a key.
+        assert!(requires_api_key(
+            AiProvider::Gemini,
+            "http://localhost:11434/v1"
+        ));
+        // Nor can a rejected override, which never becomes a live endpoint.
+        assert!(requires_api_key(
+            AiProvider::OpenAi,
+            "http://gateway.example.com/v1"
+        ));
     }
 
     #[test]
