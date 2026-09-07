@@ -161,9 +161,7 @@ impl SettingsView {
             self.ai_catalog.remove(&provider);
             self.ai_catalog_source.remove(&provider);
             self.ai_catalog_error.remove(&provider);
-            self.ai_connection.remove(&provider);
-            self.ai_connection_error.remove(&provider);
-            self.ai_verified_at.remove(&provider);
+            self.invalidate_ai_connection(provider, cx);
         }
         if let Some(provider) = self
             .expanded_ai_provider
@@ -172,6 +170,21 @@ impl SettingsView {
             self.load_ai_catalog(provider, cx);
         }
         cx.notify();
+    }
+
+    /// Forget what is known about `provider`'s connection, and any test still
+    /// in flight for it, because the credentials or the endpoint just changed.
+    pub(super) fn invalidate_ai_connection(
+        &mut self,
+        provider: AiProvider,
+        cx: &mut Context<Self>,
+    ) {
+        let had_state = self.ai_connection.remove(&provider).is_some();
+        self.ai_connection_error.remove(&provider);
+        self.ai_verified_at.remove(&provider);
+        if self.ai_test_in_flight.remove(&provider).is_some() || had_state {
+            cx.notify();
+        }
     }
 
     /// The one honest answer the settings page can give about a key.
@@ -195,6 +208,9 @@ impl SettingsView {
         self.ai_connection
             .insert(provider, ConnectionState::Testing);
         self.ai_connection_error.remove(&provider);
+        let generation = self.ai_test_generation.wrapping_add(1);
+        self.ai_test_generation = generation;
+        self.ai_test_in_flight.insert(provider, generation);
         cx.notify();
 
         let client = cx.http_client();
@@ -221,23 +237,32 @@ impl SettingsView {
                 )),
             };
 
-            this.update(cx, |this, cx| match outcome {
-                Ok(models) => {
-                    this.ai_connection
-                        .insert(provider, ConnectionState::Connected);
-                    this.ai_connection_error.remove(&provider);
-                    this.ai_verified_at
-                        .insert(provider, std::time::Instant::now());
-                    // The test already fetched the catalogue; keep it rather
-                    // than making a second identical request.
-                    this.apply_ai_catalog(provider, models, CatalogSource::Live, cx);
-                    cx.notify();
+            this.update(cx, |this, cx| {
+                // The key or the endpoint may have been replaced while this
+                // was in flight; reporting the old result would mark the new
+                // configuration verified on evidence about a different one.
+                if this.ai_test_in_flight.get(&provider) != Some(&generation) {
+                    return;
                 }
-                Err(error) => {
-                    this.ai_connection.insert(provider, ConnectionState::Failed);
-                    this.ai_connection_error
-                        .insert(provider, connection_error_message(provider, &error));
-                    cx.notify();
+                this.ai_test_in_flight.remove(&provider);
+                match outcome {
+                    Ok(models) => {
+                        this.ai_connection
+                            .insert(provider, ConnectionState::Connected);
+                        this.ai_connection_error.remove(&provider);
+                        this.ai_verified_at
+                            .insert(provider, std::time::Instant::now());
+                        // The test already fetched the catalogue; keep it rather
+                        // than making a second identical request.
+                        this.apply_ai_catalog(provider, models, CatalogSource::Live, cx);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        this.ai_connection.insert(provider, ConnectionState::Failed);
+                        this.ai_connection_error
+                            .insert(provider, connection_error_message(provider, &error));
+                        cx.notify();
+                    }
                 }
             })
             .ok();
@@ -516,9 +541,9 @@ impl SettingsView {
         if let Some(state) = self.ai_connection.get(&provider) {
             return *state;
         }
-        if self.provider_has_key(provider) {
-            // A stored key is "configured", never "verified" — the difference
-            // is the whole point of the Test button.
+        if self.provider_is_configured(provider) {
+            // Being configured is "configured", never "verified" — the
+            // difference is the whole point of the Test button.
             ConnectionState::Connected
         } else {
             ConnectionState::Unconfigured
@@ -529,6 +554,15 @@ impl SettingsView {
         self.ai_keys_loaded
             .get(&provider)
             .is_some_and(|key| !key.trim().is_empty())
+    }
+
+    /// Whether this provider can be used as it stands: it holds a key, or it
+    /// is pointed at a custom endpoint that needs none. Gating the model row
+    /// on the key alone hid the picker for a keyless local gateway, whose
+    /// model ids are exactly the ones the built-in default does not have.
+    fn provider_is_configured(&self, provider: AiProvider) -> bool {
+        self.provider_has_key(provider)
+            || !rgitui_ai::requires_api_key(provider, &self.ai_base_url_override)
     }
 
     fn render_provider_accordion(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -637,7 +671,7 @@ impl SettingsView {
     ) -> gpui::AnyElement {
         let colors = cx.colors().clone();
         let state = self.connection_state(provider);
-        let has_key = self.provider_has_key(provider);
+        let configured = self.provider_is_configured(provider);
         let tab_base = SETTINGS_TAB_INDEX_BASE + 20 + (index as isize * 10);
 
         // `div().flex().flex_col()`, never `v_flex()`/`h_flex()` here: the
@@ -654,9 +688,9 @@ impl SettingsView {
             .pr(px(6.))
             .pb(px(6.));
 
-        if !has_key {
-            // A provider with no key opens onto onboarding, not an empty text
-            // box. This is the first thing a new user sees.
+        if !configured {
+            // A provider with nothing configured opens onto onboarding, not an
+            // empty text box. This is the first thing a new user sees.
             body = body.child(
                 div()
                     .flex()
@@ -686,7 +720,7 @@ impl SettingsView {
 
         // Status line under the field: what the app actually knows.
         let status_line: Option<SharedString> = match state {
-            ConnectionState::Connected if has_key => Some(
+            ConnectionState::Connected if self.provider_has_key(provider) => Some(
                 match self.ai_verified_at.get(&provider) {
                     Some(at) => format!(
                         "Verified {} · stored in {}",
@@ -698,6 +732,15 @@ impl SettingsView {
                         credential_store_name()
                     ),
                 }
+                .into(),
+            ),
+            // A keyless custom endpoint is configured without a stored key,
+            // so it needs its own line rather than the "add a key" default.
+            ConnectionState::Connected if configured => Some(
+                format!(
+                    "No API key needed — requests go to {}.",
+                    rgitui_ai::effective_host(provider, &self.ai_base_url_override)
+                )
                 .into(),
             ),
             ConnectionState::Testing => {
@@ -725,11 +768,11 @@ impl SettingsView {
             }));
         }
 
-        if has_key {
+        if configured {
             body = body.child(self.render_model_row(provider, tab_base, cx));
         }
 
-        body = body.child(self.render_provider_actions(provider, has_key, tab_base, cx));
+        body = body.child(self.render_provider_actions(provider, configured, tab_base, cx));
 
         if provider.is_openai_compatible() {
             body = body.child(self.render_advanced(provider, tab_base, cx));
@@ -1040,7 +1083,7 @@ impl SettingsView {
     fn render_provider_actions(
         &self,
         provider: AiProvider,
-        has_key: bool,
+        configured: bool,
         tab_base: isize,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -1057,7 +1100,7 @@ impl SettingsView {
             .pt(px(4.))
             .child(div().flex_1());
 
-        if !has_key {
+        if !configured {
             // "Connect" is the user's goal; "Save" never was.
             return row
                 .child(

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use futures::StreamExt;
-use gpui::{AppContext, BorrowAppContext, Context, Entity, SharedString};
+use gpui::{AppContext, Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator, GenerationId};
 use rgitui_diff::{ConflictResolution, DiffOperation, DiffSource, DiffViewer, DiffViewerEvent};
 use rgitui_git::{
@@ -2977,18 +2977,6 @@ pub(super) fn start_ai_generation(
     let ai_entity = ai.clone();
     let diff_repo_path = repo_path.clone();
 
-    if let Some(style) = style_override {
-        // A regenerate-in-this-style is a one-request override, so it is
-        // written through to settings and left there: the user asked for that
-        // style, and silently reverting it next time would be surprising.
-        cx.update_global::<rgitui_settings::SettingsState, _>(|state, _cx| {
-            state.settings_mut().ai.commit_style = style.id().to_string();
-            if let Err(error) = state.save() {
-                log::warn!("Failed to persist the commit style override: {}", error);
-            }
-        });
-    }
-
     let target_panel = commit_panel.downgrade();
     cx.spawn(async move |workspace, cx: &mut gpui::AsyncApp| {
         let diff_text = cx
@@ -3004,7 +2992,12 @@ pub(super) fn start_ai_generation(
                 // panel's spinner is driven by `GenerationStarted`, so nothing
                 // here needs to pre-set it.
                 generator.generate_commit_message_with_tools(
-                    diff_text, summary, repo_path, use_tools, cx,
+                    diff_text,
+                    summary,
+                    repo_path,
+                    use_tools,
+                    style_override,
+                    cx,
                 )
             });
             if let Some(id) = started {

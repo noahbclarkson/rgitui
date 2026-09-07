@@ -125,6 +125,7 @@ pub enum BaseUrlError {
     NotAUrl,
     InsecureScheme,
     HasQueryOrFragment,
+    HasUserinfo,
 }
 
 impl BaseUrlError {
@@ -138,6 +139,9 @@ impl BaseUrlError {
             }
             BaseUrlError::HasQueryOrFragment => {
                 "Remove the query string or #fragment — only the base path is used."
+            }
+            BaseUrlError::HasUserinfo => {
+                "Remove the user:password@ part — credentials belong in the API key field."
             }
         }
     }
@@ -161,7 +165,15 @@ pub fn validate_base_url(value: &str) -> Result<(), BaseUrlError> {
         Some(parts) => parts,
         None => return Err(BaseUrlError::NotAUrl),
     };
-    let host = rest.split('/').next().unwrap_or("");
+    let authority = rest.split('/').next().unwrap_or("");
+    // `http://localhost:80@evil.example/v1` is a remote URL: everything before
+    // the `@` is userinfo, not the host. Accepting it would have let the
+    // loopback exemption below wave through a plaintext request to
+    // `evil.example` carrying the API key and the staged diff.
+    if authority.contains('@') {
+        return Err(BaseUrlError::HasUserinfo);
+    }
+    let host = authority;
     if host.is_empty() || host.starts_with(':') {
         return Err(BaseUrlError::NotAUrl);
     }
@@ -552,6 +564,25 @@ mod tests {
         assert_eq!(
             validate_base_url("http://[2001:db8::1]:11434/v1"),
             Err(BaseUrlError::InsecureScheme)
+        );
+    }
+
+    /// The authority before an `@` is userinfo, so the real host is whatever
+    /// follows it. Reading `localhost` out of the front of one would have let
+    /// the loopback exemption send an API key to a remote host in plaintext.
+    #[test]
+    fn userinfo_cannot_disguise_a_remote_host_as_loopback() {
+        assert_eq!(
+            validate_base_url("http://localhost:80@evil.example/v1"),
+            Err(BaseUrlError::HasUserinfo)
+        );
+        assert_eq!(
+            validate_base_url("https://user:pass@gw.example.com/v1"),
+            Err(BaseUrlError::HasUserinfo)
+        );
+        assert_eq!(
+            effective_host(AiProvider::OpenAi, "http://localhost:80@evil.example/v1"),
+            "api.openai.com"
         );
     }
 

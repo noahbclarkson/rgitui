@@ -207,7 +207,7 @@ impl AiGenerator {
         repo_path: PathBuf,
         cx: &mut Context<Self>,
     ) -> Option<GenerationId> {
-        self.generate_commit_message_with_tools(diff, summary, repo_path, false, cx)
+        self.generate_commit_message_with_tools(diff, summary, repo_path, false, None, cx)
     }
 
     /// Generate a commit message, optionally letting the model call tools.
@@ -216,12 +216,17 @@ impl AiGenerator {
     /// request was refused — already generating, or inside the cooldown. The
     /// caller does not need to guard those cases itself, which is what keeps
     /// the button, Ctrl+G and the command palette from disagreeing.
+    /// `style_override` applies to this request only, leaving the saved
+    /// preference alone: "Regenerate in a different style" is a one-off, and
+    /// writing it through to settings both changed every later generation and
+    /// raced an already-open Settings window holding the previous value.
     pub fn generate_commit_message_with_tools(
         &mut self,
         diff: String,
         summary: String,
         repo_path: PathBuf,
         use_tools: bool,
+        style_override: Option<CommitStyle>,
         cx: &mut Context<Self>,
     ) -> Option<GenerationId> {
         if self.is_generating() {
@@ -240,7 +245,8 @@ impl AiGenerator {
         let provider = settings.ai.provider;
         let api_key = settings_state.ai_api_key();
         let model = settings.ai.model.clone();
-        let commit_style = CommitStyle::from_id(&settings.ai.commit_style).unwrap_or_default();
+        let commit_style = style_override
+            .unwrap_or_else(|| CommitStyle::from_id(&settings.ai.commit_style).unwrap_or_default());
         let inject_project_context = settings.ai.inject_project_context;
         let base_url_override = settings.ai.base_url_override.clone();
         let openrouter_attribution = settings.ai.openrouter_attribution;

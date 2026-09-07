@@ -376,6 +376,13 @@ pub struct SettingsView {
     /// The running connection test per provider. A single slot dropped — and
     /// so cancelled — the test another row was still showing as in progress.
     pub(super) ai_test_tasks: BTreeMap<AiProvider, Task<()>>,
+    /// Monotonic id for the next connection test.
+    pub(super) ai_test_generation: u64,
+    /// The in-flight test per provider, by that id. Editing the key or the
+    /// base URL clears the entry, so a result that describes the credentials
+    /// or the server the user just replaced is discarded rather than reported
+    /// as verifying the new configuration.
+    pub(super) ai_test_in_flight: BTreeMap<AiProvider, u64>,
 
     /// The live model catalogue, per provider, with where it came from.
     pub(super) ai_catalog: BTreeMap<AiProvider, Vec<ModelInfo>>,
@@ -560,7 +567,10 @@ impl SettingsView {
                 move |this: &mut Self, _, event: &TextInputEvent, cx| match event {
                     // Debounced rather than per-keystroke, so the OS keychain
                     // is not round-tripped for every character typed.
-                    TextInputEvent::Changed(_) => this.schedule_secret_save(cx),
+                    TextInputEvent::Changed(_) => {
+                        this.invalidate_ai_connection(provider, cx);
+                        this.schedule_secret_save(cx);
+                    }
                     // Enter and blur both flush: typing a key and clicking away
                     // used to discard it silently, while pasting the same key
                     // saved it immediately.
@@ -950,6 +960,8 @@ impl SettingsView {
             ai_connection_error: BTreeMap::new(),
             ai_verified_at: BTreeMap::new(),
             ai_test_tasks: BTreeMap::new(),
+            ai_test_generation: 0,
+            ai_test_in_flight: BTreeMap::new(),
             ai_catalog: BTreeMap::new(),
             ai_catalog_source: BTreeMap::new(),
             ai_catalog_error: BTreeMap::new(),
