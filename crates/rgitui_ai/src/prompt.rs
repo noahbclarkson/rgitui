@@ -161,34 +161,89 @@ pub(crate) fn build_prompt(
 pub(crate) const PROJECT_CONTEXT_FILES: &[&str] = &["README.md", "CLAUDE.md", "AGENTS.md"];
 pub(crate) const MAX_PROJECT_CONTEXT_BYTES: usize = 50_000;
 
+/// Appended to a context file that did not fit in the remaining budget, so
+/// the model is told the file is partial rather than reading a sentence that
+/// stops mid-word.
+const TRUNCATION_MARKER: &str = "\n[project context truncated]";
+
 /// Read the project-context files, if any exist. Blocking I/O — call it from a
 /// background task.
+///
+/// Context injection is on by default, so this runs against whatever a freshly
+/// cloned repository contains: every read is confined to the checkout and
+/// bounded by the remaining budget before any bytes are taken.
 pub(crate) fn collect_project_context(repo_path: &Path) -> Option<String> {
+    let canonical_repo = repo_path.canonicalize().ok()?;
     let mut combined = String::new();
 
     for filename in PROJECT_CONTEXT_FILES {
-        let file_path = repo_path.join(filename);
-        if let Ok(contents) = std::fs::read_to_string(&file_path) {
-            if !contents.trim().is_empty() {
-                combined.push_str(&format!("=== {filename} ===\n{contents}\n\n"));
-            }
+        let header = format!("=== {filename} ===\n");
+        // The header, the marker and the separator come out of the same
+        // budget, so a file that fills it cannot push the total over.
+        let overhead = header.len() + TRUNCATION_MARKER.len() + 2;
+        let Some(remaining) = MAX_PROJECT_CONTEXT_BYTES
+            .checked_sub(combined.len() + overhead)
+            .filter(|remaining| *remaining > 0)
+        else {
+            break;
+        };
+        let Some((contents, truncated)) = read_context_file(&canonical_repo, filename, remaining)
+        else {
+            continue;
+        };
+        if contents.trim().is_empty() {
+            continue;
         }
+        combined.push_str(&header);
+        combined.push_str(&contents);
+        if truncated {
+            combined.push_str(TRUNCATION_MARKER);
+        }
+        combined.push_str("\n\n");
     }
 
-    if combined.is_empty() {
+    (!combined.is_empty()).then_some(combined)
+}
+
+/// Read at most `limit` bytes of one project-context file, and only from
+/// inside `canonical_repo`. Reports whether the file was cut short.
+///
+/// The canonical check is what stops a cloned repository shipping `README.md`
+/// as a symlink to a credential file and having the first generated commit
+/// message upload it — the same rule `get_file_content` already applies to
+/// paths the model asks for. The limit is applied while reading rather than
+/// after, so a huge file cannot be pulled into memory in full only to be
+/// truncated.
+fn read_context_file(
+    canonical_repo: &Path,
+    filename: &str,
+    limit: usize,
+) -> Option<(String, bool)> {
+    use std::io::Read as _;
+
+    let canonical_file = canonical_repo.join(filename).canonicalize().ok()?;
+    if !canonical_file.starts_with(canonical_repo) || !canonical_file.is_file() {
         return None;
     }
 
-    if combined.len() > MAX_PROJECT_CONTEXT_BYTES {
-        let cut = {
-            let safe = safe_truncate(&combined, MAX_PROJECT_CONTEXT_BYTES);
-            safe.rfind('\n').unwrap_or(safe.len())
-        };
-        combined.truncate(cut);
-        combined.push_str("\n\n[project context truncated]");
-    }
+    let file = std::fs::File::open(&canonical_file).ok()?;
+    // A few bytes past the limit, so a character straddling the boundary still
+    // has all of its bytes present and the overshoot reveals a longer file.
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 4).read_to_end(&mut bytes).ok()?;
+    let truncated = bytes.len() > limit;
 
-    Some(combined)
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        // `error_len() == None` means the input ended mid-character, which is
+        // this function's own doing. Genuinely invalid bytes are rejected, as
+        // they are everywhere else the model is shown a file.
+        Err(error) if error.error_len().is_none() => {
+            std::str::from_utf8(&bytes[..error.valid_up_to()]).ok()?
+        }
+        Err(_) => return None,
+    };
+    Some((safe_truncate(text, limit).to_string(), truncated))
 }
 
 #[cfg(test)]
@@ -349,7 +404,61 @@ mod tests {
         )
         .unwrap();
         let context = collect_project_context(dir.path()).unwrap();
-        assert!(context.ends_with("[project context truncated]"));
-        assert!(context.len() < MAX_PROJECT_CONTEXT_BYTES + 100);
+        assert!(context.contains(TRUNCATION_MARKER));
+        assert!(context.len() <= MAX_PROJECT_CONTEXT_BYTES);
+    }
+
+    /// Context injection is on by default, so a cloned repository could ship
+    /// `README.md` as a symlink to a credential file and have the first
+    /// generated commit message upload it.
+    #[cfg(unix)]
+    #[test]
+    fn a_context_file_symlinked_outside_the_repo_is_not_read() {
+        let outside = TempDir::new().unwrap();
+        let secret = outside.path().join("credentials");
+        std::fs::write(&secret, "AWS_SECRET_ACCESS_KEY=hunter2").unwrap();
+
+        let dir = TempDir::new().unwrap();
+        std::os::unix::fs::symlink(&secret, dir.path().join("README.md")).unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "in-repo guidance").unwrap();
+
+        let context = collect_project_context(dir.path()).unwrap();
+        assert!(!context.contains("hunter2"));
+        assert!(!context.contains("README.md"));
+        assert!(context.contains("in-repo guidance"));
+    }
+
+    /// The budget used to be applied after every file had been read in full,
+    /// so one huge file allocated its whole size before being thrown away.
+    #[test]
+    fn no_single_context_file_is_read_beyond_the_budget() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("README.md"),
+            "x".repeat(MAX_PROJECT_CONTEXT_BYTES * 4),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "y".repeat(1_000)).unwrap();
+
+        let context = collect_project_context(dir.path()).unwrap();
+        assert!(context.len() <= MAX_PROJECT_CONTEXT_BYTES);
+        // The second file is skipped rather than read: the budget was already
+        // spent by the first.
+        assert!(!context.contains("CLAUDE.md"));
+    }
+
+    /// A multi-byte character straddling the read boundary must not make the
+    /// whole file vanish.
+    #[test]
+    fn a_character_split_by_the_budget_does_not_discard_the_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("README.md"),
+            "é".repeat(MAX_PROJECT_CONTEXT_BYTES),
+        )
+        .unwrap();
+        let context = collect_project_context(dir.path()).unwrap();
+        assert!(context.contains("README.md"));
+        assert!(context.contains('é'));
     }
 }

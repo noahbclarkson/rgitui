@@ -28,7 +28,7 @@ use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, ConnectionState, Icon, IconName,
     IconSize, Label, LabelSize, Picker, TextInput, TextInputEvent,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::events::SettingsViewEvent;
 use super::{SettingsWindowAction, SettingsWindowActionGlobal};
@@ -398,6 +398,11 @@ pub struct SettingsView {
     /// pressed Refresh by hand.
     pub(super) ai_catalog_in_flight: BTreeMap<AiProvider, u64>,
     pub(super) ai_catalog_tasks: BTreeMap<AiProvider, Task<()>>,
+    /// Providers whose cached catalogue no longer describes their credentials,
+    /// so the next load must bypass the cache. `/models` results can be scoped
+    /// to the key, and a cache written under the old one stays fresh for 24
+    /// hours.
+    pub(super) ai_catalog_stale: BTreeSet<AiProvider>,
     pub(super) ai_model_picker: Entity<Picker>,
     pub(super) ai_model_picker_open: bool,
     /// Debounces the keychain write so it happens once per pause in typing
@@ -568,7 +573,7 @@ impl SettingsView {
                     // Debounced rather than per-keystroke, so the OS keychain
                     // is not round-tripped for every character typed.
                     TextInputEvent::Changed(_) => {
-                        this.invalidate_ai_connection(provider, cx);
+                        this.invalidate_ai_provider(provider, cx);
                         this.schedule_secret_save(cx);
                     }
                     // Enter and blur both flush: typing a key and clicking away
@@ -968,6 +973,7 @@ impl SettingsView {
             ai_catalog_generation: 0,
             ai_catalog_in_flight: BTreeMap::new(),
             ai_catalog_tasks: BTreeMap::new(),
+            ai_catalog_stale: BTreeSet::new(),
             ai_model_picker,
             ai_model_picker_open: false,
             pending_secret_save: None,

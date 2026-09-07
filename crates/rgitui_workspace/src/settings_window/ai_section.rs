@@ -158,10 +158,7 @@ impl SettingsView {
             .copied()
             .filter(|provider| provider.is_openai_compatible())
         {
-            self.ai_catalog.remove(&provider);
-            self.ai_catalog_source.remove(&provider);
-            self.ai_catalog_error.remove(&provider);
-            self.invalidate_ai_connection(provider, cx);
+            self.invalidate_ai_provider(provider, cx);
         }
         if let Some(provider) = self
             .expanded_ai_provider
@@ -185,6 +182,23 @@ impl SettingsView {
         if self.ai_test_in_flight.remove(&provider).is_some() || had_state {
             cx.notify();
         }
+    }
+
+    /// As [`Self::invalidate_ai_connection`], and drop the model catalogue
+    /// with it.
+    ///
+    /// `/models` results can be scoped to the credential, so a list fetched
+    /// under the previous key describes an account the user is replacing.
+    /// Superseding the in-flight request also stops one that is already
+    /// running from installing its result afterwards.
+    pub(super) fn invalidate_ai_provider(&mut self, provider: AiProvider, cx: &mut Context<Self>) {
+        self.invalidate_ai_connection(provider, cx);
+        self.ai_catalog.remove(&provider);
+        self.ai_catalog_source.remove(&provider);
+        self.ai_catalog_error.remove(&provider);
+        self.ai_catalog_in_flight.remove(&provider);
+        self.ai_catalog_stale.insert(provider);
+        cx.notify();
     }
 
     /// The one honest answer the settings page can give about a key.
@@ -272,34 +286,35 @@ impl SettingsView {
         self.ai_test_tasks.insert(provider, task);
     }
 
-    /// Read `provider`'s cached catalogue and render it at once, revalidating
-    /// in the background only when it is not fresh.
+    /// Show `provider`'s bundled list at once, then resolve the real one.
+    ///
+    /// The cache used to be read and deserialised here, on the UI thread: an
+    /// unfiltered OpenRouter catalogue is a few hundred KB of JSON, so cold
+    /// storage stalled the settings window. Everything but the bundled list —
+    /// which is compiled in — now happens on the background executor.
     pub(super) fn load_ai_catalog(&mut self, provider: AiProvider, cx: &mut Context<Self>) {
-        let base_url = self.ai_base_url_override.clone();
-        if let std::collections::btree_map::Entry::Vacant(e) = self.ai_catalog.entry(provider) {
-            let cached = catalog::read_cached(provider, &base_url);
-            let fresh = cached.as_ref().map(|cached| {
-                catalog::freshness(cached.fetched_at, catalog::now_unix())
-                    == catalog::CatalogFreshness::Fresh
-            });
-            let (models, source) = catalog::resolve_catalog(provider, cached);
-            e.insert(models);
-            self.ai_catalog_source.insert(provider, source);
-            self.sync_model_picker(cx);
-            if fresh == Some(true) {
-                return;
+        match self.ai_catalog.entry(provider) {
+            std::collections::btree_map::Entry::Occupied(_) => {
+                if matches!(
+                    self.ai_catalog_source.get(&provider),
+                    Some(CatalogSource::Live)
+                ) {
+                    return;
+                }
             }
-        } else if matches!(
-            self.ai_catalog_source.get(&provider),
-            Some(CatalogSource::Live)
-        ) {
-            return;
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(catalog::bundled_catalog(provider));
+                self.ai_catalog_source
+                    .insert(provider, CatalogSource::Bundled);
+                self.sync_model_picker(cx);
+            }
         }
 
         self.refresh_ai_catalog(provider, false, cx);
     }
 
-    /// Fetch `provider`'s catalogue in the background.
+    /// Resolve `provider`'s catalogue: cache first, network when the cache is
+    /// not fresh.
     ///
     /// A failure keeps the cached list on screen and reports itself inline.
     /// Blanking the picker because a refresh failed would be strictly worse
@@ -316,6 +331,9 @@ impl SettingsView {
             // yet, and the bundled list is already showing.
             return;
         }
+        // A credential or endpoint change makes the cached list describe
+        // something other than the current configuration.
+        let force = force || self.ai_catalog_stale.remove(&provider);
         if !force && self.ai_catalog_in_flight.contains_key(&provider) {
             return;
         }
@@ -328,23 +346,14 @@ impl SettingsView {
         cx.notify();
 
         let task = cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
-            // Send, parse and cache-write, all off the UI thread: the
-            // unfiltered OpenRouter payload is around 700 KB.
-            let fetched = cx
+            // Cache read, JSON parse, request, and cache write: all off the UI
+            // thread. An unfiltered OpenRouter catalogue is around 700 KB in
+            // either direction.
+            let outcome = cx
                 .background_executor()
-                .spawn(async move {
-                    let models =
-                        catalog::fetch_models(provider, &client, key.as_deref(), &base_url).await?;
-                    let envelope = catalog::CachedCatalog {
-                        schema: catalog::CATALOG_SCHEMA,
-                        fetched_at: catalog::now_unix(),
-                        models: models.clone(),
-                    };
-                    if let Err(error) = catalog::write_cached(provider, &base_url, &envelope) {
-                        log::warn!("Failed to cache the {} model list: {}", provider, error);
-                    }
-                    anyhow::Ok(models)
-                })
+                .spawn(
+                    async move { resolve_catalog(provider, &client, key, &base_url, force).await },
+                )
                 .await;
 
             this.update(cx, |this, cx| {
@@ -354,14 +363,16 @@ impl SettingsView {
                     return;
                 }
                 this.ai_catalog_in_flight.remove(&provider);
-                match fetched {
-                    Ok(models) => {
+                match outcome.error {
+                    Some(error) => {
+                        this.ai_catalog_error.insert(provider, error);
+                    }
+                    None => {
                         this.ai_catalog_error.remove(&provider);
-                        this.apply_ai_catalog(provider, models, CatalogSource::Live, cx);
                     }
-                    Err(error) => {
-                        this.ai_catalog_error.insert(provider, error.to_string());
-                    }
+                }
+                if let Some((models, source)) = outcome.models {
+                    this.apply_ai_catalog(provider, models, source, cx);
                 }
                 cx.notify();
             })
@@ -1401,6 +1412,68 @@ impl SettingsView {
 }
 
 /// A picker row for one model, with the facets its filter chips need.
+/// What one catalogue resolution produced.
+///
+/// The rows and the error are independent: a failed refresh still carries the
+/// cached rows, because blanking a list because a request failed is strictly
+/// worse than showing a stale one.
+struct CatalogOutcome {
+    models: Option<(Vec<ModelInfo>, CatalogSource)>,
+    error: Option<String>,
+}
+
+/// Read the cache, and fetch only when it is not fresh. Pure I/O with no
+/// entity access, so the whole thing runs on the background executor.
+async fn resolve_catalog(
+    provider: AiProvider,
+    client: &std::sync::Arc<dyn gpui::http_client::HttpClient>,
+    key: Option<String>,
+    base_url: &str,
+    force: bool,
+) -> CatalogOutcome {
+    let cached = catalog::read_cached(provider, base_url);
+    let cached_rows = |cached: catalog::CachedCatalog| {
+        (!cached.models.is_empty()).then(|| {
+            let fetched_at = cached.fetched_at;
+            (cached.models, CatalogSource::Cache { fetched_at })
+        })
+    };
+
+    if !force {
+        let fresh = cached.as_ref().is_some_and(|cached| {
+            catalog::freshness(cached.fetched_at, catalog::now_unix())
+                == catalog::CatalogFreshness::Fresh
+        });
+        if fresh {
+            return CatalogOutcome {
+                models: cached.and_then(cached_rows),
+                error: None,
+            };
+        }
+    }
+
+    match catalog::fetch_models(provider, client, key.as_deref(), base_url).await {
+        Ok(models) => {
+            let envelope = catalog::CachedCatalog {
+                schema: catalog::CATALOG_SCHEMA,
+                fetched_at: catalog::now_unix(),
+                models: models.clone(),
+            };
+            if let Err(error) = catalog::write_cached(provider, base_url, &envelope) {
+                log::warn!("Failed to cache the {} model list: {}", provider, error);
+            }
+            CatalogOutcome {
+                models: Some((models, CatalogSource::Live)),
+                error: None,
+            }
+        }
+        Err(error) => CatalogOutcome {
+            models: cached.and_then(cached_rows),
+            error: Some(error.to_string()),
+        },
+    }
+}
+
 fn model_row(provider: AiProvider, model: &ModelInfo) -> PickerRow {
     let mut row = PickerRow::new(model.id.clone(), model.display_name.clone())
         .secondary(provider.display_name())
