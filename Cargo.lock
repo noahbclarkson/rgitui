@@ -5548,12 +5548,12 @@ dependencies = [
  "anyhow",
  "futures",
  "gpui",
- "http_client",
+ "log",
+ "rgitui_git",
  "rgitui_settings",
  "serde",
  "serde_json",
  "tempfile",
- "uuid",
 ]
 
 [[package]]

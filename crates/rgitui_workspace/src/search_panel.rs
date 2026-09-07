@@ -138,6 +138,7 @@ impl GlobalSearchView {
                     }
                     cx.stop_propagation();
                 }
+                TextInputEvent::Blurred => {}
             },
         )
         .detach();

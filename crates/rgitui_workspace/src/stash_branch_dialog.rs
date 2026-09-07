@@ -55,6 +55,7 @@ impl StashBranchDialog {
                 TextInputEvent::Submit => {
                     this.try_create(cx);
                 }
+                TextInputEvent::Blurred => {}
                 TextInputEvent::Changed(text) => {
                     this.error_message = Self::validate_branch_name(text);
                     cx.notify();

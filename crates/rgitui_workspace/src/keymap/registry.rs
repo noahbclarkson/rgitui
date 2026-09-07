@@ -31,7 +31,7 @@
 // invocation site; `always_show` is the default and is referenced through
 // `$crate`, so it is not imported here.
 use crate::command_palette::{
-    has_changes, has_github_token, has_multi_commit_selection, has_remotes, has_staged,
+    ai_ready, has_changes, has_github_token, has_multi_commit_selection, has_remotes, has_staged,
     has_stashes, in_progress_operation, is_bisecting, worktree_clean, CommandContext,
 };
 
@@ -130,7 +130,7 @@ commands! {
         /// Search the commit graph.
         Search ["secondary-f", "/" in "Workspace && !modal && !TextInput"];
         /// Generate a commit message with the configured AI provider.
-        AiMessage "secondary-g" if has_staged;
+        AiMessage "secondary-g" if ai_ready;
         /// Reload the repository state from disk.
         Refresh "f5";
         /// Open the settings window.

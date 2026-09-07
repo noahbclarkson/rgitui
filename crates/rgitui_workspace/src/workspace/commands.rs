@@ -426,6 +426,9 @@ impl Workspace {
                 });
             }
             CommandId::AiMessage => {
+                // Emitting the panel's own event routes through the same
+                // guarded handler the button uses, so the keyboard cannot
+                // start a request the button would have refused.
                 tab.commit_panel.update(cx, |_cp, cx| {
                     cx.emit(CommitPanelEvent::GenerateAiMessage);
                 });

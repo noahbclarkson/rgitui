@@ -213,6 +213,7 @@ impl IssuesPanel {
                             let query = input.read(cx).text().to_string();
                             this.submit_search(query, cx);
                         }
+                        TextInputEvent::Blurred => {}
                         TextInputEvent::Changed(_) => {}
                     },
                 )

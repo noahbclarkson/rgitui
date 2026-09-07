@@ -100,9 +100,21 @@ impl SettingsWindow {
     /// from here and cannot be dismissed from here.
     fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
         match cmd {
-            CommandId::Cancel => window.remove_window(),
+            CommandId::Cancel => self.close(window, cx),
             _ => cx.propagate(),
         }
+    }
+
+    /// Close the window, flushing any text field whose edit has not yet been
+    /// committed.
+    ///
+    /// Controls autosave on change and text inputs flush on Enter and on blur,
+    /// so this is a safety net rather than the primary path — but closing a
+    /// window is not a way to discard a pasted secret.
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.view
+            .update(cx, |view, cx| view.commit_pending_edits(cx));
+        window.remove_window();
     }
 }
 
@@ -140,8 +152,8 @@ impl Render for SettingsWindow {
                             .style(ButtonStyle::Subtle)
                             .size(ButtonSize::Default)
                             .icon(IconName::X)
-                            .on_click(cx.listener(|_, _: &ClickEvent, window, _| {
-                                window.remove_window();
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.close(window, cx);
                             })),
                     ),
             )

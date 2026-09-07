@@ -65,6 +65,7 @@ impl WorktreeDialog {
                 TextInputEvent::Submit => {
                     this.try_create(cx);
                 }
+                TextInputEvent::Blurred => {}
                 TextInputEvent::Changed(text) => {
                     this.error_message = Self::validate_name(text);
                     cx.notify();
@@ -79,6 +80,7 @@ impl WorktreeDialog {
                 TextInputEvent::Submit => {
                     this.try_create(cx);
                 }
+                TextInputEvent::Blurred => {}
                 TextInputEvent::Changed(text) => {
                     this.error_message = Self::validate_path(text);
                     cx.notify();

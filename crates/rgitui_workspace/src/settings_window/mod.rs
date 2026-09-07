@@ -18,6 +18,7 @@
 //! render loop updates the in-memory state on resize/move; the on-disk
 //! write happens on window close to avoid per-frame keychain access.
 
+mod ai_section;
 mod channel;
 mod events;
 mod view;

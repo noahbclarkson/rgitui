@@ -11,6 +11,9 @@ use std::ops::Range;
 pub enum TextInputEvent {
     Changed(String),
     Submit,
+    /// The input lost focus. Lets a listener flush a pending edit that was
+    /// never submitted with Enter, rather than silently discarding it.
+    Blurred,
 }
 
 impl EventEmitter<TextInputEvent> for TextInput {}
@@ -34,6 +37,9 @@ pub struct TextInput {
     compact: bool,
     disabled: bool,
     read_only: bool,
+    /// Registered on the first render, because `on_focus_out` needs a
+    /// `Window` and construction has none. Dropping it unsubscribes.
+    focus_out_subscription: Option<gpui::Subscription>,
 }
 
 impl TextInput {
@@ -52,6 +58,7 @@ impl TextInput {
             compact: false,
             disabled: false,
             read_only: false,
+            focus_out_subscription: None,
         }
     }
 
@@ -497,6 +504,15 @@ impl Focusable for TextInput {
 
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.focus_out_subscription.is_none() {
+            let handle = self.focus_handle.clone();
+            self.focus_out_subscription =
+                Some(
+                    cx.on_focus_out(&handle, window, |_this, _event, _window, cx| {
+                        cx.emit(TextInputEvent::Blurred);
+                    }),
+                );
+        }
         let colors = cx.colors();
         let is_focused = self.focus_handle.is_focused(window);
         // TODO(audit) QUAL-18: clearing the selection on blur from inside the

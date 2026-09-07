@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use gpui::{App, Global};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -124,6 +124,17 @@ pub enum AutoFetchInterval {
     FiveMinutes,
     FifteenMinutes,
     ThirtyMinutes,
+}
+
+impl AutoFetchInterval {
+    /// Every interval, in the order the settings UI lists them.
+    pub const ALL: &'static [AutoFetchInterval] = &[
+        AutoFetchInterval::Disabled,
+        AutoFetchInterval::OneMinute,
+        AutoFetchInterval::FiveMinutes,
+        AutoFetchInterval::FifteenMinutes,
+        AutoFetchInterval::ThirtyMinutes,
+    ];
 }
 
 impl fmt::Display for AutoFetchInterval {
@@ -271,7 +282,7 @@ pub struct SavedWindowBounds {
 }
 
 /// Current settings version. Increment when making breaking changes.
-const CURRENT_SETTINGS_VERSION: u32 = 2;
+const CURRENT_SETTINGS_VERSION: u32 = 3;
 
 fn default_settings_version() -> u32 {
     CURRENT_SETTINGS_VERSION
@@ -375,16 +386,163 @@ fn default_max_recent() -> usize {
     20
 }
 
+/// The AI providers rgitui can talk to.
+///
+/// Persisted by its lowercase id, and the single source of truth for endpoint
+/// shape, auth style and default model. Dispatching on a bare string is what
+/// let a hand-edited `settings.json` reach the network layer before failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum AiProvider {
+    #[default]
+    Gemini,
+    #[serde(rename = "openai")]
+    OpenAi,
+    Anthropic,
+    #[serde(rename = "deepseek")]
+    DeepSeek,
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+}
+
+impl AiProvider {
+    /// Every provider, in the order the settings UI lists them.
+    pub const ALL: &'static [AiProvider] = &[
+        AiProvider::Gemini,
+        AiProvider::OpenAi,
+        AiProvider::Anthropic,
+        AiProvider::DeepSeek,
+        AiProvider::OpenRouter,
+    ];
+
+    /// The stable id used in `settings.json`, keychain accounts and catalogue
+    /// cache filenames. Changing one needs a migration.
+    pub fn id(self) -> &'static str {
+        match self {
+            AiProvider::Gemini => "gemini",
+            AiProvider::OpenAi => "openai",
+            AiProvider::Anthropic => "anthropic",
+            AiProvider::DeepSeek => "deepseek",
+            AiProvider::OpenRouter => "openrouter",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AiProvider::Gemini => "Google Gemini",
+            AiProvider::OpenAi => "OpenAI",
+            AiProvider::Anthropic => "Anthropic",
+            AiProvider::DeepSeek => "DeepSeek",
+            AiProvider::OpenRouter => "OpenRouter",
+        }
+    }
+
+    /// Parse a persisted id. Case- and whitespace-insensitive, so a hand-edited
+    /// `"Anthropic"` resolves instead of silently falling back.
+    pub fn from_id(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|provider| provider.id() == normalized)
+    }
+
+    /// The GA model a fresh install (or a provider switch with no remembered
+    /// choice) uses: cheap, fast and tool-capable, because commit-message
+    /// generation does not need a frontier model.
+    pub fn default_model(self) -> &'static str {
+        match self {
+            AiProvider::Gemini => "gemini-3.1-flash-lite",
+            AiProvider::OpenAi => "gpt-5.6-luna",
+            AiProvider::Anthropic => "claude-haiku-4-5",
+            AiProvider::DeepSeek => "deepseek-v4-flash",
+            AiProvider::OpenRouter => "google/gemini-3.1-flash-lite",
+        }
+    }
+
+    /// Where the user creates an API key for this provider.
+    pub fn key_url(self) -> &'static str {
+        match self {
+            AiProvider::Gemini => "https://aistudio.google.com/apikey",
+            AiProvider::OpenAi => "https://platform.openai.com/api-keys",
+            AiProvider::Anthropic => "https://console.anthropic.com/settings/keys",
+            AiProvider::DeepSeek => "https://platform.deepseek.com/api_keys",
+            AiProvider::OpenRouter => "https://openrouter.ai/keys",
+        }
+    }
+
+    /// The host requests reach by default. Shown when warning about a
+    /// `base_url_override` so the user sees what they are replacing.
+    pub fn default_host(self) -> &'static str {
+        match self {
+            AiProvider::Gemini => "generativelanguage.googleapis.com",
+            AiProvider::OpenAi => "api.openai.com",
+            AiProvider::Anthropic => "api.anthropic.com",
+            AiProvider::DeepSeek => "api.deepseek.com",
+            AiProvider::OpenRouter => "openrouter.ai",
+        }
+    }
+
+    /// Whether this provider speaks the OpenAI `/chat/completions` shape.
+    /// Only these honour `base_url_override`.
+    pub fn is_openai_compatible(self) -> bool {
+        matches!(
+            self,
+            AiProvider::OpenAi | AiProvider::DeepSeek | AiProvider::OpenRouter
+        )
+    }
+}
+
+impl fmt::Display for AiProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.display_name())
+    }
+}
+
+/// Deserialize a provider id leniently: an unknown value falls back to the
+/// default rather than failing the whole settings file. [`init`] surfaces the
+/// unknown value through `load_warnings` so the fallback is never silent.
+fn deserialize_ai_provider<'de, D>(deserializer: D) -> std::result::Result<AiProvider, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    Ok(AiProvider::from_id(&raw).unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiSettings {
-    #[serde(default = "default_ai_provider")]
-    pub provider: String,
+    #[serde(
+        default = "default_ai_provider",
+        deserialize_with = "deserialize_ai_provider"
+    )]
+    pub provider: AiProvider,
     #[serde(rename = "api_key", default, skip_serializing)]
     pub legacy_api_key: Option<String>,
+    /// Whether the *active* provider holds a key. Derived from
+    /// `has_api_key_for`; retained so existing readers keep working.
     #[serde(default)]
     pub has_api_key: bool,
+    /// Which providers hold a key in the OS keychain. Flags only — never the
+    /// secret itself.
+    #[serde(default)]
+    pub has_api_key_for: BTreeMap<String, bool>,
     #[serde(default = "default_ai_model")]
     pub model: String,
+    /// Per-provider model pin, keyed by provider id. Preserves the user's
+    /// choice per provider instead of resetting it on every provider switch.
+    #[serde(default)]
+    pub models_by_provider: BTreeMap<String, String>,
+    /// Override endpoint for OpenAI-compatible providers (LiteLLM, Ollama's
+    /// `/v1`, self-hosted gateways). Empty means use the built-in URL — the
+    /// default is deliberately not stored here so it cannot freeze at whatever
+    /// shipped.
+    #[serde(default)]
+    pub base_url_override: String,
+    /// Send `HTTP-Referer`/`X-Title` to OpenRouter for leaderboard attribution.
+    #[serde(default = "default_openrouter_attribution")]
+    pub openrouter_attribution: bool,
     #[serde(default = "default_commit_style")]
     pub commit_style: String,
     #[serde(default = "default_ai_enabled")]
@@ -393,6 +551,70 @@ pub struct AiSettings {
     pub inject_project_context: bool,
     #[serde(default = "default_use_tools")]
     pub use_tools: bool,
+}
+
+impl AiSettings {
+    /// The model pinned for `provider`, falling back to that provider's GA
+    /// default. Never returns another provider's model.
+    pub fn model_for(&self, provider: AiProvider) -> String {
+        if provider == self.provider && !self.model.trim().is_empty() {
+            return self.model.clone();
+        }
+        self.models_by_provider
+            .get(provider.id())
+            .filter(|model| !model.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| provider.default_model().to_string())
+    }
+
+    /// Whether `provider` has a key in the keychain, according to the persisted
+    /// flags. Does not touch the keychain.
+    pub fn has_key_for(&self, provider: AiProvider) -> bool {
+        self.has_api_key_for
+            .get(provider.id())
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Record whether `provider` holds a key, keeping the active-provider
+    /// mirror `has_api_key` in step.
+    pub fn set_has_key_for(&mut self, provider: AiProvider, has_key: bool) {
+        self.has_api_key_for
+            .insert(provider.id().to_string(), has_key);
+        if provider == self.provider {
+            self.has_api_key = has_key;
+        }
+    }
+
+    /// Point the active provider at `provider`, remembering the model the
+    /// previous provider used so switching back restores it.
+    pub fn set_active_provider(&mut self, provider: AiProvider) {
+        let previous = self.provider;
+        if !self.model.trim().is_empty() {
+            self.models_by_provider
+                .insert(previous.id().to_string(), self.model.clone());
+        }
+        // Resolve the incoming model *before* reassigning `provider`, so
+        // `model_for`'s active-provider shortcut cannot hand back the model the
+        // previous provider was using.
+        let next_model = self
+            .models_by_provider
+            .get(provider.id())
+            .filter(|model| !model.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| provider.default_model().to_string());
+        self.provider = provider;
+        self.model = next_model;
+        self.has_api_key = self.has_key_for(provider);
+    }
+
+    /// Pin `model` for the active provider.
+    pub fn set_active_model(&mut self, model: impl Into<String>) {
+        let model = model.into();
+        self.models_by_provider
+            .insert(self.provider.id().to_string(), model.clone());
+        self.model = model;
+    }
 }
 
 fn default_use_tools() -> bool {
@@ -407,12 +629,16 @@ fn default_inject_project_context() -> bool {
     true
 }
 
-fn default_ai_provider() -> String {
-    "gemini".into()
+fn default_openrouter_attribution() -> bool {
+    true
+}
+
+fn default_ai_provider() -> AiProvider {
+    AiProvider::Gemini
 }
 
 fn default_ai_model() -> String {
-    "gemini-2.0-flash".into()
+    default_ai_provider().default_model().into()
 }
 
 fn default_commit_style() -> String {
@@ -456,7 +682,9 @@ pub struct GitProviderSettings {
 
 #[derive(Debug, Clone, Default)]
 pub struct AuthRuntimeState {
-    pub ai_api_key: Option<String>,
+    /// Resolved AI keys, keyed by provider id. One slot per provider so a
+    /// provider switch cannot transmit the previous provider's credential.
+    pub ai_api_keys: BTreeMap<String, String>,
     pub git: GitAuthRuntime,
 }
 
@@ -499,7 +727,11 @@ impl Default for AiSettings {
             provider: default_ai_provider(),
             legacy_api_key: None,
             has_api_key: false,
+            has_api_key_for: BTreeMap::new(),
             model: default_ai_model(),
+            models_by_provider: BTreeMap::new(),
+            base_url_override: String::new(),
+            openrouter_attribution: default_openrouter_attribution(),
             commit_style: default_commit_style(),
             enabled: true,
             inject_project_context: default_inject_project_context(),
@@ -810,14 +1042,23 @@ impl SettingsState {
             log::info!("Migrated settings from version 1 to 2");
         }
 
-        // Future migrations go here:
-        // Migration 1 -> 2: Example
-        // if self.settings.version == 1 {
-        //     // Apply migration
-        //     self.settings.version = 2;
-        //     migrated = true;
-        //     log::info!("Migrated settings from version 1 to 2");
-        // }
+        // Migration 2 -> 3: AI keys became per-provider, and the shipped
+        // default model was a retired id absent from the picker. Remap the
+        // known-dead ids to their successors rather than leaving a pin that
+        // renders as no selection at all and 404s when used.
+        if self.settings.version == 2 {
+            if let Some(successor) = retired_model_successor(&self.settings.ai.model) {
+                log::info!(
+                    "Remapping retired AI model '{}' to '{}'",
+                    self.settings.ai.model,
+                    successor
+                );
+                self.settings.ai.model = successor.to_string();
+            }
+            self.settings.version = 3;
+            migrated = true;
+            log::info!("Migrated settings from version 2 to 3");
+        }
 
         // Ensure version is current
         if self.settings.version < CURRENT_SETTINGS_VERSION {
@@ -833,8 +1074,28 @@ impl SettingsState {
         migrated
     }
 
+    /// The API key for the active AI provider.
     pub fn ai_api_key(&self) -> Option<String> {
-        current_auth_runtime().ai_api_key
+        self.ai_api_key_for(self.settings.ai.provider)
+    }
+
+    /// The API key stored for a specific provider, materialized only for the
+    /// caller that asked for it.
+    pub fn ai_api_key_for(&self, provider: AiProvider) -> Option<String> {
+        with_auth_runtime(|runtime| runtime.ai_api_keys.get(provider.id()).cloned())
+    }
+
+    /// Whether the active provider has a key, without cloning any secret.
+    ///
+    /// Render paths must use this rather than `ai_api_key().is_some()`, which
+    /// deep-clones every credential the app holds on every frame.
+    pub fn has_ai_api_key(&self) -> bool {
+        self.settings.ai.has_key_for(self.settings.ai.provider)
+    }
+
+    /// Whether `provider` has a key, without cloning any secret.
+    pub fn has_ai_api_key_for(&self, provider: AiProvider) -> bool {
+        self.settings.ai.has_key_for(provider)
     }
 
     pub fn git_https_token(&self) -> Option<String> {
@@ -850,9 +1111,20 @@ impl SettingsState {
             .and_then(|provider| provider.token)
     }
 
+    /// Store (or clear) the API key for the active provider.
     pub fn set_ai_api_key(&mut self, value: Option<&str>) -> Result<()> {
+        self.set_ai_api_key_for(self.settings.ai.provider, value)
+    }
+
+    /// Store (or clear) the API key for a specific provider.
+    ///
+    /// The keychain write happens *before* any settings mutation, so a failed
+    /// write leaves the recorded flags and the resolved runtime key agreeing
+    /// with what is actually in the keychain.
+    pub fn set_ai_api_key_for(&mut self, provider: AiProvider, value: Option<&str>) -> Result<()> {
+        let has_key = write_secret(&ai_provider_account(provider.id()), value)?;
         self.settings.ai.legacy_api_key = None;
-        self.settings.ai.has_api_key = write_secret(AI_SECRET_ACCOUNT, value)?;
+        self.settings.ai.set_has_key_for(provider, has_key);
         sync_auth_runtime(&self.settings);
         Ok(())
     }
@@ -909,6 +1181,39 @@ impl SettingsState {
             if !self.settings.ai.has_api_key && write_secret(AI_SECRET_ACCOUNT, Some(&api_key))? {
                 self.settings.ai.has_api_key = true;
                 self.settings.ai.legacy_api_key = None;
+                migrated = true;
+            }
+        }
+
+        // Promote the single `ai/default` secret into the slot for whichever
+        // provider was active when it was written. `ai/default` is left in
+        // place so a downgrade still finds its key; a later save of that
+        // provider overwrites the new slot. Idempotent: the promotion is
+        // skipped once the per-provider slot exists.
+        if self.settings.ai.has_api_key {
+            let active = self.settings.ai.provider;
+            let account = ai_provider_account(active.id());
+            if read_secret(&account).is_none() {
+                if let Some(key) = read_secret(AI_SECRET_ACCOUNT) {
+                    if write_secret(&account, Some(&key))? {
+                        self.settings.ai.set_has_key_for(active, true);
+                        migrated = true;
+                        log::info!(
+                            "Promoted the shared AI key into the '{}' provider slot",
+                            active.id()
+                        );
+                    }
+                }
+            }
+        }
+
+        // Re-derive the per-provider flags from what the keychain actually
+        // holds. A flag that says "connected" for a provider with no key is
+        // exactly the false-connected state the per-provider split fixes.
+        for provider in AiProvider::ALL {
+            let present = read_secret(&ai_provider_account(provider.id())).is_some();
+            if self.settings.ai.has_key_for(*provider) != present {
+                self.settings.ai.set_has_key_for(*provider, present);
                 migrated = true;
             }
         }
@@ -1082,7 +1387,30 @@ pub fn init(cx: &mut App) {
     let settings = if config_path.exists() {
         match std::fs::read_to_string(&config_path) {
             Ok(json) => match serde_json::from_str::<AppSettings>(&json) {
-                Ok(settings) => settings,
+                Ok(settings) => {
+                    // The provider deserializer falls back rather than failing
+                    // the whole file, so re-read the raw value to tell the user
+                    // which id was not understood. Without this the settings UI
+                    // would simply show a different provider selected than the
+                    // one in their file.
+                    if let Some(raw) = raw_ai_provider(&json) {
+                        if AiProvider::from_id(&raw).is_none() {
+                            let msg = format!(
+                                "Unknown AI provider \"{}\" in settings.json; using {}. Valid values: {}.",
+                                raw,
+                                settings.ai.provider.id(),
+                                AiProvider::ALL
+                                    .iter()
+                                    .map(|provider| provider.id())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                            log::warn!("{}", msg);
+                            load_warnings.push(msg);
+                        }
+                    }
+                    settings
+                }
                 Err(e) => {
                     // Preserve the unparseable file so the user can recover any
                     // hand-edited content instead of silently overwriting it with
@@ -1151,6 +1479,17 @@ pub fn init(cx: &mut App) {
     cx.set_global(state);
 }
 
+/// The raw `ai.provider` string as it appears on disk, before the lenient
+/// deserializer has had a chance to substitute a fallback.
+fn raw_ai_provider(json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()?
+        .get("ai")?
+        .get("provider")?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// Install default settings for a test app.
 ///
 /// Any view that reads `cx.global::<SettingsState>()` in `render` needs this
@@ -1167,13 +1506,21 @@ pub fn init_test(cx: &mut App) {
     });
 }
 
+/// Borrow the resolved credentials under the lock and return only what the
+/// caller needs.
+///
+/// Prefer this over [`current_auth_runtime`], which deep-clones every secret
+/// the app holds — including ones the caller has no use for — into fresh heap
+/// allocations that are dropped without zeroization.
+pub fn with_auth_runtime<R>(f: impl FnOnce(&AuthRuntimeState) -> R) -> R {
+    let guard = auth_runtime().read().expect(
+        "git auth runtime RwLock poisoned - a previous thread panicked while holding the lock",
+    );
+    f(&guard)
+}
+
 pub fn current_auth_runtime() -> AuthRuntimeState {
-    auth_runtime()
-        .read()
-        .expect(
-            "git auth runtime RwLock poisoned - a previous thread panicked while holding the lock",
-        )
-        .clone()
+    with_auth_runtime(|runtime| runtime.clone())
 }
 
 pub fn current_git_auth_runtime() -> GitAuthRuntime {
@@ -1229,11 +1576,35 @@ fn default_git_providers() -> Vec<GitProviderSettings> {
 }
 
 const KEYRING_SERVICE: &str = "rgitui";
+/// The pre-v3 single AI key slot. Retained so the v2 -> v3 migration can read
+/// it and so a downgrade still finds a key; new writes never target it.
 const AI_SECRET_ACCOUNT: &str = "ai/default";
 const GIT_DEFAULT_HTTPS_ACCOUNT: &str = "git/default-https";
 
 fn git_provider_account(provider_id: &str) -> String {
     format!("git/provider/{}", provider_id)
+}
+
+fn ai_provider_account(provider_id: &str) -> String {
+    format!("ai/provider/{}", provider_id)
+}
+
+/// Model ids that are retired or fabricated, mapped to the successor a user
+/// pinned to them should land on. Applied once, by the v2 -> v3 migration.
+fn retired_model_successor(model: &str) -> Option<&'static str> {
+    match model.trim() {
+        // Retired 2026-06-01, and the shipped default that appeared in no
+        // picker, so a fresh install rendered the Model row with nothing
+        // selected.
+        "gemini-2.0-flash" | "gemini-1.5-flash" | "gemini-1.5-pro" => Some("gemini-3.1-flash-lite"),
+        // `20241022` is the Claude 3.5 snapshot date on a 4.5 name: a
+        // guaranteed 404 that was offered in the picker.
+        "claude-sonnet-4-5-20241022" => Some("claude-haiku-4-5"),
+        // o-series rejects `max_tokens` and a non-default `temperature`, and
+        // both are being retired.
+        "o3" | "o4-mini" | "o1" | "o1-mini" => Some("gpt-5.6-luna"),
+        _ => None,
+    }
 }
 
 fn auth_runtime() -> &'static RwLock<AuthRuntimeState> {
@@ -1243,7 +1614,7 @@ fn auth_runtime() -> &'static RwLock<AuthRuntimeState> {
 
 fn sync_auth_runtime(settings: &AppSettings) {
     let runtime = AuthRuntimeState {
-        ai_api_key: resolve_ai_api_key(&settings.ai),
+        ai_api_keys: resolve_ai_api_keys(&settings.ai),
         git: GitAuthRuntime {
             default_https_token: resolve_git_https_token(&settings.git),
             ssh_key_path: settings.git.ssh_key_path.as_ref().map(PathBuf::from),
@@ -1271,12 +1642,36 @@ fn sync_auth_runtime(settings: &AppSettings) {
     ) = runtime;
 }
 
-fn resolve_ai_api_key(settings: &AiSettings) -> Option<String> {
-    if settings.has_api_key {
-        read_secret(AI_SECRET_ACCOUNT).or_else(|| settings.legacy_api_key.clone())
-    } else {
-        settings.legacy_api_key.clone()
+/// Resolve every provider's key from the keychain in one pass.
+///
+/// Mirrors the git-provider loop: one read per provider that claims a key, and
+/// none for the rest, so adding a provider does not multiply the cost of an
+/// unrelated save.
+fn resolve_ai_api_keys(settings: &AiSettings) -> BTreeMap<String, String> {
+    let mut keys = BTreeMap::new();
+    for provider in AiProvider::ALL {
+        if !settings.has_key_for(*provider) {
+            continue;
+        }
+        if let Some(secret) = read_secret(&ai_provider_account(provider.id())) {
+            keys.insert(provider.id().to_string(), secret);
+        }
     }
+
+    // Pre-v3 files, and any install whose migration could not write to the
+    // keychain, still resolve through the shared slot for the active provider.
+    if !keys.contains_key(settings.provider.id()) {
+        let legacy = if settings.has_api_key {
+            read_secret(AI_SECRET_ACCOUNT).or_else(|| settings.legacy_api_key.clone())
+        } else {
+            settings.legacy_api_key.clone()
+        };
+        if let Some(secret) = legacy {
+            keys.insert(settings.provider.id().to_string(), secret);
+        }
+    }
+
+    keys
 }
 
 fn resolve_git_https_token(settings: &GitSettings) -> Option<String> {
@@ -1346,6 +1741,199 @@ mod tests {
             settings: AppSettings::default(),
             config_path: PathBuf::from("/tmp/rgitui-test-settings.json"),
             load_warnings: Vec::new(),
+        }
+    }
+
+    // ── AI provider catalogue coherence ───────────────────────────
+
+    /// The bug this guards is not hypothetical: the shipped default was
+    /// `gemini-2.0-flash`, which appeared in no picker, so a fresh install
+    /// rendered the Model row with nothing selected at all.
+    #[test]
+    fn default_model_is_the_default_provider_model() {
+        assert_eq!(default_ai_model(), default_ai_provider().default_model());
+    }
+
+    #[test]
+    fn every_provider_has_a_distinct_id_and_a_default_model() {
+        let mut ids: Vec<&str> = AiProvider::ALL.iter().map(|p| p.id()).collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "provider ids must be unique");
+
+        for provider in AiProvider::ALL {
+            assert!(!provider.default_model().is_empty());
+            assert!(provider.key_url().starts_with("https://"));
+            assert!(!provider.display_name().is_empty());
+            assert_eq!(AiProvider::from_id(provider.id()), Some(*provider));
+        }
+    }
+
+    #[test]
+    fn no_default_model_is_a_retired_id() {
+        for provider in AiProvider::ALL {
+            assert_eq!(
+                retired_model_successor(provider.default_model()),
+                None,
+                "{} ships a retired default",
+                provider.id()
+            );
+        }
+    }
+
+    #[test]
+    fn provider_id_parsing_is_lenient_about_case_and_whitespace() {
+        assert_eq!(
+            AiProvider::from_id("Anthropic"),
+            Some(AiProvider::Anthropic)
+        );
+        assert_eq!(AiProvider::from_id("  OpenAI "), Some(AiProvider::OpenAi));
+        assert_eq!(
+            AiProvider::from_id("openrouter"),
+            Some(AiProvider::OpenRouter)
+        );
+        assert_eq!(AiProvider::from_id("bard"), None);
+    }
+
+    #[test]
+    fn only_openai_compatible_providers_accept_a_base_url_override() {
+        assert!(AiProvider::OpenAi.is_openai_compatible());
+        assert!(AiProvider::DeepSeek.is_openai_compatible());
+        assert!(AiProvider::OpenRouter.is_openai_compatible());
+        assert!(!AiProvider::Gemini.is_openai_compatible());
+        assert!(!AiProvider::Anthropic.is_openai_compatible());
+    }
+
+    // ── AiSettings model memory ───────────────────────────────────
+
+    #[test]
+    fn switching_provider_preserves_each_providers_model_choice() {
+        let mut ai = AiSettings::default();
+        ai.set_active_model("gemini-3.1-pro-preview");
+
+        ai.set_active_provider(AiProvider::OpenAi);
+        assert_eq!(ai.model, AiProvider::OpenAi.default_model());
+        ai.set_active_model("gpt-5.4");
+
+        ai.set_active_provider(AiProvider::Gemini);
+        assert_eq!(ai.model, "gemini-3.1-pro-preview");
+
+        ai.set_active_provider(AiProvider::OpenAi);
+        assert_eq!(ai.model, "gpt-5.4");
+    }
+
+    #[test]
+    fn model_for_never_returns_another_providers_model() {
+        let mut ai = AiSettings::default();
+        ai.set_active_model("gemini-3.1-pro-preview");
+        assert_eq!(
+            ai.model_for(AiProvider::Anthropic),
+            AiProvider::Anthropic.default_model()
+        );
+    }
+
+    #[test]
+    fn key_flags_are_tracked_per_provider() {
+        let mut ai = AiSettings::default();
+        ai.set_has_key_for(AiProvider::Gemini, true);
+        assert!(ai.has_key_for(AiProvider::Gemini));
+        assert!(ai.has_api_key, "the active provider mirror must follow");
+        assert!(!ai.has_key_for(AiProvider::Anthropic));
+
+        // Switching to a provider with no key must not keep asserting
+        // "connected" — that false state is what enabled the AI button for a
+        // provider the app had no credential for.
+        ai.set_active_provider(AiProvider::Anthropic);
+        assert!(!ai.has_api_key);
+    }
+
+    // ── settings file compatibility ───────────────────────────────
+
+    #[test]
+    fn v2_settings_load_with_every_new_field_defaulted() {
+        let json = r#"{
+            "version": 2,
+            "ai": { "provider": "openai", "model": "gpt-5.4", "has_api_key": true }
+        }"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.ai.provider, AiProvider::OpenAi);
+        assert_eq!(settings.ai.model, "gpt-5.4");
+        assert!(settings.ai.has_api_key_for.is_empty());
+        assert!(settings.ai.models_by_provider.is_empty());
+        assert!(settings.ai.base_url_override.is_empty());
+        assert!(settings.ai.openrouter_attribution);
+    }
+
+    #[test]
+    fn an_unknown_provider_falls_back_instead_of_failing_the_file() {
+        let json = r#"{ "version": 3, "ai": { "provider": "bard" } }"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.ai.provider, AiProvider::default());
+        // And the raw value is still recoverable, which is what lets `init`
+        // tell the user which id it did not understand.
+        assert_eq!(raw_ai_provider(json).as_deref(), Some("bard"));
+    }
+
+    #[test]
+    fn a_miscased_provider_resolves_rather_than_falling_back() {
+        let json = r#"{ "ai": { "provider": "Anthropic" } }"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.ai.provider, AiProvider::Anthropic);
+    }
+
+    #[test]
+    fn the_api_key_never_reaches_the_settings_file() {
+        let mut settings = AppSettings::default();
+        settings.ai.legacy_api_key = Some("sk-should-never-be-written".into());
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("sk-should-never-be-written"));
+    }
+
+    #[test]
+    fn v2_to_v3_remaps_retired_model_ids() {
+        let mut state = test_settings_state();
+        state.settings.version = 2;
+        state.settings.ai.model = "gemini-2.0-flash".into();
+
+        assert!(state.migrate_settings());
+
+        assert_eq!(state.settings.version, CURRENT_SETTINGS_VERSION);
+        assert_eq!(state.settings.ai.model, "gemini-3.1-flash-lite");
+    }
+
+    #[test]
+    fn v2_to_v3_leaves_a_live_model_alone() {
+        let mut state = test_settings_state();
+        state.settings.version = 2;
+        state.settings.ai.model = "gemini-2.5-pro".into();
+
+        state.migrate_settings();
+
+        assert_eq!(state.settings.ai.model, "gemini-2.5-pro");
+    }
+
+    #[test]
+    fn retired_ids_map_to_a_successor_of_the_same_provider_family() {
+        assert_eq!(
+            retired_model_successor("claude-sonnet-4-5-20241022"),
+            Some("claude-haiku-4-5")
+        );
+        assert_eq!(retired_model_successor("o4-mini"), Some("gpt-5.6-luna"));
+        assert_eq!(retired_model_successor("deepseek-v4-flash"), None);
+    }
+
+    #[test]
+    fn ai_provider_accounts_are_distinct_and_namespaced() {
+        let accounts: Vec<String> = AiProvider::ALL
+            .iter()
+            .map(|p| ai_provider_account(p.id()))
+            .collect();
+        assert_eq!(accounts[0], "ai/provider/gemini");
+        for account in &accounts {
+            assert!(account.starts_with("ai/provider/"));
+            assert_ne!(account, AI_SECRET_ACCOUNT);
+            assert!(!account.starts_with("git/"));
         }
     }
 

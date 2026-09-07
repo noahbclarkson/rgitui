@@ -46,6 +46,7 @@ impl RenameDialog {
                 TextInputEvent::Submit => {
                     this.try_rename(cx);
                 }
+                TextInputEvent::Blurred => {}
                 TextInputEvent::Changed(text) => {
                     this.error_message = if text.is_empty() {
                         None
