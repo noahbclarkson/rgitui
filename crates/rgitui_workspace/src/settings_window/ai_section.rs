@@ -1326,11 +1326,14 @@ impl SettingsView {
             )
             .child(Self::section_divider(cx))
             .child(self.render_behaviour_toggle(
-                "ai-inject-ctx",
-                "Include project context",
-                "Adds README.md, CLAUDE.md and AGENTS.md to the prompt. ~4k extra tokens per request.",
-                self.ai_inject_project_context,
-                SETTINGS_TAB_INDEX_BASE + 80,
+                BehaviourToggle {
+                    id: "ai-inject-ctx",
+                    title: "Include project context",
+                    detail:
+                        "Adds README.md, CLAUDE.md and AGENTS.md to the prompt. ~4k extra tokens per request.",
+                    checked: self.ai_inject_project_context,
+                    tab_index: SETTINGS_TAB_INDEX_BASE + 80,
+                },
                 |this, cx| {
                     this.ai_inject_project_context = !this.ai_inject_project_context;
                     this.save_settings(cx);
@@ -1338,12 +1341,14 @@ impl SettingsView {
                 cx,
             ))
             .child(self.render_behaviour_toggle(
-                "ai-use-tools",
-                "Let the model read files",
-                "The model may request file contents and commit history. Slower and more \
-                 expensive; usually a better message.",
-                self.ai_use_tools,
-                SETTINGS_TAB_INDEX_BASE + 81,
+                BehaviourToggle {
+                    id: "ai-use-tools",
+                    title: "Let the model read files",
+                    detail: "The model may request file contents and commit history. Slower and \
+                             more expensive; usually a better message.",
+                    checked: self.ai_use_tools,
+                    tab_index: SETTINGS_TAB_INDEX_BASE + 81,
+                },
                 |this, cx| {
                     this.ai_use_tools = !this.ai_use_tools;
                     this.sync_model_picker(cx);
@@ -1353,22 +1358,24 @@ impl SettingsView {
             ))
     }
 
-    /// A behaviour toggle that states what it costs.
+    /// Render a behaviour toggle that states what it costs.
     ///
     /// `use_tools` defaults to on, which means the out-of-box configuration is
     /// the expensive multi-round-trip one; presenting that as an unremarkable
     /// checkbox hid the tradeoff entirely.
-    #[allow(clippy::too_many_arguments)]
     fn render_behaviour_toggle(
         &self,
-        id: &'static str,
-        title: &'static str,
-        detail: &'static str,
-        checked: bool,
-        tab_index: isize,
+        toggle: BehaviourToggle,
         on_toggle: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let BehaviourToggle {
+            id,
+            title,
+            detail,
+            checked,
+            tab_index,
+        } = toggle;
         div()
             .id(id)
             .flex()
@@ -1409,6 +1416,19 @@ impl SettingsView {
                     ),
             )
     }
+}
+
+/// The fixed half of a behaviour toggle: what it says, whether it is on, and
+/// where it sits in the tab order. Grouped because the renderer also takes a
+/// handler and a context, and seven loose parameters is a call site nobody can
+/// read.
+struct BehaviourToggle {
+    id: &'static str,
+    title: &'static str,
+    /// What the setting costs, in the user's terms.
+    detail: &'static str,
+    checked: bool,
+    tab_index: isize,
 }
 
 /// A picker row for one model, with the facets its filter chips need.

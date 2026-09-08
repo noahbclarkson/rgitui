@@ -423,14 +423,18 @@ pub(super) fn subscribe_ai(cx: &mut Context<Workspace>, ai: &Entity<AiGenerator>
             // Info, not an error, and deliberately without touching any
             // panel's spinner: reporting the cooldown as a failure used to
             // clear the indicator of a request that was still running.
-            let _ = ai;
-            this.set_status_message(
-                format!(
-                    "Waiting {}s before the next AI request.",
-                    wait.as_secs() + 1
-                ),
-                cx,
+            let message = format!(
+                "Waiting {}s before the next AI request.",
+                wait.as_secs() + 1
             );
+            // A refused request that nothing else is covering leaves the user
+            // watching a button they just pressed do nothing: retrying inside
+            // the cooldown clears the "AI failed" marker first, so the status
+            // line was the only sign anything had happened at all.
+            if !ai.read(cx).is_generating() {
+                this.show_toast(message.clone(), ToastKind::Info, cx);
+            }
+            this.set_status_message(message, cx);
         }
     })
     .detach();

@@ -104,8 +104,8 @@ impl std::str::FromStr for CommitStyle {
 /// Cap on the diff included in the prompt.
 ///
 /// Lowered from 200 KB (~50-60k tokens). In the tool loop the whole prompt is
-/// re-sent every iteration, so the old cap could cost ~180k input tokens for
-/// one commit message across three round trips.
+/// re-sent every iteration, so the old cap could cost tens of thousands of
+/// input tokens per round trip for one commit message.
 pub(crate) const MAX_DIFF_BYTES: usize = 40_000;
 
 /// Truncate a diff at a line boundary, always leaving a marker so the model
@@ -124,7 +124,33 @@ pub(crate) fn truncate_diff(diff: &str, max_bytes: usize) -> String {
     )
 }
 
-const TOOL_PARAGRAPH: &str = "You have access to tools to get more context about the repository. Use them if you need to:\n\
+/// Cap on the changed-file list included in the prompt.
+///
+/// This was the one prompt input with no bound at all while the diff and the
+/// project context both had one. A `git add .` that swept in a vendored tree
+/// stages thousands of files, and one line each put the whole prompt past a
+/// model's context window before the diff was even reached.
+pub(crate) const MAX_SUMMARY_BYTES: usize = 8_000;
+
+/// Truncate the changed-file list at a line boundary, saying how many files
+/// are listed out of how many changed rather than stopping silently.
+pub(crate) fn truncate_summary(summary: &str, max_bytes: usize) -> String {
+    if summary.len() <= max_bytes {
+        return summary.to_string();
+    }
+    let total = summary.lines().count();
+    let truncated = safe_truncate(summary, max_bytes);
+    let cut = truncated.rfind('\n').unwrap_or(truncated.len());
+    let kept = &truncated[..cut];
+    format!(
+        "{}\n\n[showing {} of {} changed files]",
+        kept,
+        kept.lines().count(),
+        total
+    )
+}
+
+const TOOL_PARAGRAPH: &str ="You have access to tools to get more context about the repository. Use them if you need to:\n\
      - Understand what a changed file does (get_file_content)\n\
      - See the commit message style used in this project (get_recent_commits)\n\
      - Understand how a file has evolved (get_file_history)\n\n\
@@ -141,6 +167,7 @@ pub(crate) fn build_prompt(
 ) -> String {
     let style_instruction = commit_style.instruction();
     let diff_text = truncate_diff(diff, MAX_DIFF_BYTES);
+    let summary = truncate_summary(summary, MAX_SUMMARY_BYTES);
     let context_section = match project_context {
         Some(context) => format!("Project Context:\n{context}\n\n"),
         None => String::new(),
@@ -324,6 +351,36 @@ mod tests {
     #[test]
     fn an_empty_diff_produces_an_empty_body_not_a_marker() {
         assert_eq!(truncate_diff("", MAX_DIFF_BYTES), "");
+    }
+
+    /// The changed-file list was the one prompt input with no bound at all.
+    /// A `git add .` over a vendored tree stages thousands of files, and one
+    /// line each pushed the prompt past a model's context window on its own.
+    #[test]
+    fn a_huge_changed_file_list_is_capped_and_says_how_many_it_shows() {
+        let summary = (0..4_000)
+            .map(|index| format!("M crates/rgitui_workspace/src/generated/file_{index:04}.rs"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(summary.len() > MAX_SUMMARY_BYTES);
+
+        let out = truncate_summary(&summary, MAX_SUMMARY_BYTES);
+        assert!(out.len() < summary.len());
+        assert!(out.contains("of 4000 changed files]"), "{out}");
+    }
+
+    #[test]
+    fn a_short_changed_file_list_is_passed_through_untouched() {
+        let summary = "M src/main.rs\nA src/lib.rs";
+        assert_eq!(truncate_summary(summary, MAX_SUMMARY_BYTES), summary);
+    }
+
+    #[test]
+    fn the_prompt_carries_the_capped_summary_not_the_raw_one() {
+        let summary = "M a.rs\n".repeat(MAX_SUMMARY_BYTES);
+        let prompt = build_prompt("diff", &summary, CommitStyle::Brief, None, false);
+        assert!(prompt.len() < summary.len());
+        assert!(prompt.contains("changed files]"));
     }
 
     // ── prompts ───────────────────────────────────────────────────
