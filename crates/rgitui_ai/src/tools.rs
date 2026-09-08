@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use rgitui_git::git_command;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Maximum number of commits to return for history tools.
 const MAX_COMMITS: usize = 10;
@@ -21,8 +21,8 @@ const MAX_TREE_DEPTH: usize = 5;
 
 /// Total tool output a single generation may accumulate.
 ///
-/// The per-call caps above are not a budget: three iterations of `get_diff`
-/// could add 300 KB on top of the base prompt. Once this is exhausted the
+/// The per-call caps above are not a budget: repeated `get_diff` calls could
+/// add 100 KB apiece on top of the base prompt. Once this is exhausted the
 /// remaining calls are refused with a message the model can act on.
 pub const MAX_TOOL_OUTPUT_BUDGET: usize = 200_000;
 
@@ -196,7 +196,7 @@ pub fn anthropic_tool_definitions() -> Vec<serde_json::Value> {
         }),
         serde_json::json!({
             "name": TOOL_GET_DIFF,
-            "description": "Get the diff for staged changes, unstaged changes, or a specific commit. Use this to understand the exact changes made.",
+            "description": "Get the diff for staged changes, unstaged changes, or a specific commit. The staged diff is ALREADY included in your instructions, so only call this with kind='staged' if you need more of it than was shown there. Unstaged changes are not part of the commit being described.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -215,7 +215,7 @@ pub fn anthropic_tool_definitions() -> Vec<serde_json::Value> {
         }),
         serde_json::json!({
             "name": TOOL_GET_BRANCH_LIST,
-            "description": "Get a list of all branches in the repository. Use this to understand the branching structure.",
+            "description": "Get a list of all branches in the repository. Rarely useful for describing a change: branch names are not part of the commit.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -229,7 +229,7 @@ pub fn anthropic_tool_definitions() -> Vec<serde_json::Value> {
         }),
         serde_json::json!({
             "name": TOOL_GET_FILE_TREE,
-            "description": "Get the file tree structure of the repository. Use this to understand the project layout.",
+            "description": "Get the file tree structure of the repository. Rarely useful for describing a change: prefer get_file_content on a file that is actually in the diff.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -310,7 +310,7 @@ pub fn openai_tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": TOOL_GET_DIFF,
-                "description": "Get the diff for staged changes, unstaged changes, or a specific commit. Use this to understand the exact changes made.",
+                "description": "Get the diff for staged changes, unstaged changes, or a specific commit. The staged diff is ALREADY included in your instructions, so only call this with kind='staged' if you need more of it than was shown there. Unstaged changes are not part of the commit being described.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -332,7 +332,7 @@ pub fn openai_tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": TOOL_GET_BRANCH_LIST,
-                "description": "Get a list of all branches in the repository. Use this to understand the branching structure.",
+                "description": "Get a list of all branches in the repository. Rarely useful for describing a change: branch names are not part of the commit.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -349,7 +349,7 @@ pub fn openai_tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": TOOL_GET_FILE_TREE,
-                "description": "Get the file tree structure of the repository. Use this to understand the project layout.",
+                "description": "Get the file tree structure of the repository. Rarely useful for describing a change: prefer get_file_content on a file that is actually in the diff.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -421,7 +421,7 @@ pub fn gemini_tool_definitions() -> serde_json::Value {
             },
             {
                 "name": TOOL_GET_DIFF,
-                "description": "Get the diff for staged changes, unstaged changes, or a specific commit. Use this to understand the exact changes made.",
+                "description": "Get the diff for staged changes, unstaged changes, or a specific commit. The staged diff is ALREADY included in your instructions, so only call this with kind='staged' if you need more of it than was shown there. Unstaged changes are not part of the commit being described.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -440,7 +440,7 @@ pub fn gemini_tool_definitions() -> serde_json::Value {
             },
             {
                 "name": TOOL_GET_BRANCH_LIST,
-                "description": "Get a list of all branches in the repository. Use this to understand the branching structure.",
+                "description": "Get a list of all branches in the repository. Rarely useful for describing a change: branch names are not part of the commit.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -454,7 +454,7 @@ pub fn gemini_tool_definitions() -> serde_json::Value {
             },
             {
                 "name": TOOL_GET_FILE_TREE,
-                "description": "Get the file tree structure of the repository. Use this to understand the project layout.",
+                "description": "Get the file tree structure of the repository. Rarely useful for describing a change: prefer get_file_content on a file that is actually in the diff.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -489,11 +489,19 @@ pub struct ToolResult {
     pub result: Result<String, String>,
 }
 
+/// What the model is told when it asks for something it has already been given.
+const ALREADY_ANSWERED: &str =
+    "You already called this tool with these arguments in this conversation. Its result is \
+     above — re-read it rather than asking again, and write the commit message.";
+
 /// Tracks how much tool output a single generation has accumulated, so the
-/// per-call caps add up to a bounded whole.
+/// per-call caps add up to a bounded whole, and which calls have already been
+/// answered, so a repeat costs neither a round trip's worth of budget nor the
+/// work of producing it.
 #[derive(Debug, Default)]
 pub struct ToolBudget {
     used: usize,
+    answered: std::collections::HashSet<String>,
 }
 
 impl ToolBudget {
@@ -503,6 +511,17 @@ impl ToolBudget {
 
     pub fn remaining(&self) -> usize {
         MAX_TOOL_OUTPUT_BUDGET.saturating_sub(self.used)
+    }
+
+    /// Record `call` and report whether it was already answered.
+    ///
+    /// A model that reads a truncation marker tends to ask for the same thing
+    /// again; without this, two identical `get_diff` calls could spend the
+    /// whole budget on two copies of one diff.
+    fn is_repeat(&mut self, call: &ToolCall) -> bool {
+        !self
+            .answered
+            .insert(format!("{}\u{0}{}", call.name, call.arguments))
     }
 
     /// Charge `output` against the budget, trimming it to what is left. The
@@ -540,9 +559,13 @@ pub fn execute_tool_within(
     repo_path: &Path,
     budget: &mut ToolBudget,
 ) -> ToolResult {
-    let result = match execute_tool_uncharged(call, repo_path) {
-        Ok(output) => Ok(budget.charge(output)),
-        Err(error) => Err(error),
+    let result = if budget.is_repeat(call) {
+        Ok(ALREADY_ANSWERED.to_string())
+    } else {
+        match execute_tool_uncharged(call, repo_path) {
+            Ok(output) => Ok(budget.charge(output)),
+            Err(error) => Err(error),
+        }
     };
 
     ToolResult {
@@ -821,62 +844,126 @@ fn execute_get_file_tree(
         return Err(format!("Path outside repository: {}", relative_path));
     }
 
-    fn build_tree(path: &Path, prefix: String, current_depth: usize, max_depth: usize) -> String {
-        if current_depth > max_depth {
-            return format!("{}...\n", prefix);
+    let mut walk = TreeWalk {
+        repo_root: canonical_repo,
+        ignored: ignored_directories(repo_path),
+        out: String::new(),
+        truncated: false,
+    };
+    walk.descend(&canonical_base, "", 0, max_depth);
+
+    if walk.truncated {
+        walk.out
+            .push_str("\n[file tree truncated -- narrow it with the path argument]\n");
+    }
+    Ok(walk.out)
+}
+
+/// Cap on one file-tree listing.
+///
+/// The walk used to build one unbounded `String` and only have it charged
+/// against the generation budget afterwards, so a monorepo produced megabytes
+/// in memory before anything trimmed it.
+const MAX_TREE_BYTES: usize = 16_000;
+
+/// The directories git ignores, repo-relative and without a trailing slash.
+///
+/// One `git ls-files` rather than a `check-ignore` per entry: the walk visits
+/// every directory in the repository, and a subprocess each would cost far
+/// more than the listing is worth. A hardcoded skip list caught `target` and
+/// `node_modules` but walked `vendor`, `dist`, `build` and `venv` in full.
+fn ignored_directories(repo_path: &Path) -> std::collections::HashSet<PathBuf> {
+    let Ok(output) = git_command()
+        .args([
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--directory",
+            "--exclude-standard",
+        ])
+        .current_dir(repo_path)
+        .output()
+    else {
+        return std::collections::HashSet::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| PathBuf::from(line.trim_end_matches('/')))
+        .collect()
+}
+
+/// Accumulates one file-tree listing, stopping at [`MAX_TREE_BYTES`].
+struct TreeWalk {
+    repo_root: PathBuf,
+    ignored: std::collections::HashSet<PathBuf>,
+    out: String,
+    truncated: bool,
+}
+
+impl TreeWalk {
+    /// Append one line, reporting whether there is room for another.
+    fn push_line(&mut self, line: &str) -> bool {
+        if self.out.len() + line.len() > MAX_TREE_BYTES {
+            self.truncated = true;
+            return false;
         }
-
-        let mut result = String::new();
-
-        let Ok(read_dir) = std::fs::read_dir(path) else {
-            return result;
-        };
-        let entries: Vec<_> = read_dir
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                // Skip hidden files and common ignore patterns
-                !name.starts_with('.')
-                    && name != "target"
-                    && name != "node_modules"
-                    && name != "__pycache__"
-            })
-            .collect();
-
-        let mut entries = entries;
-        entries.sort_by_key(|e| {
-            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            // Directories first, then alphabetically
-            (!is_dir, e.file_name())
-        });
-
-        for (i, entry) in entries.iter().enumerate() {
-            let is_last = i == entries.len() - 1;
-            let name = entry.file_name().to_string_lossy().to_string();
-            let connector = if is_last { "└── " } else { "├── " };
-            let extension = if is_last { "    " } else { "│   " };
-
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-
-            if is_dir {
-                result.push_str(&format!("{}{}{}/\n", prefix, connector, name));
-                if current_depth < max_depth {
-                    result.push_str(&build_tree(
-                        &entry.path(),
-                        format!("{}{}", prefix, extension),
-                        current_depth + 1,
-                        max_depth,
-                    ));
-                }
-            } else {
-                result.push_str(&format!("{}{}{}\n", prefix, connector, name));
-            }
-        }
-
-        result
+        self.out.push_str(line);
+        true
     }
 
-    Ok(build_tree(&canonical_base, String::new(), 0, max_depth))
+    fn is_ignored(&self, path: &Path) -> bool {
+        path.strip_prefix(&self.repo_root)
+            .map(|relative| self.ignored.contains(relative))
+            .unwrap_or(false)
+    }
+
+    fn descend(&mut self, path: &Path, prefix: &str, depth: usize, max_depth: usize) {
+        if self.truncated {
+            return;
+        }
+        if depth > max_depth {
+            self.push_line(&format!("{prefix}...\n"));
+            return;
+        }
+
+        let Ok(read_dir) = std::fs::read_dir(path) else {
+            return;
+        };
+        let mut entries: Vec<_> = read_dir
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+            .filter(|entry| !self.is_ignored(&entry.path()))
+            .collect();
+        entries.sort_by_key(|entry| {
+            let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+            // Directories first, then alphabetically.
+            (!is_dir, entry.file_name())
+        });
+
+        for (index, entry) in entries.iter().enumerate() {
+            let is_last = index == entries.len() - 1;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let connector = if is_last { "└── " } else { "├── " };
+            let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+            let slash = if is_dir { "/" } else { "" };
+
+            if !self.push_line(&format!("{prefix}{connector}{name}{slash}\n")) {
+                return;
+            }
+            if is_dir && depth < max_depth {
+                let extension = if is_last { "    " } else { "│   " };
+                self.descend(
+                    &entry.path(),
+                    &format!("{prefix}{extension}"),
+                    depth + 1,
+                    max_depth,
+                );
+                if self.truncated {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1049,10 +1136,55 @@ mod tests {
         assert!(charged.contains("[tool output truncated"));
         assert_eq!(budget.remaining(), 0);
 
-        // Three iterations of `get_diff` can no longer add 300 KB on top of
-        // the base prompt.
+        // Repeated `get_diff` calls can no longer add 100 KB apiece on top
+        // of the base prompt.
         let next = budget.charge("more output".into());
         assert!(next.contains("budget exhausted"));
+    }
+
+    /// A truncation marker in a result invites the model to ask for the same
+    /// thing again. Answering twice spent the budget on two copies of one
+    /// diff and cost a round trip that taught the model nothing.
+    #[test]
+    fn asking_for_the_same_thing_twice_is_answered_from_the_first_call() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("hello.txt"), "hello world").unwrap();
+        let call = ToolCall {
+            id: "1".into(),
+            name: TOOL_GET_FILE_CONTENT.into(),
+            arguments: serde_json::json!({ "path": "hello.txt" }),
+        };
+        let mut budget = ToolBudget::new();
+
+        let first = execute_tool_within(&call, dir.path(), &mut budget);
+        assert_eq!(first.result.unwrap(), "hello world");
+        let spent = MAX_TOOL_OUTPUT_BUDGET - budget.remaining();
+
+        let repeat = execute_tool_within(&call, dir.path(), &mut budget);
+        assert!(repeat.result.unwrap().contains("already called this tool"));
+        assert_eq!(
+            MAX_TOOL_OUTPUT_BUDGET - budget.remaining(),
+            spent,
+            "a repeat was charged for output it did not produce"
+        );
+    }
+
+    #[test]
+    fn different_arguments_to_one_tool_are_not_treated_as_a_repeat() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "first").unwrap();
+        fs::write(dir.path().join("b.txt"), "second").unwrap();
+        let mut budget = ToolBudget::new();
+
+        for (path, expected) in [("a.txt", "first"), ("b.txt", "second")] {
+            let call = ToolCall {
+                id: path.into(),
+                name: TOOL_GET_FILE_CONTENT.into(),
+                arguments: serde_json::json!({ "path": path }),
+            };
+            let result = execute_tool_within(&call, dir.path(), &mut budget);
+            assert_eq!(result.result.unwrap(), expected);
+        }
     }
 
     #[test]
@@ -1118,16 +1250,42 @@ mod tests {
         assert!(result.contains("visible.txt"));
     }
 
+    /// The skip list used to be four hardcoded names, so `vendor`, `dist`,
+    /// `build` and `venv` were walked and emitted in full. What the repository
+    /// actually ignores is what git says it ignores.
     #[test]
-    fn file_tree_skips_target_directory() {
+    fn file_tree_skips_whatever_the_repository_ignores() {
         let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target");
-        fs::create_dir(&target).unwrap();
-        fs::write(target.join("artifact"), "").unwrap();
+        fs::write(dir.path().join(".gitignore"), "vendor/\n").unwrap();
+        let vendored = dir.path().join("vendor");
+        fs::create_dir(&vendored).unwrap();
+        fs::write(vendored.join("artifact"), "").unwrap();
         fs::write(dir.path().join("src.rs"), "").unwrap();
+        assert!(git_command()
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git init")
+            .status
+            .success());
+
         let result = execute_get_file_tree(dir.path(), "", 2).unwrap();
-        assert!(!result.contains("artifact"));
-        assert!(result.contains("src.rs"));
+        assert!(!result.contains("artifact"), "{result}");
+        assert!(result.contains("src.rs"), "{result}");
+    }
+
+    /// The walk built one unbounded string and was only charged against the
+    /// generation budget afterwards, so a large tree was materialised in full
+    /// before anything trimmed it.
+    #[test]
+    fn a_large_file_tree_stops_at_its_own_cap() {
+        let dir = TempDir::new().unwrap();
+        for index in 0..4_000 {
+            fs::write(dir.path().join(format!("file_{index:04}.txt")), "").unwrap();
+        }
+        let result = execute_get_file_tree(dir.path(), "", 1).unwrap();
+        assert!(result.len() < MAX_TREE_BYTES * 2, "{}", result.len());
+        assert!(result.contains("file tree truncated"));
     }
 
     #[test]

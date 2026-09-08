@@ -51,7 +51,7 @@ use http::{
 use prompt::{build_prompt, collect_project_context};
 use provider::{
     auth_style, build_request_body, gemini_endpoint, openai_compat_endpoint, AuthStyle,
-    OpenAiCompatEndpoint, ANTHROPIC_ENDPOINT, ANTHROPIC_VERSION,
+    OpenAiCompatEndpoint, ToolUse, ANTHROPIC_ENDPOINT, ANTHROPIC_VERSION,
 };
 use tools::execute_tool_within;
 
@@ -91,7 +91,83 @@ pub enum AiEvent {
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Maximum number of provider round trips in one generation.
-const MAX_TOOL_ITERATIONS: usize = 4;
+///
+/// Four left a chatty model three rounds of tool results and no round in which
+/// answering was the only legal move, so "the model kept asking for more
+/// context" was the ordinary outcome rather than the pathological one.
+const MAX_TOOL_ITERATIONS: usize = 8;
+
+/// Wall clock for a whole generation, across every round trip and retry.
+///
+/// [`REQUEST_TIMEOUT`] bounds one request. Nothing bounded the sequence, so
+/// eight iterations of three attempts each could hold the spinner for twenty
+/// minutes; the cap above is only safe to raise alongside this.
+const GENERATION_DEADLINE: Duration = Duration::from_secs(180);
+
+/// Appended to the tool results of every round past the halfway mark.
+const HALFWAY_REMINDER: &str =
+    "You have now used more than half of the tool calls available for this commit message. \
+     Stop gathering context and write the message from what you already have, unless one \
+     more call is genuinely essential.";
+
+/// Appended to the tool results of the second-to-last round. The round after
+/// this one is the model's last, and its tool calls will not be executed.
+const LAST_ROUND_REMINDER: &str =
+    "This is your final turn. Do not call any more tools — they will not be executed. \
+     Reply now with the commit message itself, using the context you already have.";
+
+/// The reminder to append to the turn carrying iteration `index`'s tool
+/// results, if the model has spent more than half its round trips.
+///
+/// Pure so the pacing is testable: the loops it paces are reachable only
+/// through a live `HttpClient`.
+fn pacing_reminder(index: usize) -> Option<&'static str> {
+    let used = index + 1;
+    if used * 2 <= MAX_TOOL_ITERATIONS {
+        return None;
+    }
+    match MAX_TOOL_ITERATIONS - used {
+        1 => Some(LAST_ROUND_REMINDER),
+        _ => Some(HALFWAY_REMINDER),
+    }
+}
+
+/// Whether `index` is the round after which no result would ever be read.
+///
+/// Tool calls on the final iteration used to be executed in full — `git`
+/// spawned, files read, budget charged — and then discarded with the loop.
+fn is_final_iteration(index: usize) -> bool {
+    index + 1 >= MAX_TOOL_ITERATIONS
+}
+
+/// Tools are declared on every round trip but callable on all but the last,
+/// where answering becomes the only move the provider will accept. Asking for
+/// more context was previously legal right up to the round whose reply nobody
+/// would ever read.
+fn tool_use_for(index: usize) -> ToolUse {
+    match is_final_iteration(index) {
+        true => ToolUse::Withheld,
+        false => ToolUse::Allowed,
+    }
+}
+
+/// How long a generation has left, or the failure to report if it is spent.
+///
+/// Checking only between rounds was not enough to bound anything: a round
+/// starting a second before the deadline could still spend three 60-second
+/// attempts plus backoff, so a slow provider ran minutes past it. Every
+/// request timeout and every retry delay is clamped to what this returns.
+fn time_left(deadline: Instant) -> Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        anyhow::bail!(
+            "Gave up after {} seconds. Try turning off \"Let the model read files\" in \
+             Settings > AI, or staging a smaller change.",
+            GENERATION_DEADLINE.as_secs()
+        );
+    }
+    Ok(remaining)
+}
 
 /// What a generation needs, gathered on the UI thread and then owned entirely
 /// by the background task.
@@ -400,6 +476,7 @@ async fn send_json(
     url: &str,
     extra_headers: &[(&str, &str)],
     body: &Value,
+    deadline: Instant,
 ) -> Result<Value> {
     let key = api_key(req)?;
     let body_bytes = serde_json::to_vec(body)?;
@@ -411,7 +488,9 @@ async fn send_json(
             .header("Content-Type", "application/json")
             // Without a deadline a provider that accepts the connection and
             // then stalls leaves the spinner running until the app restarts.
-            .timeout(REQUEST_TIMEOUT);
+            // Clamped to the generation's own remaining time, so the last
+            // round of a slow generation cannot overrun it by a full minute.
+            .timeout(REQUEST_TIMEOUT.min(time_left(deadline)?));
 
         builder = match (auth_style(req.provider), key) {
             // A keyless gateway gets no authorization header at all rather
@@ -464,6 +543,13 @@ async fn send_json(
 
         if is_retryable(status.as_u16()) && attempt < MAX_RETRIES {
             let delay = retry_delay(attempt, retry_after);
+            // A `Retry-After: 30` twice over is a minute of the generation's
+            // budget. Sleeping it out only to send a request with no time left
+            // to answer reports the deadline instead of the provider's status,
+            // which is the less useful of the two.
+            if delay >= time_left(deadline)? {
+                return Err(status_error(req, status.as_u16(), &raw));
+            }
             log::warn!(
                 "{} returned {}; retrying in {:?}",
                 req.provider.display_name(),
@@ -544,16 +630,21 @@ async fn generate_openai_compatible(
         .then(|| Value::Array(openai_tool_definitions()));
     let mut history: Vec<Value> = Vec::new();
     let mut budget = ToolBudget::new();
+    let deadline = Instant::now() + GENERATION_DEADLINE;
 
-    for _ in 0..MAX_TOOL_ITERATIONS {
+    for iteration in 0..MAX_TOOL_ITERATIONS {
+        time_left(deadline)?;
+        let tool_use = tool_use_for(iteration);
+        let _ = status.unbounded_send(WAITING_ON_MODEL.to_string());
         let body = build_request_body(
             endpoint.provider,
             &req.model,
             &req.prompt,
             tools.as_ref(),
+            tool_use,
             &history,
         );
-        let json = send_json(req, &endpoint.url, &endpoint.extra_headers, &body).await?;
+        let json = send_json(req, &endpoint.url, &endpoint.extra_headers, &body, deadline).await?;
 
         // A gateway can answer 200 with an error object; without this the
         // failure surfaces as the useless "No text in ... response".
@@ -563,7 +654,7 @@ async fn generate_openai_compatible(
 
         let message = &json["choices"][0]["message"];
         let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("");
-        history.push(message.clone());
+        history.push(assistant_turn(message));
 
         let tool_calls: Vec<Value> = message["tool_calls"]
             .as_array()
@@ -581,6 +672,9 @@ async fn generate_openai_compatible(
                     endpoint.provider.display_name()
                 );
             }
+            if is_final_iteration(iteration) {
+                break;
+            }
             for call in &tool_calls {
                 let function = &call["function"];
                 let tool_call = ToolCall {
@@ -596,14 +690,17 @@ async fn generate_openai_compatible(
                     "content": tool_output(&result),
                 }));
             }
+            // A user turn after the `role: "tool"` messages: every provider in
+            // this family accepts one, where a mid-conversation `system` turn
+            // is only reliable on OpenAI itself.
+            if let Some(reminder) = pacing_reminder(iteration) {
+                history.push(serde_json::json!({ "role": "user", "content": reminder }));
+            }
             continue;
         }
 
-        if let Some(content) = message["content"].as_str() {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
+        if let Some(text) = non_empty_text(message["content"].as_str()) {
+            return Ok(text);
         }
 
         if finish_reason == "length" {
@@ -642,8 +739,12 @@ async fn generate_anthropic(req: &GenerateRequest, status: &StatusSender) -> Res
         .then(|| Value::Array(anthropic_tool_definitions()));
     let mut history: Vec<Value> = Vec::new();
     let mut budget = ToolBudget::new();
+    let deadline = Instant::now() + GENERATION_DEADLINE;
 
-    for _ in 0..MAX_TOOL_ITERATIONS {
+    for iteration in 0..MAX_TOOL_ITERATIONS {
+        time_left(deadline)?;
+        let tool_use = tool_use_for(iteration);
+        let _ = status.unbounded_send(WAITING_ON_MODEL.to_string());
         // `build_request_body` seeds the opening user turn. Sending
         // `messages: []` is a 400, which is why this provider had never once
         // produced a commit message.
@@ -652,14 +753,18 @@ async fn generate_anthropic(req: &GenerateRequest, status: &StatusSender) -> Res
             &req.model,
             &req.prompt,
             tools.as_ref(),
+            tool_use,
             &history,
         );
-        let json = send_json(req, ANTHROPIC_ENDPOINT, &[], &body).await?;
+        let json = send_json(req, ANTHROPIC_ENDPOINT, &[], &body, deadline).await?;
 
         let stop_reason = json["stop_reason"].as_str().unwrap_or("");
         let content = json["content"].as_array().cloned().unwrap_or_default();
 
         if stop_reason == "tool_use" {
+            if is_final_iteration(iteration) {
+                break;
+            }
             let mut results: Vec<Value> = Vec::new();
             for block in &content {
                 if block["type"].as_str() != Some("tool_use") {
@@ -675,6 +780,11 @@ async fn generate_anthropic(req: &GenerateRequest, status: &StatusSender) -> Res
                     "type": "tool_result",
                     "tool_use_id": result.call_id,
                     "content": tool_output(&result),
+                    // The documented signal for a failed tool. Without it a
+                    // refusal reads as an ordinary result whose text happens
+                    // to start with "Error:", and the model is as likely to
+                    // repeat the call as to adapt.
+                    "is_error": result.result.is_err(),
                 }));
             }
 
@@ -683,6 +793,13 @@ async fn generate_anthropic(req: &GenerateRequest, status: &StatusSender) -> Res
                     "Anthropic asked to call a tool but sent no tool call. Try turning off \
                      \"Let the model read files\" in Settings > AI."
                 );
+            }
+
+            // A text block in the same user turn as the results, not a second
+            // user turn: `tool_result` blocks must travel together in one
+            // message, and this keeps the alternation intact.
+            if let Some(reminder) = pacing_reminder(iteration) {
+                results.push(serde_json::json!({ "type": "text", "text": reminder }));
             }
 
             history.push(serde_json::json!({ "role": "assistant", "content": content }));
@@ -732,16 +849,21 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
     let url = gemini_endpoint(&req.model);
     let mut history: Vec<Value> = Vec::new();
     let mut budget = ToolBudget::new();
+    let deadline = Instant::now() + GENERATION_DEADLINE;
 
-    for _ in 0..MAX_TOOL_ITERATIONS {
+    for iteration in 0..MAX_TOOL_ITERATIONS {
+        time_left(deadline)?;
+        let tool_use = tool_use_for(iteration);
+        let _ = status.unbounded_send(WAITING_ON_MODEL.to_string());
         let body = build_request_body(
             AiProvider::Gemini,
             &req.model,
             &req.prompt,
             tools.as_ref(),
+            tool_use,
             &history,
         );
-        let raw = send_json(req, &url, &[], &body).await?;
+        let raw = send_json(req, &url, &[], &body, deadline).await?;
         let json: GeminiResponse =
             serde_json::from_value(raw).context("Couldn't read Gemini's response.")?;
 
@@ -767,14 +889,33 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
         // by a `functionCall`, or several parallel calls in one turn; taking
         // only the first dropped the rest and fell through to a parse error
         // whenever a thought part came first.
+        // The final round's results would never be read, so its calls are not
+        // run: `execute_tool` spawns `git` and walks directories, and that
+        // work used to be done in full and then dropped with the loop.
+        if is_final_iteration(iteration) && parts.iter().any(|part| part.function_call.is_some()) {
+            break;
+        }
+
         let mut model_parts: Vec<Value> = Vec::new();
         let mut response_parts: Vec<Value> = Vec::new();
+        let mut calls = 0usize;
         for part in parts {
             let Some(call) = &part.function_call else {
+                // A text or thought part. Replaying it keeps the model's own
+                // plan in front of it — dropping it made the model re-derive
+                // the plan every round — and a thought signature rides on
+                // whichever part carried the thought, often this one.
+                let mut model_part =
+                    serde_json::json!({ "text": part.text.clone().unwrap_or_default() });
+                if let Some(signature) = &part.thought_signature {
+                    model_part["thoughtSignature"] = Value::String(signature.clone());
+                }
+                model_parts.push(model_part);
                 continue;
             };
+            calls += 1;
             let tool_call = ToolCall {
-                id: format!("gemini_{}", model_parts.len()),
+                id: format!("gemini_{calls}"),
                 name: call.name.clone(),
                 arguments: call.args.clone(),
             };
@@ -782,23 +923,38 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
 
             // The thought signature must be echoed back verbatim so the model
             // retains reasoning continuity across the round trip.
-            let mut model_part = serde_json::json!({
-                "functionCall": { "name": call.name, "args": call.args }
+            let mut model_call = serde_json::json!({ "name": call.name, "args": call.args });
+            let mut function_response = serde_json::json!({
+                "name": call.name,
+                "response": { "content": tool_output(&result) }
             });
+            // Two parallel calls to the same tool come back as two responses
+            // with the same name; only the id the server issued can pair them.
+            if let Some(id) = &call.id {
+                model_call["id"] = Value::String(id.clone());
+                function_response["id"] = Value::String(id.clone());
+            }
+
+            let mut model_part = serde_json::json!({ "functionCall": model_call });
             if let Some(signature) = &part.thought_signature {
                 model_part["thoughtSignature"] = Value::String(signature.clone());
             }
             model_parts.push(model_part);
-
-            response_parts.push(serde_json::json!({
-                "functionResponse": {
-                    "name": call.name,
-                    "response": { "content": tool_output(&result) }
-                }
-            }));
+            response_parts.push(serde_json::json!({ "functionResponse": function_response }));
+        }
+        // Text-only parts are replayed but are not themselves a tool round.
+        if calls == 0 {
+            model_parts.clear();
         }
 
         if !model_parts.is_empty() {
+            // A text part in the same turn as the responses. `parts` may mix
+            // the two, so this needs no extra turn and cannot disturb the
+            // model/user alternation the thought signatures ride on.
+            if let Some(reminder) = pacing_reminder(iteration) {
+                response_parts.push(serde_json::json!({ "text": reminder }));
+            }
+
             history.push(serde_json::json!({ "role": "model", "parts": model_parts }));
             // The current REST API expects function results on a `user` turn;
             // `role: "function"` is a legacy spelling from other SDKs.
@@ -806,14 +962,8 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
             continue;
         }
 
-        let text: String = parts
-            .iter()
-            .filter_map(|part| part.text.as_deref())
-            .collect::<Vec<_>>()
-            .join("");
-        let text = text.trim();
-        if !text.is_empty() {
-            return Ok(text.to_string());
+        if let Some(text) = non_empty_text(Some(&joined_text(parts))) {
+            return Ok(text);
         }
 
         // Everything below used to surface as the same "Failed to parse Gemini
@@ -832,12 +982,61 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
     Err(iterations_exhausted())
 }
 
+/// End a generation that ran out of round trips.
+///
+/// Deliberately not salvaged from the last turn's text. A turn that asks for
+/// no tools already returns its text as the message, so text still in hand
+/// here arrived beside a tool call — narration like "I'll check that file
+/// first". Putting a preamble in the commit box is worse than saying the
+/// generation did not finish. With tools withheld on the final round this is
+/// reachable only from a provider that ignored that instruction.
 fn iterations_exhausted() -> anyhow::Error {
     anyhow::anyhow!(
         "The model kept asking for more context and never wrote a message. Try turning off \
          \"Let the model read files\" in Settings > AI."
     )
 }
+
+/// An assistant turn to replay, carrying only the fields the chat-completions
+/// contract defines.
+///
+/// The whole response message used to go back verbatim. Providers in this
+/// family decorate it — `reasoning_content`, `refusal`, `annotations`,
+/// whatever a gateway adds — and DeepSeek, a provider shipped here, rejects a
+/// request that replays its own `reasoning_content`. Anything absent is left
+/// out rather than sent as null, which some gateways also refuse.
+fn assistant_turn(message: &Value) -> Value {
+    let mut turn = serde_json::json!({ "role": "assistant" });
+    for field in ["content", "tool_calls"] {
+        match &message[field] {
+            Value::Null => {}
+            value => turn[field] = value.clone(),
+        }
+    }
+    turn
+}
+
+/// A trimmed non-empty string, or nothing.
+fn non_empty_text(text: Option<&str>) -> Option<String> {
+    text.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// Every text part of a Gemini turn, in order.
+fn joined_text(parts: &[GeminiPart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| part.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// What the chip shows while a round trip is in flight.
+///
+/// Without it the chip kept the last tool's description — "Reading foo.rs" —
+/// for the whole of the model's next turn, which reads as a frozen UI.
+const WAITING_ON_MODEL: &str = "Thinking…";
 
 /// Execute a tool, reporting it to the UI first so the chip shows what is
 /// happening rather than an opaque spinner.
@@ -914,6 +1113,11 @@ struct GeminiFunctionCall {
     name: String,
     #[serde(default)]
     args: Value,
+    /// Present when the model issues parallel calls. Echoed back verbatim on
+    /// the matching `functionResponse`; never synthesised, so a provider that
+    /// omits it sees exactly what it sent.
+    #[serde(default)]
+    id: Option<String>,
 }
 
 #[cfg(test)]
@@ -922,6 +1126,128 @@ mod tests {
 
     fn parse_gemini(json: Value) -> GeminiResponse {
         serde_json::from_value(json).expect("Gemini response must not fail to parse")
+    }
+
+    // ── pacing ────────────────────────────────────────────────────
+
+    /// The first half of the round trips is the model's to spend as it likes;
+    /// nagging from the first tool result would cost the message its context.
+    #[test]
+    fn the_first_half_of_the_round_trips_carries_no_reminder() {
+        for index in 0..MAX_TOOL_ITERATIONS / 2 {
+            assert_eq!(pacing_reminder(index), None, "iteration {index}");
+        }
+    }
+
+    #[test]
+    fn every_round_past_halfway_carries_a_reminder() {
+        for index in MAX_TOOL_ITERATIONS / 2..MAX_TOOL_ITERATIONS {
+            assert!(
+                pacing_reminder(index).is_some(),
+                "iteration {index} says nothing"
+            );
+        }
+    }
+
+    /// The round before the last is the only one that can still act on being
+    /// told it is the last, so that is where the strong wording goes.
+    #[test]
+    fn the_penultimate_round_is_the_one_told_it_is_final() {
+        assert_eq!(
+            pacing_reminder(MAX_TOOL_ITERATIONS - 2),
+            Some(LAST_ROUND_REMINDER)
+        );
+        assert_eq!(
+            pacing_reminder(MAX_TOOL_ITERATIONS - 3),
+            Some(HALFWAY_REMINDER)
+        );
+    }
+
+    #[test]
+    fn only_the_last_round_withholds_tool_execution() {
+        for index in 0..MAX_TOOL_ITERATIONS - 1 {
+            assert!(!is_final_iteration(index), "iteration {index}");
+        }
+        assert!(is_final_iteration(MAX_TOOL_ITERATIONS - 1));
+    }
+
+    /// Both halves of the pacing rule are stated in terms of the cap, so a cap
+    /// too small to have a halfway point would silently disable them.
+    #[test]
+    fn the_cap_leaves_room_for_both_reminders() {
+        const { assert!(MAX_TOOL_ITERATIONS >= 4 && MAX_TOOL_ITERATIONS.is_multiple_of(2)) };
+        assert_ne!(
+            pacing_reminder(MAX_TOOL_ITERATIONS - 2),
+            pacing_reminder(MAX_TOOL_ITERATIONS - 3)
+        );
+    }
+
+    // ── the generation deadline ───────────────────────────────────
+
+    /// Checking only between rounds bounded nothing: a round starting just
+    /// inside the deadline could still spend three 60-second attempts. Every
+    /// request timeout is clamped to what is actually left.
+    #[test]
+    fn a_round_starting_near_the_deadline_gets_only_the_time_that_remains() {
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let remaining = time_left(deadline).expect("still inside the deadline");
+        assert!(remaining <= Duration::from_millis(50));
+        assert!(
+            REQUEST_TIMEOUT.min(remaining) < REQUEST_TIMEOUT,
+            "the request would have been given a full timeout it cannot have"
+        );
+    }
+
+    #[test]
+    fn a_spent_deadline_is_reported_rather_than_returning_no_time() {
+        let error = time_left(Instant::now() - Duration::from_secs(1))
+            .expect_err("a spent deadline must fail the generation");
+        assert!(error.to_string().contains("Gave up after"));
+    }
+
+    // ── replaying an assistant turn ───────────────────────────────
+
+    /// The whole response message used to go back verbatim. DeepSeek is a
+    /// shipped provider and rejects a request that replays its own
+    /// `reasoning_content`, so iteration two failed outright.
+    #[test]
+    fn a_replayed_assistant_turn_carries_only_the_contract_fields() {
+        let turn = assistant_turn(&serde_json::json!({
+            "role": "assistant",
+            "content": "feat: a thing",
+            "reasoning_content": "first I considered...",
+            "refusal": null,
+            "annotations": [],
+            "tool_calls": [{ "id": "call_1" }],
+        }));
+        assert_eq!(turn["role"], "assistant");
+        assert_eq!(turn["content"], "feat: a thing");
+        assert_eq!(turn["tool_calls"][0]["id"], "call_1");
+        for extra in ["reasoning_content", "refusal", "annotations"] {
+            assert!(turn.get(extra).is_none(), "{extra} was replayed");
+        }
+    }
+
+    /// A tool-only turn has no content, and a null there is refused by some
+    /// gateways — the field is left out rather than sent empty.
+    #[test]
+    fn a_missing_field_is_omitted_rather_than_replayed_as_null() {
+        let turn = assistant_turn(&serde_json::json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{ "id": "call_1" }],
+        }));
+        assert!(turn.get("content").is_none());
+        assert!(turn.get("tool_calls").is_some());
+    }
+
+    // ── text helpers ──────────────────────────────────────────────
+
+    #[test]
+    fn whitespace_only_content_is_not_a_message() {
+        assert_eq!(non_empty_text(Some("  \n ")), None);
+        assert_eq!(non_empty_text(None), None);
+        assert_eq!(non_empty_text(Some("  hi\n")), Some("hi".to_string()));
     }
 
     // ── M3/X4: the four shapes that all produced one opaque error ──

@@ -275,7 +275,24 @@ pub(crate) const MAX_OUTPUT_TOKENS: u32 = 4096;
 /// provider had never once produced a commit message.
 pub(crate) const OPENING_USER_TURN: &str = "Generate a commit message for these changes.";
 
-/// Build the first-iteration request body for a provider.
+/// Prompt length below which an Anthropic cache breakpoint is not worth
+/// writing. The smallest minimum cacheable prefix across the models offered is
+/// 2048 tokens; at roughly four bytes a token this clears it with margin.
+const MIN_CACHEABLE_PROMPT_BYTES: usize = 10_000;
+
+/// Whether the model may call the declared tools on this round trip.
+///
+/// The tools stay declared either way: a conversation that already contains
+/// tool calls and their results is rejected by Anthropic if the definitions
+/// they refer to are gone, so the last round withholds them by asking the
+/// provider to refuse a call rather than by dropping the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolUse {
+    Allowed,
+    Withheld,
+}
+
+/// Build the request body for one round trip.
 ///
 /// `messages` is the conversation so far — empty on the first iteration, which
 /// is the case every provider must handle by seeding an opening turn.
@@ -284,6 +301,7 @@ pub(crate) fn build_request_body(
     model: &str,
     prompt: &str,
     tools: Option<&Value>,
+    tool_use: ToolUse,
     messages: &[Value],
 ) -> Value {
     match provider {
@@ -303,6 +321,11 @@ pub(crate) fn build_request_body(
             });
             if let Some(tools) = tools {
                 body["tools"] = serde_json::json!([tools]);
+                if tool_use == ToolUse::Withheld {
+                    body["toolConfig"] = serde_json::json!({
+                        "functionCallingConfig": { "mode": "NONE" }
+                    });
+                }
             }
             body
         }
@@ -312,21 +335,29 @@ pub(crate) fn build_request_body(
                 "content": OPENING_USER_TURN
             })];
             turns.extend(messages.iter().cloned());
+            let mut system = serde_json::json!({ "type": "text", "text": prompt });
+            // A cache breakpoint after the system prompt lets later rounds read
+            // the (large) diff from cache instead of re-billing it as fresh
+            // input. It is not free — a write costs more than a plain read — so
+            // it is only worth taking where later rounds are possible at all,
+            // and where the prompt is long enough to clear a model's minimum
+            // cacheable prefix. Below that the breakpoint is ignored silently.
+            if tools.is_some() && prompt.len() >= MIN_CACHEABLE_PROMPT_BYTES {
+                system["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+            }
             let mut body = serde_json::json!({
                 "model": model,
                 "max_tokens": MAX_OUTPUT_TOKENS,
-                // A cache breakpoint after the system prompt means iterations
-                // two and three read the (large) diff from cache instead of
-                // re-billing it as fresh input on every round trip.
-                "system": [{
-                    "type": "text",
-                    "text": prompt,
-                    "cache_control": { "type": "ephemeral" }
-                }],
+                "system": [system],
                 "messages": turns,
             });
             if let Some(tools) = tools {
                 body["tools"] = tools.clone();
+                // Left unset while tools are allowed: `auto` is already the
+                // default, and every byte in the prefix is cached.
+                if tool_use == ToolUse::Withheld {
+                    body["tool_choice"] = serde_json::json!({ "type": "none" });
+                }
             }
             body
         }
@@ -344,7 +375,10 @@ pub(crate) fn build_request_body(
             });
             if let Some(tools) = tools {
                 body["tools"] = tools.clone();
-                body["tool_choice"] = serde_json::json!("auto");
+                body["tool_choice"] = match tool_use {
+                    ToolUse::Allowed => serde_json::json!("auto"),
+                    ToolUse::Withheld => serde_json::json!("none"),
+                };
             }
             body
         }
@@ -384,6 +418,7 @@ mod tests {
                 provider.default_model(),
                 "PROMPT",
                 Some(&all_tools()),
+                ToolUse::Allowed,
                 &[],
             );
             let turns = body_turns(*provider, &body);
@@ -397,16 +432,125 @@ mod tests {
 
     #[test]
     fn anthropic_carries_the_prompt_in_system_not_in_the_user_turn() {
-        let body = build_request_body(AiProvider::Anthropic, "m", "PROMPT", None, &[]);
+        let body = build_request_body(
+            AiProvider::Anthropic,
+            "m",
+            "PROMPT",
+            None,
+            ToolUse::Allowed,
+            &[],
+        );
         assert_eq!(body["system"][0]["text"], "PROMPT");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"], OPENING_USER_TURN);
     }
 
+    /// A cache write costs more than a plain read, so it only pays where later
+    /// rounds can read it back and where the prompt clears the model's minimum
+    /// cacheable prefix. A short one-round-trip prompt used to pay the
+    /// surcharge for an entry nothing ever read.
     #[test]
-    fn anthropic_sets_a_cache_breakpoint_on_the_prompt() {
-        let body = build_request_body(AiProvider::Anthropic, "m", "PROMPT", None, &[]);
-        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+    fn anthropic_caches_the_prompt_only_when_a_later_round_could_read_it() {
+        let long = "x".repeat(MIN_CACHEABLE_PROMPT_BYTES);
+        let cached = build_request_body(
+            AiProvider::Anthropic,
+            "m",
+            &long,
+            Some(&all_tools()),
+            ToolUse::Allowed,
+            &[],
+        );
+        assert_eq!(cached["system"][0]["cache_control"]["type"], "ephemeral");
+
+        for (label, prompt, tools) in [
+            ("no tools means no second round", long.as_str(), None),
+            ("too short to cache", "PROMPT", Some(&all_tools())),
+        ] {
+            let body = build_request_body(
+                AiProvider::Anthropic,
+                "m",
+                prompt,
+                tools,
+                ToolUse::Allowed,
+                &[],
+            );
+            assert_eq!(body["system"][0]["text"], prompt);
+            assert!(
+                body["system"][0].get("cache_control").is_none(),
+                "{label}: paid for a cache entry nothing reads"
+            );
+        }
+    }
+
+    // ── withholding tools on the final round ──────────────────────
+
+    /// The last round has to be one the model can only answer. Dropping the
+    /// `tools` field instead is a 400 on Anthropic once the conversation
+    /// contains tool calls, so the definitions stay and the call is refused.
+    #[test]
+    fn the_final_round_withholds_tools_without_undeclaring_them() {
+        for provider in AiProvider::ALL {
+            let body = build_request_body(
+                *provider,
+                provider.default_model(),
+                "PROMPT",
+                Some(&all_tools()),
+                ToolUse::Withheld,
+                &[],
+            );
+            assert!(
+                body.get("tools").is_some(),
+                "{} undeclared its tools mid-conversation",
+                provider.id()
+            );
+        }
+    }
+
+    #[test]
+    fn each_provider_withholds_tools_in_its_own_dialect() {
+        let openai = build_request_body(
+            AiProvider::OpenAi,
+            "m",
+            "P",
+            Some(&all_tools()),
+            ToolUse::Withheld,
+            &[],
+        );
+        assert_eq!(openai["tool_choice"], "none");
+
+        let anthropic = build_request_body(
+            AiProvider::Anthropic,
+            "m",
+            "P",
+            Some(&all_tools()),
+            ToolUse::Withheld,
+            &[],
+        );
+        assert_eq!(anthropic["tool_choice"]["type"], "none");
+
+        let gemini = build_request_body(
+            AiProvider::Gemini,
+            "m",
+            "P",
+            Some(&all_tools()),
+            ToolUse::Withheld,
+            &[],
+        );
+        assert_eq!(
+            gemini["toolConfig"]["functionCallingConfig"]["mode"],
+            "NONE"
+        );
+    }
+
+    /// Withholding is expressed through `tool_choice`, so with tools off there
+    /// is nothing to withhold and nothing to say.
+    #[test]
+    fn withholding_says_nothing_when_tools_were_never_offered() {
+        for provider in AiProvider::ALL {
+            let body = build_request_body(*provider, "m", "P", None, ToolUse::Withheld, &[]);
+            assert!(body.get("tool_choice").is_none(), "{}", provider.id());
+            assert!(body.get("toolConfig").is_none(), "{}", provider.id());
+        }
     }
 
     #[test]
@@ -416,7 +560,7 @@ mod tests {
             AiProvider::DeepSeek,
             AiProvider::OpenRouter,
         ] {
-            let body = build_request_body(provider, "m", "PROMPT", None, &[]);
+            let body = build_request_body(provider, "m", "PROMPT", None, ToolUse::Allowed, &[]);
             assert_eq!(body["messages"][0]["role"], "system");
             assert_eq!(body["messages"][0]["content"], "PROMPT");
             assert_eq!(body["messages"][1]["role"], "user");
@@ -425,7 +569,14 @@ mod tests {
 
     #[test]
     fn gemini_seeds_contents_with_the_prompt() {
-        let body = build_request_body(AiProvider::Gemini, "m", "PROMPT", None, &[]);
+        let body = build_request_body(
+            AiProvider::Gemini,
+            "m",
+            "PROMPT",
+            None,
+            ToolUse::Allowed,
+            &[],
+        );
         assert_eq!(body["contents"][0]["parts"][0]["text"], "PROMPT");
         assert_eq!(body["contents"][0]["role"], "user");
     }
@@ -433,7 +584,14 @@ mod tests {
     #[test]
     fn history_is_appended_after_the_seeded_turns() {
         let history = vec![serde_json::json!({ "role": "assistant", "content": "hi" })];
-        let body = build_request_body(AiProvider::OpenAi, "m", "PROMPT", None, &history);
+        let body = build_request_body(
+            AiProvider::OpenAi,
+            "m",
+            "PROMPT",
+            None,
+            ToolUse::Allowed,
+            &history,
+        );
         let turns = body_turns(AiProvider::OpenAi, &body);
         assert_eq!(turns.len(), 3);
         assert_eq!(turns[2]["content"], "hi");
@@ -442,7 +600,7 @@ mod tests {
     #[test]
     fn tools_are_omitted_entirely_when_not_requested() {
         for provider in AiProvider::ALL {
-            let body = build_request_body(*provider, "m", "PROMPT", None, &[]);
+            let body = build_request_body(*provider, "m", "PROMPT", None, ToolUse::Allowed, &[]);
             assert!(
                 body.get("tools").is_none(),
                 "{} sent a tools field with tools disabled",
@@ -453,9 +611,16 @@ mod tests {
 
     #[test]
     fn openai_compatible_sets_tool_choice_only_alongside_tools() {
-        let with = build_request_body(AiProvider::OpenAi, "m", "P", Some(&all_tools()), &[]);
+        let with = build_request_body(
+            AiProvider::OpenAi,
+            "m",
+            "P",
+            Some(&all_tools()),
+            ToolUse::Allowed,
+            &[],
+        );
         assert_eq!(with["tool_choice"], "auto");
-        let without = build_request_body(AiProvider::OpenAi, "m", "P", None, &[]);
+        let without = build_request_body(AiProvider::OpenAi, "m", "P", None, ToolUse::Allowed, &[]);
         assert!(without.get("tool_choice").is_none());
     }
 
@@ -464,7 +629,14 @@ mod tests {
     /// must accept the one body shape this function emits.
     #[test]
     fn openai_compatible_uses_max_tokens_not_max_completion_tokens() {
-        let body = build_request_body(AiProvider::OpenAi, "gpt-5.6-luna", "P", None, &[]);
+        let body = build_request_body(
+            AiProvider::OpenAi,
+            "gpt-5.6-luna",
+            "P",
+            None,
+            ToolUse::Allowed,
+            &[],
+        );
         assert_eq!(body["max_tokens"], MAX_OUTPUT_TOKENS);
         assert!(body.get("max_completion_tokens").is_none());
     }
