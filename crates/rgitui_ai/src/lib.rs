@@ -151,17 +151,22 @@ fn tool_use_for(index: usize) -> ToolUse {
     }
 }
 
-/// Fail a generation that has outrun [`GENERATION_DEADLINE`], rather than
-/// starting a round trip whose answer the user has stopped waiting for.
-fn check_deadline(started: Instant) -> Result<()> {
-    if started.elapsed() >= GENERATION_DEADLINE {
+/// How long a generation has left, or the failure to report if it is spent.
+///
+/// Checking only between rounds was not enough to bound anything: a round
+/// starting a second before the deadline could still spend three 60-second
+/// attempts plus backoff, so a slow provider ran minutes past it. Every
+/// request timeout and every retry delay is clamped to what this returns.
+fn time_left(deadline: Instant) -> Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
         anyhow::bail!(
             "Gave up after {} seconds. Try turning off \"Let the model read files\" in \
              Settings > AI, or staging a smaller change.",
             GENERATION_DEADLINE.as_secs()
         );
     }
-    Ok(())
+    Ok(remaining)
 }
 
 /// What a generation needs, gathered on the UI thread and then owned entirely
@@ -471,6 +476,7 @@ async fn send_json(
     url: &str,
     extra_headers: &[(&str, &str)],
     body: &Value,
+    deadline: Instant,
 ) -> Result<Value> {
     let key = api_key(req)?;
     let body_bytes = serde_json::to_vec(body)?;
@@ -482,7 +488,9 @@ async fn send_json(
             .header("Content-Type", "application/json")
             // Without a deadline a provider that accepts the connection and
             // then stalls leaves the spinner running until the app restarts.
-            .timeout(REQUEST_TIMEOUT);
+            // Clamped to the generation's own remaining time, so the last
+            // round of a slow generation cannot overrun it by a full minute.
+            .timeout(REQUEST_TIMEOUT.min(time_left(deadline)?));
 
         builder = match (auth_style(req.provider), key) {
             // A keyless gateway gets no authorization header at all rather
@@ -535,6 +543,13 @@ async fn send_json(
 
         if is_retryable(status.as_u16()) && attempt < MAX_RETRIES {
             let delay = retry_delay(attempt, retry_after);
+            // A `Retry-After: 30` twice over is a minute of the generation's
+            // budget. Sleeping it out only to send a request with no time left
+            // to answer reports the deadline instead of the provider's status,
+            // which is the less useful of the two.
+            if delay >= time_left(deadline)? {
+                return Err(status_error(req, status.as_u16(), &raw));
+            }
             log::warn!(
                 "{} returned {}; retrying in {:?}",
                 req.provider.display_name(),
@@ -615,11 +630,10 @@ async fn generate_openai_compatible(
         .then(|| Value::Array(openai_tool_definitions()));
     let mut history: Vec<Value> = Vec::new();
     let mut budget = ToolBudget::new();
-    let mut draft: Option<String> = None;
-    let started = Instant::now();
+    let deadline = Instant::now() + GENERATION_DEADLINE;
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
-        check_deadline(started)?;
+        time_left(deadline)?;
         let tool_use = tool_use_for(iteration);
         let _ = status.unbounded_send(WAITING_ON_MODEL.to_string());
         let body = build_request_body(
@@ -630,7 +644,7 @@ async fn generate_openai_compatible(
             tool_use,
             &history,
         );
-        let json = send_json(req, &endpoint.url, &endpoint.extra_headers, &body).await?;
+        let json = send_json(req, &endpoint.url, &endpoint.extra_headers, &body, deadline).await?;
 
         // A gateway can answer 200 with an error object; without this the
         // failure surfaces as the useless "No text in ... response".
@@ -640,12 +654,6 @@ async fn generate_openai_compatible(
 
         let message = &json["choices"][0]["message"];
         let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("");
-        // A model that drafts the message and asks for one more file in the
-        // same turn used to lose the draft, and an exhausted loop then
-        // reported failure with a finished message already in hand.
-        if let Some(text) = non_empty_text(message["content"].as_str()) {
-            draft = Some(text);
-        }
         history.push(assistant_turn(message));
 
         let tool_calls: Vec<Value> = message["tool_calls"]
@@ -718,7 +726,7 @@ async fn generate_openai_compatible(
         );
     }
 
-    exhausted(draft)
+    Err(iterations_exhausted())
 }
 
 // ============================================================================
@@ -731,11 +739,10 @@ async fn generate_anthropic(req: &GenerateRequest, status: &StatusSender) -> Res
         .then(|| Value::Array(anthropic_tool_definitions()));
     let mut history: Vec<Value> = Vec::new();
     let mut budget = ToolBudget::new();
-    let mut draft: Option<String> = None;
-    let started = Instant::now();
+    let deadline = Instant::now() + GENERATION_DEADLINE;
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
-        check_deadline(started)?;
+        time_left(deadline)?;
         let tool_use = tool_use_for(iteration);
         let _ = status.unbounded_send(WAITING_ON_MODEL.to_string());
         // `build_request_body` seeds the opening user turn. Sending
@@ -749,17 +756,10 @@ async fn generate_anthropic(req: &GenerateRequest, status: &StatusSender) -> Res
             tool_use,
             &history,
         );
-        let json = send_json(req, ANTHROPIC_ENDPOINT, &[], &body).await?;
+        let json = send_json(req, ANTHROPIC_ENDPOINT, &[], &body, deadline).await?;
 
         let stop_reason = json["stop_reason"].as_str().unwrap_or("");
         let content = json["content"].as_array().cloned().unwrap_or_default();
-
-        // Claude routinely emits a text block alongside its `tool_use` blocks.
-        // Only the tool blocks used to be read on this branch, so a finished
-        // message sitting next to one more tool call was thrown away.
-        if let Some(text) = first_text_block(&content) {
-            draft = Some(text);
-        }
 
         if stop_reason == "tool_use" {
             if is_final_iteration(iteration) {
@@ -827,7 +827,7 @@ async fn generate_anthropic(req: &GenerateRequest, status: &StatusSender) -> Res
         );
     }
 
-    exhausted(draft)
+    Err(iterations_exhausted())
 }
 
 fn first_text_block(content: &[Value]) -> Option<String> {
@@ -849,11 +849,10 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
     let url = gemini_endpoint(&req.model);
     let mut history: Vec<Value> = Vec::new();
     let mut budget = ToolBudget::new();
-    let mut draft: Option<String> = None;
-    let started = Instant::now();
+    let deadline = Instant::now() + GENERATION_DEADLINE;
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
-        check_deadline(started)?;
+        time_left(deadline)?;
         let tool_use = tool_use_for(iteration);
         let _ = status.unbounded_send(WAITING_ON_MODEL.to_string());
         let body = build_request_body(
@@ -864,7 +863,7 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
             tool_use,
             &history,
         );
-        let raw = send_json(req, &url, &[], &body).await?;
+        let raw = send_json(req, &url, &[], &body, deadline).await?;
         let json: GeminiResponse =
             serde_json::from_value(raw).context("Couldn't read Gemini's response.")?;
 
@@ -890,13 +889,6 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
         // by a `functionCall`, or several parallel calls in one turn; taking
         // only the first dropped the rest and fell through to a parse error
         // whenever a thought part came first.
-        // Text that arrives alongside a `functionCall` is the model's draft.
-        // The tool branch below leaves the loop before the text join, so
-        // without this the draft is lost every time it asks for one more file.
-        if let Some(text) = non_empty_text(Some(&joined_text(parts))) {
-            draft = Some(text);
-        }
-
         // The final round's results would never be read, so its calls are not
         // run: `execute_tool` spawns `git` and walks directories, and that
         // work used to be done in full and then dropped with the loop.
@@ -987,22 +979,22 @@ async fn generate_gemini(req: &GenerateRequest, status: &StatusSender) -> Result
         }
     }
 
-    exhausted(draft)
+    Err(iterations_exhausted())
 }
 
 /// End a generation that ran out of round trips.
 ///
-/// A model that wrote a message and then asked for one more file has already
-/// answered; failing the whole generation in that case threw away the very
-/// thing the user asked for.
-fn exhausted(draft: Option<String>) -> Result<String> {
-    match draft {
-        Some(text) => Ok(text),
-        None => Err(anyhow::anyhow!(
-            "The model kept asking for more context and never wrote a message. Try turning off \
-             \"Let the model read files\" in Settings > AI."
-        )),
-    }
+/// Deliberately not salvaged from the last turn's text. A turn that asks for
+/// no tools already returns its text as the message, so text still in hand
+/// here arrived beside a tool call — narration like "I'll check that file
+/// first". Putting a preamble in the commit box is worse than saying the
+/// generation did not finish. With tools withheld on the final round this is
+/// reachable only from a provider that ignored that instruction.
+fn iterations_exhausted() -> anyhow::Error {
+    anyhow::anyhow!(
+        "The model kept asking for more context and never wrote a message. Try turning off \
+         \"Let the model read files\" in Settings > AI."
+    )
 }
 
 /// An assistant turn to replay, carrying only the fields the chat-completions
@@ -1190,21 +1182,27 @@ mod tests {
         );
     }
 
-    // ── exhaustion ────────────────────────────────────────────────
+    // ── the generation deadline ───────────────────────────────────
 
-    /// A model that wrote the message and then asked for one more file has
-    /// answered. Reporting failure threw that answer away.
+    /// Checking only between rounds bounded nothing: a round starting just
+    /// inside the deadline could still spend three 60-second attempts. Every
+    /// request timeout is clamped to what is actually left.
     #[test]
-    fn a_draft_written_before_the_rounds_ran_out_is_the_result() {
-        let message = exhausted(Some("fix(ai): stop dropping the draft".into()))
-            .expect("a draft must be returned rather than reported as a failure");
-        assert_eq!(message, "fix(ai): stop dropping the draft");
+    fn a_round_starting_near_the_deadline_gets_only_the_time_that_remains() {
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let remaining = time_left(deadline).expect("still inside the deadline");
+        assert!(remaining <= Duration::from_millis(50));
+        assert!(
+            REQUEST_TIMEOUT.min(remaining) < REQUEST_TIMEOUT,
+            "the request would have been given a full timeout it cannot have"
+        );
     }
 
     #[test]
-    fn running_out_with_nothing_written_still_reports_the_failure() {
-        let error = exhausted(None).expect_err("no draft must remain an error");
-        assert!(error.to_string().contains("never wrote a message"));
+    fn a_spent_deadline_is_reported_rather_than_returning_no_time() {
+        let error = time_left(Instant::now() - Duration::from_secs(1))
+            .expect_err("a spent deadline must fail the generation");
+        assert!(error.to_string().contains("Gave up after"));
     }
 
     // ── replaying an assistant turn ───────────────────────────────
