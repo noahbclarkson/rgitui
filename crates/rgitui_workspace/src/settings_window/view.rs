@@ -1241,6 +1241,24 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// Close whatever is open in front of the page — the model list or a
+    /// dropdown — returning whether anything was.
+    ///
+    /// Esc is bound to the settings window's Cancel, and gpui runs a binding
+    /// before any key listener inside the page, so without this Esc would close
+    /// the whole window rather than the list or dropdown the user is in.
+    pub(super) fn dismiss_open_overlay(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.dismiss_model_picker(cx) {
+            return true;
+        }
+        let select_open = self.auto_fetch_select.read(cx).is_open();
+        if select_open {
+            self.auto_fetch_select
+                .update(cx, |select, cx| select.close(cx));
+        }
+        select_open
+    }
+
     /// Commit any text fields that have not yet been submitted via Enter and
     /// persist all settings. The standalone settings window invokes this on
     /// close so a pasted secret is not silently discarded.

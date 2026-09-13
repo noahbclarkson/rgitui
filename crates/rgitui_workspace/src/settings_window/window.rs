@@ -100,12 +100,12 @@ impl SettingsWindow {
     /// from here and cannot be dismissed from here.
     fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
         match cmd {
-            // Esc closes an open model list first, and the window only once
-            // nothing inside the page is open.
+            // Esc closes an open model list or dropdown first, and the window
+            // only once nothing inside the page is open.
             CommandId::Cancel => {
                 let dismissed = self
                     .view
-                    .update(cx, |view, cx| view.dismiss_model_picker(cx));
+                    .update(cx, |view, cx| view.dismiss_open_overlay(cx));
                 if !dismissed {
                     self.close(window, cx);
                 }

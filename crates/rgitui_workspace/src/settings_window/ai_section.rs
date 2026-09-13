@@ -419,10 +419,6 @@ impl SettingsView {
     }
 
     /// Close the model list if one is open, returning whether one was.
-    ///
-    /// Esc is bound to the settings window's Cancel, and gpui runs a binding
-    /// before any key listener inside the page, so without this Esc in the
-    /// model list would close the whole window rather than the list.
     pub(super) fn dismiss_model_picker(&mut self, cx: &mut Context<Self>) -> bool {
         if self.ai_model_picker_provider.take().is_none() {
             return false;
@@ -1525,10 +1521,8 @@ async fn resolve_catalog(
 ) -> CatalogOutcome {
     let cached = catalog::read_cached(provider, base_url);
     let cached_rows = |cached: catalog::CachedCatalog| {
-        (!cached.models.is_empty()).then(|| {
-            let fetched_at = cached.fetched_at;
-            (cached.models, CatalogSource::Cache { fetched_at })
-        })
+        let fetched_at = cached.fetched_at;
+        (cached.models, CatalogSource::Cache { fetched_at })
     };
 
     if !force {
@@ -1538,7 +1532,7 @@ async fn resolve_catalog(
         });
         if fresh {
             return CatalogOutcome {
-                models: cached.and_then(cached_rows),
+                models: cached.map(cached_rows),
                 error: None,
             };
         }
@@ -1560,7 +1554,7 @@ async fn resolve_catalog(
             }
         }
         Err(error) => CatalogOutcome {
-            models: cached.and_then(cached_rows),
+            models: cached.map(cached_rows),
             error: Some(error.to_string()),
         },
     }

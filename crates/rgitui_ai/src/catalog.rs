@@ -183,20 +183,6 @@ pub enum CatalogSource {
     Bundled,
 }
 
-/// Live > cache > bundled.
-pub fn resolve_catalog(
-    provider: AiProvider,
-    cached: Option<CachedCatalog>,
-) -> (Vec<ModelInfo>, CatalogSource) {
-    match cached {
-        Some(catalog) if catalog.schema == CATALOG_SCHEMA && !catalog.models.is_empty() => {
-            let fetched_at = catalog.fetched_at;
-            (catalog.models, CatalogSource::Cache { fetched_at })
-        }
-        _ => (bundled_catalog(provider), CatalogSource::Bundled),
-    }
-}
-
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -230,8 +216,17 @@ fn stable_hash(value: &str) -> u64 {
 /// of JSON, so call this from a background task.
 pub fn read_cached(provider: AiProvider, base_url_override: &str) -> Option<CachedCatalog> {
     let json = std::fs::read_to_string(catalog_path(provider, base_url_override)).ok()?;
-    let catalog: CachedCatalog = serde_json::from_str(&json).ok()?;
-    (catalog.schema == CATALOG_SCHEMA).then_some(catalog)
+    parse_cached(&json)
+}
+
+/// Parse a cache file, or `None` when it is corrupt, from another schema, or
+/// empty. Pure.
+///
+/// An empty list counts as no cache at all. Counted as fresh, it would show
+/// nothing new while stopping the real list from being fetched for a day.
+fn parse_cached(json: &str) -> Option<CachedCatalog> {
+    let catalog: CachedCatalog = serde_json::from_str(json).ok()?;
+    (catalog.schema == CATALOG_SCHEMA && !catalog.models.is_empty()).then_some(catalog)
 }
 
 /// Write a provider's catalogue, temp-file-then-rename so a crash mid-write
@@ -1118,45 +1113,40 @@ mod tests {
         assert_eq!(freshness(2_000_000, 1_000_000), CatalogFreshness::Fresh);
     }
 
-    #[test]
-    fn resolve_prefers_the_cache_and_falls_back_to_bundled() {
-        let cached = CachedCatalog {
-            schema: CATALOG_SCHEMA,
+    fn cache_json(schema: u32, models: Vec<ModelInfo>) -> String {
+        serde_json::to_string(&CachedCatalog {
+            schema,
             fetched_at: 42,
-            models: vec![model("cached/model")],
-        };
-        let (models, source) = resolve_catalog(AiProvider::OpenAi, Some(cached));
-        assert_eq!(models[0].id, "cached/model");
-        assert_eq!(source, CatalogSource::Cache { fetched_at: 42 });
-
-        let (models, source) = resolve_catalog(AiProvider::OpenAi, None);
-        assert_eq!(source, CatalogSource::Bundled);
-        assert!(models
-            .iter()
-            .any(|m| m.id == AiProvider::OpenAi.default_model()));
+            models,
+        })
+        .unwrap()
     }
 
     #[test]
-    fn a_cache_from_an_older_schema_is_discarded() {
-        let cached = CachedCatalog {
-            schema: CATALOG_SCHEMA + 1,
-            fetched_at: 42,
-            models: vec![model("cached/model")],
-        };
-        let (_, source) = resolve_catalog(AiProvider::OpenAi, Some(cached));
-        assert_eq!(source, CatalogSource::Bundled);
+    fn a_current_cache_parses_with_its_models_and_timestamp() {
+        let cached = parse_cached(&cache_json(CATALOG_SCHEMA, vec![model("cached/model")]))
+            .expect("a current cache should parse");
+        assert_eq!(cached.fetched_at, 42);
+        assert_eq!(cached.models[0].id, "cached/model");
     }
 
     #[test]
-    fn an_empty_cache_falls_back_rather_than_rendering_nothing() {
-        let cached = CachedCatalog {
-            schema: CATALOG_SCHEMA,
-            fetched_at: 42,
-            models: Vec::new(),
-        };
-        let (models, source) = resolve_catalog(AiProvider::Gemini, Some(cached));
-        assert_eq!(source, CatalogSource::Bundled);
-        assert!(!models.is_empty());
+    fn a_cache_from_another_schema_is_discarded() {
+        let models = vec![model("cached/model")];
+        assert!(parse_cached(&cache_json(CATALOG_SCHEMA - 1, models.clone())).is_none());
+        assert!(parse_cached(&cache_json(CATALOG_SCHEMA + 1, models)).is_none());
+    }
+
+    /// Counted as fresh, an empty cache would show nothing new while stopping
+    /// the real list from being fetched for a day.
+    #[test]
+    fn an_empty_cache_counts_as_no_cache() {
+        assert!(parse_cached(&cache_json(CATALOG_SCHEMA, Vec::new())).is_none());
+    }
+
+    #[test]
+    fn a_truncated_cache_is_discarded_rather_than_failing() {
+        assert!(parse_cached(r#"{ "schema": 2, "fetched_at": 42, "models": ["#).is_none());
     }
 
     #[test]

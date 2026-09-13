@@ -203,7 +203,11 @@ impl Select {
         cx.notify();
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
+    /// Close the menu, emitting `Dismissed` if it was open.
+    ///
+    /// For a host that owns an Esc binding: gpui runs a binding before this
+    /// element's own key listener, so the listener never sees that Esc.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
         if !self.open {
             return;
         }
@@ -505,5 +509,62 @@ mod tests {
         assert_eq!(option.detail.as_deref(), Some("1M ctx"));
         assert_eq!(option.icon, Some(IconName::Sparkle));
         assert!(option.disabled);
+    }
+
+    mod headless {
+        use gpui::Entity;
+        use rgitui_test_support::ViewTest;
+
+        use super::*;
+
+        struct Host {
+            select: Entity<Select>,
+            dismissed: usize,
+        }
+
+        impl Host {
+            fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+                let select = cx.new(|cx| {
+                    let mut select = Select::new("select", cx);
+                    select.set_options(options(&[("a", false), ("b", false)]), cx);
+                    select
+                });
+                cx.subscribe(&select, |host: &mut Self, _, event: &SelectEvent, _| {
+                    if let SelectEvent::Dismissed = event {
+                        host.dismissed += 1;
+                    }
+                })
+                .detach();
+                Self {
+                    select,
+                    dismissed: 0,
+                }
+            }
+        }
+
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().child(self.select.clone())
+            }
+        }
+
+        /// The settings window closes an open dropdown on Esc before closing
+        /// itself, which relies on `close` reporting a dismissal once and
+        /// doing nothing to a dropdown that is already shut.
+        #[test]
+        fn close_dismisses_an_open_menu_once_and_leaves_a_closed_one_alone() {
+            let mut view = ViewTest::open(Host::new);
+            view.update(|host, _, cx| {
+                host.select.update(cx, |select, cx| {
+                    select.toggle(cx);
+                    select.close(cx);
+                    select.close(cx);
+                });
+            });
+            view.read(|host, cx| {
+                assert!(!host.select.read(cx).is_open());
+                assert_eq!(host.dismissed, 1);
+            });
+        }
     }
 }
