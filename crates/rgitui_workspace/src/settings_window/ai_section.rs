@@ -13,9 +13,10 @@
 //!    that cost money, each stating what it costs.
 
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, ElementId, FontWeight, SharedString};
+use gpui::{div, px, App, ClickEvent, Context, ElementId, FontWeight, SharedString, Window};
 use rgitui_ai::catalog::{
     self, classify_pinned, filter_models, CatalogSource, ModelFilter, ModelInfo, PinnedModelStatus,
+    ToolSupport,
 };
 use rgitui_ai::CommitStyle;
 use rgitui_settings::{AiProvider, SettingsState};
@@ -104,7 +105,7 @@ impl SettingsView {
             self.expanded_ai_provider = None;
         } else {
             self.expanded_ai_provider = Some(provider);
-            self.ai_model_picker_open = false;
+            self.ai_model_picker_provider = None;
             self.load_ai_catalog(provider, cx);
         }
         cx.notify();
@@ -122,7 +123,7 @@ impl SettingsView {
         model: String,
         cx: &mut Context<Self>,
     ) {
-        self.ai_model_picker_open = false;
+        self.ai_model_picker_provider = None;
         if provider == self.ai_provider {
             self.ai_model = model.clone();
         }
@@ -395,32 +396,110 @@ impl SettingsView {
         self.sync_model_picker(cx);
     }
 
-    /// Feed the picker the current provider's catalogue.
-    pub(super) fn sync_model_picker(&mut self, cx: &mut Context<Self>) {
-        let provider = self.ai_provider;
-        let models = self.ai_catalog.get(&provider).cloned().unwrap_or_default();
-        let filter = ModelFilter {
-            tools_only: self.ai_use_tools,
-            ..ModelFilter::default()
-        };
-        let rows: Vec<PickerRow> = filter_models(&models, filter)
-            .into_iter()
-            .map(|model| model_row(provider, model))
-            .collect();
+    /// Open `provider`'s model list, or close it if it is already open.
+    ///
+    /// Opening never changes the active provider: a model chosen here is
+    /// pinned to the provider whose row it was chosen in, and making a
+    /// provider the active one is its own button.
+    fn toggle_model_picker(
+        &mut self,
+        provider: AiProvider,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai_model_picker_provider == Some(provider) {
+            self.ai_model_picker_provider = None;
+        } else {
+            self.ai_model_picker_provider = Some(provider);
+            self.sync_model_picker(cx);
+            self.ai_model_picker
+                .update(cx, |picker, cx| picker.reset(window, cx));
+        }
+        cx.notify();
+    }
 
-        let footer = self
-            .ai_catalog_source
+    /// Close the model list if one is open, returning whether one was.
+    ///
+    /// Esc is bound to the settings window's Cancel, and gpui runs a binding
+    /// before any key listener inside the page, so without this Esc in the
+    /// model list would close the whole window rather than the list.
+    pub(super) fn dismiss_model_picker(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.ai_model_picker_provider.take().is_none() {
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
+    /// The model pinned to `provider`, as this page currently holds it.
+    fn pinned_model(&self, provider: AiProvider, cx: &App) -> String {
+        if provider == self.ai_provider {
+            self.ai_model.clone()
+        } else {
+            cx.read_global::<SettingsState, _>(|state, _cx| state.settings().ai.model_for(provider))
+        }
+    }
+
+    /// Feed the open picker its provider's catalogue.
+    pub(super) fn sync_model_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(provider) = self.ai_model_picker_provider else {
+            return;
+        };
+        let pinned = self.pinned_model(provider, cx);
+        let models = self
+            .ai_catalog
             .get(&provider)
-            .map(|source| catalog_source_label(*source));
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let offered = filter_models(
+            models,
+            ModelFilter {
+                tools_only: self.ai_use_tools,
+                ..ModelFilter::default()
+            },
+        );
+        let hidden_for_tools = if self.ai_use_tools {
+            filter_models(models, ModelFilter::default()).len() - offered.len()
+        } else {
+            0
+        };
+
+        let mut rows: Vec<PickerRow> = offered.into_iter().map(model_row).collect();
+        // The model in use stays visible even when the list does not offer it
+        // — retired, typed by hand, or served only by a gateway — so the
+        // picker never opens with nothing checked.
+        if !pinned.trim().is_empty() && !rows.iter().any(|row| *row.id == *pinned) {
+            let note = if models.iter().any(|model| model.id == pinned) {
+                "Current model · filtered out of this list"
+            } else {
+                "Current model · not in this list"
+            };
+            rows.insert(
+                0,
+                PickerRow::new(pinned.clone(), pinned.clone()).secondary(note),
+            );
+        }
+
+        let mut footer = Vec::new();
+        if let Some(source) = self.ai_catalog_source.get(&provider) {
+            footer.push(catalog_source_label(*source));
+        }
+        // Say why a model the user knows exists is not listed.
+        if hidden_for_tools > 0 {
+            footer.push(format!("{hidden_for_tools} without tool support hidden"));
+        }
+        let footer = (!footer.is_empty()).then(|| SharedString::from(footer.join(" · ")));
         let status = self.ai_catalog_error.get(&provider).map(|error| {
-            format!(
+            SharedString::from(format!(
                 "Couldn't refresh the model list — showing the last known {} models. {error}",
                 models.len()
-            )
+            ))
         });
-        let selected = self.ai_model.clone();
 
         self.ai_model_picker.update(cx, |picker, cx| {
+            // Rows before chips: chip counts are taken against the rows in
+            // place, and counting against the previous provider's rows could
+            // reset a chip the new rows fill.
             picker.set_rows(rows, cx);
             picker.set_chips(
                 vec![
@@ -431,9 +510,9 @@ impl SettingsView {
                 ],
                 cx,
             );
-            picker.set_selected(Some(selected.into()), cx);
-            picker.set_footer_note(footer.map(SharedString::from), cx);
-            picker.set_status_note(status.map(SharedString::from), cx);
+            picker.set_selected(Some(pinned.into()), cx);
+            picker.set_footer_note(footer, cx);
+            picker.set_status_note(status, cx);
         });
     }
 
@@ -755,7 +834,7 @@ impl SettingsView {
                 .into(),
             ),
             ConnectionState::Testing => {
-                Some(format!("Testing {}…", self.ai_model).to_string().into())
+                Some(format!("Testing {}…", provider.display_name()).into())
             }
             ConnectionState::Failed => self
                 .ai_connection_error
@@ -913,19 +992,18 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors().clone();
-        let models = self.ai_catalog.get(&provider).cloned().unwrap_or_default();
+        let models = self
+            .ai_catalog
+            .get(&provider)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let source = self
             .ai_catalog_source
             .get(&provider)
             .copied()
             .unwrap_or(CatalogSource::Bundled);
-        let pinned = if provider == self.ai_provider {
-            self.ai_model.clone()
-        } else {
-            cx.read_global::<SettingsState, _>(|state, _cx| state.settings().ai.model_for(provider))
-        };
-        let status = classify_pinned(&pinned, &models, source, self.ai_use_tools);
-        let is_active_provider = provider == self.ai_provider;
+        let pinned = self.pinned_model(provider, cx);
+        let status = classify_pinned(&pinned, models, source, self.ai_use_tools);
 
         let summary: SharedString = match &status {
             PinnedModelStatus::Known(model) => model.summary_line().into(),
@@ -960,14 +1038,9 @@ impl SettingsView {
                     .bg(colors.editor_background)
                     .cursor_pointer()
                     .tab_index(tab_base + 4)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        if !is_active_provider {
-                            this.use_ai_provider(provider, cx);
-                        }
-                        this.ai_model_picker_open = !this.ai_model_picker_open;
-                        this.sync_model_picker(cx);
-                        cx.notify();
+                        this.toggle_model_picker(provider, window, cx);
                     }))
                     .child(
                         div()
@@ -1084,7 +1157,7 @@ impl SettingsView {
                 ),
         );
 
-        if self.ai_model_picker_open && is_active_provider {
+        if self.ai_model_picker_provider == Some(provider) {
             column = column.child(self.ai_model_picker.clone());
         }
 
@@ -1431,7 +1504,6 @@ struct BehaviourToggle {
     tab_index: isize,
 }
 
-/// A picker row for one model, with the facets its filter chips need.
 /// What one catalogue resolution produced.
 ///
 /// The rows and the error are independent: a failed refresh still carries the
@@ -1494,29 +1566,34 @@ async fn resolve_catalog(
     }
 }
 
-fn model_row(provider: AiProvider, model: &ModelInfo) -> PickerRow {
+/// A picker row for one model, with the facets its filter chips need.
+fn model_row(model: &ModelInfo) -> PickerRow {
     let mut row = PickerRow::new(model.id.clone(), model.display_name.clone())
-        .secondary(provider.display_name())
         .trailing(model.trailing_label());
-
+    // The id is what gets sent and what a gateway or a changelog calls the
+    // model; a display name alone cannot tell two snapshots of one apart.
+    if model.display_name != model.id {
+        row = row.secondary(model.id.clone());
+    }
     if let Some(badge) = model.tool_support.badge() {
         row = row.badge(badge);
-        if model.tool_support == rgitui_ai::catalog::ToolSupport::Supported {
-            row = row.facet("tools");
-        }
-    } else {
-        // `Unknown` renders with no badge rather than a false one, but still
-        // belongs in the Tools chip: dropping it would empty the Gemini and
-        // OpenAI lists entirely.
+    }
+    // Only a model that reports tool support is in the Tools chip. Counting
+    // `Unknown` too would make the chip identical to All for every provider
+    // that does not report it.
+    if model.tool_support == ToolSupport::Supported {
         row = row.facet("tools");
     }
-
     if model.is_free() {
-        row = row.badge("free").facet("free");
+        row = row.badge("Free").facet("free");
     }
-    // "Cheap" means under a dollar per million prompt tokens; a provider that
-    // reports no pricing is not claimed to be cheap.
-    if model.prompt_price_per_mtok.is_some_and(|price| price < 1.0) {
+    // "Cheap" means under a dollar per million prompt tokens. A provider that
+    // reports no pricing is not claimed to be cheap, and a negative BYOK
+    // rebate row is not a price anyone pays.
+    if model
+        .prompt_price_per_mtok
+        .is_some_and(|price| (0.0..1.0).contains(&price))
+    {
         row = row.facet("cheap");
     }
     row
@@ -1569,7 +1646,6 @@ fn connection_error_message(provider: AiProvider, error: &anyhow::Error) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rgitui_ai::catalog::ToolSupport;
 
     fn model(id: &str) -> ModelInfo {
         ModelInfo {
@@ -1588,25 +1664,37 @@ mod tests {
 
     #[test]
     fn a_tool_capable_model_lands_in_the_tools_chip() {
-        let row = model_row(AiProvider::OpenAi, &model("gpt-5.6-luna"));
+        let row = model_row(&model("gpt-5.6-luna"));
         assert!(row.facets.iter().any(|facet| facet == "tools"));
         assert!(row.badges.iter().any(|badge| badge == "Tools"));
     }
 
-    /// Dropping `Unknown` from the Tools chip would empty the Gemini and
-    /// OpenAI lists entirely, since neither advertises tool support.
+    /// Counting `Unknown` in the Tools chip would make it identical to All for
+    /// every provider that does not report tool support.
     #[test]
-    fn an_unknown_tool_capability_stays_in_the_chip_but_gets_no_badge() {
+    fn an_unknown_tool_capability_gets_no_badge_and_no_tools_chip() {
         let mut info = model("gemini-3.1-flash-lite");
         info.tool_support = ToolSupport::Unknown;
-        let row = model_row(AiProvider::Gemini, &info);
-        assert!(row.facets.iter().any(|facet| facet == "tools"));
+        let row = model_row(&info);
+        assert!(!row.facets.iter().any(|facet| facet == "tools"));
         assert!(row.badges.is_empty());
     }
 
     #[test]
+    fn the_id_that_gets_sent_is_shown_under_a_differing_display_name() {
+        let mut info = model("anthropic/claude-sonnet-4.6");
+        info.display_name = "Anthropic: Claude Sonnet 4.6".to_string();
+        assert_eq!(
+            model_row(&info).secondary.as_deref(),
+            Some("anthropic/claude-sonnet-4.6")
+        );
+        // A name that already is the id needs no second line repeating it.
+        assert_eq!(model_row(&model("gpt-5.6-luna")).secondary, None);
+    }
+
+    #[test]
     fn a_model_with_no_reported_price_is_not_claimed_to_be_cheap() {
-        let row = model_row(AiProvider::OpenAi, &model("gpt-5.6-luna"));
+        let row = model_row(&model("gpt-5.6-luna"));
         assert!(!row.facets.iter().any(|facet| facet == "cheap"));
     }
 
@@ -1615,24 +1703,33 @@ mod tests {
         let mut cheap = model("vendor/cheap");
         cheap.prompt_price_per_mtok = Some(0.25);
         cheap.completion_price_per_mtok = Some(1.5);
-        let row = model_row(AiProvider::OpenRouter, &cheap);
+        let row = model_row(&cheap);
         assert!(row.facets.iter().any(|facet| facet == "cheap"));
         assert!(!row.facets.iter().any(|facet| facet == "free"));
 
         let mut free = model("vendor/free");
         free.prompt_price_per_mtok = Some(0.0);
         free.completion_price_per_mtok = Some(0.0);
-        let row = model_row(AiProvider::OpenRouter, &free);
+        let row = model_row(&free);
         assert!(row.facets.iter().any(|facet| facet == "free"));
-        assert!(row.badges.iter().any(|badge| badge == "free"));
+        assert!(row.badges.iter().any(|badge| badge == "Free"));
     }
 
     #[test]
-    fn an_expensive_model_is_not_in_the_cheap_chip() {
+    fn an_expensive_model_or_a_rebate_price_is_not_in_the_cheap_chip() {
         let mut expensive = model("vendor/opus");
         expensive.prompt_price_per_mtok = Some(15.0);
-        let row = model_row(AiProvider::OpenRouter, &expensive);
-        assert!(!row.facets.iter().any(|facet| facet == "cheap"));
+        assert!(!model_row(&expensive)
+            .facets
+            .iter()
+            .any(|facet| facet == "cheap"));
+
+        let mut rebate = model("vendor/byok-rebate");
+        rebate.prompt_price_per_mtok = Some(-0.1);
+        assert!(!model_row(&rebate)
+            .facets
+            .iter()
+            .any(|facet| facet == "cheap"));
     }
 
     #[test]

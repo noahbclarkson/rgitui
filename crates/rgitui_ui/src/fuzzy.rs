@@ -1,7 +1,9 @@
-//! Fuzzy subsequence matching, shared by every search box in the app.
+//! Fuzzy subsequence matching for the app's search boxes.
 //!
-//! One implementation, so the command palette and the model picker cannot
-//! drift into ranking the same query differently.
+//! The command palette and the file filter rank by it directly. The model
+//! picker uses it as its last tier, below whole-word and substring matches, so
+//! a scattered-letter hit can surface a similar name without outranking a row
+//! that contains the query outright.
 
 /// Score `query` against `target`, or `None` when the query's characters do
 /// not all appear in `target` in order.

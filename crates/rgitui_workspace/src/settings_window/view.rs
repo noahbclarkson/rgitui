@@ -404,7 +404,10 @@ pub struct SettingsView {
     /// hours.
     pub(super) ai_catalog_stale: BTreeSet<AiProvider>,
     pub(super) ai_model_picker: Entity<Picker>,
-    pub(super) ai_model_picker_open: bool,
+    /// The provider whose model list is open. Per provider rather than a flag,
+    /// so opening another provider's list does not have to make that provider
+    /// the active one first.
+    pub(super) ai_model_picker_provider: Option<AiProvider>,
     /// Debounces the keychain write so it happens once per pause in typing
     /// rather than once per keystroke.
     pub(super) pending_secret_save: Option<Task<()>>,
@@ -645,23 +648,30 @@ impl SettingsView {
         )
         .detach();
 
-        let ai_model_picker = cx.new(Picker::new);
+        let ai_model_picker = cx.new(|cx| {
+            let mut picker = Picker::new(cx);
+            // A model newer than the catalogue, or one only a gateway serves,
+            // has to be typed by hand.
+            picker.set_allow_custom(true, cx);
+            picker
+        });
         cx.subscribe(
             &ai_model_picker,
-            |this: &mut Self, _, event: &rgitui_ui::PickerEvent, cx| match event {
-                rgitui_ui::PickerEvent::Selected(id) => {
-                    let provider = this.ai_provider;
-                    this.select_ai_model(provider, id.to_string(), cx);
-                }
-                rgitui_ui::PickerEvent::Dismissed => {
-                    this.ai_model_picker_open = false;
-                    cx.notify();
-                }
-                rgitui_ui::PickerEvent::RefreshRequested => {
-                    this.refresh_ai_catalog(this.ai_provider, true, cx);
-                }
-                rgitui_ui::PickerEvent::ChipChanged(_) => {
-                    this.sync_model_picker(cx);
+            |this: &mut Self, _, event: &rgitui_ui::PickerEvent, cx| {
+                let Some(provider) = this.ai_model_picker_provider else {
+                    return;
+                };
+                match event {
+                    rgitui_ui::PickerEvent::Selected(id) => {
+                        this.select_ai_model(provider, id.to_string(), cx);
+                    }
+                    rgitui_ui::PickerEvent::Dismissed => {
+                        this.ai_model_picker_provider = None;
+                        cx.notify();
+                    }
+                    rgitui_ui::PickerEvent::RefreshRequested => {
+                        this.refresh_ai_catalog(provider, true, cx);
+                    }
                 }
             },
         )
@@ -975,7 +985,7 @@ impl SettingsView {
             ai_catalog_tasks: BTreeMap::new(),
             ai_catalog_stale: BTreeSet::new(),
             ai_model_picker,
-            ai_model_picker_open: false,
+            ai_model_picker_provider: None,
             pending_secret_save: None,
             git_sign_commits: settings.git.sign_commits,
             git_providers,

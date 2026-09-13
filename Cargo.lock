@@ -5681,6 +5681,7 @@ dependencies = [
  "log",
  "rgitui_perf",
  "rgitui_settings",
+ "rgitui_test_support",
  "rgitui_theme",
  "smallvec",
 ]

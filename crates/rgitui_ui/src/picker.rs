@@ -1,4 +1,4 @@
-//! A searchable, virtualized picker overlay.
+//! A searchable, virtualized picker.
 //!
 //! Used for the model list, where a closed pill row cannot work: OpenRouter
 //! alone offers hundreds of models, and the two questions that actually decide
@@ -10,13 +10,16 @@
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
-    Focusable, FontWeight, KeyDownEvent, Render, ScrollStrategy, SharedString,
-    UniformListScrollHandle, Window,
+    div, px, uniform_list, App, ClickEvent, Context, Div, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent, Render, ScrollStrategy, SharedString,
+    Stateful, UniformListScrollHandle, Window,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 
-use crate::{fuzzy_score, Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent};
+use crate::{
+    fuzzy_score, Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label,
+    LabelSize, TextInput, TextInputEvent,
+};
 
 /// One selectable row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,9 +32,6 @@ pub struct PickerRow {
     pub badges: Vec<SharedString>,
     /// Which filter chips this row belongs to.
     pub facets: Vec<SharedString>,
-    /// Rendered above the list and always selectable, even when filtered out.
-    /// A pinned model that has left the catalogue must stay reachable.
-    pub pinned_note: Option<SharedString>,
 }
 
 impl PickerRow {
@@ -43,7 +43,6 @@ impl PickerRow {
             trailing: None,
             badges: Vec::new(),
             facets: Vec::new(),
-            pinned_note: None,
         }
     }
 
@@ -66,14 +65,9 @@ impl PickerRow {
         self.facets.push(facet.into());
         self
     }
-
-    pub fn pinned_note(mut self, note: impl Into<SharedString>) -> Self {
-        self.pinned_note = Some(note.into());
-        self
-    }
 }
 
-/// A filter chip above the list.
+/// A filter chip above the list. An empty id means "every row".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerChip {
     pub id: SharedString,
@@ -94,56 +88,149 @@ pub enum PickerEvent {
     Selected(SharedString),
     Dismissed,
     RefreshRequested,
-    /// The active filter chip changed. The owner re-supplies rows.
-    ChipChanged(SharedString),
 }
 
 /// Row height, in pixels. Two lines of text plus padding.
 const ROW_HEIGHT: f32 = 44.0;
 
-/// Rank rows against a query. Pure.
+/// Rows shown before the list scrolls.
 ///
-/// An empty query preserves the caller's order, which for a server-sorted
-/// catalogue is already the most useful ranking there is.
-pub fn rank_rows<'a>(rows: &'a [PickerRow], query: &str) -> Vec<&'a PickerRow> {
-    let query = query.trim();
-    if query.is_empty() {
-        return rows.iter().collect();
+/// The list is given an explicit height from this. A `uniform_list` sized
+/// with `flex_1` inside a column that has no fixed height resolves to zero
+/// pixels: the search box and chips draw, and the rows never do.
+const MAX_VISIBLE_ROWS: usize = 8;
+
+// Match tiers, best first. Each query word scores the best tier it reaches in
+// either the id or the display name, and a row's score is the sum over words.
+const TIER_EXACT: u32 = 10_000;
+const TIER_PREFIX: u32 = 800;
+const TIER_WORD_PREFIX: u32 = 600;
+const TIER_SUBSTRING: u32 = 400;
+const TIER_IGNORING_PUNCTUATION: u32 = 300;
+const TIER_SCATTERED: u32 = 100;
+
+/// Score one lowercase query word against one lowercase haystack.
+fn word_score(word: &str, haystack: &str) -> Option<u32> {
+    if haystack.starts_with(word) {
+        return Some(TIER_PREFIX);
     }
-    let mut scored: Vec<(usize, &PickerRow)> = rows
-        .iter()
-        .filter_map(|row| {
-            let score = fuzzy_score(query, &row.id)
-                .into_iter()
-                .chain(fuzzy_score(query, &row.primary))
-                .max()?;
-            Some((score, row))
-        })
-        .collect();
-    // Descending: the best score first.
-    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-    scored.into_iter().map(|(_, row)| row).collect()
+    let starts_a_word = haystack.match_indices(word).any(|(index, _)| {
+        haystack[..index]
+            .chars()
+            .next_back()
+            .is_none_or(|previous| !previous.is_alphanumeric())
+    });
+    if starts_a_word {
+        return Some(TIER_WORD_PREFIX);
+    }
+    if haystack.contains(word) {
+        return Some(TIER_SUBSTRING);
+    }
+    let compact_word = alphanumeric(word);
+    if !compact_word.is_empty() && alphanumeric(haystack).contains(&compact_word) {
+        return Some(TIER_IGNORING_PUNCTUATION);
+    }
+    fuzzy_score(word, haystack).map(|_| TIER_SCATTERED)
 }
 
-/// Keep only rows carrying `facet`. An empty facet keeps everything, which is
-/// what the "All" chip means.
-pub fn rows_in_facet<'a>(rows: &'a [&'a PickerRow], facet: &str) -> Vec<&'a PickerRow> {
-    if facet.is_empty() {
-        return rows.to_vec();
+fn alphanumeric(text: &str) -> String {
+    text.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// Score a row against a query, or `None` when some word of the query matches
+/// neither the id nor the display name. Pure.
+///
+/// Words match independently and in any order, so `sonnet claude` finds
+/// `anthropic/claude-sonnet-4.6`, and punctuation is optional, so `gpt5` finds
+/// `gpt-5`. Scattered-letter matches still count — that is what surfaces a
+/// similar name for a misremembered one — but rank below any row that contains
+/// the words outright.
+pub fn row_score(row: &PickerRow, query: &str) -> Option<u32> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Some(0);
     }
-    rows.iter()
-        .copied()
-        .filter(|row| row.facets.iter().any(|value| value == facet))
+    let id = row.id.to_lowercase();
+    let primary = row.primary.to_lowercase();
+    let mut score = 0;
+    for word in query.split_whitespace() {
+        score += word_score(word, &id).max(word_score(word, &primary))?;
+    }
+    if id == query || primary == query {
+        score += TIER_EXACT;
+    }
+    Some(score)
+}
+
+fn row_in_facet(row: &PickerRow, facet: &str) -> bool {
+    facet.is_empty() || row.facets.iter().any(|value| value == facet)
+}
+
+/// Indices of the rows carrying `facet` that match `query`, best match first.
+/// Pure.
+///
+/// Equal scores keep the caller's order, which for a server-sorted catalogue
+/// is already the most useful ranking there is; an empty query keeps it
+/// outright.
+pub fn filter_rows(rows: &[PickerRow], query: &str, facet: &str) -> Vec<usize> {
+    let mut scored: Vec<(u32, usize)> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row_in_facet(row, facet))
+        .filter_map(|(index, row)| Some((row_score(row, query)?, index)))
+        .collect();
+    // Stable, so ties keep the caller's order.
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    scored.into_iter().map(|(_, index)| index).collect()
+}
+
+/// How many rows each chip holds, ignoring the query. Pure.
+///
+/// A chip holding nothing is not offered: a provider that reports no prices
+/// has no cheap models, and a chip that can only ever answer "no matches"
+/// reads as a broken filter.
+pub fn chip_counts(rows: &[PickerRow], chips: &[PickerChip]) -> Vec<usize> {
+    chips
+        .iter()
+        .map(|chip| {
+            rows.iter()
+                .filter(|row| row_in_facet(row, &chip.id))
+                .count()
+        })
         .collect()
+}
+
+/// The typed id offered below the matches, when the query could name
+/// something that is not in the list. Pure.
+///
+/// An id never contains whitespace, so a query with a space is a search rather
+/// than an id, and a query that already names a row needs no second entry.
+pub fn custom_entry(rows: &[PickerRow], query: &str) -> Option<SharedString> {
+    let query = query.trim();
+    if query.is_empty()
+        || query.contains(char::is_whitespace)
+        || rows.iter().any(|row| row.id == query)
+    {
+        return None;
+    }
+    Some(SharedString::from(query.to_string()))
 }
 
 pub struct Picker {
     rows: Vec<PickerRow>,
     chips: Vec<PickerChip>,
+    /// Per chip, how many rows it holds regardless of the query.
+    chip_counts: Vec<usize>,
     active_chip: SharedString,
     selected_id: Option<SharedString>,
+    /// Indices into `rows` passing the chip and the query, best match first.
+    matches: Vec<usize>,
+    /// Offered after `matches` when the query could be an unlisted id.
+    custom: Option<SharedString>,
+    allow_custom: bool,
+    /// An index into the entries: `matches`, then `custom`.
     highlighted: usize,
-    query_editor: gpui::Entity<TextInput>,
+    query_editor: Entity<TextInput>,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     footer_note: Option<SharedString>,
@@ -162,20 +249,19 @@ impl Picker {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let query_editor = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Search models…");
+            input.set_placeholder("Search by name or id…");
             input
         });
 
+        // Only `Changed` is handled. Enter also bubbles to `on_key_down`, so
+        // committing on `Submit` as well would select every choice twice.
         cx.subscribe(
             &query_editor,
-            |this: &mut Self, _, event: &TextInputEvent, cx| match event {
-                TextInputEvent::Changed(_) => {
-                    this.highlighted = 0;
-                    this.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
-                    cx.notify();
+            |this: &mut Self, _, event: &TextInputEvent, cx| {
+                if let TextInputEvent::Changed(_) = event {
+                    this.refresh_matches(cx);
+                    this.highlight(0, ScrollStrategy::Top, cx);
                 }
-                TextInputEvent::Submit => this.commit_highlighted(cx),
-                TextInputEvent::Blurred => {}
             },
         )
         .detach();
@@ -183,8 +269,12 @@ impl Picker {
         Self {
             rows: Vec::new(),
             chips: Vec::new(),
+            chip_counts: Vec::new(),
             active_chip: SharedString::default(),
             selected_id: None,
+            matches: Vec::new(),
+            custom: None,
+            allow_custom: false,
             highlighted: 0,
             query_editor,
             scroll_handle: UniformListScrollHandle::new(),
@@ -196,19 +286,12 @@ impl Picker {
 
     pub fn set_rows(&mut self, rows: Vec<PickerRow>, cx: &mut Context<Self>) {
         self.rows = rows;
-        self.highlighted = 0;
-        cx.notify();
+        self.refresh_matches(cx);
     }
 
     pub fn set_chips(&mut self, chips: Vec<PickerChip>, cx: &mut Context<Self>) {
         self.chips = chips;
-        cx.notify();
-    }
-
-    pub fn set_active_chip(&mut self, chip: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.active_chip = chip.into();
-        self.highlighted = 0;
-        cx.notify();
+        self.refresh_matches(cx);
     }
 
     pub fn set_selected(&mut self, id: Option<SharedString>, cx: &mut Context<Self>) {
@@ -216,7 +299,13 @@ impl Picker {
         cx.notify();
     }
 
-    /// A short line in the footer, e.g. `312 models · updated 3 h ago`.
+    /// Offer the typed query as a choice when no row has that id.
+    pub fn set_allow_custom(&mut self, allow_custom: bool, cx: &mut Context<Self>) {
+        self.allow_custom = allow_custom;
+        self.refresh_matches(cx);
+    }
+
+    /// A short line in the footer, e.g. `updated 3 h ago`.
     pub fn set_footer_note(&mut self, note: Option<SharedString>, cx: &mut Context<Self>) {
         self.footer_note = note;
         cx.notify();
@@ -234,67 +323,209 @@ impl Picker {
             .update(cx, |input, cx| input.focus(window, cx));
     }
 
-    pub fn clear_query(&mut self, cx: &mut Context<Self>) {
+    /// Clear the search and the chip, highlight the current selection, and
+    /// focus the search box.
+    ///
+    /// Call each time the picker is shown, so it opens on the model in use
+    /// rather than on whatever was typed into it last time.
+    pub fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.query_editor.update(cx, |input, cx| input.clear(cx));
-        self.highlighted = 0;
+        self.active_chip = SharedString::default();
+        self.refresh_matches(cx);
+        let selected = self.selected_id.as_ref().and_then(|selected| {
+            self.matches
+                .iter()
+                .position(|&row| &self.rows[row].id == selected)
+        });
+        self.highlight(selected.unwrap_or(0), ScrollStrategy::Center, cx);
+        self.focus(window, cx);
+    }
+
+    /// Recompute the chip counts and the matching rows from the current rows,
+    /// chip and query.
+    fn refresh_matches(&mut self, cx: &mut Context<Self>) {
+        let query = self.query_editor.read(cx).text().to_string();
+        self.chip_counts = chip_counts(&self.rows, &self.chips);
+        // New rows (another provider, a toggled setting) can empty the active
+        // chip, which then disappears; left active, it would strand the list
+        // on "no matches" behind a chip the user can no longer see.
+        let chip_available = self.active_chip.is_empty()
+            || self
+                .chips
+                .iter()
+                .zip(&self.chip_counts)
+                .any(|(chip, count)| chip.id == self.active_chip && *count > 0);
+        if !chip_available {
+            self.active_chip = SharedString::default();
+        }
+        self.matches = filter_rows(&self.rows, &query, &self.active_chip);
+        self.custom = self
+            .allow_custom
+            .then(|| custom_entry(&self.rows, &query))
+            .flatten();
+        self.highlighted = self.highlighted.min(self.entry_count().saturating_sub(1));
         cx.notify();
     }
 
-    /// The rows currently visible, after chip and query filtering.
-    fn visible_rows(&self, cx: &Context<Self>) -> Vec<PickerRow> {
-        let query = self.query_editor.read(cx).text().to_string();
-        let ranked = rank_rows(&self.rows, &query);
-        rows_in_facet(&ranked, &self.active_chip)
-            .into_iter()
-            .cloned()
-            .collect()
+    fn entry_count(&self) -> usize {
+        self.matches.len() + usize::from(self.custom.is_some())
     }
 
-    fn commit_highlighted(&mut self, cx: &mut Context<Self>) {
-        let visible = self.visible_rows(cx);
-        let Some(row) = visible.get(self.highlighted) else {
+    /// The id behind entry `index`: a matching row, or the typed id after them.
+    fn entry_id(&self, index: usize) -> Option<SharedString> {
+        match self.matches.get(index) {
+            Some(&row) => Some(self.rows[row].id.clone()),
+            None if index == self.matches.len() => self.custom.clone(),
+            None => None,
+        }
+    }
+
+    fn highlight(&mut self, index: usize, strategy: ScrollStrategy, cx: &mut Context<Self>) {
+        let count = self.entry_count();
+        self.highlighted = index.min(count.saturating_sub(1));
+        if count > 0 {
+            self.scroll_handle
+                .scroll_to_item(self.highlighted, strategy);
+        }
+        cx.notify();
+    }
+
+    fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let count = self.entry_count();
+        if count == 0 {
+            return;
+        }
+        let next = (self.highlighted as isize + delta).clamp(0, count as isize - 1) as usize;
+        self.highlight(next, ScrollStrategy::Nearest, cx);
+    }
+
+    fn select_chip(&mut self, chip: SharedString, cx: &mut Context<Self>) {
+        self.active_chip = chip;
+        self.refresh_matches(cx);
+        self.highlight(0, ScrollStrategy::Top, cx);
+    }
+
+    fn commit(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(id) = self.entry_id(index) else {
             return;
         };
-        let id = row.id.clone();
         self.selected_id = Some(id.clone());
         cx.emit(PickerEvent::Selected(id));
         cx.notify();
     }
 
-    fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.visible_rows(cx).len();
-        if count == 0 {
-            return;
-        }
-        let next = (self.highlighted as isize + delta).clamp(0, count as isize - 1) as usize;
-        self.highlighted = next;
-        self.scroll_handle
-            .scroll_to_item(next, ScrollStrategy::Center);
-        cx.notify();
-    }
-
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let page = MAX_VISIBLE_ROWS as isize;
         match event.keystroke.key.as_str() {
             "escape" => cx.emit(PickerEvent::Dismissed),
             "down" => self.move_highlight(1, cx),
             "up" => self.move_highlight(-1, cx),
-            "pagedown" => self.move_highlight(8, cx),
-            "pageup" => self.move_highlight(-8, cx),
-            "enter" => self.commit_highlighted(cx),
+            "pagedown" => self.move_highlight(page, cx),
+            "pageup" => self.move_highlight(-page, cx),
+            "enter" => self.commit(self.highlighted, cx),
             _ => return,
         }
         cx.stop_propagation();
     }
 }
 
+/// The check column shared by every entry, so names line up whether or not a
+/// row is the current choice.
+fn selection_mark(is_selected: bool) -> Div {
+    div().w(px(14.)).flex_shrink_0().when(is_selected, |el| {
+        el.child(
+            Icon::new(IconName::Check)
+                .size(IconSize::XSmall)
+                .color(Color::Accent),
+        )
+    })
+}
+
+fn row_contents(
+    entry: Stateful<Div>,
+    row: &PickerRow,
+    is_selected: bool,
+    badge_background: Hsla,
+) -> Stateful<Div> {
+    let mut badges = div().flex().flex_row().flex_shrink_0().gap(px(4.));
+    for badge in &row.badges {
+        badges = badges.child(
+            div().px(px(5.)).rounded(px(3.)).bg(badge_background).child(
+                Label::new(badge.clone())
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            ),
+        );
+    }
+
+    entry
+        .child(selection_mark(is_selected))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    Label::new(row.primary.clone())
+                        .size(LabelSize::Small)
+                        .truncate(),
+                )
+                .when_some(row.secondary.clone(), |el, secondary| {
+                    el.child(
+                        Label::new(secondary)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .truncate(),
+                    )
+                }),
+        )
+        .child(badges)
+        .when_some(row.trailing.clone(), |el, trailing| {
+            el.child(
+                div().flex_shrink_0().child(
+                    Label::new(trailing)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                ),
+            )
+        })
+}
+
+fn custom_contents(entry: Stateful<Div>, id: &str) -> Stateful<Div> {
+    entry.child(selection_mark(false)).child(
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .child(
+                Label::new(format!("Use “{id}”"))
+                    .size(LabelSize::Small)
+                    .truncate(),
+            )
+            .child(
+                Label::new("Not in this list — sent to the provider exactly as typed")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            ),
+    )
+}
+
 impl Render for Picker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
-        let visible = self.visible_rows(cx);
+        let entry_count = self.entry_count();
+        let shown = self.matches.len();
         let total = self.rows.len();
-        let shown = visible.len();
-        let highlighted = self.highlighted;
-        let selected_id = self.selected_id.clone();
+
+        // "All" always shows; any other chip only when it holds something.
+        let offered_chips: Vec<(&PickerChip, usize)> = self
+            .chips
+            .iter()
+            .zip(self.chip_counts.iter().copied())
+            .filter(|(chip, count)| chip.id.is_empty() || *count > 0)
+            .collect();
 
         let mut chip_row = div()
             .flex()
@@ -306,7 +537,7 @@ impl Render for Picker {
             .gap(px(4.))
             .px(px(10.))
             .py(px(6.));
-        for chip in &self.chips {
+        for (chip, count) in &offered_chips {
             let is_active = chip.id == self.active_chip;
             let chip_id = chip.id.clone();
             chip_row = chip_row.child(
@@ -315,6 +546,7 @@ impl Render for Picker {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .gap(px(5.))
                     .h(px(24.))
                     .px(px(10.))
                     .rounded(px(12.))
@@ -325,10 +557,12 @@ impl Render for Picker {
                         colors.element_background
                     })
                     .hover(|style| style.bg(colors.ghost_element_hover))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        this.set_active_chip(chip_id.clone(), cx);
-                        cx.emit(PickerEvent::ChipChanged(chip_id.clone()));
+                        this.select_chip(chip_id.clone(), cx);
+                        // A click lands focus on the picker itself; hand it
+                        // back so typing keeps refining the search.
+                        this.focus(window, cx);
                     }))
                     .child(
                         Label::new(chip.label.clone())
@@ -343,101 +577,96 @@ impl Render for Picker {
                             } else {
                                 FontWeight::NORMAL
                             }),
+                    )
+                    .child(
+                        Label::new(count.to_string())
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             );
         }
 
-        let rows_for_list = visible.clone();
-        let list = uniform_list(
-            "picker-rows",
-            shown,
-            cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
-                let colors = cx.colors().clone();
-                range
-                    .map(|index| {
-                        let Some(row) = rows_for_list.get(index) else {
-                            return div().h(px(ROW_HEIGHT)).into_any_element();
-                        };
-                        let is_highlighted = index == highlighted;
-                        let is_selected = selected_id.as_ref() == Some(&row.id);
-                        let row_id = row.id.clone();
-
-                        let mut badges = div().flex().flex_row().gap(px(4.));
-                        for badge in &row.badges {
-                            badges = badges.child(
-                                div()
-                                    .px(px(5.))
-                                    .rounded(px(3.))
-                                    .bg(colors.element_background)
-                                    .child(
-                                        Label::new(badge.clone())
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
-                                    ),
-                            );
-                        }
-
-                        div()
-                            .id(ElementId::NamedInteger("picker-row".into(), index as u64))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.))
-                            .h(px(ROW_HEIGHT))
-                            .px(px(10.))
-                            .cursor_pointer()
-                            .when(is_highlighted, |el| el.bg(colors.element_selected))
-                            .hover(|style| style.bg(colors.ghost_element_hover))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.selected_id = Some(row_id.clone());
-                                cx.emit(PickerEvent::Selected(row_id.clone()));
-                                cx.notify();
-                            }))
-                            .child(div().w(px(14.)).flex_shrink_0().when(is_selected, |el| {
-                                el.child(
-                                    Icon::new(IconName::Check)
-                                        .size(IconSize::XSmall)
-                                        .color(Color::Accent),
-                                )
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(
-                                        Label::new(row.primary.clone())
-                                            .size(LabelSize::Small)
-                                            .color(Color::Default),
-                                    )
-                                    .when_some(row.secondary.clone(), |el, secondary| {
-                                        el.child(
-                                            Label::new(secondary)
-                                                .size(LabelSize::XSmall)
-                                                .color(Color::Muted),
-                                        )
-                                    }),
-                            )
-                            .child(badges)
-                            .when_some(row.trailing.clone(), |el, trailing| {
-                                el.child(
-                                    div().flex_shrink_0().child(
-                                        Label::new(trailing)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
-                                    ),
-                                )
-                            })
+        let body = if entry_count > 0 {
+            let visible_rows = entry_count.min(MAX_VISIBLE_ROWS);
+            uniform_list(
+                "picker-rows",
+                entry_count,
+                cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                    let colors = cx.colors().clone();
+                    range
+                        .map(|index| {
+                            let entry = div()
+                                .id(ElementId::NamedInteger("picker-row".into(), index as u64))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.))
+                                .h(px(ROW_HEIGHT))
+                                .px(px(10.))
+                                .cursor_pointer()
+                                .when(index == this.highlighted, |el| {
+                                    el.bg(colors.element_selected)
+                                })
+                                .hover(|style| style.bg(colors.ghost_element_hover))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.commit(index, cx);
+                                }));
+                            match this.matches.get(index) {
+                                Some(&row) => {
+                                    let row = &this.rows[row];
+                                    let is_selected = this.selected_id.as_ref() == Some(&row.id);
+                                    row_contents(entry, row, is_selected, colors.element_background)
+                                }
+                                None => custom_contents(
+                                    entry,
+                                    this.custom.as_deref().unwrap_or_default(),
+                                ),
+                            }
                             .into_any_element()
-                    })
-                    .collect()
-            }),
-        )
-        .track_scroll(&self.scroll_handle)
-        .flex_1()
-        .min_h(px(0.));
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.scroll_handle)
+            .h(px(visible_rows as f32 * ROW_HEIGHT))
+            .into_any_element()
+        } else {
+            let query = self.query_editor.read(cx).text().trim().to_string();
+            let message = if total == 0 {
+                "No models loaded yet".to_string()
+            } else if query.is_empty() {
+                "No models in this filter".to_string()
+            } else {
+                format!("No models match “{query}”")
+            };
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .h(px(80.))
+                .child(
+                    Label::new(message)
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                )
+                .when(!self.active_chip.is_empty(), |el| {
+                    el.child(
+                        Button::new("picker-clear-chip", "Search all models")
+                            .style(ButtonStyle::Subtle)
+                            .size(ButtonSize::Compact)
+                            .color(Color::Accent)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.select_chip(SharedString::default(), cx);
+                                this.focus(window, cx);
+                            })),
+                    )
+                })
+                .into_any_element()
+        };
 
         div()
             .id("model-picker")
@@ -445,7 +674,6 @@ impl Render for Picker {
             .flex()
             .flex_col()
             .w_full()
-            .max_h(px(420.))
             .rounded(px(8.))
             .border_1()
             .border_color(colors.border)
@@ -469,8 +697,8 @@ impl Render for Picker {
                     )
                     .child(div().flex_1().min_w_0().child(self.query_editor.clone()))
                     .child(
-                        crate::IconButton::new("picker-refresh", IconName::Refresh)
-                            .size(crate::ButtonSize::Compact)
+                        IconButton::new("picker-refresh", IconName::Refresh)
+                            .size(ButtonSize::Compact)
                             .color(Color::Muted)
                             .tooltip("Refresh the model list")
                             .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
@@ -479,7 +707,7 @@ impl Render for Picker {
                             })),
                     ),
             )
-            .when(!self.chips.is_empty(), |el| el.child(chip_row))
+            .when(offered_chips.len() > 1, |el| el.child(chip_row))
             // A failed refresh shows a note; it never blanks the list, because
             // a stale list is far more use than an empty one.
             .when_some(self.status_note.clone(), |el, note| {
@@ -491,22 +719,7 @@ impl Render for Picker {
                     ),
                 )
             })
-            .child(if shown == 0 {
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .h(px(80.))
-                    .child(
-                        Label::new("No models match this search")
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .into_any_element()
-            } else {
-                list.into_any_element()
-            })
+            .child(body)
             .child(
                 div()
                     .flex()
@@ -518,7 +731,7 @@ impl Render for Picker {
                     .border_t_1()
                     .border_color(colors.border_variant)
                     .child(
-                        Label::new("↑↓ navigate   ⏎ select   esc cancel")
+                        Label::new("↑↓ navigate   ⏎ select   esc close")
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
@@ -551,77 +764,346 @@ mod tests {
         ]
     }
 
+    fn ids(rows: &[PickerRow], indices: &[usize]) -> Vec<String> {
+        indices
+            .iter()
+            .map(|&index| rows[index].id.to_string())
+            .collect()
+    }
+
     #[test]
     fn an_empty_query_preserves_the_supplied_order() {
-        let rows = rows();
-        let ranked = rank_rows(&rows, "");
-        assert_eq!(ranked.len(), 3);
-        assert_eq!(ranked[0].id, rows[0].id);
-        assert_eq!(ranked[2].id, rows[2].id);
+        assert_eq!(filter_rows(&rows(), "", ""), vec![0, 1, 2]);
+        assert_eq!(filter_rows(&rows(), "   ", ""), vec![0, 1, 2]);
     }
 
     #[test]
     fn a_query_ranks_matches_and_drops_non_matches() {
         let rows = rows();
-        let ranked = rank_rows(&rows, "flash");
-        assert_eq!(ranked.len(), 1);
-        assert!(ranked[0].id.contains("flash"));
+        assert_eq!(
+            ids(&rows, &filter_rows(&rows, "flash", "")),
+            ["google/gemini-3.1-flash-lite"]
+        );
     }
 
     #[test]
     fn a_query_matches_the_display_name_as_well_as_the_id() {
-        let rows = rows();
-        let ranked = rank_rows(&rows, "Opus");
-        assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].id, "anthropic/claude-opus-4-6");
+        let rows = vec![PickerRow::new("vendor/m-2026", "Moonbeam")];
+        assert_eq!(filter_rows(&rows, "moonbeam", ""), vec![0]);
     }
 
     #[test]
     fn a_query_that_matches_nothing_yields_an_empty_list_not_everything() {
-        assert!(rank_rows(&rows(), "zzzzzz").is_empty());
+        assert!(filter_rows(&rows(), "zzzzzz", "").is_empty());
     }
 
     #[test]
     fn ranking_is_case_insensitive() {
-        assert_eq!(rank_rows(&rows(), "FLASH").len(), 1);
+        assert_eq!(filter_rows(&rows(), "FLASH", "").len(), 1);
+    }
+
+    #[test]
+    fn words_match_in_any_order_across_the_id_and_the_name() {
+        let rows = vec![
+            PickerRow::new("anthropic/claude-opus-5", "Anthropic: Claude Opus 5"),
+            PickerRow::new(
+                "anthropic/claude-sonnet-4.6",
+                "Anthropic: Claude Sonnet 4.6",
+            ),
+        ];
+        assert_eq!(
+            ids(&rows, &filter_rows(&rows, "sonnet claude", "")),
+            ["anthropic/claude-sonnet-4.6"]
+        );
+    }
+
+    #[test]
+    fn punctuation_in_the_query_is_optional() {
+        let rows = rows();
+        assert_eq!(
+            ids(&rows, &filter_rows(&rows, "gpt56", "")),
+            ["openai/gpt-5.6-luna"]
+        );
+    }
+
+    /// Scattered-letter matches are how a similar name surfaces, but a row
+    /// containing the word outright must come first.
+    #[test]
+    fn a_whole_word_outranks_a_scattered_letter_match_and_both_are_kept() {
+        let rows = vec![
+            PickerRow::new("vendor/lighthouse", "Lighthouse"),
+            PickerRow::new("google/gemini-flash-lite", "Gemini Flash Lite"),
+        ];
+        assert_eq!(
+            ids(&rows, &filter_rows(&rows, "lite", "")),
+            ["google/gemini-flash-lite", "vendor/lighthouse"]
+        );
+    }
+
+    #[test]
+    fn an_exact_id_outranks_longer_ids_that_start_with_it() {
+        let rows = vec![
+            PickerRow::new("openai/gpt-5-mini", "GPT-5 mini"),
+            PickerRow::new("openai/gpt-5", "GPT-5"),
+        ];
+        assert_eq!(
+            ids(&rows, &filter_rows(&rows, "openai/gpt-5", "")),
+            ["openai/gpt-5", "openai/gpt-5-mini"]
+        );
+    }
+
+    #[test]
+    fn equal_scores_keep_the_supplied_order() {
+        let rows = vec![
+            PickerRow::new("anthropic/claude-opus-5", "Claude Opus 5"),
+            PickerRow::new("anthropic/claude-sonnet-4.6", "Claude Sonnet 4.6"),
+        ];
+        assert_eq!(filter_rows(&rows, "claude", ""), vec![0, 1]);
     }
 
     #[test]
     fn an_empty_chip_means_all_rows() {
-        let rows = rows();
-        let all: Vec<&PickerRow> = rows.iter().collect();
-        assert_eq!(rows_in_facet(&all, "").len(), 3);
+        assert_eq!(filter_rows(&rows(), "", "").len(), 3);
     }
 
     #[test]
     fn a_chip_keeps_only_rows_carrying_that_facet() {
         let rows = rows();
-        let all: Vec<&PickerRow> = rows.iter().collect();
-        assert_eq!(rows_in_facet(&all, "cheap").len(), 2);
-        assert_eq!(rows_in_facet(&all, "tools").len(), 3);
-        assert_eq!(rows_in_facet(&all, "free").len(), 0);
+        assert_eq!(filter_rows(&rows, "", "cheap").len(), 2);
+        assert_eq!(filter_rows(&rows, "", "tools").len(), 3);
+        assert_eq!(filter_rows(&rows, "", "free").len(), 0);
     }
 
     #[test]
     fn chip_and_query_filtering_compose() {
         let rows = rows();
-        let ranked = rank_rows(&rows, "gpt");
-        let filtered = rows_in_facet(&ranked, "cheap");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].id, "openai/gpt-5.6-luna");
+        assert_eq!(
+            ids(&rows, &filter_rows(&rows, "gpt", "cheap")),
+            ["openai/gpt-5.6-luna"]
+        );
+    }
+
+    #[test]
+    fn chip_counts_ignore_the_query_and_count_empty_chips_as_zero() {
+        let chips = vec![
+            PickerChip::new("", "All"),
+            PickerChip::new("cheap", "Cheap"),
+            PickerChip::new("tools", "Tools"),
+            PickerChip::new("free", "Free"),
+        ];
+        assert_eq!(chip_counts(&rows(), &chips), vec![3, 2, 3, 0]);
+    }
+
+    #[test]
+    fn an_unlisted_id_is_offered_as_a_custom_entry() {
+        assert_eq!(
+            custom_entry(&rows(), " vendor/new-model ").as_deref(),
+            Some("vendor/new-model")
+        );
+    }
+
+    #[test]
+    fn no_custom_entry_for_a_listed_id_a_phrase_or_nothing() {
+        assert_eq!(custom_entry(&rows(), "openai/gpt-5.6-luna"), None);
+        assert_eq!(custom_entry(&rows(), "claude opus"), None);
+        assert_eq!(custom_entry(&rows(), "  "), None);
     }
 
     #[test]
     fn row_builders_compose() {
         let row = PickerRow::new("id", "Primary")
-            .secondary("Google · fast")
+            .secondary("vendor/id")
             .trailing("1M   $0.25/$1.50")
-            .badge("tools")
-            .facet("cheap")
-            .pinned_note("no longer offered");
-        assert_eq!(row.secondary.as_deref(), Some("Google · fast"));
-        assert_eq!(row.badges, vec![SharedString::from("tools")]);
+            .badge("Tools")
+            .facet("cheap");
+        assert_eq!(row.secondary.as_deref(), Some("vendor/id"));
+        assert_eq!(row.badges, vec![SharedString::from("Tools")]);
         assert_eq!(row.facets, vec![SharedString::from("cheap")]);
-        assert_eq!(row.pinned_note.as_deref(), Some("no longer offered"));
+    }
+
+    /// Drives a real picker in a headless window, hosted the way the settings
+    /// page hosts it: inside a scroll container, in a column with no fixed
+    /// height.
+    mod headless {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use gpui::canvas;
+        use rgitui_test_support::ViewTest;
+
+        use super::*;
+
+        struct Host {
+            picker: Entity<Picker>,
+            selected: Vec<SharedString>,
+            painted_height: Rc<Cell<f32>>,
+        }
+
+        impl Host {
+            fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+                let picker = cx.new(Picker::new);
+                cx.subscribe(&picker, |host: &mut Self, _, event: &PickerEvent, _| {
+                    if let PickerEvent::Selected(id) = event {
+                        host.selected.push(id.clone());
+                    }
+                })
+                .detach();
+                Self {
+                    picker,
+                    selected: Vec::new(),
+                    painted_height: Rc::new(Cell::new(0.)),
+                }
+            }
+        }
+
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let painted_height = self.painted_height.clone();
+                div().size_full().flex().flex_col().child(
+                    div()
+                        .id("scroll")
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(
+                            div()
+                                .relative()
+                                .flex()
+                                .flex_col()
+                                .w_full()
+                                .child(self.picker.clone())
+                                .child(
+                                    canvas(
+                                        move |bounds, _, _| {
+                                            painted_height.set(f32::from(bounds.size.height))
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .size_full(),
+                                ),
+                        ),
+                )
+            }
+        }
+
+        fn catalogue() -> Vec<PickerRow> {
+            vec![
+                PickerRow::new("anthropic/claude-opus-5", "Anthropic: Claude Opus 5")
+                    .facet("tools"),
+                PickerRow::new(
+                    "anthropic/claude-sonnet-4.6",
+                    "Anthropic: Claude Sonnet 4.6",
+                )
+                .facet("tools"),
+                PickerRow::new(
+                    "google/gemini-3.1-flash-lite",
+                    "Google: Gemini 3.1 Flash Lite",
+                )
+                .facet("cheap")
+                .facet("tools"),
+            ]
+        }
+
+        fn open(rows: Vec<PickerRow>) -> ViewTest<Host> {
+            let mut view = ViewTest::open(Host::new);
+            view.update(|host, window, cx| {
+                host.picker.update(cx, |picker, cx| {
+                    picker.set_rows(rows, cx);
+                    picker.reset(window, cx);
+                });
+            });
+            view.draw();
+            view
+        }
+
+        fn selected(view: &ViewTest<Host>) -> Vec<String> {
+            view.read(|host, _| host.selected.iter().map(|id| id.to_string()).collect())
+        }
+
+        #[test]
+        fn rows_take_up_real_height_in_a_column_with_no_fixed_height() {
+            let painted_height = |count: usize| {
+                let rows = (0..count)
+                    .map(|index| {
+                        PickerRow::new(format!("vendor/model-{index}"), format!("Model {index}"))
+                    })
+                    .collect();
+                open(rows).read(|host, _| host.painted_height.get())
+            };
+            let three = painted_height(3);
+            let sixty = painted_height(60);
+            let expected = (MAX_VISIBLE_ROWS - 3) as f32 * ROW_HEIGHT;
+            assert!(
+                (sixty - three - expected).abs() < 0.5,
+                "three rows painted {three}px and sixty painted {sixty}px; \
+                 the list should grow by {expected}px before it scrolls"
+            );
+        }
+
+        #[test]
+        fn typing_narrows_the_list_and_enter_picks_the_best_match_once() {
+            let mut view = open(catalogue());
+            view.simulate_input("sonnet");
+            view.simulate_keystroke("enter");
+            assert_eq!(selected(&view), ["anthropic/claude-sonnet-4.6"]);
+        }
+
+        #[test]
+        fn arrow_keys_move_through_similar_matches_before_enter() {
+            let mut view = open(catalogue());
+            view.simulate_input("claude");
+            view.simulate_keystroke("down");
+            view.simulate_keystroke("enter");
+            assert_eq!(selected(&view), ["anthropic/claude-sonnet-4.6"]);
+        }
+
+        #[test]
+        fn an_id_missing_from_the_list_can_be_typed_and_chosen() {
+            let mut view = open(catalogue());
+            view.update(|host, _, cx| {
+                host.picker
+                    .update(cx, |picker, cx| picker.set_allow_custom(true, cx));
+            });
+            view.simulate_input("vendor/unlisted");
+            view.simulate_keystroke("enter");
+            assert_eq!(selected(&view), ["vendor/unlisted"]);
+        }
+
+        #[test]
+        fn a_chip_limits_the_list_to_its_facet() {
+            let mut view = open(catalogue());
+            view.update(|host, _, cx| {
+                host.picker.update(cx, |picker, cx| {
+                    picker.set_chips(
+                        vec![
+                            PickerChip::new("", "All"),
+                            PickerChip::new("cheap", "Cheap"),
+                        ],
+                        cx,
+                    );
+                    picker.select_chip("cheap".into(), cx);
+                });
+            });
+            view.simulate_keystroke("enter");
+            assert_eq!(selected(&view), ["google/gemini-3.1-flash-lite"]);
+        }
+
+        #[test]
+        fn opening_again_starts_from_a_clear_search_on_the_current_choice() {
+            let mut view = open(catalogue());
+            view.simulate_input("flash");
+            view.update(|host, window, cx| {
+                host.picker.update(cx, |picker, cx| {
+                    picker.set_selected(Some("anthropic/claude-sonnet-4.6".into()), cx);
+                    picker.reset(window, cx);
+                });
+            });
+            view.draw();
+            view.simulate_keystroke("enter");
+            assert_eq!(selected(&view), ["anthropic/claude-sonnet-4.6"]);
+        }
     }
 }
