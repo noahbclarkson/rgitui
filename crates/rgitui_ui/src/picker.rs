@@ -200,8 +200,8 @@ pub fn chip_counts(rows: &[PickerRow], chips: &[PickerChip]) -> Vec<usize> {
         .collect()
 }
 
-/// The typed id offered below the matches, when the query could name
-/// something that is not in the list. Pure.
+/// The typed id offered with the matches, when the query could name something
+/// that is not in the list. Pure.
 ///
 /// An id never contains whitespace, so a query with a space is a search rather
 /// than an id, and a query that already names a row needs no second entry.
@@ -216,6 +216,50 @@ pub fn custom_entry(rows: &[PickerRow], query: &str) -> Option<SharedString> {
     Some(SharedString::from(query.to_string()))
 }
 
+/// One entry in the list: a row, by its index into the rows, or the typed id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickerEntry {
+    Row(usize),
+    Custom(SharedString),
+}
+
+/// The entries the list shows, in order: the rows carrying `facet` that match
+/// `query`, best match first, and the typed id when `allow_custom` is set and
+/// no row has it. Pure.
+///
+/// The order decides what Enter picks, because every change to the query
+/// highlights the first entry. A search puts the typed id after the matches,
+/// so `sonnet` picks the best match rather than saving `sonnet` as a model. An
+/// id — a vendor and a model either side of a slash, which display names never
+/// contain — puts it first instead: behind the matches, `vendor/model` would
+/// lose Enter to `vendor/model-mini` and save a model the user never named. A
+/// row matching the query exactly, in any case, still comes first.
+pub fn picker_entries(
+    rows: &[PickerRow],
+    query: &str,
+    facet: &str,
+    allow_custom: bool,
+) -> Vec<PickerEntry> {
+    let matches = filter_rows(rows, query, facet);
+    let Some(custom) = allow_custom.then(|| custom_entry(rows, query)).flatten() else {
+        return matches.into_iter().map(PickerEntry::Row).collect();
+    };
+    let names_an_id = custom
+        .split_once('/')
+        .is_some_and(|(vendor, model)| !vendor.is_empty() && !model.is_empty());
+    let exact_match = matches
+        .first()
+        .and_then(|&row| row_score(&rows[row], query))
+        .is_some_and(|score| score >= TIER_EXACT);
+    let matching = matches.into_iter().map(PickerEntry::Row);
+    let custom = std::iter::once(PickerEntry::Custom(custom));
+    if names_an_id && !exact_match {
+        custom.chain(matching).collect()
+    } else {
+        matching.chain(custom).collect()
+    }
+}
+
 pub struct Picker {
     rows: Vec<PickerRow>,
     chips: Vec<PickerChip>,
@@ -223,12 +267,10 @@ pub struct Picker {
     chip_counts: Vec<usize>,
     active_chip: SharedString,
     selected_id: Option<SharedString>,
-    /// Indices into `rows` passing the chip and the query, best match first.
-    matches: Vec<usize>,
-    /// Offered after `matches` when the query could be an unlisted id.
-    custom: Option<SharedString>,
+    /// What the list shows for the current rows, chip and query.
+    entries: Vec<PickerEntry>,
     allow_custom: bool,
-    /// An index into the entries: `matches`, then `custom`.
+    /// An index into `entries`.
     highlighted: usize,
     query_editor: Entity<TextInput>,
     scroll_handle: UniformListScrollHandle,
@@ -272,8 +314,7 @@ impl Picker {
             chip_counts: Vec::new(),
             active_chip: SharedString::default(),
             selected_id: None,
-            matches: Vec::new(),
-            custom: None,
+            entries: Vec::new(),
             allow_custom: false,
             highlighted: 0,
             query_editor,
@@ -333,16 +374,16 @@ impl Picker {
         self.active_chip = SharedString::default();
         self.refresh_matches(cx);
         let selected = self.selected_id.as_ref().and_then(|selected| {
-            self.matches
-                .iter()
-                .position(|&row| &self.rows[row].id == selected)
+            self.entries.iter().position(
+                |entry| matches!(entry, PickerEntry::Row(row) if &self.rows[*row].id == selected),
+            )
         });
         self.highlight(selected.unwrap_or(0), ScrollStrategy::Center, cx);
         self.focus(window, cx);
     }
 
-    /// Recompute the chip counts and the matching rows from the current rows,
-    /// chip and query.
+    /// Recompute the chip counts and the entries from the current rows, chip
+    /// and query.
     fn refresh_matches(&mut self, cx: &mut Context<Self>) {
         let query = self.query_editor.read(cx).text().to_string();
         self.chip_counts = chip_counts(&self.rows, &self.chips);
@@ -358,30 +399,21 @@ impl Picker {
         if !chip_available {
             self.active_chip = SharedString::default();
         }
-        self.matches = filter_rows(&self.rows, &query, &self.active_chip);
-        self.custom = self
-            .allow_custom
-            .then(|| custom_entry(&self.rows, &query))
-            .flatten();
-        self.highlighted = self.highlighted.min(self.entry_count().saturating_sub(1));
+        self.entries = picker_entries(&self.rows, &query, &self.active_chip, self.allow_custom);
+        self.highlighted = self.highlighted.min(self.entries.len().saturating_sub(1));
         cx.notify();
     }
 
-    fn entry_count(&self) -> usize {
-        self.matches.len() + usize::from(self.custom.is_some())
-    }
-
-    /// The id behind entry `index`: a matching row, or the typed id after them.
+    /// The id behind entry `index`: a matching row's, or the typed one.
     fn entry_id(&self, index: usize) -> Option<SharedString> {
-        match self.matches.get(index) {
-            Some(&row) => Some(self.rows[row].id.clone()),
-            None if index == self.matches.len() => self.custom.clone(),
-            None => None,
+        match self.entries.get(index)? {
+            PickerEntry::Row(row) => Some(self.rows[*row].id.clone()),
+            PickerEntry::Custom(id) => Some(id.clone()),
         }
     }
 
     fn highlight(&mut self, index: usize, strategy: ScrollStrategy, cx: &mut Context<Self>) {
-        let count = self.entry_count();
+        let count = self.entries.len();
         self.highlighted = index.min(count.saturating_sub(1));
         if count > 0 {
             self.scroll_handle
@@ -391,7 +423,7 @@ impl Picker {
     }
 
     fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.entry_count();
+        let count = self.entries.len();
         if count == 0 {
             return;
         }
@@ -515,8 +547,12 @@ fn custom_contents(entry: Stateful<Div>, id: &str) -> Stateful<Div> {
 impl Render for Picker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
-        let entry_count = self.entry_count();
-        let shown = self.matches.len();
+        let entry_count = self.entries.len();
+        let shown = self
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry, PickerEntry::Row(_)))
+            .count();
         let total = self.rows.len();
 
         // "All" always shows; any other chip only when it holds something.
@@ -612,16 +648,14 @@ impl Render for Picker {
                                     cx.stop_propagation();
                                     this.commit(index, cx);
                                 }));
-                            match this.matches.get(index) {
-                                Some(&row) => {
-                                    let row = &this.rows[row];
+                            match this.entries.get(index) {
+                                Some(PickerEntry::Row(row)) => {
+                                    let row = &this.rows[*row];
                                     let is_selected = this.selected_id.as_ref() == Some(&row.id);
                                     row_contents(entry, row, is_selected, colors.element_background)
                                 }
-                                None => custom_contents(
-                                    entry,
-                                    this.custom.as_deref().unwrap_or_default(),
-                                ),
+                                Some(PickerEntry::Custom(id)) => custom_contents(entry, id),
+                                None => entry,
                             }
                             .into_any_element()
                         })
@@ -910,6 +944,52 @@ mod tests {
     }
 
     #[test]
+    fn a_search_keeps_its_best_match_ahead_of_the_typed_id() {
+        assert_eq!(
+            picker_entries(&rows(), "flash", "", true),
+            [PickerEntry::Row(0), PickerEntry::Custom("flash".into())]
+        );
+    }
+
+    /// Enter picks the first entry, so an id typed in full must not lose it to
+    /// a longer listed id that starts the same way.
+    #[test]
+    fn a_typed_id_leads_the_longer_ids_it_starts() {
+        let rows = vec![PickerRow::new("vendor/model-mini", "Vendor: Model Mini")];
+        assert_eq!(
+            picker_entries(&rows, "vendor/model", "", true),
+            [
+                PickerEntry::Custom("vendor/model".into()),
+                PickerEntry::Row(0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_vendor_alone_is_a_search() {
+        assert_eq!(
+            picker_entries(&rows(), "google/", "", true).first(),
+            Some(&PickerEntry::Row(0))
+        );
+    }
+
+    #[test]
+    fn a_listed_id_typed_in_another_case_still_comes_first() {
+        assert_eq!(
+            picker_entries(&rows(), "OpenAI/GPT-5.6-Luna", "", true).first(),
+            Some(&PickerEntry::Row(1))
+        );
+    }
+
+    #[test]
+    fn no_typed_id_is_offered_unless_allowed() {
+        assert_eq!(
+            picker_entries(&rows(), "flash", "", false),
+            [PickerEntry::Row(0)]
+        );
+    }
+
+    #[test]
     fn row_builders_compose() {
         let row = PickerRow::new("id", "Primary")
             .secondary("vendor/id")
@@ -1011,6 +1091,7 @@ mod tests {
             let mut view = ViewTest::open(Host::new);
             view.update(|host, window, cx| {
                 host.picker.update(cx, |picker, cx| {
+                    picker.set_allow_custom(true, cx);
                     picker.set_rows(rows, cx);
                     picker.reset(window, cx);
                 });
@@ -1063,13 +1144,20 @@ mod tests {
         #[test]
         fn an_id_missing_from_the_list_can_be_typed_and_chosen() {
             let mut view = open(catalogue());
-            view.update(|host, _, cx| {
-                host.picker
-                    .update(cx, |picker, cx| picker.set_allow_custom(true, cx));
-            });
             view.simulate_input("vendor/unlisted");
             view.simulate_keystroke("enter");
             assert_eq!(selected(&view), ["vendor/unlisted"]);
+        }
+
+        #[test]
+        fn enter_saves_a_typed_id_rather_than_a_longer_listed_one() {
+            let mut view = open(vec![PickerRow::new(
+                "vendor/model-mini",
+                "Vendor: Model Mini",
+            )]);
+            view.simulate_input("vendor/model");
+            view.simulate_keystroke("enter");
+            assert_eq!(selected(&view), ["vendor/model"]);
         }
 
         #[test]
