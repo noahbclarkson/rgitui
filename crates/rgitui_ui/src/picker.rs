@@ -631,8 +631,12 @@ impl Render for Picker {
                     let colors = cx.colors().clone();
                     range
                         .map(|index| {
+                            // The list lays each row out on its own, so a row
+                            // with no width is only as wide as its text, and
+                            // its highlight and click area stop there.
                             let entry = div()
                                 .id(ElementId::NamedInteger("picker-row".into(), index as u64))
+                                .w_full()
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -664,6 +668,14 @@ impl Render for Picker {
             )
             .track_scroll(&self.scroll_handle)
             .h(px(visible_rows as f32 * ROW_HEIGHT))
+            // GPUI gives a wheel event to every scroll container under the
+            // pointer, so the page scrolled along with the list. The list's
+            // own scrolling runs before this listener; stopping the event here
+            // keeps it from the page. A list with nothing to scroll lets the
+            // wheel through.
+            .when(entry_count > MAX_VISIBLE_ROWS, |list| {
+                list.on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            })
             .into_any_element()
         } else {
             let query = self.query_editor.read(cx).text().trim().to_string();
@@ -1002,13 +1014,13 @@ mod tests {
     }
 
     /// Drives a real picker in a headless window, hosted the way the settings
-    /// page hosts it: inside a scroll container, in a column with no fixed
-    /// height.
+    /// page hosts it: inside a scroll container with more of the page below
+    /// it, in a column with no fixed height.
     mod headless {
         use std::cell::Cell;
         use std::rc::Rc;
 
-        use gpui::canvas;
+        use gpui::{canvas, point, Bounds, MouseButton, Pixels, Point, ScrollHandle};
         use rgitui_test_support::ViewTest;
 
         use super::*;
@@ -1016,7 +1028,8 @@ mod tests {
         struct Host {
             picker: Entity<Picker>,
             selected: Vec<SharedString>,
-            painted_height: Rc<Cell<f32>>,
+            painted_bounds: Rc<Cell<Bounds<Pixels>>>,
+            page_scroll: ScrollHandle,
         }
 
         impl Host {
@@ -1031,14 +1044,15 @@ mod tests {
                 Self {
                     picker,
                     selected: Vec::new(),
-                    painted_height: Rc::new(Cell::new(0.)),
+                    painted_bounds: Rc::new(Cell::new(Bounds::default())),
+                    page_scroll: ScrollHandle::new(),
                 }
             }
         }
 
         impl Render for Host {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let painted_height = self.painted_height.clone();
+                let painted_bounds = self.painted_bounds.clone();
                 div().size_full().flex().flex_col().child(
                     div()
                         .id("scroll")
@@ -1047,6 +1061,7 @@ mod tests {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
+                        .track_scroll(&self.page_scroll)
                         .child(
                             div()
                                 .relative()
@@ -1056,15 +1071,14 @@ mod tests {
                                 .child(self.picker.clone())
                                 .child(
                                     canvas(
-                                        move |bounds, _, _| {
-                                            painted_height.set(f32::from(bounds.size.height))
-                                        },
+                                        move |bounds, _, _| painted_bounds.set(bounds),
                                         |_, _, _, _| {},
                                     )
                                     .absolute()
                                     .size_full(),
                                 ),
-                        ),
+                        )
+                        .child(div().flex_shrink_0().h(px(4000.))),
                 )
             }
         }
@@ -1104,15 +1118,74 @@ mod tests {
             view.read(|host, _| host.selected.iter().map(|id| id.to_string()).collect())
         }
 
+        fn numbered_rows(count: usize) -> Vec<PickerRow> {
+            (0..count)
+                .map(|index| {
+                    PickerRow::new(format!("vendor/model-{index}"), format!("Model {index}"))
+                })
+                .collect()
+        }
+
+        /// Halfway down the picker, which lands on a row: the rows are most of
+        /// its height.
+        fn picker_middle(view: &ViewTest<Host>) -> Point<Pixels> {
+            let bounds = view.read(|host, _| host.painted_bounds.get());
+            point(
+                bounds.origin.x + bounds.size.width / 2.,
+                bounds.origin.y + bounds.size.height / 2.,
+            )
+        }
+
+        fn page_offset(view: &ViewTest<Host>) -> f32 {
+            view.read(|host, _| f32::from(host.page_scroll.offset().y))
+        }
+
+        fn list_offset(view: &ViewTest<Host>) -> f32 {
+            view.read(|host, cx| {
+                let picker = host.picker.read(cx);
+                let offset = picker.scroll_handle.0.borrow().base_handle.offset();
+                f32::from(offset.y)
+            })
+        }
+
+        #[test]
+        fn a_click_at_the_far_edge_of_a_row_picks_it() {
+            let mut view = open(numbered_rows(60));
+            let bounds = view.read(|host, _| host.painted_bounds.get());
+            let far_edge = point(
+                bounds.origin.x + bounds.size.width - px(24.),
+                bounds.origin.y + bounds.size.height / 2.,
+            );
+            view.simulate_click(far_edge, MouseButton::Left);
+            assert_eq!(
+                selected(&view).len(),
+                1,
+                "a row should reach the edge of the list, not stop where its text does"
+            );
+        }
+
+        #[test]
+        fn the_wheel_over_a_long_list_scrolls_the_list_and_not_the_page() {
+            let mut view = open(numbered_rows(60));
+            let middle = picker_middle(&view);
+            view.simulate_scroll(middle, point(px(0.), px(-100.)));
+            assert!(list_offset(&view) < 0., "the list should have scrolled");
+            assert_eq!(page_offset(&view), 0., "the page should not have moved");
+        }
+
+        #[test]
+        fn the_wheel_over_a_list_with_nothing_to_scroll_moves_the_page() {
+            let mut view = open(numbered_rows(3));
+            let middle = picker_middle(&view);
+            view.simulate_scroll(middle, point(px(0.), px(-100.)));
+            assert!(page_offset(&view) < 0., "the page should have scrolled");
+        }
+
         #[test]
         fn rows_take_up_real_height_in_a_column_with_no_fixed_height() {
             let painted_height = |count: usize| {
-                let rows = (0..count)
-                    .map(|index| {
-                        PickerRow::new(format!("vendor/model-{index}"), format!("Model {index}"))
-                    })
-                    .collect();
-                open(rows).read(|host, _| host.painted_height.get())
+                open(numbered_rows(count))
+                    .read(|host, _| f32::from(host.painted_bounds.get().size.height))
             };
             let three = painted_height(3);
             let sixty = painted_height(60);
