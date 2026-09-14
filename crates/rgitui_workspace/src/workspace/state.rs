@@ -15,6 +15,10 @@ pub(crate) struct LayoutState {
     pub detail_panel_width: f32,
     pub diff_viewer_height: f32,
     pub commit_input_height: f32,
+    /// Whether the commit graph is hidden so the bottom panel fills the center
+    /// column. `diff_viewer_height` is kept while hidden, so showing the graph
+    /// again restores the split the user had.
+    pub graph_hidden: bool,
     pub content_bounds: Bounds<Pixels>,
     pub right_panel_bounds: Bounds<Pixels>,
 }

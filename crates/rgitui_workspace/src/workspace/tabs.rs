@@ -418,6 +418,7 @@ impl Workspace {
             detail_panel_width: self.layout.detail_panel_width,
             diff_viewer_height: self.layout.diff_viewer_height,
             commit_input_height: self.layout.commit_input_height,
+            graph_hidden: self.layout.graph_hidden,
         }
     }
 
@@ -426,6 +427,7 @@ impl Workspace {
         self.layout.detail_panel_width = layout.detail_panel_width;
         self.layout.diff_viewer_height = layout.diff_viewer_height;
         self.layout.commit_input_height = layout.commit_input_height.max(300.0);
+        self.layout.graph_hidden = layout.graph_hidden;
     }
 
     pub(super) fn persist_workspace_snapshot(&mut self, cx: &mut Context<Self>) {

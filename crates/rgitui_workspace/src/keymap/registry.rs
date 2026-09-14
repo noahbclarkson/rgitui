@@ -127,6 +127,8 @@ commands! {
         ContinueMerge unbound if in_progress_operation;
         /// Switch the diff viewer between unified and side-by-side.
         ToggleDiffMode "shift-d" in "Workspace && !modal && !TextInput";
+        /// Hide or show the commit graph, giving its space to the diff viewer.
+        ToggleGraph "secondary-shift-g";
         /// Search the commit graph.
         Search ["secondary-f", "/" in "Workspace && !modal && !TextInput"];
         /// Generate a commit message with the configured AI provider.

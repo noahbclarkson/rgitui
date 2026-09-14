@@ -2,9 +2,7 @@ use gpui::{Context, Window};
 
 use crate::{CommandId, CommitPanelEvent, ConfirmAction, ToastKind};
 
-use super::layout::{
-    MAX_DETAIL_PANEL_WIDTH, MAX_DIFF_VIEWER_HEIGHT, MIN_DETAIL_PANEL_WIDTH, MIN_DIFF_VIEWER_HEIGHT,
-};
+use super::layout::{MAX_DETAIL_PANEL_WIDTH, MIN_DETAIL_PANEL_WIDTH};
 use super::{
     BottomPanelMode, FocusedPanel, ProjectTab, RightPanelMode, ViewCacheEntry, ViewCacheKey,
     ViewCaches, Workspace,
@@ -56,7 +54,11 @@ impl Workspace {
                 self.focus_panel(FocusedPanel::Sidebar, window, cx);
             }
             CommandId::FocusSidebar => self.focus_panel(FocusedPanel::Sidebar, window, cx),
-            CommandId::FocusGraph => self.focus_panel(FocusedPanel::Graph, window, cx),
+            // Asking for the graph by name is asking to see it.
+            CommandId::FocusGraph => {
+                self.set_graph_hidden(false, cx);
+                self.focus_panel(FocusedPanel::Graph, window, cx);
+            }
             CommandId::FocusDetailPanel => self.focus_panel(FocusedPanel::DetailPanel, window, cx),
             CommandId::FocusDiffViewer => self.focus_panel(FocusedPanel::DiffViewer, window, cx),
             CommandId::FocusNextPanel => self.focus_next_panel(window, cx),
@@ -203,13 +205,23 @@ impl Workspace {
     }
 
     /// Toggles the commit graph's search field, focusing it when it opens.
+    ///
+    /// Searching a hidden graph would filter rows nobody can see, so the graph
+    /// is brought back first, with its search opened rather than toggled: one
+    /// left open when the graph was hidden is not what the user is closing.
     fn toggle_graph_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(self.active_tab) else {
             return;
         };
         let graph = tab.graph.clone();
+        let revealing = self.layout.graph_hidden;
+        self.set_graph_hidden(false, cx);
         graph.update(cx, |graph, cx| {
-            graph.toggle_search_focused(window, cx);
+            if revealing {
+                graph.open_search_focused(window, cx);
+            } else {
+                graph.toggle_search_focused(window, cx);
+            }
         });
     }
 
@@ -222,9 +234,27 @@ impl Workspace {
     }
 
     /// Heightens (positive `delta`) or shortens the bottom diff viewer.
+    ///
+    /// Steps from the height on screen rather than the stored one, which can
+    /// be taller than a window that has since shrunk has room for.
     fn resize_diff_viewer(&mut self, delta: f32, cx: &mut Context<Self>) {
-        self.layout.diff_viewer_height = (self.layout.diff_viewer_height + delta)
-            .clamp(MIN_DIFF_VIEWER_HEIGHT, MAX_DIFF_VIEWER_HEIGHT);
+        let current = self.fit_diff_viewer_height(self.layout.diff_viewer_height);
+        self.layout.diff_viewer_height = self.fit_diff_viewer_height(current + delta);
+        self.schedule_layout_save(cx);
+        cx.notify();
+    }
+
+    /// Hides or shows the commit graph, saving the choice with the rest of the
+    /// layout.
+    ///
+    /// Focus left on a graph being hidden is moved on by the next render (see
+    /// `Render for Workspace`): that is the one place every caller, the command
+    /// palette included, reaches with a `Window`.
+    pub(super) fn set_graph_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if self.layout.graph_hidden == hidden {
+            return;
+        }
+        self.layout.graph_hidden = hidden;
         self.schedule_layout_save(cx);
         cx.notify();
     }
@@ -343,6 +373,7 @@ impl Workspace {
             CommandId::GrowDetailPanel => self.resize_detail_panel(DETAIL_PANEL_STEP, cx),
             CommandId::ShrinkDiffViewer => self.resize_diff_viewer(-DIFF_VIEWER_STEP, cx),
             CommandId::GrowDiffViewer => self.resize_diff_viewer(DIFF_VIEWER_STEP, cx),
+            CommandId::ToggleGraph => self.set_graph_hidden(!self.layout.graph_hidden, cx),
             // Toggling the palette needs a `Window`, so it is handled in
             // `dispatch_command`. It is `[hidden]`, so the palette never
             // dispatches it to itself. The panel-focus commands likewise need a
@@ -449,9 +480,15 @@ impl Workspace {
                 });
             }
             CommandId::Search => {
-                tab.graph.update(cx, |g, cx| {
-                    g.toggle_search(cx);
-                });
+                // As in `toggle_graph_search`: a hidden graph comes back with
+                // its search open, never closed.
+                let revealing = self.layout.graph_hidden;
+                self.set_graph_hidden(false, cx);
+                if !(revealing && tab.graph.read(cx).is_search_visible()) {
+                    tab.graph.update(cx, |g, cx| {
+                        g.toggle_search(cx);
+                    });
+                }
             }
             CommandId::InteractiveRebase => {
                 use crate::interactive_rebase::{RebaseAction, RebaseEntry};
@@ -818,7 +855,8 @@ impl Workspace {
             | CommandId::ShrinkDetailPanel
             | CommandId::GrowDetailPanel
             | CommandId::ShrinkDiffViewer
-            | CommandId::GrowDiffViewer => {}
+            | CommandId::GrowDiffViewer
+            | CommandId::ToggleGraph => {}
             // View-owned commands. Each is handled by the panel, overlay or
             // dialog whose key context scopes it — the shared `menu` commands on
             // whichever element holds the selection, the `graph` and `diff` ones

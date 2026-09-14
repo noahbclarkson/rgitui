@@ -475,6 +475,12 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             "View",
         ),
         PaletteCommand::new(
+            CommandId::ToggleGraph,
+            "View: Toggle Commit Graph",
+            Some("Hide the commit graph so the diff fills the center column, or bring it back"),
+            "View",
+        ),
+        PaletteCommand::new(
             CommandId::Search,
             "View: Search Commits",
             Some("Filter the commit graph by message, author, or hash"),

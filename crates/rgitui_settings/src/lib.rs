@@ -356,6 +356,10 @@ pub struct LayoutSettings {
     pub diff_viewer_height: f32,
     #[serde(default = "default_commit_input_height")]
     pub commit_input_height: f32,
+    /// Whether the commit graph is hidden, handing its space to the bottom
+    /// panel. Files written before the option existed load with it off.
+    #[serde(default)]
+    pub graph_hidden: bool,
 }
 
 fn default_sidebar_width() -> f32 {
@@ -378,6 +382,7 @@ impl Default for LayoutSettings {
             detail_panel_width: default_detail_panel_width(),
             diff_viewer_height: default_diff_viewer_height(),
             commit_input_height: default_commit_input_height(),
+            graph_hidden: false,
         }
     }
 }
@@ -1742,6 +1747,30 @@ mod tests {
             config_path: PathBuf::from("/tmp/rgitui-test-settings.json"),
             load_warnings: Vec::new(),
         }
+    }
+
+    // ── Layout ────────────────────────────────────────────────────
+
+    /// A layout saved before the graph could be hidden must keep showing it.
+    #[test]
+    fn layout_without_graph_hidden_shows_the_graph() {
+        let layout: LayoutSettings = serde_json::from_str(
+            r#"{"sidebar_width":300.0,"detail_panel_width":400.0,"diff_viewer_height":500.0,"commit_input_height":350.0}"#,
+        )
+        .expect("legacy layout parses");
+        assert!(!layout.graph_hidden);
+        assert_eq!(layout.diff_viewer_height, 500.0);
+    }
+
+    #[test]
+    fn graph_hidden_round_trips() {
+        let layout = LayoutSettings {
+            graph_hidden: true,
+            ..LayoutSettings::default()
+        };
+        let json = serde_json::to_string(&layout).expect("layout serializes");
+        let restored: LayoutSettings = serde_json::from_str(&json).expect("layout parses");
+        assert_eq!(restored, layout);
     }
 
     // ── AI provider catalogue coherence ───────────────────────────

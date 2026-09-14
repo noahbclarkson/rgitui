@@ -69,6 +69,7 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | _unbound_ | — | `rgitui::AbortOperation` | Abort the merge, rebase, cherry-pick or revert in progress. |
 | _unbound_ | — | `rgitui::ContinueMerge` | Continue the merge, rebase, cherry-pick or revert in progress. |
 | `shift-d` | `Workspace && !modal && !TextInput` | `rgitui::ToggleDiffMode` | Switch the diff viewer between unified and side-by-side. |
+| `secondary-shift-g` | `Workspace && !modal` | `rgitui::ToggleGraph` | Hide or show the commit graph, giving its space to the diff viewer. |
 | `secondary-f` or `/` | `Workspace && !modal` or `Workspace && !modal && !TextInput` | `rgitui::Search` | Search the commit graph. |
 | `secondary-g` | `Workspace && !modal` | `rgitui::AiMessage` | Generate a commit message with the configured AI provider. |
 | `f5` | `Workspace && !modal` | `rgitui::Refresh` | Reload the repository state from disk. |

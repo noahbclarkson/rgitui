@@ -177,6 +177,10 @@
           "description": "Switch the diff viewer between unified and side-by-side. Command id: `toggle_diff_mode`."
         },
         {
+          "const": "rgitui::ToggleGraph",
+          "description": "Hide or show the commit graph, giving its space to the diff viewer. Command id: `toggle_graph`."
+        },
+        {
           "const": "rgitui::Search",
           "description": "Search the commit graph. Command id: `search`."
         },

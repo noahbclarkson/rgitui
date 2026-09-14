@@ -238,6 +238,55 @@ pub(super) enum FocusedPanel {
     DiffViewer,
 }
 
+impl FocusedPanel {
+    /// The panel after this one in Tab order.
+    fn next(self) -> Self {
+        match self {
+            Self::Sidebar => Self::Graph,
+            Self::Graph => Self::DetailPanel,
+            Self::DetailPanel => Self::DiffViewer,
+            Self::DiffViewer => Self::Sidebar,
+        }
+    }
+
+    /// The panel before this one in Tab order.
+    fn prev(self) -> Self {
+        match self {
+            Self::Sidebar => Self::DiffViewer,
+            Self::Graph => Self::Sidebar,
+            Self::DetailPanel => Self::Graph,
+            Self::DiffViewer => Self::DetailPanel,
+        }
+    }
+
+    /// The panel that takes a focus request made for this one. A hidden graph
+    /// has no element to hold focus, so its requests go to the diff viewer,
+    /// which is what fills the space the graph gave up.
+    fn available(self, graph_hidden: bool) -> Self {
+        if graph_hidden && self == Self::Graph {
+            Self::DiffViewer
+        } else {
+            self
+        }
+    }
+
+    /// Where Tab (`forward`) or Shift+Tab moves focus from `current`, stepping
+    /// over the graph while it is hidden. With nothing focused the cycle starts
+    /// at the graph, which [`Self::available`] then resolves.
+    fn cycle(current: Option<Self>, forward: bool, graph_hidden: bool) -> Self {
+        let step = |panel: Self| if forward { panel.next() } else { panel.prev() };
+        let Some(current) = current else {
+            return Self::Graph;
+        };
+        let target = step(current);
+        if graph_hidden && target == Self::Graph {
+            step(target)
+        } else {
+            target
+        }
+    }
+}
+
 /// Tracks a long-running git operation in progress.
 pub(super) struct ActiveOperation {
     pub id: u64,
@@ -386,6 +435,7 @@ impl Workspace {
                 detail_panel_width,
                 diff_viewer_height,
                 commit_input_height,
+                graph_hidden: layout_settings.graph_hidden,
                 content_bounds: Bounds::default(),
                 right_panel_bounds: Bounds::default(),
             },
@@ -870,30 +920,18 @@ impl Workspace {
     /// Cycle focus to the next panel in order.
     pub(super) fn focus_next_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.current_focused_panel(window, cx);
-        let next = match current {
-            Some(FocusedPanel::Sidebar) => FocusedPanel::Graph,
-            Some(FocusedPanel::Graph) => FocusedPanel::DetailPanel,
-            Some(FocusedPanel::DetailPanel) => FocusedPanel::DiffViewer,
-            Some(FocusedPanel::DiffViewer) => FocusedPanel::Sidebar,
-            None => FocusedPanel::Graph,
-        };
+        let next = FocusedPanel::cycle(current, true, self.layout.graph_hidden);
         self.focus_panel(next, window, cx);
     }
 
     /// Cycle focus to the previous panel in order.
     pub(super) fn focus_prev_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.current_focused_panel(window, cx);
-        let prev = match current {
-            Some(FocusedPanel::Sidebar) => FocusedPanel::DiffViewer,
-            Some(FocusedPanel::Graph) => FocusedPanel::Sidebar,
-            Some(FocusedPanel::DetailPanel) => FocusedPanel::Graph,
-            Some(FocusedPanel::DiffViewer) => FocusedPanel::DetailPanel,
-            None => FocusedPanel::Graph,
-        };
+        let prev = FocusedPanel::cycle(current, false, self.layout.graph_hidden);
         self.focus_panel(prev, window, cx);
     }
 
-    /// Focus a specific panel.
+    /// Focus a specific panel, or the diff viewer in place of a hidden graph.
     pub(super) fn focus_panel(
         &mut self,
         panel: FocusedPanel,
@@ -901,7 +939,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(tab) = self.tabs.get(self.active_tab) {
-            match panel {
+            match panel.available(self.layout.graph_hidden) {
                 FocusedPanel::Sidebar => {
                     tab.sidebar.update(cx, |s, cx| s.focus(window, cx));
                 }
@@ -972,5 +1010,51 @@ mod tests {
         let event = WorkspaceEvent::OpenRepo("/tmp/repo".to_string());
         let WorkspaceEvent::OpenRepo(path) = &event;
         assert_eq!(*path, "/tmp/repo");
+    }
+
+    #[test]
+    fn tab_order_is_unchanged_while_the_graph_shows() {
+        use FocusedPanel::*;
+        assert_eq!(FocusedPanel::cycle(Some(Sidebar), true, false), Graph);
+        assert_eq!(FocusedPanel::cycle(Some(Graph), true, false), DetailPanel);
+        assert_eq!(FocusedPanel::cycle(Some(DetailPanel), false, false), Graph);
+        assert_eq!(FocusedPanel::cycle(Some(Sidebar), false, false), DiffViewer);
+        assert_eq!(FocusedPanel::cycle(None, true, false), Graph);
+        assert_eq!(FocusedPanel::cycle(None, false, false), Graph);
+    }
+
+    #[test]
+    fn tab_order_steps_over_a_hidden_graph() {
+        use FocusedPanel::*;
+        assert_eq!(FocusedPanel::cycle(Some(Sidebar), true, true), DetailPanel);
+        assert_eq!(FocusedPanel::cycle(Some(DetailPanel), false, true), Sidebar);
+
+        let lap = |forward: bool| {
+            let mut panel = Sidebar;
+            (0..3)
+                .map(|_| {
+                    panel = FocusedPanel::cycle(Some(panel), forward, true);
+                    panel
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lap(true), [DetailPanel, DiffViewer, Sidebar]);
+        assert_eq!(lap(false), [DiffViewer, DetailPanel, Sidebar]);
+    }
+
+    /// Initial focus, focus restoration and Alt+2 all ask for the graph by
+    /// name; while it is hidden each of them has to land somewhere real.
+    #[test]
+    fn a_hidden_graph_hands_its_focus_to_the_diff_viewer() {
+        use FocusedPanel::*;
+        assert_eq!(Graph.available(true), DiffViewer);
+        assert_eq!(Graph.available(false), Graph);
+        for panel in [Sidebar, DetailPanel, DiffViewer] {
+            assert_eq!(panel.available(true), panel);
+        }
+        assert_eq!(
+            FocusedPanel::cycle(None, true, true).available(true),
+            DiffViewer
+        );
     }
 }
