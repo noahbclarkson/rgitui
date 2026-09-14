@@ -20,3 +20,6 @@ rgitui_theme.workspace = true
 rgitui_settings.workspace = true
 smallvec.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+rgitui_test_support.workspace = true

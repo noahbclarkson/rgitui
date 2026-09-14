@@ -22,7 +22,6 @@ use rgitui_settings::{cache_dir, AiProvider};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 pub use static_catalog::{bundled_catalog, enrich_from_static};
 
@@ -139,8 +138,10 @@ pub fn format_context(tokens: u32) -> String {
 // Cache envelope
 // ============================================================================
 
-/// Bump to invalidate stale cache files after a [`ModelInfo`] shape change.
-pub const CATALOG_SCHEMA: u32 = 1;
+/// Bump to invalidate cache files after a [`ModelInfo`] shape change, or a
+/// change to what a provider's fetch returns: a cache stays fresh for a day,
+/// so without a bump the old list stays on screen that long.
+pub const CATALOG_SCHEMA: u32 = 2;
 const CATALOG_TTL_SECS: i64 = 24 * 60 * 60;
 const CATALOG_STALE_SECS: i64 = 30 * 24 * 60 * 60;
 
@@ -182,20 +183,6 @@ pub enum CatalogSource {
     Bundled,
 }
 
-/// Live > cache > bundled.
-pub fn resolve_catalog(
-    provider: AiProvider,
-    cached: Option<CachedCatalog>,
-) -> (Vec<ModelInfo>, CatalogSource) {
-    match cached {
-        Some(catalog) if catalog.schema == CATALOG_SCHEMA && !catalog.models.is_empty() => {
-            let fetched_at = catalog.fetched_at;
-            (catalog.models, CatalogSource::Cache { fetched_at })
-        }
-        _ => (bundled_catalog(provider), CatalogSource::Bundled),
-    }
-}
-
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -225,12 +212,21 @@ fn stable_hash(value: &str) -> u64 {
     hasher.finish()
 }
 
-/// Read a provider's cached catalogue. A few KB of JSON — cheap enough to read
-/// synchronously when the picker opens.
+/// Read a provider's cached catalogue. OpenRouter's runs to several hundred KB
+/// of JSON, so call this from a background task.
 pub fn read_cached(provider: AiProvider, base_url_override: &str) -> Option<CachedCatalog> {
     let json = std::fs::read_to_string(catalog_path(provider, base_url_override)).ok()?;
-    let catalog: CachedCatalog = serde_json::from_str(&json).ok()?;
-    (catalog.schema == CATALOG_SCHEMA).then_some(catalog)
+    parse_cached(&json)
+}
+
+/// Parse a cache file, or `None` when it is corrupt, from another schema, or
+/// empty. Pure.
+///
+/// An empty list counts as no cache at all. Counted as fresh, it would show
+/// nothing new while stopping the real list from being fetched for a day.
+fn parse_cached(json: &str) -> Option<CachedCatalog> {
+    let catalog: CachedCatalog = serde_json::from_str(json).ok()?;
+    (catalog.schema == CATALOG_SCHEMA && !catalog.models.is_empty()).then_some(catalog)
 }
 
 /// Write a provider's catalogue, temp-file-then-rename so a crash mid-write
@@ -265,14 +261,13 @@ pub fn catalog_needs_key(provider: AiProvider, base_url_override: &str) -> bool 
         && crate::provider::requires_api_key(provider, base_url_override)
 }
 
-/// The recommended OpenRouter query: tool-capable text models sorted by coding
-/// ability, which is exactly the axis that matters for a commit-message
-/// generator. 145 KB rather than the 697 KB full dump.
-const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models\
-     ?supported_parameters=tools&output_modalities=text&sort=coding-high-to-low&limit=60";
-
-/// The unfiltered OpenRouter catalogue, behind "load all" in the picker.
-const OPENROUTER_ALL_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
+/// OpenRouter's whole text-model catalogue, sorted by coding ability — the
+/// axis that matters for a commit-message generator. Around 450 models and
+/// 700 KB, fetched and parsed off the UI thread and cached for a day. A
+/// `limit`ed or tools-only slice would hide models people search for, make the
+/// Tools chip identical to All, and leave the Free chip with nothing to show.
+const OPENROUTER_MODELS_URL: &str =
+    "https://openrouter.ai/api/v1/models?output_modalities=text&sort=coding-high-to-low";
 
 /// Fetch a provider's model list. Runs the round-trip **and** the parse — call
 /// it from a background task.
@@ -281,27 +276,6 @@ pub async fn fetch_models(
     client: &Arc<dyn HttpClient>,
     api_key: Option<&str>,
     base_url_override: &str,
-) -> Result<Vec<ModelInfo>> {
-    fetch_models_inner(provider, client, api_key, base_url_override, false).await
-}
-
-/// As [`fetch_models`], but asks OpenRouter for its entire catalogue rather
-/// than the recommended 60-model slice.
-pub async fn fetch_all_models(
-    provider: AiProvider,
-    client: &Arc<dyn HttpClient>,
-    api_key: Option<&str>,
-    base_url_override: &str,
-) -> Result<Vec<ModelInfo>> {
-    fetch_models_inner(provider, client, api_key, base_url_override, true).await
-}
-
-async fn fetch_models_inner(
-    provider: AiProvider,
-    client: &Arc<dyn HttpClient>,
-    api_key: Option<&str>,
-    base_url_override: &str,
-    load_all: bool,
 ) -> Result<Vec<ModelInfo>> {
     if catalog_needs_key(provider, base_url_override)
         && api_key.map(str::trim).unwrap_or("").is_empty()
@@ -319,14 +293,7 @@ async fn fetch_models_inner(
     let (url, mut builder) = match gateway_url {
         Some(url) => (url, Request::builder()),
         None => match provider {
-            AiProvider::OpenRouter => {
-                let url = if load_all {
-                    OPENROUTER_ALL_MODELS_URL
-                } else {
-                    OPENROUTER_MODELS_URL
-                };
-                (url.to_string(), Request::builder())
-            }
+            AiProvider::OpenRouter => (OPENROUTER_MODELS_URL.to_string(), Request::builder()),
             AiProvider::Anthropic => (
                 // The default limit is 20; without this the list renders silently
                 // truncated.
@@ -647,7 +614,6 @@ pub struct ModelFilter {
     /// Defaults to mirroring `settings.ai.use_tools`.
     pub tools_only: bool,
     pub text_only: bool,
-    pub free_only: bool,
     pub show_variants: bool,
 }
 
@@ -656,7 +622,6 @@ impl Default for ModelFilter {
         Self {
             tools_only: false,
             text_only: true,
-            free_only: false,
             show_variants: false,
         }
     }
@@ -667,8 +632,7 @@ impl Default for ModelFilter {
 /// Ordering is preserved, because the server's own order is already the most
 /// useful one there is — OpenRouter's is `coding-high-to-low`, which is
 /// exactly the axis that matters for a commit-message generator. Ranking a
-/// typed query is the picker's job, and it uses the app's single shared
-/// `fuzzy_score` so the two cannot rank the same query differently.
+/// typed query is the picker's job.
 pub fn filter_models(models: &[ModelInfo], filter: ModelFilter) -> Vec<&ModelInfo> {
     models
         .iter()
@@ -677,8 +641,10 @@ pub fn filter_models(models: &[ModelInfo], filter: ModelFilter) -> Vec<&ModelInf
         // the Gemini and OpenAI lists entirely, since neither advertises tool
         // support.
         .filter(|model| !filter.tools_only || model.tool_support != ToolSupport::Unsupported)
-        .filter(|model| !filter.free_only || model.is_free())
-        .filter(|model| filter.show_variants || !model.is_variant)
+        // A free variant survives `show_variants: false`: `:free` is the only
+        // form in which OpenRouter offers a model at no cost, so hiding it as
+        // a duplicate would hide every free model there is.
+        .filter(|model| filter.show_variants || !model.is_variant || model.is_free())
         .collect()
 }
 
@@ -777,9 +743,6 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
         .map(|(x, _)| x.len_utf8())
         .sum()
 }
-
-/// How long a catalogue fetch may take before it is abandoned.
-pub const CATALOG_TIMEOUT: Duration = CATALOG_REQUEST_TIMEOUT;
 
 #[cfg(test)]
 mod tests {
@@ -1043,9 +1006,11 @@ mod tests {
         free.prompt_price_per_mtok = Some(0.0);
         free.completion_price_per_mtok = Some(0.0);
         free.is_variant = true;
+        let mut batch = model("vendor/tools-model:batch");
+        batch.is_variant = true;
         let mut image = model("vendor/image-model");
         image.emits_text = false;
-        vec![supported, unsupported, unknown, free, image]
+        vec![supported, unsupported, unknown, free, batch, image]
     }
 
     #[test]
@@ -1068,7 +1033,7 @@ mod tests {
     fn variants_are_hidden_by_default_and_revealed_on_request() {
         let models = filter_fixture();
         let hidden = filter_models(&models, ModelFilter::default());
-        assert!(!hidden.iter().any(|m| m.is_variant));
+        assert!(!hidden.iter().any(|m| m.id.ends_with(":batch")));
 
         let shown = filter_models(
             &models,
@@ -1077,22 +1042,16 @@ mod tests {
                 ..ModelFilter::default()
             },
         );
-        assert!(shown.iter().any(|m| m.is_variant));
+        assert!(shown.iter().any(|m| m.id.ends_with(":batch")));
     }
 
+    /// `:free` is the only form in which OpenRouter offers a model at no cost,
+    /// so hiding it with the other variants would leave the Free chip empty.
     #[test]
-    fn free_only_needs_a_reported_price_of_exactly_zero() {
+    fn a_free_variant_is_offered_even_with_variants_hidden() {
         let models = filter_fixture();
-        let filter = ModelFilter {
-            free_only: true,
-            show_variants: true,
-            ..ModelFilter::default()
-        };
-        let ids: Vec<&str> = filter_models(&models, filter)
-            .into_iter()
-            .map(|m| m.id.as_str())
-            .collect();
-        assert_eq!(ids, vec!["vendor/free-model:free"]);
+        let kept = filter_models(&models, ModelFilter::default());
+        assert!(kept.iter().any(|m| m.id == "vendor/free-model:free"));
     }
 
     #[test]
@@ -1100,16 +1059,13 @@ mod tests {
         let models = filter_fixture();
         for tools_only in [false, true] {
             for text_only in [false, true] {
-                for free_only in [false, true] {
-                    for show_variants in [false, true] {
-                        let filter = ModelFilter {
-                            tools_only,
-                            text_only,
-                            free_only,
-                            show_variants,
-                        };
-                        assert!(filter_models(&models, filter).len() <= models.len());
-                    }
+                for show_variants in [false, true] {
+                    let filter = ModelFilter {
+                        tools_only,
+                        text_only,
+                        show_variants,
+                    };
+                    assert!(filter_models(&models, filter).len() <= models.len());
                 }
             }
         }
@@ -1157,45 +1113,40 @@ mod tests {
         assert_eq!(freshness(2_000_000, 1_000_000), CatalogFreshness::Fresh);
     }
 
-    #[test]
-    fn resolve_prefers_the_cache_and_falls_back_to_bundled() {
-        let cached = CachedCatalog {
-            schema: CATALOG_SCHEMA,
+    fn cache_json(schema: u32, models: Vec<ModelInfo>) -> String {
+        serde_json::to_string(&CachedCatalog {
+            schema,
             fetched_at: 42,
-            models: vec![model("cached/model")],
-        };
-        let (models, source) = resolve_catalog(AiProvider::OpenAi, Some(cached));
-        assert_eq!(models[0].id, "cached/model");
-        assert_eq!(source, CatalogSource::Cache { fetched_at: 42 });
-
-        let (models, source) = resolve_catalog(AiProvider::OpenAi, None);
-        assert_eq!(source, CatalogSource::Bundled);
-        assert!(models
-            .iter()
-            .any(|m| m.id == AiProvider::OpenAi.default_model()));
+            models,
+        })
+        .unwrap()
     }
 
     #[test]
-    fn a_cache_from_an_older_schema_is_discarded() {
-        let cached = CachedCatalog {
-            schema: CATALOG_SCHEMA + 1,
-            fetched_at: 42,
-            models: vec![model("cached/model")],
-        };
-        let (_, source) = resolve_catalog(AiProvider::OpenAi, Some(cached));
-        assert_eq!(source, CatalogSource::Bundled);
+    fn a_current_cache_parses_with_its_models_and_timestamp() {
+        let cached = parse_cached(&cache_json(CATALOG_SCHEMA, vec![model("cached/model")]))
+            .expect("a current cache should parse");
+        assert_eq!(cached.fetched_at, 42);
+        assert_eq!(cached.models[0].id, "cached/model");
     }
 
     #[test]
-    fn an_empty_cache_falls_back_rather_than_rendering_nothing() {
-        let cached = CachedCatalog {
-            schema: CATALOG_SCHEMA,
-            fetched_at: 42,
-            models: Vec::new(),
-        };
-        let (models, source) = resolve_catalog(AiProvider::Gemini, Some(cached));
-        assert_eq!(source, CatalogSource::Bundled);
-        assert!(!models.is_empty());
+    fn a_cache_from_another_schema_is_discarded() {
+        let models = vec![model("cached/model")];
+        assert!(parse_cached(&cache_json(CATALOG_SCHEMA - 1, models.clone())).is_none());
+        assert!(parse_cached(&cache_json(CATALOG_SCHEMA + 1, models)).is_none());
+    }
+
+    /// Counted as fresh, an empty cache would show nothing new while stopping
+    /// the real list from being fetched for a day.
+    #[test]
+    fn an_empty_cache_counts_as_no_cache() {
+        assert!(parse_cached(&cache_json(CATALOG_SCHEMA, Vec::new())).is_none());
+    }
+
+    #[test]
+    fn a_truncated_cache_is_discarded_rather_than_failing() {
+        assert!(parse_cached(r#"{ "schema": 2, "fetched_at": 42, "models": ["#).is_none());
     }
 
     #[test]
