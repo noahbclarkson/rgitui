@@ -1,4 +1,4 @@
-use gpui::{Bounds, Entity, Pixels, WeakEntity};
+use gpui::{Bounds, Entity, Pixels, WeakEntity, WeakFocusHandle};
 use rgitui_git::GitOperationUpdate;
 
 use crate::{
@@ -7,7 +7,8 @@ use crate::{
     StashSaveDialog, TagDialog, ThemeEditorDialog, WorktreeDialog,
 };
 
-use super::{ActiveOperation, FocusedPanel, OperationOutput};
+use super::focus::OverlayFocus;
+use super::{ActiveOperation, OperationOutput};
 
 /// Layout dimensions for resizable panels.
 pub(crate) struct LayoutState {
@@ -29,7 +30,6 @@ pub(crate) struct DialogState {
     pub worktree_dialog: Entity<WorktreeDialog>,
     pub stash_branch_dialog: Entity<StashBranchDialog>,
     pub create_pr_dialog: Entity<CreatePrDialog>,
-    #[allow(dead_code)]
     pub repo_clone_dialog: Entity<RepoCloneDialog>,
 }
 
@@ -71,8 +71,9 @@ pub(crate) struct OperationState {
 
 /// Focus management state.
 pub(crate) struct FocusState {
-    pub last_focused_panel: Option<FocusedPanel>,
-    pub pending_focus_restore: bool,
+    /// Where focus goes back to once the open overlays close; see
+    /// `Workspace::track_overlay_focus`.
+    pub overlay_focus: OverlayFocus<WeakFocusHandle>,
     /// Whether the workspace has handed focus to a panel yet.
     ///
     /// One-shot: on a fresh launch nothing in the workspace holds focus, and

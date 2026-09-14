@@ -2,6 +2,7 @@
 mod census;
 mod commands;
 mod events;
+mod focus;
 mod key_handler;
 mod layout;
 mod operations;
@@ -418,8 +419,7 @@ impl Workspace {
                 ai_target: None,
             },
             focus: FocusState {
-                last_focused_panel: None,
-                pending_focus_restore: false,
+                overlay_focus: focus::OverlayFocus::default(),
                 initial_focus_taken: false,
                 crash_recovery_available: false,
                 crash_recovery_shown: false,
@@ -825,23 +825,6 @@ impl Workspace {
         });
     }
 
-    /// Detect which panel is currently focused and save it for later restoration.
-    pub(super) fn save_focus(&mut self, window: &Window, cx: &Context<Self>) {
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-            if tab.sidebar.read(cx).is_focused(window) {
-                self.focus.last_focused_panel = Some(FocusedPanel::Sidebar);
-            } else if tab.graph.read(cx).is_focused(window) {
-                self.focus.last_focused_panel = Some(FocusedPanel::Graph);
-            } else if tab.detail_panel.read(cx).is_focused(window) {
-                self.focus.last_focused_panel = Some(FocusedPanel::DetailPanel);
-            } else if tab.diff_viewer.read(cx).is_focused(window)
-                || tab.blame_view.read(cx).is_focused(window)
-            {
-                self.focus.last_focused_panel = Some(FocusedPanel::DiffViewer);
-            }
-        }
-    }
-
     /// Detect which panel currently has focus.
     pub(super) fn current_focused_panel(
         &self,
@@ -919,14 +902,6 @@ impl Workspace {
                     }
                 }
             }
-        }
-    }
-
-    /// Restore focus to the previously focused panel.
-    pub(super) fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = self.focus.last_focused_panel.take();
-        if let Some(panel) = panel {
-            self.focus_panel(panel, window, cx);
         }
     }
 

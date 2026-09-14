@@ -23,7 +23,7 @@ use super::{
 /// Global bindings are scoped to it (see `commands!` in
 /// [`crate::keymap::registry`]); `WORKSPACE_MODAL_KEY_CONTEXT` adds `modal` so
 /// `Workspace && !modal` bindings stand down while an overlay is up.
-const WORKSPACE_KEY_CONTEXT: &str = "Workspace";
+pub(super) const WORKSPACE_KEY_CONTEXT: &str = "Workspace";
 /// Key context for the workspace root while an overlay or dialog is open.
 const WORKSPACE_MODAL_KEY_CONTEXT: &str = "Workspace modal";
 
@@ -154,10 +154,7 @@ impl Render for Workspace {
             crate::perf::note_first_content(cx);
         }
 
-        if self.focus.pending_focus_restore {
-            self.focus.pending_focus_restore = false;
-            self.restore_focus(window, cx);
-        }
+        self.track_overlay_focus(window, cx);
 
         // Nothing holds focus on a fresh launch. gpui dispatches an action
         // along the path from the focused node up to the root, so with no focus
