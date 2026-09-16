@@ -37,9 +37,14 @@ mkdir -p "$APP_DIR/usr/share/metainfo"
 cp target/release/rgitui "$APP_DIR/usr/bin/"
 strip "$APP_DIR/usr/bin/rgitui" 2>/dev/null || true
 
-# Copy desktop file
+# Copy desktop file, stamped with the version. AppImage managers read
+# X-AppImage-Version before anything else, and without it fall back to the
+# metainfo or report no version at all.
 cp crates/rgitui/resources/linux/rgitui.desktop "$APP_DIR/usr/share/applications/"
 cp crates/rgitui/resources/linux/rgitui.desktop "$APP_DIR/"
+for desktop in "$APP_DIR/rgitui.desktop" "$APP_DIR/usr/share/applications/rgitui.desktop"; do
+    echo "X-AppImage-Version=$VERSION" >> "$desktop"
+done
 
 # Copy AppRun
 cp crates/rgitui/resources/linux/AppRun "$APP_DIR/"
@@ -59,7 +64,9 @@ cp crates/rgitui/resources/linux/com.rgitui.app.metainfo.xml "$APP_DIR/usr/share
 # Create AppImage
 if command -v appimagetool &> /dev/null; then
     echo "Creating AppImage..."
-    ARCH="$ARCH" appimagetool "$APP_DIR" "target/rgitui-${VERSION}-${ARCH}.AppImage"
+    # appimagetool writes $VERSION into the desktop entry it embeds, which
+    # agrees with the stamp above rather than guessing one from git.
+    VERSION="$VERSION" ARCH="$ARCH" appimagetool "$APP_DIR" "target/rgitui-${VERSION}-${ARCH}.AppImage"
     echo "Done! AppImage created at target/rgitui-${VERSION}-${ARCH}.AppImage"
 else
     echo "appimagetool not found. Creating tarball instead..."
