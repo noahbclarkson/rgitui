@@ -867,10 +867,7 @@ pub(super) fn subscribe_repo_opener(cx: &mut Context<Workspace>, repo_opener: &E
                     this.refresh_all_tabs_prioritized(cx);
                 }
             }
-            RepoOpenerEvent::Dismissed => {
-                this.focus.pending_focus_restore = true;
-                cx.notify();
-            }
+            RepoOpenerEvent::Dismissed => {}
             RepoOpenerEvent::ShowCloneDialog => {
                 // Show the clone dialog when user clicks Clone button
                 this.dialogs.repo_clone_dialog.update(cx, |d, cx| {
@@ -1016,7 +1013,6 @@ pub(super) fn subscribe_global_search(
                         tab.bottom_panel_mode = BottomPanelMode::Diff;
                     }
                 }
-                this.focus.pending_focus_restore = true;
                 cx.notify();
             }
         },
@@ -3433,10 +3429,7 @@ pub(super) fn subscribe_repo_clone_dialog(
                 })
                 .detach();
             }
-            RepoCloneEvent::Dismissed => {
-                this.focus.pending_focus_restore = true;
-                cx.notify();
-            }
+            RepoCloneEvent::Dismissed => {}
         },
     )
     .detach();

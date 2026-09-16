@@ -23,7 +23,7 @@ use super::{
 /// Global bindings are scoped to it (see `commands!` in
 /// [`crate::keymap::registry`]); `WORKSPACE_MODAL_KEY_CONTEXT` adds `modal` so
 /// `Workspace && !modal` bindings stand down while an overlay is up.
-const WORKSPACE_KEY_CONTEXT: &str = "Workspace";
+pub(super) const WORKSPACE_KEY_CONTEXT: &str = "Workspace";
 /// Key context for the workspace root while an overlay or dialog is open.
 const WORKSPACE_MODAL_KEY_CONTEXT: &str = "Workspace modal";
 
@@ -154,10 +154,7 @@ impl Render for Workspace {
             crate::perf::note_first_content(cx);
         }
 
-        if self.focus.pending_focus_restore {
-            self.focus.pending_focus_restore = false;
-            self.restore_focus(window, cx);
-        }
+        self.track_focus(window, cx);
 
         // Nothing holds focus on a fresh launch. gpui dispatches an action
         // along the path from the focused node up to the root, so with no focus
@@ -236,7 +233,6 @@ impl Render for Workspace {
                 .child(self.overlays.repo_opener.clone())
                 .child(self.dialogs.repo_clone_dialog.clone())
                 .child(self.overlays.shortcuts_help.clone())
-                .child(self.overlays.global_search.clone())
                 .into_any_element();
         }
 
@@ -326,21 +322,7 @@ impl Render for Workspace {
             None => project.repo_path().display().to_string(),
         }
         .into();
-        let overlays_active = self.overlays.command_palette.read(cx).is_visible()
-            || self.overlays.interactive_rebase.read(cx).is_visible()
-            || self.overlays.theme_editor.read(cx).is_visible()
-            || self.dialogs.branch_dialog.read(cx).is_visible()
-            || self.dialogs.tag_dialog.read(cx).is_visible()
-            || self.dialogs.worktree_dialog.read(cx).is_visible()
-            || self.dialogs.rename_dialog.read(cx).is_visible()
-            || self.dialogs.stash_save_dialog.read(cx).is_visible()
-            || self.dialogs.stash_branch_dialog.read(cx).is_visible()
-            || self.overlays.repo_opener.read(cx).is_visible()
-            || self.dialogs.repo_clone_dialog.read(cx).is_visible()
-            || self.dialogs.confirm_dialog.read(cx).is_visible()
-            || self.dialogs.create_pr_dialog.read(cx).is_visible()
-            || self.overlays.shortcuts_help.read(cx).is_visible()
-            || self.overlays.global_search.read(cx).is_visible();
+        let overlays_active = self.any_overlay_visible(cx);
 
         // Detect which panel has keyboard focus for visual indicators
         let sidebar_focused = active_tab.sidebar.read(cx).is_focused(window);
@@ -1464,7 +1446,8 @@ impl Render for Workspace {
             .child(self.dialogs.worktree_dialog.clone())
             // Rename dialog overlay
             .child(self.dialogs.rename_dialog.clone())
-            // Stash branch dialog overlay
+            // Stash dialog overlays
+            .child(self.dialogs.stash_save_dialog.clone())
             .child(self.dialogs.stash_branch_dialog.clone())
             // Repo opener overlay
             .child(self.overlays.repo_opener.clone())
@@ -1477,8 +1460,6 @@ impl Render for Workspace {
             .child(self.overlays.theme_editor.clone())
             // Shortcuts help overlay
             .child(self.overlays.shortcuts_help.clone())
-            // Global search overlay
-            .child(self.overlays.global_search.clone())
             .into_any_element()
     }
 }

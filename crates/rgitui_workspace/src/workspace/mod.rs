@@ -2,6 +2,7 @@
 mod census;
 mod commands;
 mod events;
+mod focus;
 mod key_handler;
 mod layout;
 mod operations;
@@ -229,7 +230,7 @@ pub enum WorkspaceEvent {
     OpenRepo(String),
 }
 
-/// Which panel had focus before a modal was opened.
+/// A panel keyboard focus can be moved to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FocusedPanel {
     Sidebar,
@@ -329,7 +330,6 @@ impl Workspace {
         let github_data = cx.new(|_cx| crate::github_data_service::GithubDataService::new());
         let command_palette = cx.new(crate::CommandPalette::new);
         let interactive_rebase = cx.new(crate::InteractiveRebase::new);
-        let global_search = cx.new(crate::GlobalSearchView::new);
         let theme_editor = cx.new(crate::ThemeEditorDialog::new_for_active_theme);
         let toast_layer = cx.new(ToastLayer::new);
 
@@ -360,7 +360,6 @@ impl Workspace {
         events::subscribe_repo_opener(cx, &repo_opener);
         events::subscribe_repo_clone_dialog(cx, &repo_clone_dialog);
         events::subscribe_shortcuts_help(cx, &shortcuts_help);
-        events::subscribe_global_search(cx, &global_search);
 
         // Restore layout dimensions from saved settings
         let layout_settings = if let Some(state) = cx.try_global::<rgitui_settings::SettingsState>()
@@ -405,7 +404,6 @@ impl Workspace {
                 interactive_rebase,
                 repo_opener,
                 shortcuts_help,
-                global_search,
                 theme_editor,
             },
             operations: OperationState {
@@ -418,8 +416,8 @@ impl Workspace {
                 ai_target: None,
             },
             focus: FocusState {
-                last_focused_panel: None,
-                pending_focus_restore: false,
+                overlay_focus: focus::OverlayFocus::default(),
+                drawn_panels: focus::DrawnPanels::default(),
                 initial_focus_taken: false,
                 crash_recovery_available: false,
                 crash_recovery_shown: false,
@@ -825,23 +823,6 @@ impl Workspace {
         });
     }
 
-    /// Detect which panel is currently focused and save it for later restoration.
-    pub(super) fn save_focus(&mut self, window: &Window, cx: &Context<Self>) {
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-            if tab.sidebar.read(cx).is_focused(window) {
-                self.focus.last_focused_panel = Some(FocusedPanel::Sidebar);
-            } else if tab.graph.read(cx).is_focused(window) {
-                self.focus.last_focused_panel = Some(FocusedPanel::Graph);
-            } else if tab.detail_panel.read(cx).is_focused(window) {
-                self.focus.last_focused_panel = Some(FocusedPanel::DetailPanel);
-            } else if tab.diff_viewer.read(cx).is_focused(window)
-                || tab.blame_view.read(cx).is_focused(window)
-            {
-                self.focus.last_focused_panel = Some(FocusedPanel::DiffViewer);
-            }
-        }
-    }
-
     /// Detect which panel currently has focus.
     pub(super) fn current_focused_panel(
         &self,
@@ -911,22 +892,35 @@ impl Workspace {
                 FocusedPanel::DetailPanel => {
                     tab.detail_panel.update(cx, |d, cx| d.focus(window, cx));
                 }
-                FocusedPanel::DiffViewer => {
-                    if tab.bottom_panel_mode == BottomPanelMode::Blame {
-                        tab.blame_view.update(cx, |bv, cx| bv.focus(window, cx));
-                    } else {
+                // Only the view the bottom panel is showing is drawn; focusing
+                // any other would strand focus on an element missing from the
+                // frame.
+                FocusedPanel::DiffViewer => match tab.bottom_panel_mode {
+                    BottomPanelMode::Diff => {
                         tab.diff_viewer.update(cx, |d, cx| d.focus(window, cx));
                     }
-                }
+                    BottomPanelMode::Blame => {
+                        tab.blame_view.update(cx, |v, cx| v.focus(window, cx));
+                    }
+                    BottomPanelMode::FileHistory => {
+                        tab.file_history_view
+                            .update(cx, |v, cx| v.focus(window, cx));
+                    }
+                    BottomPanelMode::Reflog => {
+                        tab.reflog_view.update(cx, |v, cx| v.focus(window, cx));
+                    }
+                    BottomPanelMode::Submodules => {
+                        tab.submodule_view.update(cx, |v, cx| v.focus(window, cx));
+                    }
+                    BottomPanelMode::GlobalSearch => {
+                        tab.global_search_view
+                            .update(cx, |v, cx| v.focus(window, cx));
+                    }
+                    BottomPanelMode::Bisect => {
+                        tab.bisect_view.update(cx, |v, cx| v.focus(window, cx));
+                    }
+                },
             }
-        }
-    }
-
-    /// Restore focus to the previously focused panel.
-    pub(super) fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = self.focus.last_focused_panel.take();
-        if let Some(panel) = panel {
-            self.focus_panel(panel, window, cx);
         }
     }
 
