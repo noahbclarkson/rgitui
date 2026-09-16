@@ -28,23 +28,17 @@ impl Workspace {
     ) {
         match cmd {
             CommandId::CommandPalette => {
-                self.save_focus(window, cx);
                 self.overlays.command_palette.update(cx, |palette, cx| {
                     palette.toggle(window, cx);
                 });
             }
-            CommandId::Settings => {
-                self.save_focus(window, cx);
-                self.open_or_focus_settings(cx);
-            }
+            CommandId::Settings => self.open_or_focus_settings(cx),
             CommandId::OpenRepo => {
-                self.save_focus(window, cx);
                 self.overlays.repo_opener.update(cx, |opener, cx| {
                     opener.toggle(window, cx);
                 });
             }
             CommandId::Shortcuts => {
-                self.save_focus(window, cx);
                 self.overlays.shortcuts_help.update(cx, |help, cx| {
                     help.toggle(window, cx);
                 });

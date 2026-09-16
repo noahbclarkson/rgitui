@@ -49,7 +49,18 @@ impl Workspace {
             || self.overlays.repo_opener.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()
             || self.dialogs.stash_branch_dialog.read(cx).is_visible()
-            || self.overlays.global_search.read(cx).is_visible()
             || self.overlays.shortcuts_help.read(cx).is_visible()
+    }
+
+    /// Whether any overlay or dialog is on screen.
+    ///
+    /// Wider than [`Self::any_overlay_active`]: it also counts the dialogs that
+    /// leave global shortcuts live, because every overlay takes focus when it
+    /// opens and each of them strands it the same way when it closes.
+    pub(super) fn any_overlay_visible(&self, cx: &Context<Self>) -> bool {
+        self.any_overlay_active(cx)
+            || self.dialogs.stash_save_dialog.read(cx).is_visible()
+            || self.dialogs.create_pr_dialog.read(cx).is_visible()
+            || self.dialogs.repo_clone_dialog.read(cx).is_visible()
     }
 }
