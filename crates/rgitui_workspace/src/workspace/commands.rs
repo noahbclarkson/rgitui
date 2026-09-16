@@ -253,6 +253,33 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Checks out the branch HEAD was on before, like `git switch -`.
+    pub(super) fn switch_to_previous_branch(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        let project = tab.project.clone();
+        let Some(branch) = project.read(cx).previous_branch().map(str::to_owned) else {
+            self.show_toast(
+                "There is no previous branch to switch back to. Check out a branch from the sidebar.",
+                ToastKind::Info,
+                cx,
+            );
+            return;
+        };
+        project.update(cx, |proj, cx| proj.checkout_branch(&branch, cx).detach());
+    }
+
+    /// Shows the commit graph with HEAD's commit selected, scrolled into view and
+    /// focused.
+    pub(super) fn reveal_head(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_graph_hidden(false, cx);
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            tab.graph.update(cx, |graph, cx| graph.reveal_head(cx));
+        }
+        self.focus_panel(FocusedPanel::Graph, window, cx);
+    }
+
     /// Swaps the bottom panel between the diff viewer and the working-tree search.
     fn toggle_global_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get_mut(self.active_tab) else {
@@ -669,6 +696,7 @@ impl Workspace {
                     cx,
                 );
             }
+            CommandId::SwitchToPreviousBranch => self.switch_to_previous_branch(cx),
             CommandId::Blame => {
                 self.toggle_blame_view(tab, cx);
             }

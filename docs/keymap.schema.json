@@ -217,6 +217,10 @@
           "description": "Focus the sidebar to switch branches. Command id: `switch_branch`."
         },
         {
+          "const": "rgitui::SwitchToPreviousBranch",
+          "description": "Check out the branch HEAD was on before, like `git switch -`. Command id: `switch_to_previous_branch`."
+        },
+        {
           "const": "rgitui::Blame",
           "description": "Blame the selected file. Command id: `blame`."
         },

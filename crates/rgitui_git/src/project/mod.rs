@@ -233,8 +233,11 @@ fn push_target(
 /// All the data gathered during a refresh, designed to be Send so it can
 /// be computed on a background thread and then applied on the main thread.
 pub struct RefreshData {
+    /// Checked-out branch, or `None` when HEAD is detached.
     pub head_branch: Option<String>,
     pub head_detached: bool,
+    /// The local branch HEAD was last switched away from, if it still exists.
+    pub previous_branch: Option<String>,
     pub repo_state: RepoState,
     pub branches: Vec<BranchInfo>,
     pub tags: Vec<TagInfo>,
@@ -286,6 +289,7 @@ pub struct GitProject {
     // Cached state
     head_branch: Option<String>,
     head_detached: bool,
+    previous_branch: Option<String>,
     repo_state: RepoState,
     branches: Vec<BranchInfo>,
     tags: Vec<TagInfo>,
@@ -360,6 +364,7 @@ impl GitProject {
             repo_path: path,
             head_branch: None,
             head_detached: false,
+            previous_branch: None,
             repo_state: RepoState::Clean,
             branches: Vec::new(),
             tags: Vec::new(),
@@ -398,6 +403,7 @@ impl GitProject {
             repo_path,
             head_branch: None,
             head_detached: false,
+            previous_branch: None,
             repo_state: RepoState::Clean,
             branches: Vec::new(),
             tags: Vec::new(),
@@ -593,12 +599,33 @@ impl GitProject {
             .unwrap_or("unknown")
     }
 
+    /// The checked-out branch, or `None` when HEAD is detached or unborn.
     pub fn head_branch(&self) -> Option<&str> {
         self.head_branch.as_deref()
     }
 
     pub fn is_head_detached(&self) -> bool {
         self.head_detached
+    }
+
+    /// The local branch HEAD was last switched away from, the one
+    /// `git switch -` would return to, if it still exists.
+    pub fn previous_branch(&self) -> Option<&str> {
+        self.previous_branch.as_deref()
+    }
+
+    /// The commit HEAD points at, as of the last refresh.
+    pub fn head_oid(&self) -> Option<git2::Oid> {
+        self.worktrees
+            .iter()
+            .find(|worktree| worktree.is_current)
+            .and_then(|worktree| worktree.head_oid)
+    }
+
+    /// The commit HEAD points at, when it is among the loaded commits.
+    pub fn head_commit(&self) -> Option<&CommitInfo> {
+        let head = self.head_oid()?;
+        self.recent_commits.iter().find(|commit| commit.oid == head)
     }
 
     /// Tell the watcher which linked worktree the UI is inspecting so it is
@@ -788,6 +815,7 @@ impl GitProject {
     pub(crate) fn apply_refresh_data(&mut self, data: RefreshData) {
         self.head_branch = data.head_branch;
         self.head_detached = data.head_detached;
+        self.previous_branch = data.previous_branch;
         self.repo_state = data.repo_state;
         self.branches = carry_forward_branch_graph_state(&self.branches, data.branches);
         self.tags = data.tags;

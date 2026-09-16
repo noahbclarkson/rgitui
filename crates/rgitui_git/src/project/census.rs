@@ -70,14 +70,16 @@ impl HeapSize for StatusCache<'_> {
 }
 
 /// The small strings the project keeps for the life of the repository: its
-/// path, the current head, the default branch, the user's email and any author
-/// filter. Individually trivial, grouped so the report can show they are.
+/// path, the current and previous head, the default branch, the user's email
+/// and any author filter. Individually trivial, grouped so the report can show
+/// they are.
 struct Paths<'a>(&'a GitProject);
 
 impl HeapSize for Paths<'_> {
     fn heap_size(&self, census: &mut Census) -> usize {
         self.0.repo_path.heap_size(census)
             + self.0.head_branch.heap_size(census)
+            + self.0.previous_branch.heap_size(census)
             + self.0.default_branch.heap_size(census)
             + self.0.current_user_email.heap_size(census)
             + self.0.commit_author_filter.heap_size(census)

@@ -9,7 +9,7 @@ use gpui::{AppContext, Context, Entity, SharedString};
 use rgitui_ai::{AiEvent, AiGenerator, GenerationId};
 use rgitui_diff::{ConflictResolution, DiffOperation, DiffSource, DiffViewer, DiffViewerEvent};
 use rgitui_git::{
-    CommitInfo, GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
+    CommitCheckout, CommitInfo, GitOperationKind, GitOperationState, GitProject, GitProjectEvent,
     RebaseEntryAction, RebasePlanEntry, Signature,
 };
 use rgitui_graph::{GraphView, GraphViewEvent, WorktreeGraphInfo};
@@ -1108,8 +1108,10 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
 
                 let worktree_graph_infos = build_worktree_graph_infos(&worktrees);
                 let worktrees_for_sidebar = worktrees.clone();
+                let head_detached = project.read(cx).is_head_detached();
                 graph.update(cx, |g, cx| {
                     g.set_commits(commits, cx);
+                    g.set_head_detached(head_detached, cx);
                     g.set_all_loaded(!has_more);
                     g.set_worktree_statuses(worktree_graph_infos, cx);
                 });
@@ -2247,6 +2249,38 @@ pub(super) fn subscribe_graph(
                     project.update(cx, |proj, cx| {
                         proj.checkout_commit(oid, cx).detach();
                     });
+                }
+                GraphViewEvent::CommitActivated(oid) => {
+                    let oid = *oid;
+                    let checkout = {
+                        let proj = project.read(cx);
+                        let refs = proj
+                            .recent_commits()
+                            .iter()
+                            .find(|commit| commit.oid == oid)
+                            .map(|commit| commit.refs.as_slice())
+                            .unwrap_or_default();
+                        rgitui_git::commit_checkout(refs, proj.head_branch())
+                    };
+                    match checkout {
+                        CommitCheckout::AlreadyCheckedOut(branch) => {
+                            this.show_toast(
+                                format!("'{branch}' is already checked out"),
+                                ToastKind::Info,
+                                cx,
+                            );
+                        }
+                        CommitCheckout::Branch(branch) => {
+                            project.update(cx, |proj, cx| {
+                                proj.checkout_branch(&branch, cx).detach();
+                            });
+                        }
+                        CommitCheckout::Detached => {
+                            project.update(cx, |proj, cx| {
+                                proj.checkout_commit(oid, cx).detach();
+                            });
+                        }
+                    }
                 }
                 GraphViewEvent::CopyCommitSha(sha) => {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(sha.clone()));

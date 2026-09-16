@@ -31,8 +31,9 @@
 // invocation site; `always_show` is the default and is referenced through
 // `$crate`, so it is not imported here.
 use crate::command_palette::{
-    ai_ready, has_changes, has_github_token, has_multi_commit_selection, has_remotes, has_staged,
-    has_stashes, in_progress_operation, is_bisecting, worktree_clean, CommandContext,
+    ai_ready, has_changes, has_github_token, has_multi_commit_selection, has_previous_branch,
+    has_remotes, has_staged, has_stashes, in_progress_operation, is_bisecting, worktree_clean,
+    CommandContext,
 };
 
 /// Static description of a single command.
@@ -149,6 +150,8 @@ commands! {
         Shortcuts "?" in "Workspace && !TextInput";
         /// Focus the sidebar to switch branches.
         SwitchBranch "secondary-shift-b";
+        /// Check out the branch HEAD was on before, like `git switch -`.
+        SwitchToPreviousBranch unbound if has_previous_branch;
         /// Blame the selected file.
         Blame unbound;
         /// Undo the last git operation.

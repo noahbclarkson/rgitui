@@ -299,7 +299,11 @@ pub enum GraphViewEvent {
     CherryPick(git2::Oid),
     RevertCommit(git2::Oid),
     CreateBranchAtCommit(git2::Oid),
+    /// Check out the commit itself, detaching HEAD ("Checkout commit").
     CheckoutCommit(git2::Oid),
+    /// The commit was double-clicked: check out the local branch that points at
+    /// it, or the commit itself when none does.
+    CommitActivated(git2::Oid),
     CopyCommitSha(String),
     CopyCommitMessage(String),
     CopyAuthorName(String),
@@ -719,6 +723,8 @@ pub struct GraphView {
     show_author_email: bool,
     /// Whether "My Commits" filter is active — show only commits by the current user.
     my_commits_active: bool,
+    /// Whether HEAD is detached, which changes how the HEAD row is marked.
+    head_detached: bool,
     /// Cached bounds of the graph container div, used to convert window-relative
     /// click positions to container-relative coordinates for context menu placement.
     container_bounds: Bounds<Pixels>,
@@ -793,6 +799,7 @@ impl GraphView {
             show_ref_badges: true,
             show_author_email: false,
             my_commits_active: false,
+            head_detached: false,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
             dragging_oid: None,
             drag_start_position: None,
@@ -954,6 +961,27 @@ impl GraphView {
     /// Mark that all available commits have been loaded (disables "load more").
     pub fn set_all_loaded(&mut self, loaded: bool) {
         self.all_commits_loaded = loaded;
+    }
+
+    /// Record whether HEAD is detached. Checking out a commit a branch already
+    /// points at leaves the commits and their refs unchanged, so this is the
+    /// only thing that tells the HEAD row to change its marking.
+    pub fn set_head_detached(&mut self, detached: bool, cx: &mut Context<Self>) {
+        if self.head_detached != detached {
+            self.head_detached = detached;
+            cx.notify();
+        }
+    }
+
+    /// Select HEAD's commit and scroll it into view.
+    pub fn reveal_head(&mut self, cx: &mut Context<Self>) {
+        if let Some(head) = self
+            .commits
+            .iter()
+            .find(|commit| commit.refs.contains(&RefLabel::Head))
+        {
+            self.scroll_to_commit(head.oid, cx);
+        }
     }
 
     /// Compute the context menu's container-relative placement and visible size.
@@ -1738,14 +1766,27 @@ impl Render for GraphView {
             ..colors.text_accent
         };
 
-        // HEAD emphasis: accent-tinted background for the HEAD row
-        let head_row_bg = gpui::Hsla {
-            a: 0.08,
-            ..colors.text_accent
-        };
-
         // Working tree row color (warning/yellow tint)
         let status_colors = cx.status();
+
+        // HEAD emphasis: a tinted background and a solid marker bar. A detached
+        // HEAD takes the warning colour the title bar, status bar and banner use
+        // for it, so it cannot be mistaken for the blue of a selected row.
+        let head_detached = self.head_detached;
+        let head_color = if head_detached {
+            status_colors.warning
+        } else {
+            accent_border
+        };
+        let head_row_bg = gpui::Hsla {
+            a: if head_detached { 0.14 } else { 0.08 },
+            ..head_color
+        };
+        let head_badge_text = if head_detached {
+            "HEAD (detached)"
+        } else {
+            "HEAD"
+        };
         let working_tree_bg = gpui::Hsla {
             a: 0.06,
             ..status_colors.warning
@@ -2212,7 +2253,10 @@ impl Render for GraphView {
                             compact_ref_labels(&commit.refs).into_iter().enumerate()
                         {
                             let badge = match &compact_ref.label {
-                                RefLabel::Head => Badge::new("HEAD").color(Color::Warning).bold(),
+                                RefLabel::Head => Badge::new(head_badge_text)
+                                    .prefix("→")
+                                    .color(Color::Warning)
+                                    .bold(),
                                 RefLabel::LocalBranch(name) => {
                                     Badge::new(name.clone()).color(Color::Success)
                                 }
@@ -2268,13 +2312,13 @@ impl Render for GraphView {
                         let view_clone = view.clone();
                         let view_ctx_menu = view.clone();
 
-                        let left_tab_color = if selected {
+                        // HEAD keeps its marker when selected: double-clicking a
+                        // commit both checks it out and selects it, and the
+                        // selection must not paint over where HEAD now is.
+                        let left_tab_color = if is_head_row {
+                            head_color
+                        } else if selected {
                             selected_border
-                        } else if is_head_row {
-                            gpui::Hsla {
-                                a: 0.8,
-                                ..accent_border
-                            }
                         } else {
                             gpui::Hsla {
                                 a: 0.4,
@@ -2307,8 +2351,7 @@ impl Render for GraphView {
                                             this.dismiss_context_menu(cx);
                                             let modifiers = event.modifiers();
                                             if event.click_count() >= 2 {
-                                                // Double-click: checkout this commit
-                                                cx.emit(GraphViewEvent::CheckoutCommit(oid));
+                                                cx.emit(GraphViewEvent::CommitActivated(oid));
                                             } else if modifiers.shift {
                                                 this.extend_selection_to_list_index(i, cx);
                                             } else if modifiers.secondary() {

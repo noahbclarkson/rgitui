@@ -163,8 +163,10 @@ impl Workspace {
             };
             crate::avatar_resolver::resolve_avatars(authors, cx);
             let worktree_graph_infos = super::events::build_worktree_graph_infos(&worktrees);
+            let head_detached = project.read(cx).is_head_detached();
             graph.update(cx, |g, cx| {
                 g.set_commits(commits, cx);
+                g.set_head_detached(head_detached, cx);
                 g.set_all_loaded(!has_more);
                 g.set_worktree_statuses(worktree_graph_infos, cx);
             });
@@ -258,6 +260,7 @@ impl Workspace {
             has_token,
         )
         .with_multi_commit_selection(tab.graph.read(cx).selected_commit_count() > 1)
+        .with_previous_branch(proj.previous_branch().is_some())
         .with_ai_ready(
             cx.try_global::<rgitui_settings::SettingsState>()
                 .is_some_and(|state| {

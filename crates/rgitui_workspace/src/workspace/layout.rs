@@ -54,6 +54,17 @@ fn clamp_diff_viewer_height(height: f32, available_height: f32) -> f32 {
     height.clamp(MIN_DIFF_VIEWER_HEIGHT, max)
 }
 
+/// What the title and status bars call a checkout's HEAD: its branch, or the
+/// short id of the commit a detached HEAD sits on, so the bars say where HEAD
+/// is rather than only that it has left every branch.
+fn head_display_name(branch: Option<&str>, head_oid: Option<git2::Oid>) -> String {
+    match (branch, head_oid) {
+        (Some(branch), _) => branch.to_owned(),
+        (None, Some(oid)) => format!("{oid:.7}"),
+        (None, None) => "detached".to_owned(),
+    }
+}
+
 /// Smallest width the center column (commit graph + diff viewer) is allowed to
 /// keep when the window is narrow. The fixed-width side panels are capped at
 /// render time so the primary view never collapses below this width.
@@ -303,8 +314,8 @@ impl Render for Workspace {
             None => project.is_head_detached(),
         };
         let branch_name: SharedString = match inspected {
-            Some(worktree) => worktree.branch.clone().unwrap_or_else(|| "detached".into()),
-            None => project.head_branch().unwrap_or("detached").to_string(),
+            Some(worktree) => head_display_name(worktree.branch.as_deref(), worktree.head_oid),
+            None => head_display_name(project.head_branch(), project.head_oid()),
         }
         .into();
         let (has_changes, staged_count, unstaged_count) = match active_tab.inspecting_worktree {
@@ -360,6 +371,21 @@ impl Render for Workspace {
             Some(worktree) => project.conflicted_files_at(&worktree.path).len(),
             None => project.conflicted_files().len(),
         };
+        // Only the main checkout's detached HEAD gets this banner. An inspected
+        // worktree's is already named by the inspection banner, and a rebase or
+        // bisect detaches HEAD as part of an operation its own banner covers.
+        let detached_head = (active_tab.inspecting_worktree.is_none()
+            && project.is_head_detached()
+            && repo_state.is_clean())
+        .then(|| DetachedHead {
+            commit: branch_name.clone(),
+            summary: project
+                .head_commit()
+                .map(|commit| commit.summary.clone().into()),
+            previous_branch: project
+                .previous_branch()
+                .map(|branch| branch.to_owned().into()),
+        });
         let stash_count = project.stashes().len();
         let repo_path_display: SharedString = match inspected {
             Some(worktree) => worktree.path.display().to_string(),
@@ -569,21 +595,31 @@ impl Render for Workspace {
 
         let operation_output_bar = self.render_operation_output_bar(cx);
         let update_banner = self.render_update_banner(cx);
+        let detached_head_banner =
+            detached_head.map(|head| self.render_detached_head_banner(head, cx));
 
         let root = self.workspace_root(cx, ui_font, colors.background).v_flex();
 
         root
             // Title bar
             .child({
-                let sidebar = active_tab.sidebar.clone();
-                let mut title = TitleBar::new(repo_name.clone(), branch_name.clone())
+                let title = TitleBar::new(repo_name.clone(), branch_name.clone())
                     .has_changes(has_changes)
-                    .head_detached(head_detached)
-                    .on_branch_click(move |_, window, cx| {
+                    .head_detached(head_detached);
+                // A detached HEAD has no branch to find in the sidebar, so its
+                // pill shows HEAD's commit in the graph instead.
+                let mut title = if detached_head_banner.is_some() {
+                    title.on_branch_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.reveal_head(window, cx);
+                    }))
+                } else {
+                    let sidebar = active_tab.sidebar.clone();
+                    title.on_branch_click(move |_, window, cx| {
                         sidebar.update(cx, |sb, cx| {
                             sb.ensure_branches_visible(window, cx);
                         });
-                    });
+                    })
+                };
                 if !repo_state.is_clean() {
                     title = title.repo_state(repo_state.label());
                 }
@@ -725,6 +761,7 @@ impl Render for Workspace {
                         ),
                 )
             })
+            .when_some(detached_head_banner, |el, banner| el.child(banner))
             // Tab bar
             .child(tab_bar)
             // Main content area — drag_move listeners live here so they fire globally
@@ -1552,7 +1589,100 @@ impl Render for Workspace {
     }
 }
 
+/// What the detached HEAD banner shows.
+struct DetachedHead {
+    /// Short id of the commit HEAD is detached at.
+    commit: SharedString,
+    /// That commit's summary, when it is among the loaded commits.
+    summary: Option<SharedString>,
+    /// The branch "Return to" checks out, when there is one to go back to.
+    previous_branch: Option<SharedString>,
+}
+
 impl Workspace {
+    /// Banner shown while the main checkout's HEAD is detached. Double-clicking
+    /// a commit is all it takes to get there, and without it nothing says where
+    /// HEAD went or how to get back onto a branch.
+    fn render_detached_head_banner(
+        &self,
+        head: DetachedHead,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let title: SharedString = format!("HEAD is detached at {}", head.commit).into();
+        let consequence = "Commits made here belong to no branch";
+        let detail: SharedString = match head.summary {
+            Some(summary) => format!("{summary} · {consequence}").into(),
+            None => consequence.into(),
+        };
+        let way_back = match head.previous_branch {
+            Some(branch) => Button::new("detached-head-return", format!("Return to {branch}"))
+                .tooltip(format!(
+                    "Check out '{branch}', the branch HEAD was on before"
+                ))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.switch_to_previous_branch(cx);
+                })),
+            None => Button::new("detached-head-switch", "Switch Branch…").on_click(cx.listener(
+                |this, _: &ClickEvent, window, cx| {
+                    if let Some(tab) = this.tabs.get(this.active_tab) {
+                        tab.sidebar.update(cx, |sidebar, cx| {
+                            sidebar.ensure_branches_visible(window, cx)
+                        });
+                    }
+                },
+            )),
+        }
+        .size(ButtonSize::Compact)
+        .style(ButtonStyle::Filled)
+        .color(Color::Accent);
+
+        div()
+            .id("detached-head-banner")
+            .h_flex()
+            .w_full()
+            .min_h(px(32.))
+            .px(px(10.))
+            .py(px(4.))
+            .gap(px(6.))
+            .items_center()
+            .bg(cx.status().warning_background)
+            .border_b_1()
+            .border_color(cx.status().warning)
+            .child(
+                Icon::new(IconName::GitCommit)
+                    .size(IconSize::Small)
+                    .color(Color::Warning),
+            )
+            .child(
+                div()
+                    .v_flex()
+                    .min_w_0()
+                    .flex_1()
+                    .child(
+                        Label::new(title)
+                            .size(LabelSize::Small)
+                            .weight(gpui::FontWeight::SEMIBOLD)
+                            .truncate(),
+                    )
+                    .child(
+                        Label::new(detail)
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                            .truncate(),
+                    ),
+            )
+            .child(
+                Button::new("detached-head-show", "Show in Graph")
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Subtle)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.reveal_head(window, cx);
+                    })),
+            )
+            .child(way_back)
+            .into_any_element()
+    }
+
     /// Persistent banner shown when the update checker has found a newer
     /// release. Contains a "Download" button that opens the release URL and
     /// an "X" button to dismiss for the remainder of the session.
@@ -2844,5 +2974,27 @@ mod diff_viewer_height_tests {
     fn an_unmeasured_column_only_applies_the_minimum() {
         assert_eq!(clamp_diff_viewer_height(900.0, 0.0), 900.0);
         assert_eq!(clamp_diff_viewer_height(10.0, 0.0), MIN_DIFF_VIEWER_HEIGHT);
+    }
+}
+
+#[cfg(test)]
+mod head_display_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_branch_is_named() {
+        let oid = git2::Oid::from_str("1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d").unwrap();
+        assert_eq!(head_display_name(Some("main"), Some(oid)), "main");
+    }
+
+    #[test]
+    fn a_detached_head_is_named_by_its_commit() {
+        let oid = git2::Oid::from_str("1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d").unwrap();
+        assert_eq!(head_display_name(None, Some(oid)), "1a2b3c4");
+    }
+
+    #[test]
+    fn nothing_known_still_says_detached() {
+        assert_eq!(head_display_name(None, None), "detached");
     }
 }
