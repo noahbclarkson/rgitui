@@ -71,6 +71,11 @@ impl BisectView {
         !self.entries.is_empty()
     }
 
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window)
     }

@@ -1,13 +1,13 @@
-use gpui::{Bounds, Entity, Pixels, WeakEntity, WeakFocusHandle};
+use gpui::{Bounds, Entity, EntityId, Pixels, WeakEntity, WeakFocusHandle};
 use rgitui_git::GitOperationUpdate;
 
 use crate::{
-    BranchDialog, CommandPalette, CommitPanel, ConfirmDialog, CreatePrDialog, GlobalSearchView,
-    InteractiveRebase, RenameDialog, RepoCloneDialog, RepoOpener, ShortcutsHelp, StashBranchDialog,
-    StashSaveDialog, TagDialog, ThemeEditorDialog, WorktreeDialog,
+    BranchDialog, CommandPalette, CommitPanel, ConfirmDialog, CreatePrDialog, InteractiveRebase,
+    RenameDialog, RepoCloneDialog, RepoOpener, ShortcutsHelp, StashBranchDialog, StashSaveDialog,
+    TagDialog, ThemeEditorDialog, WorktreeDialog,
 };
 
-use super::focus::OverlayFocus;
+use super::focus::{DrawnPanels, OverlayFocus};
 use super::{ActiveOperation, OperationOutput};
 
 /// Layout dimensions for resizable panels.
@@ -39,7 +39,6 @@ pub(crate) struct OverlayState {
     pub interactive_rebase: Entity<InteractiveRebase>,
     pub repo_opener: Entity<RepoOpener>,
     pub shortcuts_help: Entity<ShortcutsHelp>,
-    pub global_search: Entity<GlobalSearchView>,
     pub theme_editor: Entity<ThemeEditorDialog>,
 }
 
@@ -72,8 +71,11 @@ pub(crate) struct OperationState {
 /// Focus management state.
 pub(crate) struct FocusState {
     /// Where focus goes back to once the open overlays close; see
-    /// `Workspace::track_overlay_focus`.
+    /// `Workspace::track_focus`.
     pub overlay_focus: OverlayFocus<WeakFocusHandle>,
+    /// The tab and bottom panel view drawn last frame, so focus left on one that
+    /// was swapped out can be handed to its replacement.
+    pub drawn_panels: DrawnPanels<EntityId>,
     /// Whether the workspace has handed focus to a panel yet.
     ///
     /// One-shot: on a fresh launch nothing in the workspace holds focus, and

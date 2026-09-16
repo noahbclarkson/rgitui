@@ -49,7 +49,6 @@ impl Workspace {
             || self.overlays.repo_opener.read(cx).is_visible()
             || self.dialogs.confirm_dialog.read(cx).is_visible()
             || self.dialogs.stash_branch_dialog.read(cx).is_visible()
-            || self.overlays.global_search.read(cx).is_visible()
             || self.overlays.shortcuts_help.read(cx).is_visible()
     }
 
