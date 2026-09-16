@@ -200,6 +200,18 @@ impl ProjectTab {
             .unwrap_or_else(|| self.project.read(cx).repo_path().to_path_buf())
     }
 
+    /// Whether one of the views that take turns filling the bottom panel holds
+    /// focus.
+    pub(super) fn bottom_panel_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.diff_viewer.read(cx).is_focused(window)
+            || self.blame_view.read(cx).is_focused(window)
+            || self.file_history_view.read(cx).is_focused(window)
+            || self.reflog_view.read(cx).is_focused(window)
+            || self.submodule_view.read(cx).is_focused(window)
+            || self.global_search_view.read(cx).is_focused(window)
+            || self.bisect_view.read(cx).is_focused(window)
+    }
+
     pub(super) fn current_view_cache_key(&self, cx: &gpui::App) -> Option<ViewCacheKey> {
         let diff_viewer = self.diff_viewer.read(cx);
         let file_path = diff_viewer.file_path()?.to_string();
@@ -261,7 +273,7 @@ impl FocusedPanel {
     }
 
     /// The panel that takes a focus request made for this one. A hidden graph
-    /// has no element to hold focus, so its requests go to the diff viewer,
+    /// has no element to hold focus, so its requests go to the bottom panel,
     /// which is what fills the space the graph gave up.
     fn available(self, graph_hidden: bool) -> Self {
         if graph_hidden && self == Self::Graph {
@@ -889,9 +901,10 @@ impl Workspace {
             if tab.detail_panel.read(cx).is_focused(window) {
                 return Some(FocusedPanel::DetailPanel);
             }
-            if tab.diff_viewer.read(cx).is_focused(window)
-                || tab.blame_view.read(cx).is_focused(window)
-            {
+            // Every view the bottom panel can show counts: with the graph hidden,
+            // one left unrecognised would start the Tab cycle at the graph,
+            // which resolves straight back to the bottom panel.
+            if tab.bottom_panel_focused(window, cx) {
                 return Some(FocusedPanel::DiffViewer);
             }
         }

@@ -205,7 +205,7 @@ impl Render for Workspace {
         // A hidden graph is not in the element tree, so focus left inside it,
         // on the graph or its search field, sits outside every dispatch path
         // and strands the keyboard just as having no focus does. Hand it to
-        // the diff viewer, which fills the graph's space. This happens here
+        // the bottom panel, which fills the graph's space. This happens here
         // rather than where the graph is hidden because the command palette
         // hides it without a `Window`, and containment is resolved against the
         // previous frame: the last one in which the graph was there to hold it.
@@ -372,12 +372,7 @@ impl Render for Workspace {
         let sidebar_focused = active_tab.sidebar.read(cx).is_focused(window);
         let graph_focused = active_tab.graph.read(cx).is_focused(window);
         let detail_focused = active_tab.detail_panel.read(cx).is_focused(window);
-        let diff_focused = active_tab.diff_viewer.read(cx).is_focused(window)
-            || active_tab.blame_view.read(cx).is_focused(window)
-            || active_tab.file_history_view.read(cx).is_focused(window)
-            || active_tab.reflog_view.read(cx).is_focused(window)
-            || active_tab.submodule_view.read(cx).is_focused(window)
-            || active_tab.global_search_view.read(cx).is_focused(window);
+        let diff_focused = active_tab.bottom_panel_focused(window, cx);
         let focus_accent = colors.border_focused;
         let bottom_panel_mode = active_tab.bottom_panel_mode;
         let graph_hidden = self.layout.graph_hidden;
