@@ -32,10 +32,27 @@ const WORKSPACE_MODAL_KEY_CONTEXT: &str = "Workspace modal";
 pub(super) const MIN_DETAIL_PANEL_WIDTH: f32 = 180.0;
 pub(super) const MAX_DETAIL_PANEL_WIDTH: f32 = 720.0;
 
-/// Resize bounds for the bottom diff viewer, shared by the drag handle and the
-/// Ctrl+Up / Ctrl+Down keyboard shortcuts so both input paths clamp identically.
-pub(super) const MIN_DIFF_VIEWER_HEIGHT: f32 = 100.0;
-pub(super) const MAX_DIFF_VIEWER_HEIGHT: f32 = 600.0;
+/// Shortest the bottom diff viewer can be made.
+const MIN_DIFF_VIEWER_HEIGHT: f32 = 100.0;
+
+/// Shortest the commit graph is left when the diff viewer grows. The diff
+/// viewer has no fixed ceiling: on a tall window it may take everything but
+/// this. Hiding the graph outright is `ToggleGraph`'s job.
+const MIN_GRAPH_HEIGHT: f32 = 120.0;
+
+/// Clamps a bottom panel height to what a center column `available_height`
+/// tall has room for. Shared by the drag handle and the Ctrl+Up / Ctrl+Down
+/// shortcuts so both input paths store the same values; rendering enforces
+/// the same two minimums through flex constraints instead. Before the first
+/// frame has measured the column (`available_height` is zero) only the minimum
+/// applies, so a saved height is not cut down to nothing.
+fn clamp_diff_viewer_height(height: f32, available_height: f32) -> f32 {
+    if available_height <= 0.0 {
+        return height.max(MIN_DIFF_VIEWER_HEIGHT);
+    }
+    let max = (available_height - MIN_GRAPH_HEIGHT).max(MIN_DIFF_VIEWER_HEIGHT);
+    height.clamp(MIN_DIFF_VIEWER_HEIGHT, max)
+}
 
 /// Smallest width the center column (commit graph + diff viewer) is allowed to
 /// keep when the window is narrow. The fixed-width side panels are capped at
@@ -75,6 +92,17 @@ impl Workspace {
     pub(super) fn rem_size_for_font_size(font_size: u32) -> gpui::Pixels {
         let clamped = font_size.clamp(MIN_UI_FONT_SIZE, MAX_UI_FONT_SIZE);
         px(clamped as f32 * BASELINE_REM_SIZE / DEFAULT_UI_FONT_SIZE as f32)
+    }
+
+    /// `height` clamped to what the content area, as last measured, has room
+    /// for in the bottom panel.
+    ///
+    /// For input only. Rendering must not size from `content_bounds`: it is
+    /// measured while the previous frame paints, and nothing redraws when it
+    /// changes, so after a resize a height derived from it stays one window
+    /// size behind until something else happens to repaint.
+    pub(super) fn fit_diff_viewer_height(&self, height: f32) -> f32 {
+        clamp_diff_viewer_height(height, f32::from(self.layout.content_bounds.size.height))
     }
 
     /// Key context for the workspace root element.
@@ -172,6 +200,22 @@ impl Render for Workspace {
                 window.focused(cx)
             );
             self.focus_panel(FocusedPanel::Graph, window, cx);
+        }
+
+        // A hidden graph is not in the element tree, so focus left inside it,
+        // on the graph or its search field, sits outside every dispatch path
+        // and strands the keyboard just as having no focus does. Hand it to
+        // the bottom panel, which fills the graph's space. This happens here
+        // rather than where the graph is hidden because the command palette
+        // hides it without a `Window`, and containment is resolved against the
+        // previous frame: the last one in which the graph was there to hold it.
+        if self.layout.graph_hidden
+            && self
+                .tabs
+                .get(self.active_tab)
+                .is_some_and(|tab| tab.graph.read(cx).contains_focus(window, cx))
+        {
+            self.focus_panel(FocusedPanel::DiffViewer, window, cx);
         }
 
         // Apply the configured UI font size. Every `rgitui_ui` component sizes
@@ -328,14 +372,11 @@ impl Render for Workspace {
         let sidebar_focused = active_tab.sidebar.read(cx).is_focused(window);
         let graph_focused = active_tab.graph.read(cx).is_focused(window);
         let detail_focused = active_tab.detail_panel.read(cx).is_focused(window);
-        let diff_focused = active_tab.diff_viewer.read(cx).is_focused(window)
-            || active_tab.blame_view.read(cx).is_focused(window)
-            || active_tab.file_history_view.read(cx).is_focused(window)
-            || active_tab.reflog_view.read(cx).is_focused(window)
-            || active_tab.submodule_view.read(cx).is_focused(window)
-            || active_tab.global_search_view.read(cx).is_focused(window);
+        let diff_focused = active_tab.bottom_panel_focused(window, cx);
         let focus_accent = colors.border_focused;
         let bottom_panel_mode = active_tab.bottom_panel_mode;
+        let graph_hidden = self.layout.graph_hidden;
+        let diff_viewer_height = self.layout.diff_viewer_height;
         let current_view_key = active_tab.current_view_cache_key(cx);
         let (history_availability, blame_availability) = current_view_key
             .as_ref()
@@ -760,9 +801,9 @@ impl Render for Workspace {
                     ))
                     .on_drag_move::<DiffViewerResize>(cx.listener(
                         |this, e: &DragMoveEvent<DiffViewerResize>, _, cx| {
-                            let new_h =
-                                f32::from(this.layout.content_bounds.bottom() - e.event.position.y)
-                                    .clamp(MIN_DIFF_VIEWER_HEIGHT, MAX_DIFF_VIEWER_HEIGHT);
+                            let new_h = this.fit_diff_viewer_height(f32::from(
+                                this.layout.content_bounds.bottom() - e.event.position.y,
+                            ));
                             this.layout.diff_viewer_height = new_h;
                             this.schedule_layout_save(cx);
                             cx.notify();
@@ -862,45 +903,47 @@ impl Render for Workspace {
                                         ),
                                 )
                             })
-                            // Graph view
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .when(graph_focused, |el| {
-                                        el.border_t_2().border_color(focus_accent)
-                                    })
-                                    .child(active_tab.graph.clone()),
-                            )
-                            // Drag-to-resize strip between graph and diff viewer
-                            .child(
-                                div()
-                                    .id("diff-resize-handle")
-                                    .w_full()
-                                    .h(px(3.))
-                                    .flex_shrink_0()
-                                    .border_t_1()
-                                    .border_color(colors.border_variant)
-                                    .when(!overlays_active, |el| {
-                                        el.cursor_row_resize()
-                                            .hover(|s| {
-                                                s.bg(gpui::Hsla {
-                                                    a: 0.6,
-                                                    ..colors.border_focused
+                            // Graph view and the drag-to-resize strip below it,
+                            // both gone while the graph is hidden
+                            .when(!graph_hidden, |el| {
+                                el.child(
+                                    div()
+                                        .flex_1()
+                                        .min_h(px(MIN_GRAPH_HEIGHT))
+                                        .when(graph_focused, |el| {
+                                            el.border_t_2().border_color(focus_accent)
+                                        })
+                                        .child(active_tab.graph.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .id("diff-resize-handle")
+                                        .w_full()
+                                        .h(px(3.))
+                                        .flex_shrink_0()
+                                        .border_t_1()
+                                        .border_color(colors.border_variant)
+                                        .when(!overlays_active, |el| {
+                                            el.cursor_row_resize()
+                                                .hover(|s| {
+                                                    s.bg(gpui::Hsla {
+                                                        a: 0.6,
+                                                        ..colors.border_focused
+                                                    })
                                                 })
-                                            })
-                                            .on_drag(DiffViewerResize, |val, _, _, cx| {
-                                                cx.stop_propagation();
-                                                cx.new(|_| val.clone())
-                                            })
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                |_: &MouseDownEvent, _, cx| {
+                                                .on_drag(DiffViewerResize, |val, _, _, cx| {
                                                     cx.stop_propagation();
-                                                },
-                                            )
-                                    }),
-                            )
+                                                    cx.new(|_| val.clone())
+                                                })
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    |_: &MouseDownEvent, _, cx| {
+                                                        cx.stop_propagation();
+                                                    },
+                                                )
+                                        }),
+                                )
+                            })
                             // Bottom panel tabs + content
                             .child({
                                 let tab_bar_bg = colors.toolbar_background;
@@ -965,6 +1008,36 @@ impl Render for Workspace {
                                         "Blame is unavailable for this file at the selected commit"
                                     }
                                 };
+
+                                // This bar stays on screen whichever way the
+                                // graph is toggled, so the one control for both
+                                // directions lives here rather than on the graph.
+                                let graph_toggle = div().h_full().flex().items_center().child(
+                                    IconButton::new(
+                                        "toggle-commit-graph",
+                                        if graph_hidden {
+                                            IconName::ChevronDown
+                                        } else {
+                                            IconName::ChevronUp
+                                        },
+                                    )
+                                    .size(ButtonSize::Compact)
+                                    .color(Color::Muted)
+                                    .tooltip_fn(keymap::command_tooltip(
+                                        if graph_hidden {
+                                            "Show commit graph"
+                                        } else {
+                                            "Hide commit graph"
+                                        },
+                                        CommandId::ToggleGraph,
+                                    ))
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            this.execute_command(CommandId::ToggleGraph, cx);
+                                        },
+                                    )),
+                                );
 
                                 let ws = cx.entity().downgrade();
                                 let ws2 = cx.entity().downgrade();
@@ -1083,12 +1156,27 @@ impl Render for Workspace {
                                             )
                                             },
                                         ),
-                                    );
+                                    )
+                                    .child(div().flex_1())
+                                    .child(graph_toggle);
 
                                 div()
                                     .v_flex()
-                                    .h(px(self.layout.diff_viewer_height))
-                                    .flex_shrink_0()
+                                    // Hidden graph: take the whole column. Otherwise
+                                    // the stored height is a preference the panel
+                                    // shrinks from when the column is too short, down
+                                    // to its own minimum, while the graph's minimum
+                                    // holds its ground above it. The layout engine
+                                    // resolves that every frame, so a window resize
+                                    // is reflected in the same frame it happens.
+                                    .map(|el| {
+                                        if graph_hidden {
+                                            el.flex_1().min_h_0()
+                                        } else {
+                                            el.h(px(diff_viewer_height))
+                                                .min_h(px(MIN_DIFF_VIEWER_HEIGHT))
+                                        }
+                                    })
                                     .when(diff_focused, |el| {
                                         el.border_t_2().border_color(focus_accent)
                                     })
@@ -1885,6 +1973,7 @@ impl Workspace {
             settings.settings_mut().layout.detail_panel_width = self.layout.detail_panel_width;
             settings.settings_mut().layout.diff_viewer_height = self.layout.diff_viewer_height;
             settings.settings_mut().layout.commit_input_height = self.layout.commit_input_height;
+            settings.settings_mut().layout.graph_hidden = self.layout.graph_hidden;
             if let Err(e) = settings.save() {
                 log::error!("Failed to save layout: {}", e);
             }
@@ -2710,5 +2799,50 @@ mod terminal_args_cross_platform_tests {
             Workspace::rem_size_for_font_size(9_999),
             Workspace::rem_size_for_font_size(super::MAX_UI_FONT_SIZE)
         );
+    }
+}
+
+#[cfg(test)]
+mod diff_viewer_height_tests {
+    use super::*;
+
+    /// The old fixed 600px ceiling left most of a tall window to the graph.
+    #[test]
+    fn a_tall_column_lets_the_diff_viewer_past_the_old_ceiling() {
+        assert_eq!(clamp_diff_viewer_height(900.0, 1_400.0), 900.0);
+    }
+
+    #[test]
+    fn the_graph_keeps_its_minimum_height() {
+        assert_eq!(
+            clamp_diff_viewer_height(5_000.0, 1_000.0),
+            1_000.0 - MIN_GRAPH_HEIGHT
+        );
+    }
+
+    /// A column too short for both minimums keeps the diff viewer's, and the
+    /// clamp range never inverts (which would panic).
+    #[test]
+    fn a_short_column_keeps_the_diff_viewer_minimum() {
+        assert_eq!(
+            clamp_diff_viewer_height(345.0, 150.0),
+            MIN_DIFF_VIEWER_HEIGHT
+        );
+    }
+
+    #[test]
+    fn heights_below_the_minimum_are_raised() {
+        assert_eq!(
+            clamp_diff_viewer_height(10.0, 1_000.0),
+            MIN_DIFF_VIEWER_HEIGHT
+        );
+    }
+
+    /// Before the first frame has measured the column there is nothing to cap
+    /// against, so a saved height has to survive untouched.
+    #[test]
+    fn an_unmeasured_column_only_applies_the_minimum() {
+        assert_eq!(clamp_diff_viewer_height(900.0, 0.0), 900.0);
+        assert_eq!(clamp_diff_viewer_height(10.0, 0.0), MIN_DIFF_VIEWER_HEIGHT);
     }
 }

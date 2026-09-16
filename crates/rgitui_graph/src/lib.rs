@@ -812,6 +812,12 @@ impl GraphView {
         self.graph_focus.is_focused(window)
     }
 
+    /// Whether focus is on the graph or anything inside it, such as the search
+    /// field. Resolved against the most recently rendered frame.
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.graph_focus.contains_focused(window, cx)
+    }
+
     /// Whether "My Commits" filter is currently active.
     pub fn my_commits_active(&self) -> bool {
         self.my_commits_active
@@ -1415,19 +1421,26 @@ impl GraphView {
         cx.notify();
     }
 
+    /// Show the search field and focus it, leaving an open search as it is.
+    pub fn open_search_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_search = true;
+        self.search_editor
+            .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.focus(window, cx));
+        cx.notify();
+    }
+
     /// Toggle search with window access (focuses the search input).
     pub fn toggle_search_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_search = !self.show_search;
-        if self.show_search {
-            self.search_editor
-                .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.focus(window, cx));
-        } else {
-            self.search_editor
-                .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
-            self.filter_matches.clear();
-            self.filter_match_set_arc = Arc::new(HashSet::new());
-            self.current_match = 0;
+        if !self.show_search {
+            self.open_search_focused(window, cx);
+            return;
         }
+        self.show_search = false;
+        self.search_editor
+            .update(cx, |e: &mut rgitui_ui::TextInput, cx| e.clear(cx));
+        self.filter_matches.clear();
+        self.filter_match_set_arc = Arc::new(HashSet::new());
+        self.current_match = 0;
         cx.notify();
     }
 

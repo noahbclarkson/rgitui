@@ -159,6 +159,7 @@ rgitui /path/to/repo
 | `Ctrl+O` | Open repository |
 | `Ctrl+F` | Search commit graph |
 | `Ctrl+Shift+F` | Global search (`git grep`) |
+| `Ctrl+Shift+G` | Hide / show the commit graph |
 | `Ctrl+Shift+R` | Fetch |
 | `Ctrl+G` | Generate AI commit message |
 | `Ctrl+Enter` | Commit staged changes |
@@ -182,7 +183,7 @@ rgitui /path/to/repo
 | `Tab` / `Shift+Tab` | Cycle panel focus |
 | `Alt+1`..`Alt+4` | Focus sidebar / graph / detail / diff |
 | `Ctrl+[` / `Ctrl+]` | Resize detail panel |
-| `Ctrl+Up` / `Ctrl+Down` | Resize diff viewer |
+| `Ctrl+Up` / `Ctrl+Down` | Resize diff viewer (up to the full column, minus a sliver of graph) |
 | `/` | Search in focused panel |
 
 ### Diff viewer
