@@ -275,7 +275,10 @@ impl Workspace {
     pub(super) fn reveal_head(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.set_graph_hidden(false, cx);
         if let Some(tab) = self.tabs.get(self.active_tab) {
-            tab.graph.update(cx, |graph, cx| graph.reveal_head(cx));
+            if let Some(head) = tab.project.read(cx).head_oid() {
+                tab.graph
+                    .update(cx, |graph, cx| graph.reveal_head(head, cx));
+            }
         }
         self.focus_panel(FocusedPanel::Graph, window, cx);
     }

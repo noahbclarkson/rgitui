@@ -1124,6 +1124,19 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                     s.update_worktrees(worktrees_for_sidebar, cx);
                 });
 
+                // The palette filters against a cached context, and a refresh is
+                // what moves the state it reads: stashes, changes, remotes and
+                // the branch to switch back to. Without this a command stayed
+                // hidden, or on offer, until some unrelated selection or tab
+                // change happened to rebuild the context.
+                if this
+                    .tabs
+                    .get(this.active_tab)
+                    .is_some_and(|tab| tab.project == project)
+                {
+                    this.update_command_context(cx);
+                }
+
                 // Remotes load asynchronously after a tab opens (the initial
                 // refresh emits StatusChanged), so reconfigure this project's
                 // GitHub panels now that the remote may be known. Without this

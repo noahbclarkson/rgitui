@@ -583,6 +583,45 @@ fn row_for_commit_index(
     Some(row)
 }
 
+/// A commit to select and scroll to once the page of history holding it loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingScroll {
+    oid: git2::Oid,
+    /// Keep loading pages until the commit arrives, instead of loading one and
+    /// leaving the rest to the "Load more" row. Only for a commit the history
+    /// walk is certain to reach, or paging runs to the end of history.
+    load_until_found: bool,
+}
+
+/// What a pending scroll should do now that a commit list has been applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingScrollStep {
+    /// The commit is loaded at this commit index.
+    Reveal(usize),
+    /// Every commit is loaded and it is not among them.
+    Abandon,
+    /// Ask for the next page.
+    LoadMore,
+    /// Wait for the user to load more.
+    Wait,
+}
+
+fn pending_scroll_step(
+    pending: PendingScroll,
+    commits: &[CommitInfo],
+    all_commits_loaded: bool,
+) -> PendingScrollStep {
+    if let Some(index) = commits.iter().position(|commit| commit.oid == pending.oid) {
+        PendingScrollStep::Reveal(index)
+    } else if all_commits_loaded {
+        PendingScrollStep::Abandon
+    } else if pending.load_until_found {
+        PendingScrollStep::LoadMore
+    } else {
+        PendingScrollStep::Wait
+    }
+}
+
 /// The set of commits selected in the graph, plus the anchor a range extension
 /// grows from.
 ///
@@ -693,9 +732,9 @@ pub struct GraphView {
     search_editor: Entity<rgitui_ui::TextInput>,
     graph_focus: FocusHandle,
     all_commits_loaded: bool,
-    /// OID to scroll to once the commit list is refreshed and the OID is present.
-    /// Used when scroll_to_commit is called for a commit not yet in the loaded list.
-    pending_scroll_oid: Option<git2::Oid>,
+    /// Commit to scroll to once the commit list is refreshed and it is present.
+    /// Set when a commit is revealed before the page holding it has loaded.
+    pending_scroll: Option<PendingScroll>,
     /// Search query to re-run once more commits have been loaded.
     /// Used when a search returns no matches but more commits are available.
     pending_search_query: Option<SharedString>,
@@ -780,7 +819,7 @@ impl GraphView {
             search_editor,
             graph_focus: cx.focus_handle(),
             all_commits_loaded: false,
-            pending_scroll_oid: None,
+            pending_scroll: None,
             pending_search_query: None,
             cached_graph_hash: None,
             compute_generation: 0,
@@ -937,17 +976,22 @@ impl GraphView {
                     this.update_search_filter(cx);
                 }
 
-                // Check if a pending scroll target has just been loaded.
-                if let Some(pending_oid) = this.pending_scroll_oid {
-                    if let Some(index) = this.commits.iter().position(|c| c.oid == pending_oid) {
-                        if let Some(list_index) = this.list_index_for_commit_index(index) {
-                            this.select_list_index(list_index, cx);
-                            this.scroll_handle
-                                .scroll_to_item(list_index, ScrollStrategy::Top);
+                // Check if a pending scroll target has just been loaded. A found
+                // target stops waiting: left pending, every later refresh would
+                // pull the selection back to it.
+                if let Some(pending) = this.pending_scroll {
+                    match pending_scroll_step(pending, &this.commits, this.all_commits_loaded) {
+                        PendingScrollStep::Reveal(index) => {
+                            this.pending_scroll = None;
+                            if let Some(list_index) = this.list_index_for_commit_index(index) {
+                                this.select_list_index(list_index, cx);
+                                this.scroll_handle
+                                    .scroll_to_item(list_index, ScrollStrategy::Top);
+                            }
                         }
-                    }
-                    if this.all_commits_loaded {
-                        this.pending_scroll_oid = None;
+                        PendingScrollStep::Abandon => this.pending_scroll = None,
+                        PendingScrollStep::LoadMore => cx.emit(GraphViewEvent::LoadMoreCommits),
+                        PendingScrollStep::Wait => {}
                     }
                 }
 
@@ -973,15 +1017,33 @@ impl GraphView {
         }
     }
 
-    /// Select HEAD's commit and scroll it into view.
-    pub fn reveal_head(&mut self, cx: &mut Context<Self>) {
-        if let Some(head) = self
-            .commits
-            .iter()
-            .find(|commit| commit.refs.contains(&RefLabel::Head))
-        {
-            self.scroll_to_commit(head.oid, cx);
+    /// Select HEAD's commit and scroll it into view, loading history until it
+    /// arrives.
+    ///
+    /// HEAD can sit beyond the loaded pages, a detached checkout of an old tag
+    /// for one. The history walk always includes HEAD, so paging reaches it —
+    /// unless "My Commits" leaves out another author's commit. When HEAD is not
+    /// already loaded the filter is lifted, since it may be what hides HEAD.
+    pub fn reveal_head(&mut self, head: git2::Oid, cx: &mut Context<Self>) {
+        let target = PendingScroll {
+            oid: head,
+            load_until_found: true,
+        };
+        let head_loaded = self.commits.iter().any(|commit| commit.oid == head);
+        if !self.my_commits_active || head_loaded {
+            self.reveal_commit(target, cx);
+            return;
         }
+        self.my_commits_active = false;
+        self.all_commits_loaded = false;
+        // The unfiltered first page can equal the filtered list when every
+        // commit on it is the user's, and an unchanged list is never applied —
+        // which is where the pending scroll is picked up.
+        self.cached_graph_hash = None;
+        self.pending_scroll = Some(target);
+        // Its handler reloads history without the author filter.
+        cx.emit(GraphViewEvent::ToggleMyCommits);
+        cx.notify();
     }
 
     /// Compute the context menu's container-relative placement and visible size.
@@ -1229,16 +1291,33 @@ impl GraphView {
 
     /// Scroll to the commit with the given OID, selecting it and emitting CommitSelected.
     pub fn scroll_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) {
-        if let Some(index) = self.commits.iter().position(|c| c.oid == oid) {
-            if let Some(list_index) = self.list_index_for_commit_index(index) {
-                self.select_list_index(list_index, cx);
-                self.scroll_handle
-                    .scroll_to_item(list_index, ScrollStrategy::Top);
+        self.reveal_commit(
+            PendingScroll {
+                oid,
+                load_until_found: false,
+            },
+            cx,
+        );
+    }
+
+    /// Reveals `target`, replacing any earlier reveal still waiting for its page:
+    /// left in place, it would page on and then pull the selection away.
+    fn reveal_commit(&mut self, target: PendingScroll, cx: &mut Context<Self>) {
+        self.pending_scroll = None;
+        match pending_scroll_step(target, &self.commits, self.all_commits_loaded) {
+            PendingScrollStep::Reveal(index) => {
+                if let Some(list_index) = self.list_index_for_commit_index(index) {
+                    self.select_list_index(list_index, cx);
+                    self.scroll_handle
+                        .scroll_to_item(list_index, ScrollStrategy::Top);
+                }
             }
-        } else if !self.all_commits_loaded {
-            // Commit not in loaded list — set as pending and trigger loading.
-            self.pending_scroll_oid = Some(oid);
-            cx.emit(GraphViewEvent::LoadMoreCommits);
+            PendingScrollStep::Abandon => {}
+            PendingScrollStep::LoadMore | PendingScrollStep::Wait => {
+                // Not loaded yet: wait for it and load the next page.
+                self.pending_scroll = Some(target);
+                cx.emit(GraphViewEvent::LoadMoreCommits);
+            }
         }
     }
 
@@ -4131,6 +4210,57 @@ mod tests {
             parent_oids: parents.iter().map(|parent| make_oid(*parent)).collect(),
             refs,
             is_signed: false,
+        }
+    }
+
+    fn pending(oid: u8, load_until_found: bool) -> PendingScroll {
+        PendingScroll {
+            oid: make_oid(oid),
+            load_until_found,
+        }
+    }
+
+    #[test]
+    fn a_loaded_pending_commit_is_revealed_even_while_more_history_remains() {
+        let commits = vec![
+            make_commit(3, &[2], Vec::new()),
+            make_commit(2, &[1], Vec::new()),
+            make_commit(1, &[], Vec::new()),
+        ];
+        for load_until_found in [false, true] {
+            for all_loaded in [false, true] {
+                assert_eq!(
+                    pending_scroll_step(pending(2, load_until_found), &commits, all_loaded),
+                    PendingScrollStep::Reveal(1),
+                );
+            }
+        }
+    }
+
+    /// HEAD a few pages back used to get one page loaded for it and then
+    /// nothing, so "Show in Graph" did nothing for an old detached checkout.
+    #[test]
+    fn revealing_head_keeps_paging_until_it_arrives() {
+        let commits = vec![make_commit(2, &[1], Vec::new())];
+        assert_eq!(
+            pending_scroll_step(pending(9, true), &commits, false),
+            PendingScrollStep::LoadMore
+        );
+        assert_eq!(
+            pending_scroll_step(pending(9, false), &commits, false),
+            PendingScrollStep::Wait,
+            "an ordinary reveal leaves further pages to the user, since its commit may be unreachable"
+        );
+    }
+
+    #[test]
+    fn a_pending_commit_missing_from_complete_history_is_abandoned() {
+        let commits = vec![make_commit(2, &[1], Vec::new())];
+        for load_until_found in [false, true] {
+            assert_eq!(
+                pending_scroll_step(pending(9, load_until_found), &commits, true),
+                PendingScrollStep::Abandon
+            );
         }
     }
 
