@@ -99,6 +99,42 @@ pub fn compact_ref_labels(refs: &[RefLabel]) -> Vec<CompactRefLabel> {
         .collect()
 }
 
+/// What checking out a commit from the graph should do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitCheckout {
+    /// The checked-out branch already points at the commit.
+    AlreadyCheckedOut(String),
+    /// A local branch points at the commit; checking it out keeps HEAD on a
+    /// branch.
+    Branch(String),
+    /// No local branch points at the commit, so HEAD detaches there.
+    Detached,
+}
+
+/// Decides what activating a commit with `refs` checks out while `head_branch`
+/// is checked out (`None` when HEAD is detached).
+///
+/// Detaching at a commit a branch already names only strands the user off that
+/// branch, so a local branch is preferred, and the one already checked out
+/// before any other. Tags and remote-tracking branches still detach, as they do
+/// in git.
+pub fn commit_checkout(refs: &[RefLabel], head_branch: Option<&str>) -> CommitCheckout {
+    let local_branches = || {
+        refs.iter().filter_map(|label| match label {
+            RefLabel::LocalBranch(name) => Some(name.as_str()),
+            _ => None,
+        })
+    };
+    if let Some(current) = local_branches().find(|name| Some(*name) == head_branch) {
+        return CommitCheckout::AlreadyCheckedOut(current.to_owned());
+    }
+    local_branches()
+        .next()
+        .map_or(CommitCheckout::Detached, |branch| {
+            CommitCheckout::Branch(branch.to_owned())
+        })
+}
+
 /// Information about a single commit.
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
@@ -689,6 +725,51 @@ mod tests {
                     remotes: vec![],
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_commit_with_no_local_branch_detaches() {
+        assert_eq!(commit_checkout(&[], Some("main")), CommitCheckout::Detached);
+        let refs = [
+            RefLabel::Tag("v1.0.0".into()),
+            RefLabel::RemoteBranch("origin/main".into()),
+        ];
+        assert_eq!(commit_checkout(&refs, None), CommitCheckout::Detached);
+    }
+
+    #[test]
+    fn a_commit_a_local_branch_names_checks_that_branch_out() {
+        let refs = [
+            RefLabel::LocalBranch("main".into()),
+            RefLabel::RemoteBranch("origin/main".into()),
+        ];
+        assert_eq!(
+            commit_checkout(&refs, Some("feature")),
+            CommitCheckout::Branch("main".into())
+        );
+        // Detached at this very commit: back onto its branch.
+        let refs = [RefLabel::Head, RefLabel::LocalBranch("main".into())];
+        assert_eq!(
+            commit_checkout(&refs, None),
+            CommitCheckout::Branch("main".into())
+        );
+    }
+
+    #[test]
+    fn the_branch_already_checked_out_wins_over_its_neighbours() {
+        let refs = [
+            RefLabel::Head,
+            RefLabel::LocalBranch("feature".into()),
+            RefLabel::LocalBranch("main".into()),
+        ];
+        assert_eq!(
+            commit_checkout(&refs, Some("main")),
+            CommitCheckout::AlreadyCheckedOut("main".into())
+        );
+        assert_eq!(
+            commit_checkout(&refs, Some("other")),
+            CommitCheckout::Branch("feature".into())
         );
     }
 

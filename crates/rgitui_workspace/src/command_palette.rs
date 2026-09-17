@@ -42,6 +42,9 @@ pub struct CommandContext {
     /// checked only `has_staged`, so turning AI off still let the keyboard
     /// fire a full request and spend tokens.
     pub ai_ready: bool,
+    /// True when HEAD was switched away from a local branch that still exists,
+    /// so there is a branch to switch back to.
+    pub has_previous_branch: bool,
 }
 
 impl CommandContext {
@@ -59,7 +62,14 @@ impl CommandContext {
             has_github_token: false,
             has_multi_commit_selection: false,
             ai_ready: false,
+            has_previous_branch: false,
         }
+    }
+
+    /// Records whether there is a previous branch to switch back to.
+    pub fn with_previous_branch(mut self, has_previous_branch: bool) -> Self {
+        self.has_previous_branch = has_previous_branch;
+        self
     }
 
     /// Records whether AI generation is currently possible: the feature is on
@@ -113,6 +123,7 @@ impl CommandContext {
             has_github_token,
             has_multi_commit_selection: false,
             ai_ready: false,
+            has_previous_branch: false,
         }
     }
 }
@@ -135,6 +146,11 @@ pub(crate) const fn has_remotes(ctx: CommandContext) -> bool {
 /// Show only when there are unstaged and/or staged file changes.
 pub(crate) const fn has_changes(ctx: CommandContext) -> bool {
     ctx.has_changes
+}
+
+/// Show only when there is a previous branch to switch back to.
+pub(crate) const fn has_previous_branch(ctx: CommandContext) -> bool {
+    ctx.has_previous_branch
 }
 
 /// Show only when the repository worktree is clean (no uncommitted changes).
@@ -375,6 +391,13 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             Some("Switch to an existing branch"),
             "Git",
         ),
+        PaletteCommand::new(
+            CommandId::SwitchToPreviousBranch,
+            "Git: Switch to Previous Branch",
+            Some("Go back to the branch you were on before, like `git switch -`"),
+            "Git",
+        )
+        .with_predicate(has_previous_branch),
         PaletteCommand::new(
             CommandId::DeleteBranch,
             "Git: Delete Branch",

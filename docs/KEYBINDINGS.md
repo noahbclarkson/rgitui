@@ -79,6 +79,7 @@ The file is reloaded when you save it. Bindings you add win over the defaults. T
 | _unbound_ | — | `rgitui::RestoreLastWorkspace` | Reopen the most recently saved workspace. |
 | `?` | `Workspace && !TextInput` | `rgitui::Shortcuts` | Show the keyboard shortcut reference. |
 | `secondary-shift-b` | `Workspace && !modal` | `rgitui::SwitchBranch` | Focus the sidebar to switch branches. |
+| _unbound_ | — | `rgitui::SwitchToPreviousBranch` | Check out the branch HEAD was on before, like `git switch -`. |
 | _unbound_ | — | `rgitui::Blame` | Blame the selected file. |
 | _unbound_ | — | `rgitui::Undo` | Undo the last git operation. |
 | _unbound_ | — | `rgitui::FileHistory` | Show the commit history of the selected file. |

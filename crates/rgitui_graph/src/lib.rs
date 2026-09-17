@@ -299,7 +299,11 @@ pub enum GraphViewEvent {
     CherryPick(git2::Oid),
     RevertCommit(git2::Oid),
     CreateBranchAtCommit(git2::Oid),
+    /// Check out the commit itself, detaching HEAD ("Checkout commit").
     CheckoutCommit(git2::Oid),
+    /// The commit was double-clicked: check out the local branch that points at
+    /// it, or the commit itself when none does.
+    CommitActivated(git2::Oid),
     CopyCommitSha(String),
     CopyCommitMessage(String),
     CopyAuthorName(String),
@@ -579,6 +583,45 @@ fn row_for_commit_index(
     Some(row)
 }
 
+/// A commit to select and scroll to once the page of history holding it loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingScroll {
+    oid: git2::Oid,
+    /// Keep loading pages until the commit arrives, instead of loading one and
+    /// leaving the rest to the "Load more" row. Only for a commit the history
+    /// walk is certain to reach, or paging runs to the end of history.
+    load_until_found: bool,
+}
+
+/// What a pending scroll should do now that a commit list has been applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingScrollStep {
+    /// The commit is loaded at this commit index.
+    Reveal(usize),
+    /// Every commit is loaded and it is not among them.
+    Abandon,
+    /// Ask for the next page.
+    LoadMore,
+    /// Wait for the user to load more.
+    Wait,
+}
+
+fn pending_scroll_step(
+    pending: PendingScroll,
+    commits: &[CommitInfo],
+    all_commits_loaded: bool,
+) -> PendingScrollStep {
+    if let Some(index) = commits.iter().position(|commit| commit.oid == pending.oid) {
+        PendingScrollStep::Reveal(index)
+    } else if all_commits_loaded {
+        PendingScrollStep::Abandon
+    } else if pending.load_until_found {
+        PendingScrollStep::LoadMore
+    } else {
+        PendingScrollStep::Wait
+    }
+}
+
 /// The set of commits selected in the graph, plus the anchor a range extension
 /// grows from.
 ///
@@ -689,9 +732,9 @@ pub struct GraphView {
     search_editor: Entity<rgitui_ui::TextInput>,
     graph_focus: FocusHandle,
     all_commits_loaded: bool,
-    /// OID to scroll to once the commit list is refreshed and the OID is present.
-    /// Used when scroll_to_commit is called for a commit not yet in the loaded list.
-    pending_scroll_oid: Option<git2::Oid>,
+    /// Commit to scroll to once the commit list is refreshed and it is present.
+    /// Set when a commit is revealed before the page holding it has loaded.
+    pending_scroll: Option<PendingScroll>,
     /// Search query to re-run once more commits have been loaded.
     /// Used when a search returns no matches but more commits are available.
     pending_search_query: Option<SharedString>,
@@ -719,6 +762,8 @@ pub struct GraphView {
     show_author_email: bool,
     /// Whether "My Commits" filter is active — show only commits by the current user.
     my_commits_active: bool,
+    /// Whether HEAD is detached, which changes how the HEAD row is marked.
+    head_detached: bool,
     /// Cached bounds of the graph container div, used to convert window-relative
     /// click positions to container-relative coordinates for context menu placement.
     container_bounds: Bounds<Pixels>,
@@ -774,7 +819,7 @@ impl GraphView {
             search_editor,
             graph_focus: cx.focus_handle(),
             all_commits_loaded: false,
-            pending_scroll_oid: None,
+            pending_scroll: None,
             pending_search_query: None,
             cached_graph_hash: None,
             compute_generation: 0,
@@ -793,6 +838,7 @@ impl GraphView {
             show_ref_badges: true,
             show_author_email: false,
             my_commits_active: false,
+            head_detached: false,
             container_bounds: Bounds::new(Point::new(px(0.), px(0.)), Size::new(px(0.), px(0.))),
             dragging_oid: None,
             drag_start_position: None,
@@ -930,17 +976,22 @@ impl GraphView {
                     this.update_search_filter(cx);
                 }
 
-                // Check if a pending scroll target has just been loaded.
-                if let Some(pending_oid) = this.pending_scroll_oid {
-                    if let Some(index) = this.commits.iter().position(|c| c.oid == pending_oid) {
-                        if let Some(list_index) = this.list_index_for_commit_index(index) {
-                            this.select_list_index(list_index, cx);
-                            this.scroll_handle
-                                .scroll_to_item(list_index, ScrollStrategy::Top);
+                // Check if a pending scroll target has just been loaded. A found
+                // target stops waiting: left pending, every later refresh would
+                // pull the selection back to it.
+                if let Some(pending) = this.pending_scroll {
+                    match pending_scroll_step(pending, &this.commits, this.all_commits_loaded) {
+                        PendingScrollStep::Reveal(index) => {
+                            this.pending_scroll = None;
+                            if let Some(list_index) = this.list_index_for_commit_index(index) {
+                                this.select_list_index(list_index, cx);
+                                this.scroll_handle
+                                    .scroll_to_item(list_index, ScrollStrategy::Top);
+                            }
                         }
-                    }
-                    if this.all_commits_loaded {
-                        this.pending_scroll_oid = None;
+                        PendingScrollStep::Abandon => this.pending_scroll = None,
+                        PendingScrollStep::LoadMore => cx.emit(GraphViewEvent::LoadMoreCommits),
+                        PendingScrollStep::Wait => {}
                     }
                 }
 
@@ -954,6 +1005,45 @@ impl GraphView {
     /// Mark that all available commits have been loaded (disables "load more").
     pub fn set_all_loaded(&mut self, loaded: bool) {
         self.all_commits_loaded = loaded;
+    }
+
+    /// Record whether HEAD is detached. Checking out a commit a branch already
+    /// points at leaves the commits and their refs unchanged, so this is the
+    /// only thing that tells the HEAD row to change its marking.
+    pub fn set_head_detached(&mut self, detached: bool, cx: &mut Context<Self>) {
+        if self.head_detached != detached {
+            self.head_detached = detached;
+            cx.notify();
+        }
+    }
+
+    /// Select HEAD's commit and scroll it into view, loading history until it
+    /// arrives.
+    ///
+    /// HEAD can sit beyond the loaded pages, a detached checkout of an old tag
+    /// for one. The history walk always includes HEAD, so paging reaches it —
+    /// unless "My Commits" leaves out another author's commit. When HEAD is not
+    /// already loaded the filter is lifted, since it may be what hides HEAD.
+    pub fn reveal_head(&mut self, head: git2::Oid, cx: &mut Context<Self>) {
+        let target = PendingScroll {
+            oid: head,
+            load_until_found: true,
+        };
+        let head_loaded = self.commits.iter().any(|commit| commit.oid == head);
+        if !self.my_commits_active || head_loaded {
+            self.reveal_commit(target, cx);
+            return;
+        }
+        self.my_commits_active = false;
+        self.all_commits_loaded = false;
+        // The unfiltered first page can equal the filtered list when every
+        // commit on it is the user's, and an unchanged list is never applied —
+        // which is where the pending scroll is picked up.
+        self.cached_graph_hash = None;
+        self.pending_scroll = Some(target);
+        // Its handler reloads history without the author filter.
+        cx.emit(GraphViewEvent::ToggleMyCommits);
+        cx.notify();
     }
 
     /// Compute the context menu's container-relative placement and visible size.
@@ -1201,16 +1291,33 @@ impl GraphView {
 
     /// Scroll to the commit with the given OID, selecting it and emitting CommitSelected.
     pub fn scroll_to_commit(&mut self, oid: git2::Oid, cx: &mut Context<Self>) {
-        if let Some(index) = self.commits.iter().position(|c| c.oid == oid) {
-            if let Some(list_index) = self.list_index_for_commit_index(index) {
-                self.select_list_index(list_index, cx);
-                self.scroll_handle
-                    .scroll_to_item(list_index, ScrollStrategy::Top);
+        self.reveal_commit(
+            PendingScroll {
+                oid,
+                load_until_found: false,
+            },
+            cx,
+        );
+    }
+
+    /// Reveals `target`, replacing any earlier reveal still waiting for its page:
+    /// left in place, it would page on and then pull the selection away.
+    fn reveal_commit(&mut self, target: PendingScroll, cx: &mut Context<Self>) {
+        self.pending_scroll = None;
+        match pending_scroll_step(target, &self.commits, self.all_commits_loaded) {
+            PendingScrollStep::Reveal(index) => {
+                if let Some(list_index) = self.list_index_for_commit_index(index) {
+                    self.select_list_index(list_index, cx);
+                    self.scroll_handle
+                        .scroll_to_item(list_index, ScrollStrategy::Top);
+                }
             }
-        } else if !self.all_commits_loaded {
-            // Commit not in loaded list — set as pending and trigger loading.
-            self.pending_scroll_oid = Some(oid);
-            cx.emit(GraphViewEvent::LoadMoreCommits);
+            PendingScrollStep::Abandon => {}
+            PendingScrollStep::LoadMore | PendingScrollStep::Wait => {
+                // Not loaded yet: wait for it and load the next page.
+                self.pending_scroll = Some(target);
+                cx.emit(GraphViewEvent::LoadMoreCommits);
+            }
         }
     }
 
@@ -1738,14 +1845,27 @@ impl Render for GraphView {
             ..colors.text_accent
         };
 
-        // HEAD emphasis: accent-tinted background for the HEAD row
-        let head_row_bg = gpui::Hsla {
-            a: 0.08,
-            ..colors.text_accent
-        };
-
         // Working tree row color (warning/yellow tint)
         let status_colors = cx.status();
+
+        // HEAD emphasis: a tinted background and a solid marker bar. A detached
+        // HEAD takes the warning colour the title bar, status bar and banner use
+        // for it, so it cannot be mistaken for the blue of a selected row.
+        let head_detached = self.head_detached;
+        let head_color = if head_detached {
+            status_colors.warning
+        } else {
+            accent_border
+        };
+        let head_row_bg = gpui::Hsla {
+            a: if head_detached { 0.14 } else { 0.08 },
+            ..head_color
+        };
+        let head_badge_text = if head_detached {
+            "HEAD (detached)"
+        } else {
+            "HEAD"
+        };
         let working_tree_bg = gpui::Hsla {
             a: 0.06,
             ..status_colors.warning
@@ -2212,7 +2332,10 @@ impl Render for GraphView {
                             compact_ref_labels(&commit.refs).into_iter().enumerate()
                         {
                             let badge = match &compact_ref.label {
-                                RefLabel::Head => Badge::new("HEAD").color(Color::Warning).bold(),
+                                RefLabel::Head => Badge::new(head_badge_text)
+                                    .prefix("→")
+                                    .color(Color::Warning)
+                                    .bold(),
                                 RefLabel::LocalBranch(name) => {
                                     Badge::new(name.clone()).color(Color::Success)
                                 }
@@ -2268,13 +2391,13 @@ impl Render for GraphView {
                         let view_clone = view.clone();
                         let view_ctx_menu = view.clone();
 
-                        let left_tab_color = if selected {
+                        // HEAD keeps its marker when selected: double-clicking a
+                        // commit both checks it out and selects it, and the
+                        // selection must not paint over where HEAD now is.
+                        let left_tab_color = if is_head_row {
+                            head_color
+                        } else if selected {
                             selected_border
-                        } else if is_head_row {
-                            gpui::Hsla {
-                                a: 0.8,
-                                ..accent_border
-                            }
                         } else {
                             gpui::Hsla {
                                 a: 0.4,
@@ -2307,8 +2430,7 @@ impl Render for GraphView {
                                             this.dismiss_context_menu(cx);
                                             let modifiers = event.modifiers();
                                             if event.click_count() >= 2 {
-                                                // Double-click: checkout this commit
-                                                cx.emit(GraphViewEvent::CheckoutCommit(oid));
+                                                cx.emit(GraphViewEvent::CommitActivated(oid));
                                             } else if modifiers.shift {
                                                 this.extend_selection_to_list_index(i, cx);
                                             } else if modifiers.secondary() {
@@ -4088,6 +4210,57 @@ mod tests {
             parent_oids: parents.iter().map(|parent| make_oid(*parent)).collect(),
             refs,
             is_signed: false,
+        }
+    }
+
+    fn pending(oid: u8, load_until_found: bool) -> PendingScroll {
+        PendingScroll {
+            oid: make_oid(oid),
+            load_until_found,
+        }
+    }
+
+    #[test]
+    fn a_loaded_pending_commit_is_revealed_even_while_more_history_remains() {
+        let commits = vec![
+            make_commit(3, &[2], Vec::new()),
+            make_commit(2, &[1], Vec::new()),
+            make_commit(1, &[], Vec::new()),
+        ];
+        for load_until_found in [false, true] {
+            for all_loaded in [false, true] {
+                assert_eq!(
+                    pending_scroll_step(pending(2, load_until_found), &commits, all_loaded),
+                    PendingScrollStep::Reveal(1),
+                );
+            }
+        }
+    }
+
+    /// HEAD a few pages back used to get one page loaded for it and then
+    /// nothing, so "Show in Graph" did nothing for an old detached checkout.
+    #[test]
+    fn revealing_head_keeps_paging_until_it_arrives() {
+        let commits = vec![make_commit(2, &[1], Vec::new())];
+        assert_eq!(
+            pending_scroll_step(pending(9, true), &commits, false),
+            PendingScrollStep::LoadMore
+        );
+        assert_eq!(
+            pending_scroll_step(pending(9, false), &commits, false),
+            PendingScrollStep::Wait,
+            "an ordinary reveal leaves further pages to the user, since its commit may be unreachable"
+        );
+    }
+
+    #[test]
+    fn a_pending_commit_missing_from_complete_history_is_abandoned() {
+        let commits = vec![make_commit(2, &[1], Vec::new())];
+        for load_until_found in [false, true] {
+            assert_eq!(
+                pending_scroll_step(pending(9, load_until_found), &commits, true),
+                PendingScrollStep::Abandon
+            );
         }
     }
 

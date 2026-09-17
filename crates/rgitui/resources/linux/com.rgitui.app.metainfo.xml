@@ -18,8 +18,60 @@
   <provides>
     <binary>rgitui</binary>
   </provides>
+  <!-- Newest first. Software centres and AppImage managers show the first
+       entry as the installed version; `crates/rgitui/tests/linux_metadata.rs`
+       fails when it falls behind the crate version or CHANGELOG.md. -->
   <releases>
+    <release version="0.4.1" date="2026-08-26">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.4.1</url>
+    </release>
+    <release version="0.4.0" date="2026-08-12">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.4.0</url>
+    </release>
+    <release version="0.3.2" date="2026-07-27">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.3.2</url>
+    </release>
+    <release version="0.3.1" date="2026-07-19">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.3.1</url>
+    </release>
+    <release version="0.3.0" date="2026-06-02">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.3.0</url>
+    </release>
+    <release version="0.2.2" date="2026-05-25">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.2.2</url>
+    </release>
+    <release version="0.2.1" date="2026-05-20">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.2.1</url>
+    </release>
+    <release version="0.2.0" date="2026-05-12">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.2.0</url>
+    </release>
+    <release version="0.1.8" date="2026-04-28">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.8</url>
+    </release>
+    <release version="0.1.7" date="2026-04-18">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.7</url>
+    </release>
+    <release version="0.1.6" date="2026-04-11">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.6</url>
+    </release>
+    <release version="0.1.5" date="2026-04-10">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.5</url>
+    </release>
+    <release version="0.1.4" date="2026-04-10">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.4</url>
+    </release>
+    <release version="0.1.3" date="2026-04-10">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.3</url>
+    </release>
+    <release version="0.1.2" date="2026-04-09">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.2</url>
+    </release>
+    <release version="0.1.1" date="2026-04-08">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.1</url>
+    </release>
     <release version="0.1.0" date="2026-04-08">
+      <url type="details">https://github.com/noahbclarkson/rgitui/releases/tag/v0.1.0</url>
       <description>
         <p>First public release.</p>
       </description>

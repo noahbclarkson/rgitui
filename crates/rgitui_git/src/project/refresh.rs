@@ -205,6 +205,36 @@ fn head_summary(repo: &Repository) -> (Option<String>, bool, Option<git2::Oid>) 
     (branch, detached, head_oid)
 }
 
+/// The branch a HEAD reflog message says HEAD was switched away from.
+///
+/// Every checkout records `checkout: moving from <from> to <to>` — git's own
+/// `checkout` and `switch`, and libgit2's `set_head` and `set_head_detached`
+/// alike. `<from>` is a branch name, or a commit id when HEAD was already
+/// detached. Ref names cannot contain spaces, so the first ` to ` ends it.
+fn checkout_source(message: &str) -> Option<&str> {
+    let (from, _to) = message
+        .strip_prefix("checkout: moving from ")?
+        .split_once(" to ")?;
+    (!from.is_empty()).then_some(from)
+}
+
+/// The local branch HEAD was most recently switched away from, other than
+/// `current`, provided it still exists.
+///
+/// Commits HEAD was detached at are passed over rather than ending the search,
+/// so after stepping from commit to commit the branch the user started on is
+/// still what comes back.
+pub(crate) fn previous_branch(repo: &Repository, current: Option<&str>) -> Option<String> {
+    let reflog = repo.reflog("HEAD").ok()?;
+    reflog
+        .iter()
+        .filter_map(|entry| entry.message().and_then(checkout_source).map(str::to_owned))
+        .find(|from| {
+            Some(from.as_str()) != current
+                && repo.find_branch(from, git2::BranchType::Local).is_ok()
+        })
+}
+
 /// Build a [`WorktreeInfo`] for the checkout at `path` by opening it directly.
 fn worktree_info_at(
     name: String,
@@ -611,11 +641,8 @@ fn gather_refresh_data_internal(
         .with_context(|| format!("Failed to open repository at {}", repo_path.display()))?;
 
     // Head
-    let head_branch = repo
-        .head()
-        .ok()
-        .and_then(|r| r.shorthand().map(String::from));
-    let head_detached = repo.head_detached().unwrap_or(false);
+    let (head_branch, head_detached, _) = head_summary(&repo);
+    let previous_branch = previous_branch(&repo, head_branch.as_deref());
     let repo_state = RepoState::from_git2(repo.state());
 
     // Current user email (for "My Branches" / "My Commits" filtering)
@@ -903,6 +930,7 @@ fn gather_refresh_data_internal(
     Ok(RefreshData {
         head_branch,
         head_detached,
+        previous_branch,
         repo_state,
         branches,
         tags,
@@ -1943,5 +1971,147 @@ mod worktree_tests {
         assert!(current.head_detached);
         assert_eq!(current.branch, None);
         assert_eq!(current.head_oid, Some(fixture.head_oid()));
+    }
+}
+
+// ── previous_branch ──────────────────────────────────────────────
+
+#[cfg(test)]
+mod previous_branch_tests {
+    use super::*;
+    use rgitui_test_support::TempRepo;
+
+    fn switch_to(fixture: &TempRepo, branch: &str) {
+        fixture
+            .repo()
+            .set_head(&format!("refs/heads/{branch}"))
+            .unwrap();
+    }
+
+    #[test]
+    fn checkout_source_reads_the_branch_or_commit_moved_away_from() {
+        assert_eq!(
+            checkout_source("checkout: moving from main to feature"),
+            Some("main")
+        );
+        assert_eq!(
+            checkout_source("checkout: moving from 1a2b3c4d to main"),
+            Some("1a2b3c4d")
+        );
+        assert_eq!(
+            checkout_source("checkout: moving from feature/to-do to main"),
+            Some("feature/to-do")
+        );
+        assert_eq!(checkout_source("commit: add a file"), None);
+        assert_eq!(checkout_source("checkout: moving from  to main"), None);
+    }
+
+    #[test]
+    fn detaching_remembers_the_branch_it_left() {
+        let fixture = TempRepo::with_commits(2);
+        fixture
+            .repo()
+            .set_head_detached(fixture.head_oid())
+            .unwrap();
+
+        assert_eq!(
+            previous_branch(fixture.repo(), None).as_deref(),
+            Some(TempRepo::DEFAULT_BRANCH)
+        );
+    }
+
+    #[test]
+    fn stepping_between_detached_commits_still_finds_the_branch() {
+        let fixture = TempRepo::with_commits(3);
+        let repo = fixture.repo();
+        let head = fixture.head_oid();
+        let parent = repo.find_commit(head).unwrap().parent_id(0).unwrap();
+        repo.set_head_detached(head).unwrap();
+        repo.set_head_detached(parent).unwrap();
+
+        assert_eq!(
+            previous_branch(repo, None).as_deref(),
+            Some(TempRepo::DEFAULT_BRANCH)
+        );
+    }
+
+    #[test]
+    fn on_a_branch_it_is_the_one_switched_from() {
+        let fixture = TempRepo::with_commits(1);
+        fixture.branch("feature");
+        switch_to(&fixture, "feature");
+
+        assert_eq!(
+            previous_branch(fixture.repo(), Some("feature")).as_deref(),
+            Some(TempRepo::DEFAULT_BRANCH)
+        );
+    }
+
+    #[test]
+    fn the_current_branch_is_never_the_previous_one() {
+        let fixture = TempRepo::with_commits(1);
+        fixture.branch("feature");
+        switch_to(&fixture, "feature");
+        switch_to(&fixture, TempRepo::DEFAULT_BRANCH);
+        switch_to(&fixture, "feature");
+
+        assert_eq!(
+            previous_branch(fixture.repo(), Some("feature")).as_deref(),
+            Some(TempRepo::DEFAULT_BRANCH)
+        );
+    }
+
+    #[test]
+    fn a_deleted_branch_is_passed_over() {
+        let fixture = TempRepo::with_commits(1);
+        fixture.branch("feature");
+        fixture.branch("topic");
+        switch_to(&fixture, "topic");
+        switch_to(&fixture, "feature");
+        fixture
+            .repo()
+            .set_head_detached(fixture.head_oid())
+            .unwrap();
+        fixture
+            .repo()
+            .find_branch("feature", git2::BranchType::Local)
+            .unwrap()
+            .delete()
+            .unwrap();
+
+        assert_eq!(
+            previous_branch(fixture.repo(), None).as_deref(),
+            Some("topic")
+        );
+    }
+
+    #[test]
+    fn a_repository_never_switched_has_no_previous_branch() {
+        let fixture = TempRepo::with_commits(2);
+        assert_eq!(
+            previous_branch(fixture.repo(), Some(TempRepo::DEFAULT_BRANCH)),
+            None
+        );
+    }
+
+    /// `head_branch` used to be `shorthand()`, which is the literal `HEAD` on a
+    /// detached HEAD — so the title bar named a branch called HEAD and Rename
+    /// Branch offered to rename it.
+    #[test]
+    fn a_detached_refresh_reports_no_branch_and_where_to_return() {
+        let fixture = TempRepo::with_commits(2);
+        fixture
+            .repo()
+            .set_head_detached(fixture.head_oid())
+            .unwrap();
+
+        let data = gather_refresh_data(fixture.path(), 50).unwrap();
+
+        assert!(data.head_detached);
+        assert_eq!(data.head_branch, None);
+        assert_eq!(
+            data.previous_branch.as_deref(),
+            Some(TempRepo::DEFAULT_BRANCH)
+        );
     }
 }

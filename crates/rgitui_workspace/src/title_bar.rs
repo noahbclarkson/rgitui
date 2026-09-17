@@ -122,6 +122,11 @@ impl RenderOnce for TitleBar {
 
         let hover_bg = colors.ghost_element_active;
         let branch_bg = colors.ghost_element_hover;
+        let tooltip: SharedString = if self.head_detached {
+            format!("HEAD is detached at {}", self.branch_name).into()
+        } else {
+            self.branch_name.clone()
+        };
 
         let mut branch_pill = div()
             .id("title-branch-pill")
@@ -134,7 +139,7 @@ impl RenderOnce for TitleBar {
             .bg(branch_bg)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
-            .tooltip(Tooltip::text(self.branch_name.clone()))
+            .tooltip(Tooltip::text(tooltip))
             .child(
                 Icon::new(IconName::GitBranch)
                     .size(IconSize::Small)

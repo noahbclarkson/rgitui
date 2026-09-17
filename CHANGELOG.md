@@ -10,6 +10,45 @@
   an editor handoff supports manual resolutions. Stale resolver views and raw
   conflict markers are rejected instead of silently overwriting or staging
   them, and ordinary Stage / Stage All no longer bypasses the resolver. (#77)
+- **The commit graph can be hidden** with `Ctrl+Shift+G`, the chevron in the
+  bottom panel's tab bar, or the palette, so the diff fills the center column.
+  The diff viewer is no longer capped at 600px either: it can grow until the
+  graph is down to a sliver. (#83)
+- **A detached HEAD says so, and offers the way back.** A banner names the
+  commit HEAD is detached at, with *Show in Graph* and a *Return to* button for
+  the branch HEAD was on (or *Switch Branch…* when there is none). The same move is
+  available anywhere as *Git: Switch to Previous Branch*, which works like
+  `git switch -`. (#85)
+
+### Changed
+
+- **Double-clicking a commit checks out its branch.** When a local branch
+  points at the commit, that branch is checked out instead of detaching HEAD at
+  the same commit; double-clicking the commit the current branch is on does
+  nothing. Commits with no local branch still detach, and *Checkout commit* in
+  the context menu always does. (#85)
+- **HEAD is easier to find in the graph.** Its badge reads *→ HEAD*, or *→ HEAD
+  (detached)*, and the row keeps its marker while selected. A detached HEAD's
+  row is tinted in the warning colour rather than a blue that read as a
+  selection. The title and status bars name the commit a detached HEAD is on
+  instead of just "detached". (#85)
+
+### Fixed
+
+- **Keyboard shortcuts stopped working after the command palette or a dialog
+  closed**, until a panel was clicked. Focus is now handed back whenever an
+  overlay closes, and whenever the panel holding it is swapped out: Esc in
+  Reflog, File History, Blame, Submodules, Bisect or Search, or switching tab.
+  (#84, #85)
+- **The Stash button and `Ctrl+Z` showed nothing** once a repository was open;
+  the stash dialog is drawn again. (#84)
+- **Debug builds crashed on Windows** with a main-thread stack overflow. (#84)
+- **Linux packages reported version 0.1.0.** The AppImage's desktop entry now
+  carries `X-AppImage-Version`, and the AppStream metainfo lists every release,
+  so AppImage managers and software centres show the real version. A test fails
+  when the metainfo falls behind the crate version or this changelog. (#85)
+- **Rename Branch offered to rename a branch called `HEAD`** while HEAD was
+  detached, and the title bar named it as if it were a branch. (#85)
 
 ## [0.4.1] - 2026-08-26
 
