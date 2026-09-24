@@ -1,4 +1,4 @@
-use gpui::{Context, Window};
+use gpui::{BorrowAppContext, Context, Window};
 
 use crate::{CommandId, CommitPanelEvent, ConfirmAction, ToastKind};
 
@@ -250,6 +250,28 @@ impl Workspace {
         }
         self.layout.graph_hidden = hidden;
         self.schedule_layout_save(cx);
+        cx.notify();
+    }
+
+    /// Shows or hides the per-file line counts in every tab's Staged and
+    /// Unstaged lists, and remembers the choice.
+    ///
+    /// Counts are only gathered while they are shown, so turning them on
+    /// refreshes each open repository to fill them in.
+    pub(super) fn set_change_line_stats(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        cx.update_global::<rgitui_settings::SettingsState, _>(|state, _| {
+            state.settings_mut().show_change_line_stats = enabled;
+            if let Err(error) = state.save() {
+                log::warn!("Failed to save the line count setting: {}", error);
+            }
+        });
+        for tab in &self.tabs {
+            if enabled {
+                tab.project
+                    .update(cx, |project, cx| project.refresh(cx).detach());
+            }
+            tab.sidebar.update(cx, |_, cx| cx.notify());
+        }
         cx.notify();
     }
 

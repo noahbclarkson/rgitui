@@ -866,6 +866,17 @@ fn should_apply_prepared(current_generation: u64, prepared_generation: u64) -> b
     current_generation == prepared_generation
 }
 
+/// Index of the row at the top edge of a uniform list whose rows total
+/// `content_height`, scrolled by `scroll_offset_y` (negative once scrolled down).
+fn uniform_first_visible_row(scroll_offset_y: f32, content_height: f32, row_count: usize) -> usize {
+    if row_count == 0 || content_height <= 0.0 {
+        return 0;
+    }
+    let row_height = content_height / row_count as f32;
+    let row = (-scroll_offset_y / row_height).floor().max(0.0) as usize;
+    row.min(row_count - 1)
+}
+
 impl EventEmitter<DiffViewerEvent> for DiffViewer {}
 
 impl DiffViewer {
@@ -1320,6 +1331,9 @@ impl DiffViewer {
     }
 
     fn handle_line_click(&mut self, row_ix: usize, shift: bool, cx: &mut Context<Self>) {
+        // The keyboard cursor follows the pointer, so arrow keys carry on from
+        // the clicked line rather than from wherever the cursor was left.
+        self.highlighted_row = Some(row_ix);
         if shift {
             if let Some(anchor) = self.selection_anchor {
                 self.selected_lines = Some(Self::range_from_anchor(anchor, row_ix));
@@ -1506,12 +1520,35 @@ impl DiffViewer {
     /// Reveal row `ix` in whichever scrollable container is currently active.
     /// The uniform list scroll handle is used for no-wrap rendering, while
     /// wrap mode lives inside a `gpui::list` backed by `wrap_list_state`.
-    fn scroll_row_into_view(&self, ix: usize, cx: &App) {
+    ///
+    /// `strategy` places the row in the no-wrap list: `Nearest` scrolls only as
+    /// far as needed, for a cursor stepping one row at a time; `Top` brings the
+    /// row to the top, for jumps. The wrap list always scrolls the least needed.
+    fn scroll_row_into_view(&self, ix: usize, strategy: ScrollStrategy, cx: &App) {
         if self.wrap_active(cx) {
             self.wrap_list_state.scroll_to_reveal_item(ix);
         } else {
-            self.scroll_handle.scroll_to_item(ix, ScrollStrategy::Top);
+            self.scroll_handle.scroll_to_item(ix, strategy);
         }
+    }
+
+    /// The row at the top of the viewport in whichever scrollable container is
+    /// currently active.
+    fn first_visible_row(&self, cx: &App) -> usize {
+        if self.wrap_active(cx) {
+            return self.wrap_list_state.logical_scroll_top().item_ix;
+        }
+        // The uniform list never registers its rows with the base handle, so
+        // `ScrollHandle::top_item` is always 0; derive the row from the offset.
+        let state = self.scroll_handle.0.borrow();
+        let content_height = state
+            .last_item_size
+            .map_or(0.0, |size| f32::from(size.contents.height));
+        uniform_first_visible_row(
+            f32::from(state.base_handle.offset().y),
+            content_height,
+            self.row_count(),
+        )
     }
 
     /// Moves the diff cursor down one row, scrolling it into view.
@@ -1526,10 +1563,10 @@ impl DiffViewer {
         }
         let next = match self.highlighted_row {
             Some(i) if i + 1 < row_count => i + 1,
-            None => 0,
             Some(i) => i,
+            None => self.first_visible_row(cx),
         };
-        self.highlight_row(next, cx);
+        self.step_cursor_to(next, cx);
     }
 
     /// Moves the diff cursor up one row, scrolling it into view.
@@ -1540,9 +1577,9 @@ impl DiffViewer {
         let next = match self.highlighted_row {
             Some(i) if i > 0 => i - 1,
             Some(i) => i,
-            None => 0,
+            None => self.first_visible_row(cx),
         };
-        self.highlight_row(next, cx);
+        self.step_cursor_to(next, cx);
     }
 
     /// Moves the diff cursor to the first row.
@@ -1560,9 +1597,18 @@ impl DiffViewer {
         }
     }
 
+    /// Moves the cursor to `row`, scrolling only as far as needed to keep it on
+    /// screen.
+    fn step_cursor_to(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.highlighted_row = Some(row);
+        self.scroll_row_into_view(row, ScrollStrategy::Nearest, cx);
+        cx.notify();
+    }
+
+    /// Moves the cursor to `row`, bringing it to the top of the viewport.
     fn highlight_row(&mut self, row: usize, cx: &mut Context<Self>) {
         self.highlighted_row = Some(row);
-        self.scroll_row_into_view(row, cx);
+        self.scroll_row_into_view(row, ScrollStrategy::Top, cx);
         cx.notify();
     }
 
@@ -2062,15 +2108,8 @@ impl DiffViewer {
         }
 
         // Capture the current top item so we can restore scroll position after the
-        // switch. No-wrap reads the uniform list's base handle; wrap mode lives in a
-        // `gpui::list` whose `logical_scroll_top` is the authoritative position (the
-        // uniform handle is never rendered in wrap mode and stays at 0).
-        let top_item = if self.wrap_active(cx) {
-            self.wrap_list_state.logical_scroll_top().item_ix
-        } else {
-            self.scroll_handle.0.borrow().base_handle.top_item()
-        };
-        self.pending_scroll_top = Some(top_item);
+        // switch.
+        self.pending_scroll_top = Some(self.first_visible_row(cx));
 
         self.display_mode = match self.display_mode {
             DiffDisplayMode::Unified => DiffDisplayMode::SideBySide,
@@ -2344,7 +2383,7 @@ impl DiffViewer {
                 self.sync_wrap_list_state();
             }
             self.highlighted_row = Some(idx);
-            self.scroll_row_into_view(idx, cx);
+            self.scroll_row_into_view(idx, ScrollStrategy::Top, cx);
             return true;
         }
         false
@@ -3705,7 +3744,7 @@ impl Render for DiffViewer {
         // user sees the correct scroll position immediately.
         if let Some(top_ix) = self.pending_scroll_top.take() {
             let target_ix = top_ix.min(self.row_count().saturating_sub(1));
-            self.scroll_row_into_view(target_ix, cx);
+            self.scroll_row_into_view(target_ix, ScrollStrategy::Top, cx);
         }
 
         log::debug!(
@@ -5505,6 +5544,22 @@ mod tests {
         assert!(should_apply_prepared(7, 7));
         assert!(!should_apply_prepared(8, 7));
         assert!(!should_apply_prepared(7, 8));
+    }
+
+    #[test]
+    fn first_visible_row_follows_the_scroll_offset() {
+        // 400 rows of 20px, scrolled down by 1040px: row 52 is at the top.
+        assert_eq!(uniform_first_visible_row(-1040.0, 8000.0, 400), 52);
+        // Part-way through a row still reports the row showing at the edge.
+        assert_eq!(uniform_first_visible_row(-1050.0, 8000.0, 400), 52);
+        assert_eq!(uniform_first_visible_row(0.0, 8000.0, 400), 0);
+    }
+
+    #[test]
+    fn first_visible_row_is_clamped_and_safe_before_first_layout() {
+        assert_eq!(uniform_first_visible_row(-99_999.0, 8000.0, 400), 399);
+        assert_eq!(uniform_first_visible_row(-100.0, 0.0, 400), 0);
+        assert_eq!(uniform_first_visible_row(-100.0, 8000.0, 0), 0);
     }
 
     // ── DiffSource provenance ─────────────────────────────────────
@@ -7310,6 +7365,129 @@ mod view_tests {
                     }
                 )]
             );
+        });
+    }
+
+    /// One hunk of `lines` context rows, long enough to scroll in the test window.
+    fn tall_diff(lines: usize) -> FileDiff {
+        FileDiff {
+            path: std::path::PathBuf::from(PATH),
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                old_lines: lines as u32,
+                new_start: 1,
+                new_lines: lines as u32,
+                header: format!("@@ -1,{lines} +1,{lines} @@"),
+                lines: (0..lines)
+                    .map(|i| DiffLine::Context(format!("line {i}")))
+                    .collect(),
+            }],
+            additions: 0,
+            deletions: 0,
+            kind: FileChangeKind::Modified,
+        }
+    }
+
+    fn cursor_and_top_row(probe: &ViewTest<StagingProbe>) -> (Option<usize>, usize) {
+        probe.read(|probe, cx| {
+            let viewer = probe.viewer.read(cx);
+            (viewer.highlighted_row, viewer.first_visible_row(cx))
+        })
+    }
+
+    /// Stepping past the bottom edge used to bring the cursor to the top of the
+    /// viewport, skipping a whole page; it should scroll one row at a time.
+    #[test]
+    fn stepping_down_past_the_bottom_scrolls_one_row_at_a_time() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        show(
+            &mut probe,
+            tall_diff(400),
+            DiffSource::Commit(OID.to_string()),
+        );
+        probe.draw();
+
+        let mut previous_top = 0;
+        for _ in 0..120 {
+            probe.update(|probe, _, cx| {
+                probe
+                    .viewer
+                    .update(cx, |viewer, cx| viewer.select_next_row(cx));
+            });
+            probe.draw();
+            let (_, top) = cursor_and_top_row(&probe);
+            assert!(
+                top <= previous_top + 1,
+                "the view jumped from row {previous_top} to row {top} on one step"
+            );
+            previous_top = top;
+        }
+
+        let (cursor, top) = cursor_and_top_row(&probe);
+        assert_eq!(cursor, Some(119));
+        assert!(top > 0, "the view never followed the cursor down");
+        assert!(
+            cursor.unwrap() - top > 10,
+            "the cursor should sit at the bottom edge, not the top (top row {top})"
+        );
+    }
+
+    /// With no cursor yet, the first arrow press after scrolling must start from
+    /// what is on screen instead of jumping back to the top of the file.
+    #[test]
+    fn first_arrow_after_scrolling_starts_from_the_visible_rows() {
+        for step_up in [true, false] {
+            let mut probe = ViewTest::open(StagingProbe::new);
+            show(
+                &mut probe,
+                tall_diff(400),
+                DiffSource::Commit(OID.to_string()),
+            );
+            probe.draw();
+            probe.simulate_scroll(
+                gpui::point(gpui::px(400.), gpui::px(400.)),
+                gpui::point(gpui::px(0.), gpui::px(-2000.)),
+            );
+            probe.draw();
+
+            let (cursor, top_before) = cursor_and_top_row(&probe);
+            assert_eq!(cursor, None);
+            assert!(top_before > 0, "the wheel should have scrolled the diff");
+
+            probe.update(|probe, _, cx| {
+                probe.viewer.update(cx, |viewer, cx| {
+                    if step_up {
+                        viewer.select_prev_row(cx);
+                    } else {
+                        viewer.select_next_row(cx);
+                    }
+                });
+            });
+            probe.draw();
+
+            assert_eq!(cursor_and_top_row(&probe), (Some(top_before), top_before));
+        }
+    }
+
+    #[test]
+    fn clicking_a_line_moves_the_keyboard_cursor_there() {
+        let mut probe = ViewTest::open(StagingProbe::new);
+        show(
+            &mut probe,
+            tall_diff(40),
+            DiffSource::Commit(OID.to_string()),
+        );
+        probe.draw();
+
+        probe.update(|probe, _, cx| {
+            probe.viewer.update(cx, |viewer, cx| {
+                viewer.begin_mouse_selection(12, false, cx);
+                viewer.select_prev_row(cx);
+            });
+        });
+
+        probe.read(|probe, cx| {
+            assert_eq!(probe.viewer.read(cx).highlighted_row, Some(11));
         });
     }
 }

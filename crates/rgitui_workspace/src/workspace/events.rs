@@ -1874,6 +1874,9 @@ pub(super) fn subscribe_sidebar(
                     s.toggle_dir(prefix, dir, cx);
                 });
             }
+            SidebarEvent::SetChangeLineStats(enabled) => {
+                this.set_change_line_stats(*enabled, cx);
+            }
         }
     })
     .detach();

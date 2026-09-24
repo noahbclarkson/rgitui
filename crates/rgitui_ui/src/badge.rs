@@ -89,7 +89,7 @@ impl RenderOnce for Badge {
             .py(px(1.))
             .h(if self.compact { px(18.) } else { px(20.) })
             .items_center()
-            .rounded(if self.compact { px(9.) } else { px(10.) })
+            .rounded(if self.compact { px(5.) } else { px(6.) })
             .bg(bg)
             .border_1()
             .border_color(border)

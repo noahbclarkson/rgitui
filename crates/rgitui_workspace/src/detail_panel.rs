@@ -47,6 +47,17 @@ fn file_list_min_height(row_count: usize, row_height: f32) -> f32 {
     file_list_content_height(row_count, row_height).min(FILE_LIST_MIN_VISIBLE_ROWS * row_height)
 }
 
+/// Largest font size for the initials drawn in an avatar with no image.
+const AVATAR_INITIALS_MAX_SIZE: f32 = 12.0;
+
+/// Font size for the fallback initials in an avatar circle of `avatar_size`.
+///
+/// Scales with the circle so two bold capitals fit inside a small co-author
+/// avatar, and caps at the old fixed size so larger avatars look unchanged.
+fn avatar_initials_size(avatar_size: f32) -> f32 {
+    (avatar_size * 0.6).min(AVATAR_INITIALS_MAX_SIZE)
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum FileViewMode {
     #[default]
@@ -878,6 +889,7 @@ impl DetailPanel {
         avatar_text_color: gpui::Hsla,
         size: gpui::Pixels,
     ) -> gpui::Div {
+        let initials_size = px(avatar_initials_size(f32::from(size)));
         let mut avatar_circle = div()
             .w(size)
             .h(size)
@@ -904,7 +916,7 @@ impl DetailPanel {
                             .child(
                                 div()
                                     .text_color(avatar_text_color)
-                                    .text_xs()
+                                    .text_size(initials_size)
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .child(fb_initials.clone()),
                             )
@@ -915,7 +927,7 @@ impl DetailPanel {
             avatar_circle = avatar_circle.child(
                 div()
                     .text_color(avatar_text_color)
-                    .text_xs()
+                    .text_size(initials_size)
                     .font_weight(gpui::FontWeight::BOLD)
                     .child(initials),
             );
@@ -2090,6 +2102,17 @@ mod tests {
     #[test]
     fn short_file_lists_never_reserve_more_than_their_content() {
         assert_eq!(file_list_min_height(2, 26.0), 60.0);
+    }
+
+    #[test]
+    fn co_author_initials_shrink_to_fit_the_small_avatar() {
+        assert!((avatar_initials_size(16.0) - 9.6).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn large_avatar_initials_keep_the_original_size() {
+        assert_eq!(avatar_initials_size(24.0), AVATAR_INITIALS_MAX_SIZE);
+        assert_eq!(avatar_initials_size(40.0), AVATAR_INITIALS_MAX_SIZE);
     }
 
     // --- format_relative_time tests ---
