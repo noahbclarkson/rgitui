@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender};
 use std::sync::{Mutex, OnceLock, RwLock};
 use uuid::Uuid;
@@ -265,6 +266,11 @@ pub struct AppSettings {
     pub commit_limit: usize,
     #[serde(default)]
     pub watch_all_worktrees: bool,
+    /// Show each staged and unstaged file's added and removed line counts in
+    /// the sidebar. Off by default: counting them diffs every changed file on
+    /// each status refresh.
+    #[serde(default)]
+    pub show_change_line_stats: bool,
     /// Last known position/size of the standalone Settings window. Restored
     /// on next open if the saved origin still falls within a connected display.
     #[serde(default)]
@@ -778,6 +784,7 @@ impl Default for AppSettings {
             last_update_check_at: None,
             commit_limit: default_commit_limit(),
             watch_all_worktrees: false,
+            show_change_line_stats: false,
             settings_window_bounds: None,
         }
     }
@@ -827,6 +834,7 @@ impl SettingsState {
     /// wrong order.
     pub fn save(&self) -> Result<()> {
         sync_auth_runtime(&self.settings);
+        sync_change_line_stats(&self.settings);
         let json = serde_json::to_string_pretty(&self.settings)?;
         enqueue_write(WriteRequest {
             config_path: self.config_path.clone(),
@@ -1477,6 +1485,7 @@ pub fn init(cx: &mut App) {
     // not only when migration failed. (`save()` below also syncs, but doing it
     // here keeps the runtime correct even if the save is skipped or fails.)
     sync_auth_runtime(state.settings());
+    sync_change_line_stats(state.settings());
 
     if let Err(error) = state.save() {
         log::warn!("Failed to persist migrated settings: {}", error);
@@ -1610,6 +1619,21 @@ fn retired_model_successor(model: &str) -> Option<&'static str> {
         "o3" | "o4-mini" | "o1" | "o1-mini" => Some("gpt-5.6-luna"),
         _ => None,
     }
+}
+
+/// Mirror of [`AppSettings::show_change_line_stats`] for background threads,
+/// which gather working-tree status without access to the `SettingsState`
+/// global.
+static CHANGE_LINE_STATS: AtomicBool = AtomicBool::new(false);
+
+/// Whether working-tree refreshes should count added and removed lines per
+/// file. Updated whenever settings are loaded or saved.
+pub fn change_line_stats_enabled() -> bool {
+    CHANGE_LINE_STATS.load(Ordering::Relaxed)
+}
+
+fn sync_change_line_stats(settings: &AppSettings) {
+    CHANGE_LINE_STATS.store(settings.show_change_line_stats, Ordering::Relaxed);
 }
 
 fn auth_runtime() -> &'static RwLock<AuthRuntimeState> {

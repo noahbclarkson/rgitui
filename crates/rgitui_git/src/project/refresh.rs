@@ -397,23 +397,41 @@ fn mix_file_contents(hasher: &mut DefaultHasher, path: &Path, len: u64) {
 
 /// Build a cheap fingerprint from `repo.statuses()` output.
 ///
-/// Captures: file paths, status flags, staged blob OIDs (index state), and
+/// Captures: file paths, status flags, the blob OIDs each change is measured
+/// between (HEAD and index for a staged one, index for an unstaged one), and
 /// mtime+size plus bounded content sampling for workdir-modified tracked files
 /// (content changes that don't move through the index). This is fast — libgit2
 /// uses its own stat cache for `statuses()`, and the additional `metadata()`
 /// calls are only for files already flagged as workdir-modified.
-fn status_fingerprint(repo_path: &Path, statuses: &git2::Statuses<'_>) -> u64 {
+///
+/// With `line_stats`, untracked files are sampled the same way: one stays
+/// untracked however it is edited, so its contents are all that separate one
+/// line count from the next. Without it they are skipped, since nothing
+/// reported for an untracked file depends on what is inside it.
+fn status_fingerprint(repo_path: &Path, statuses: &git2::Statuses<'_>, line_stats: bool) -> u64 {
     let mut hasher = DefaultHasher::new();
+    // A status cached without line counts must not be served once they are
+    // wanted, and the reverse.
+    line_stats.hash(&mut hasher);
+    let mut read_from_disk =
+        git2::Status::WT_MODIFIED | git2::Status::WT_RENAMED | git2::Status::WT_TYPECHANGE;
+    if line_stats {
+        read_from_disk |= git2::Status::WT_NEW;
+    }
     for entry in statuses.iter() {
         let path = entry.path().unwrap_or("");
         path.hash(&mut hasher);
         entry.status().bits().hash(&mut hasher);
+        // Both ends of each diff, not just the index: a reset can move HEAD or
+        // the index beneath a change whose flags and on-disk file stay put.
         if let Some(delta) = entry.head_to_index() {
+            delta.old_file().id().as_bytes().hash(&mut hasher);
             delta.new_file().id().as_bytes().hash(&mut hasher);
         }
-        if entry.status().intersects(
-            git2::Status::WT_MODIFIED | git2::Status::WT_RENAMED | git2::Status::WT_TYPECHANGE,
-        ) {
+        if let Some(delta) = entry.index_to_workdir() {
+            delta.old_file().id().as_bytes().hash(&mut hasher);
+        }
+        if entry.status().intersects(read_from_disk) {
             let full_path = repo_path.join(path);
             if let Ok(meta) = std::fs::metadata(&full_path) {
                 meta.len().hash(&mut hasher);
@@ -429,9 +447,14 @@ fn status_fingerprint(repo_path: &Path, statuses: &git2::Statuses<'_>) -> u64 {
 
 /// Gather all refresh data from a repository at the given path.
 /// This is a standalone function (no `&self`) so it can run on a background thread.
+///
+/// `line_stats` controls whether each file's added and removed line counts are
+/// computed. That diffs every changed file, so it is skipped unless the counts
+/// are shown; without it every `FileStatus` reports zero for both.
 fn compute_working_tree_status(
     repo_path: &Path,
     cache: Option<&Mutex<WorktreeStatusCache>>,
+    line_stats: bool,
 ) -> Result<WorkingTreeStatus> {
     let repo = Repository::open(repo_path)?;
     let mut wt_status = WorkingTreeStatus::default();
@@ -444,7 +467,7 @@ fn compute_working_tree_status(
     let statuses = repo.statuses(Some(&mut opts))?;
 
     // Compute fingerprint once; used for both the cache read and the cache write.
-    let fingerprint = cache.map(|_| status_fingerprint(repo_path, &statuses));
+    let fingerprint = cache.map(|_| status_fingerprint(repo_path, &statuses, line_stats));
 
     if let (Some(fp), Some(c)) = (fingerprint, cache) {
         let guard = c.lock().unwrap_or_else(|e| e.into_inner());
@@ -460,24 +483,28 @@ fn compute_working_tree_status(
     // runs on a background thread and borrows `repo_path`, so a scope keeps the
     // borrow and costs two thread spawns, where routing through the executor
     // would make every gather function async up to its call sites.
-    let (staged_stats, unstaged_stats) = std::thread::scope(|s| {
-        let staged_handle = s.spawn(|| {
-            let repo = Repository::open(repo_path).ok();
-            repo.as_ref()
-                .map(|r| batch_diff_stats(r, true))
-                .unwrap_or_default()
-        });
-        let unstaged_handle = s.spawn(|| {
-            let repo = Repository::open(repo_path).ok();
-            repo.as_ref()
-                .map(|r| batch_diff_stats(r, false))
-                .unwrap_or_default()
-        });
-        (
-            staged_handle.join().unwrap_or_default(),
-            unstaged_handle.join().unwrap_or_default(),
-        )
-    });
+    let (staged_stats, unstaged_stats) = if line_stats {
+        std::thread::scope(|s| {
+            let staged_handle = s.spawn(|| {
+                let repo = Repository::open(repo_path).ok();
+                repo.as_ref()
+                    .map(|r| batch_diff_stats(r, true))
+                    .unwrap_or_default()
+            });
+            let unstaged_handle = s.spawn(|| {
+                let repo = Repository::open(repo_path).ok();
+                repo.as_ref()
+                    .map(|r| batch_diff_stats(r, false))
+                    .unwrap_or_default()
+            });
+            (
+                staged_handle.join().unwrap_or_default(),
+                unstaged_handle.join().unwrap_or_default(),
+            )
+        })
+    } else {
+        Default::default()
+    };
 
     for entry in statuses.iter() {
         let path = PathBuf::from(entry.path().unwrap_or(""));
@@ -775,8 +802,10 @@ fn gather_refresh_data_internal(
     // Run status, stashes, worktrees in parallel; scoped threads for the same
     // reason as in `compute_working_tree_status`. Status and stashes open their
     // own repos, while worktrees and the revwalk share `&repo`.
+    let line_stats = rgitui_settings::change_line_stats_enabled();
     let (status, stashes, worktrees) = std::thread::scope(|s| {
-        let status_handle = s.spawn(|| compute_working_tree_status(repo_path, worktree_cache));
+        let status_handle =
+            s.spawn(|| compute_working_tree_status(repo_path, worktree_cache, line_stats));
 
         let stash_handle = s.spawn(|| {
             let mut stashes = Vec::new();
@@ -802,7 +831,9 @@ fn gather_refresh_data_internal(
             let worktree_path = worktree.path.clone();
             worktree_status_handles.push((
                 idx,
-                s.spawn(move || compute_working_tree_status(&worktree_path, worktree_cache)),
+                s.spawn(move || {
+                    compute_working_tree_status(&worktree_path, worktree_cache, line_stats)
+                }),
             ));
         }
 
@@ -2113,5 +2144,152 @@ mod previous_branch_tests {
             data.previous_branch.as_deref(),
             Some(TempRepo::DEFAULT_BRANCH)
         );
+    }
+}
+
+// ── compute_working_tree_status ──────────────────────────────────
+
+#[cfg(test)]
+mod working_tree_status_tests {
+    use super::*;
+    use rgitui_test_support::TempRepo;
+
+    /// One staged edit (two lines added, one removed) and one unstaged edit
+    /// (one line added) on top of a committed three-line file.
+    fn repo_with_staged_and_unstaged_edits() -> TempRepo {
+        let fixture = TempRepo::init();
+        fixture.commit_file("notes.txt", "one\ntwo\nthree\n", "Add notes");
+        fixture.write_file("notes.txt", "one\nthree\nfour\nfive\n");
+        fixture.stage("notes.txt");
+        fixture.write_file("notes.txt", "one\nthree\nfour\nfive\nsix\n");
+        fixture
+    }
+
+    fn line_counts(files: &[FileStatus]) -> Vec<(usize, usize)> {
+        files
+            .iter()
+            .map(|file| (file.additions, file.deletions))
+            .collect()
+    }
+
+    #[test]
+    fn line_counts_are_left_at_zero_unless_asked_for() {
+        let fixture = repo_with_staged_and_unstaged_edits();
+
+        let status = compute_working_tree_status(fixture.path(), None, false).unwrap();
+
+        assert_eq!(line_counts(&status.staged), vec![(0, 0)]);
+        assert_eq!(line_counts(&status.unstaged), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn line_counts_are_filled_in_when_asked_for() {
+        let fixture = repo_with_staged_and_unstaged_edits();
+
+        let status = compute_working_tree_status(fixture.path(), None, true).unwrap();
+
+        assert_eq!(line_counts(&status.staged), vec![(2, 1)]);
+        assert_eq!(line_counts(&status.unstaged), vec![(1, 0)]);
+    }
+
+    /// Turning the counts on must not be answered from a cache entry made while
+    /// they were off, which would keep showing zeros until the files changed.
+    #[test]
+    fn turning_line_counts_on_bypasses_a_status_cached_without_them() {
+        let fixture = repo_with_staged_and_unstaged_edits();
+        let cache = Mutex::new(WorktreeStatusCache::new());
+
+        let without = compute_working_tree_status(fixture.path(), Some(&cache), false).unwrap();
+        let with = compute_working_tree_status(fixture.path(), Some(&cache), true).unwrap();
+
+        assert_eq!(line_counts(&without.staged), vec![(0, 0)]);
+        assert_eq!(line_counts(&with.staged), vec![(2, 1)]);
+        assert_eq!(line_counts(&with.unstaged), vec![(1, 0)]);
+    }
+
+    /// The status a cached refresh reports, line counts included.
+    fn cached_status(fixture: &TempRepo, cache: &Mutex<WorktreeStatusCache>) -> WorkingTreeStatus {
+        compute_working_tree_status(fixture.path(), Some(cache), true).unwrap()
+    }
+
+    fn reset_to(fixture: &TempRepo, commit: git2::Oid, kind: git2::ResetType) {
+        let repo = fixture.repo();
+        let target = repo.find_object(commit, None).unwrap();
+        repo.reset(&target, kind, None).unwrap();
+    }
+
+    /// The fingerprint has to hold still while the working tree does, or every
+    /// refresh would miss the cache and diff every changed file again.
+    #[test]
+    fn an_untouched_working_tree_keeps_its_cache_entry() {
+        let fixture = repo_with_staged_and_unstaged_edits();
+        fixture.write_file("draft.txt", "one\n");
+        let cache = Mutex::new(WorktreeStatusCache::new());
+        let cached_fingerprint = || {
+            let entries = cache.lock().unwrap();
+            entries
+                .get(fixture.path())
+                .map(|(fingerprint, _)| *fingerprint)
+        };
+
+        cached_status(&fixture, &cache);
+        let first = cached_fingerprint();
+        cached_status(&fixture, &cache);
+
+        assert!(first.is_some());
+        assert_eq!(cached_fingerprint(), first);
+    }
+
+    /// An untracked file stays untracked however it is edited, so neither its
+    /// path nor its status flags move: only its contents tell the edits apart.
+    #[test]
+    fn editing_an_untracked_file_refreshes_its_cached_line_count() {
+        let fixture = TempRepo::init();
+        let cache = Mutex::new(WorktreeStatusCache::new());
+
+        fixture.write_file("draft.txt", "one\n");
+        let before = cached_status(&fixture, &cache);
+        fixture.write_file("draft.txt", "one\ntwo\nthree\n");
+        let after = cached_status(&fixture, &cache);
+
+        assert_eq!(line_counts(&before.unstaged), vec![(1, 0)]);
+        assert_eq!(line_counts(&after.unstaged), vec![(3, 0)]);
+    }
+
+    /// A soft reset moves `HEAD` and nothing else: the staged file keeps its
+    /// index blob and its flags, but is now measured against a different commit.
+    #[test]
+    fn moving_head_under_a_staged_file_refreshes_its_cached_line_count() {
+        let fixture = TempRepo::init();
+        let first = fixture.commit_file("notes.txt", "one\n", "Add notes");
+        fixture.commit_file("notes.txt", "one\ntwo\n", "Extend notes");
+        fixture.write_file("notes.txt", "one\ntwo\nthree\n");
+        fixture.stage("notes.txt");
+        let cache = Mutex::new(WorktreeStatusCache::new());
+
+        let before = cached_status(&fixture, &cache);
+        reset_to(&fixture, first, git2::ResetType::Soft);
+        let after = cached_status(&fixture, &cache);
+
+        assert_eq!(line_counts(&before.staged), vec![(1, 0)]);
+        assert_eq!(line_counts(&after.staged), vec![(2, 0)]);
+    }
+
+    /// A mixed reset rewrites the index entry beneath an unstaged edit while the
+    /// file on disk, and with it the flags, size and mtime, stays as it was.
+    #[test]
+    fn moving_the_index_under_an_unstaged_file_refreshes_its_cached_line_count() {
+        let fixture = TempRepo::init();
+        let first = fixture.commit_file("notes.txt", "one\n", "Add notes");
+        fixture.commit_file("notes.txt", "one\ntwo\n", "Extend notes");
+        fixture.write_file("notes.txt", "one\ntwo\nthree\n");
+        let cache = Mutex::new(WorktreeStatusCache::new());
+
+        let before = cached_status(&fixture, &cache);
+        reset_to(&fixture, first, git2::ResetType::Mixed);
+        let after = cached_status(&fixture, &cache);
+
+        assert_eq!(line_counts(&before.unstaged), vec![(1, 0)]);
+        assert_eq!(line_counts(&after.unstaged), vec![(2, 0)]);
     }
 }

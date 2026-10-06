@@ -19,6 +19,9 @@
   the branch HEAD was on (or *Switch Branch…* when there is none). The same move is
   available anywhere as *Git: Switch to Previous Branch*, which works like
   `git switch -`. (#85)
+- **Line counts in the Staged and Unstaged lists.** The ⋯ button on either
+  header toggles a +N −N count and bar beside each file. The choice is saved and
+  off by default, and the counts are not computed while it is off. (#87)
 
 ### Changed
 
@@ -32,6 +35,10 @@
   row is tinted in the warning colour rather than a blue that read as a
   selection. The title and status bars name the commit a detached HEAD is on
   instead of just "detached". (#85)
+- **The Tags section stops growing at 8 rows** and scrolls, like Branches.
+  (#87)
+- **Badges have tighter corners**, and two-letter initials in co-author avatars
+  are sized to fit instead of looking squashed. (#87)
 
 ### Fixed
 
@@ -49,6 +56,15 @@
   when the metainfo falls behind the crate version or this changelog. (#85)
 - **Rename Branch offered to rename a branch called `HEAD`** while HEAD was
   detached, and the title bar named it as if it were a branch. (#85)
+- **Sidebar popovers and the stash menu stayed open** after a click in another
+  panel, such as the graph. They now close on a click anywhere outside them.
+  The remote branch filter also opens under its own button instead of at the
+  top of the sidebar. (#87)
+- **Arrow keys in the diff viewer** jumped a full page past the bottom edge,
+  started from the top of the file after scrolling with the wheel, and ignored
+  a clicked line. The cursor now moves one row at a time from where you are
+  looking, and switching between unified and split keeps the scroll position.
+  (#87)
 
 ## [0.4.1] - 2026-08-26
 

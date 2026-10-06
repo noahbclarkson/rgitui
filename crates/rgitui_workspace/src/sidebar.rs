@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, uniform_list, App, Bounds, ClickEvent, Context, ElementId, Entity,
-    EventEmitter, FocusHandle, ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent,
-    Pixels, Point, Render, ScrollStrategy, SharedString, Size, UniformListScrollHandle, WeakEntity,
-    Window,
+    anchored, canvas, deferred, div, px, relative, uniform_list, Anchor, App, Bounds, ClickEvent,
+    Context, ElementId, Entity, EventEmitter, FocusHandle, ListSizingBehavior, MouseButton,
+    MouseDownEvent, MouseMoveEvent, Pixels, Point, Render, ScrollStrategy, SharedString, Size,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{
     BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
@@ -20,8 +20,8 @@ use rgitui_git::{
 use rgitui_settings::{Compactness, SettingsState};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
-    Badge, Button, ButtonSize, ButtonStyle, IconButton, IconName, Label, LabelSize, Scrollbar,
-    TextInput, TextInputEvent, Tooltip,
+    Badge, Button, ButtonSize, ButtonStyle, CheckState, Checkbox, DiffStat, IconButton, IconName,
+    Label, LabelSize, Scrollbar, TextInput, TextInputEvent, Tooltip,
 };
 
 use crate::keymap;
@@ -52,7 +52,10 @@ pub enum SidebarEvent {
     WorktreeSelected(usize),
     WorktreeCreate,
     WorktreeRemove(usize),
-    FileSelected { path: String, staged: bool },
+    FileSelected {
+        path: String,
+        staged: bool,
+    },
     StageFile(String),
     UnstageFile(String),
     StageAll,
@@ -61,6 +64,8 @@ pub enum SidebarEvent {
     ConflictFileSelected(String),
     OpenRepo,
     ToggleDir(String), // dir_key: "staged:path" or "unstaged:path"
+    /// Show or hide per-file line counts in the Staged and Unstaged lists.
+    SetChangeLineStats(bool),
 }
 
 /// Sidebar sections.
@@ -155,6 +160,7 @@ const SIDEBAR_EMPTY_ROW_HEIGHT: f32 = 28.0;
 /// a 1px line plus 4px of margin above and below.
 const SIDEBAR_SEPARATOR_HEIGHT: f32 = 9.0;
 const BRANCH_FILTER_POPOVER_WIDTH: f32 = 248.0;
+const CHANGE_LIST_POPOVER_WIDTH: f32 = 200.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum BranchAgeFilter {
@@ -202,11 +208,57 @@ enum BranchFilterTarget {
     Remote,
 }
 
+/// Which file-change list a control belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeList {
+    Staged,
+    Unstaged,
+}
+
+/// A popover opened from a section header's options button. At most one is
+/// open at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarPopover {
+    BranchFilter(BranchFilterTarget),
+    ChangeListOptions(ChangeList),
+}
+
+/// Whether a mouse press outside the open popover should close it.
+///
+/// A press on the open popover's own button is left to that button, which
+/// toggles the popover closed; closing it here too would have the button's
+/// click reopen it straight away.
+fn outside_press_closes_popover(
+    open: Option<SidebarPopover>,
+    hovered_trigger: Option<SidebarPopover>,
+) -> bool {
+    open.is_some() && open != hovered_trigger
+}
+
+/// Most tag rows the Tags section shows before it scrolls.
+const TAG_VIEWPORT_ROWS: usize = 8;
+
 fn branch_viewport_rows(compactness: Compactness) -> usize {
     match compactness {
         Compactness::Compact => 12,
         Compactness::Default => 10,
         Compactness::Comfortable => 8,
+    }
+}
+
+/// Most rows `section` shows before it scrolls, or `None` for a section that
+/// grows to fit its content while there is room.
+fn section_row_cap(section: SidebarSection, compactness: Compactness) -> Option<usize> {
+    match section {
+        SidebarSection::LocalBranches | SidebarSection::RemoteBranches => {
+            Some(branch_viewport_rows(compactness))
+        }
+        SidebarSection::Tags => Some(TAG_VIEWPORT_ROWS),
+        SidebarSection::Remotes
+        | SidebarSection::Stashes
+        | SidebarSection::Worktrees
+        | SidebarSection::StagedChanges
+        | SidebarSection::UnstagedChanges => None,
     }
 }
 
@@ -353,8 +405,10 @@ pub struct Sidebar {
     /// Date ranges use each branch tip's last commit time.
     local_branch_age_filter: BranchAgeFilter,
     remote_branch_age_filter: BranchAgeFilter,
-    /// The filter popover currently shown, if any.
-    branch_filter_popover: Option<BranchFilterTarget>,
+    /// The header popover currently shown, if any.
+    open_popover: Option<SidebarPopover>,
+    /// The header button under the pointer that opens a popover, if any.
+    hovered_popover_trigger: Option<SidebarPopover>,
     /// Whether "My Branches" filter is active (show only branches authored by current user).
     my_branches_active: bool,
     /// Current user email for "My Branches" filtering.
@@ -522,7 +576,8 @@ impl Sidebar {
             remote_branch_filter_editor,
             local_branch_age_filter: BranchAgeFilter::Any,
             remote_branch_age_filter: BranchAgeFilter::Any,
-            branch_filter_popover: None,
+            open_popover: None,
+            hovered_popover_trigger: None,
             my_branches_active: false,
             current_user_email: None,
             stash_context_menu: None,
@@ -583,23 +638,32 @@ impl Sidebar {
         )
     }
 
-    fn toggle_branch_filter_popover(
+    fn toggle_popover(
         &mut self,
-        target: BranchFilterTarget,
+        popover: SidebarPopover,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.branch_filter_popover == Some(target) {
-            self.branch_filter_popover = None;
+        if self.open_popover == Some(popover) {
+            self.open_popover = None;
         } else {
-            self.branch_filter_popover = Some(target);
-            let editor = match target {
-                BranchFilterTarget::Local => &self.branch_filter_editor,
-                BranchFilterTarget::Remote => &self.remote_branch_filter_editor,
-            };
-            editor.update(cx, |editor, cx| editor.focus(window, cx));
+            self.open_popover = Some(popover);
+            if let SidebarPopover::BranchFilter(target) = popover {
+                let editor = match target {
+                    BranchFilterTarget::Local => &self.branch_filter_editor,
+                    BranchFilterTarget::Remote => &self.remote_branch_filter_editor,
+                };
+                editor.update(cx, |editor, cx| editor.focus(window, cx));
+            }
         }
         cx.notify();
+    }
+
+    fn dismiss_popover_on_outside_press(&mut self, cx: &mut Context<Self>) {
+        if outside_press_closes_popover(self.open_popover, self.hovered_popover_trigger) {
+            self.open_popover = None;
+            cx.notify();
+        }
     }
 
     fn set_branch_age_filter(
@@ -821,7 +885,11 @@ impl Sidebar {
     /// Runs a keyboard command scoped to `Sidebar` or to the shared `List` group.
     fn dispatch_command(&mut self, cmd: CommandId, window: &mut Window, cx: &mut Context<Self>) {
         if cmd == CommandId::FilterBranches {
-            self.toggle_branch_filter_popover(BranchFilterTarget::Local, window, cx);
+            self.toggle_popover(
+                SidebarPopover::BranchFilter(BranchFilterTarget::Local),
+                window,
+                cx,
+            );
             return;
         }
 
@@ -833,7 +901,7 @@ impl Sidebar {
         let last = self.cached_nav_items.len().saturating_sub(1);
         match cmd {
             CommandId::Cancel => {
-                if self.branch_filter_popover.take().is_some() {
+                if self.open_popover.take().is_some() {
                     cx.notify();
                 } else {
                     cx.propagate();
@@ -1543,25 +1611,25 @@ impl Sidebar {
         &self,
         item_h: f32,
         header_h: f32,
-        branch_row_cap: usize,
+        compactness: Compactness,
     ) -> SidebarListHeights {
-        let rows = |expanded: SidebarSection, count: usize| -> f32 {
-            if self.is_expanded(expanded) {
-                count as f32 * item_h
-            } else {
-                0.0
+        let rows = |section: SidebarSection, count: usize| -> f32 {
+            if !self.is_expanded(section) {
+                return 0.0;
             }
+            let visible = section_row_cap(section, compactness).map_or(count, |cap| count.min(cap));
+            visible as f32 * item_h
         };
 
         let desired = [
             rows(
                 SidebarSection::LocalBranches,
-                self.flattened_local_branches.len().min(branch_row_cap),
+                self.flattened_local_branches.len(),
             ),
             rows(SidebarSection::Remotes, self.flattened_remotes.len()),
             rows(
                 SidebarSection::RemoteBranches,
-                self.flattened_remote_branches.len().min(branch_row_cap),
+                self.flattened_remote_branches.len(),
             ),
             rows(SidebarSection::Tags, self.flattened_tags.len()),
             rows(SidebarSection::Stashes, self.stashes.len()),
@@ -1597,6 +1665,305 @@ impl Sidebar {
             unstaged: heights[7],
         }
     }
+
+    /// A section header's options button, with the popover it opens anchored
+    /// below it while open.
+    fn render_popover_trigger(
+        &self,
+        popover: SidebarPopover,
+        id: &'static str,
+        tooltip: &'static str,
+        highlighted: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_open = self.open_popover == Some(popover);
+        div()
+            .id(ElementId::Name(format!("{id}-trigger").into()))
+            .relative()
+            // Keeps the press from reaching the section header, which would
+            // expand or collapse the section.
+            .on_mouse_down(
+                MouseButton::Left,
+                |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                },
+            )
+            .on_hover(cx.listener(move |this, hovered: &bool, _, _| {
+                if *hovered {
+                    this.hovered_popover_trigger = Some(popover);
+                } else if this.hovered_popover_trigger == Some(popover) {
+                    this.hovered_popover_trigger = None;
+                }
+            }))
+            .child(
+                IconButton::new(id, IconName::MoreHorizontal)
+                    .size(ButtonSize::Compact)
+                    .color(if highlighted {
+                        Color::Accent
+                    } else {
+                        Color::Muted
+                    })
+                    .tooltip(tooltip)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.toggle_popover(popover, window, cx);
+                    })),
+            )
+            .when(is_open, |el| {
+                // Deferred so it paints above the rest of the window and is not
+                // clipped by the sidebar's scroll area; pinned to the button's
+                // bottom-right corner so it opens beneath whichever header owns it.
+                el.child(
+                    div().absolute().top(relative(1.)).right_0().child(deferred(
+                        anchored()
+                            .anchor(Anchor::TopRight)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(div().pt(px(4.)).child(self.render_popover(popover, cx))),
+                    )),
+                )
+            })
+    }
+
+    fn render_popover(
+        &self,
+        popover: SidebarPopover,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        match popover {
+            SidebarPopover::BranchFilter(target) => self.render_branch_filter_popover(target, cx),
+            SidebarPopover::ChangeListOptions(list) => self.render_change_list_popover(list, cx),
+        }
+    }
+
+    /// The frame shared by header popovers. A press anywhere outside it closes
+    /// it, including in other panels.
+    fn popover_frame(
+        &self,
+        id: &'static str,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let background = cx.colors().elevated_surface_background;
+        let border = cx.colors().border;
+        div()
+            .id(id)
+            .occlude()
+            .w(px(width))
+            .v_flex()
+            .gap(px(6.))
+            .p_2()
+            .bg(background)
+            .border_1()
+            .border_color(border)
+            .rounded(px(6.))
+            .elevation_3(cx)
+            .on_mouse_down(
+                MouseButton::Left,
+                |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                },
+            )
+            .on_mouse_move(|_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.dismiss_popover_on_outside_press(cx);
+            }))
+    }
+
+    fn render_branch_filter_popover(
+        &self,
+        target: BranchFilterTarget,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let selected_bg = cx.colors().ghost_element_selected;
+        let hover_bg = cx.colors().ghost_element_hover;
+        let (title, editor, active_age, filters_active) = match target {
+            BranchFilterTarget::Local => (
+                "Branch filters",
+                self.branch_filter_editor.clone(),
+                self.local_branch_age_filter,
+                !self.branch_filter.is_empty()
+                    || self.my_branches_active
+                    || self.local_branch_age_filter != BranchAgeFilter::Any,
+            ),
+            BranchFilterTarget::Remote => (
+                "Remote branch filters",
+                self.remote_branch_filter_editor.clone(),
+                self.remote_branch_age_filter,
+                !self.remote_branch_filter.is_empty()
+                    || self.remote_branch_age_filter != BranchAgeFilter::Any,
+            ),
+        };
+        let weak = cx.weak_entity();
+        let mut popover = self
+            .popover_frame("branch-filter-popover", BRANCH_FILTER_POPOVER_WIDTH, cx)
+            .child(
+                Label::new(title)
+                    .size(LabelSize::XSmall)
+                    .weight(gpui::FontWeight::SEMIBOLD)
+                    .color(Color::Default),
+            )
+            .child(
+                Label::new("Name")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            )
+            .child(div().w_full().child(editor))
+            .child(
+                Label::new("Last used")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            );
+
+        for (index, age_filter) in BranchAgeFilter::OPTIONS.into_iter().enumerate() {
+            let selected = age_filter == active_age;
+            let weak = weak.clone();
+            popover = popover.child(
+                div()
+                    .id(ElementId::NamedInteger(
+                        "branch-age-filter".into(),
+                        index as u64,
+                    ))
+                    .h_flex()
+                    .w_full()
+                    .h(px(24.))
+                    .px_2()
+                    .gap_1()
+                    .items_center()
+                    .rounded(px(4.))
+                    .when(selected, |el| el.bg(selected_bg))
+                    .hover(move |el| el.bg(hover_bg))
+                    .cursor_pointer()
+                    .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        weak.update(cx, |this, cx| {
+                            this.set_branch_age_filter(target, age_filter, cx);
+                        })
+                        .ok();
+                    })
+                    .child(div().w(px(14.)).flex_shrink_0().when(selected, |el| {
+                        el.child(
+                            rgitui_ui::Icon::new(IconName::Check)
+                                .size(rgitui_ui::IconSize::XSmall)
+                                .color(Color::Accent),
+                        )
+                    }))
+                    .child(
+                        Label::new(age_filter.label())
+                            .size(LabelSize::XSmall)
+                            .color(if selected {
+                                Color::Accent
+                            } else {
+                                Color::Default
+                            }),
+                    ),
+            );
+        }
+
+        if target == BranchFilterTarget::Local {
+            let weak = weak.clone();
+            popover = popover.child(
+                div()
+                    .id("my-branches-filter")
+                    .h_flex()
+                    .w_full()
+                    .h(px(26.))
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(4.))
+                    .when(self.my_branches_active, |el| el.bg(selected_bg))
+                    .hover(move |el| el.bg(hover_bg))
+                    .cursor_pointer()
+                    .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        weak.update(cx, |this, cx| {
+                            this.my_branches_active = !this.my_branches_active;
+                            this.rebuild_flattened_branches();
+                            this.rebuild_nav_items();
+                            cx.notify();
+                        })
+                        .ok();
+                    })
+                    .child(
+                        rgitui_ui::Icon::new(IconName::User)
+                            .size(rgitui_ui::IconSize::XSmall)
+                            .color(if self.my_branches_active {
+                                Color::Accent
+                            } else {
+                                Color::Muted
+                            }),
+                    )
+                    .child(
+                        Label::new("Only my branches")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Default),
+                    ),
+            );
+        }
+
+        let weak = weak.clone();
+        popover = popover.child(
+            div().w_full().flex().justify_end().child(
+                Button::new("clear-branch-filters", "Clear")
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Subtle)
+                    .disabled(!filters_active)
+                    .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        weak.update(cx, |this, cx| {
+                            this.clear_branch_filters(target, cx);
+                        })
+                        .ok();
+                    }),
+            ),
+        );
+
+        popover
+    }
+
+    fn render_change_list_popover(
+        &self,
+        list: ChangeList,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let enabled = cx
+            .global::<SettingsState>()
+            .settings()
+            .show_change_line_stats;
+        let title = match list {
+            ChangeList::Staged => "Staged files",
+            ChangeList::Unstaged => "Unstaged files",
+        };
+        let weak = cx.weak_entity();
+        self.popover_frame("change-list-popover", CHANGE_LIST_POPOVER_WIDTH, cx)
+            .child(
+                Label::new(title)
+                    .size(LabelSize::XSmall)
+                    .weight(gpui::FontWeight::SEMIBOLD)
+                    .color(Color::Default),
+            )
+            .child(
+                Checkbox::new(
+                    "show-change-line-stats",
+                    if enabled {
+                        CheckState::Checked
+                    } else {
+                        CheckState::Unchecked
+                    },
+                )
+                .label("Show line counts")
+                .on_toggle(move |_: &mut Window, cx: &mut App| {
+                    weak.update(cx, |_, cx| {
+                        cx.emit(SidebarEvent::SetChangeLineStats(!enabled));
+                    })
+                    .ok();
+                }),
+            )
+            .child(
+                Label::new("Applies to staged and unstaged files.")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            )
+    }
 }
 
 impl Render for Sidebar {
@@ -1609,8 +1976,11 @@ impl Render for Sidebar {
         let compactness = cx.global::<SettingsState>().settings().compactness;
         let item_h = compactness.spacing(24.0);
         let header_h = compactness.spacing(26.0);
-        let branch_row_cap = branch_viewport_rows(compactness);
-        let list_heights = self.plan_list_heights(item_h, header_h, branch_row_cap);
+        let list_heights = self.plan_list_heights(item_h, header_h, compactness);
+        let show_line_stats = cx
+            .global::<SettingsState>()
+            .settings()
+            .show_change_line_stats;
         let sidebar_weak: WeakEntity<Sidebar> = cx.weak_entity();
 
         // Compute navigable items for keyboard highlight matching
@@ -1639,12 +2009,6 @@ impl Render for Sidebar {
         .absolute()
         .size_full();
 
-        // Dismiss context menu on left-click outside the menu bounds.
-        let stash_dismiss = cx.weak_entity();
-        let has_stash_menu = self.stash_context_menu.is_some();
-        let branch_filter_dismiss = cx.weak_entity();
-        let has_branch_filter_popover = self.branch_filter_popover.is_some();
-
         let panel = div()
             .id("sidebar-panel")
             .track_focus(&self.focus_handle)
@@ -1663,44 +2027,6 @@ impl Render for Sidebar {
             .bg(colors.panel_background)
             .border_r_1()
             .border_color(colors.border_variant)
-            .when(has_stash_menu, |el| {
-                el.on_mouse_down(MouseButton::Left, {
-                    let dismiss = stash_dismiss.clone();
-                    move |event: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                        dismiss
-                            .update(cx, |this: &mut Sidebar, cx| {
-                                let click_inside_menu =
-                                    this.stash_context_menu.as_ref().is_some_and(|cm| {
-                                        let menu_size = stash_menu_size();
-                                        let x = event.position.x;
-                                        let y = event.position.y;
-                                        x >= cm.position.x
-                                            && x < cm.position.x + menu_size.width
-                                            && y >= cm.position.y
-                                            && y < cm.position.y + menu_size.height
-                                    });
-                                if !click_inside_menu {
-                                    this.dismiss_stash_context_menu(cx);
-                                }
-                            })
-                            .ok();
-                    }
-                })
-            })
-            .when(has_branch_filter_popover, |el| {
-                el.on_mouse_down(MouseButton::Left, {
-                    let dismiss = branch_filter_dismiss.clone();
-                    move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                        dismiss
-                            .update(cx, |this: &mut Sidebar, cx| {
-                                if this.branch_filter_popover.take().is_some() {
-                                    cx.notify();
-                                }
-                            })
-                            .ok();
-                    }
-                })
-            })
             .child(bounds_tracker);
 
         let mut content = div()
@@ -1814,34 +2140,13 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(div().flex_1())
-                .child(
-                    div()
-                        .id("local-branch-filter-trigger")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                                cx.stop_propagation();
-                            },
-                        )
-                        .child(
-                            IconButton::new("local-branch-filters", IconName::MoreHorizontal)
-                                .size(ButtonSize::Compact)
-                                .color(if local_filters_active {
-                                    Color::Accent
-                                } else {
-                                    Color::Muted
-                                })
-                                .tooltip("Filter branches by name or last used")
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.toggle_branch_filter_popover(
-                                        BranchFilterTarget::Local,
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        ),
-                )
+                .child(self.render_popover_trigger(
+                    SidebarPopover::BranchFilter(BranchFilterTarget::Local),
+                    "local-branch-filters",
+                    "Filter branches by name or last used",
+                    local_filters_active,
+                    cx,
+                ))
                 .child(
                     div()
                         .h_flex()
@@ -2484,34 +2789,13 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(div().flex_1())
-                .child(
-                    div()
-                        .id("remote-branch-filter-trigger")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                                cx.stop_propagation();
-                            },
-                        )
-                        .child(
-                            IconButton::new("remote-branch-filters", IconName::MoreHorizontal)
-                                .size(ButtonSize::Compact)
-                                .color(if remote_filters_active {
-                                    Color::Accent
-                                } else {
-                                    Color::Muted
-                                })
-                                .tooltip("Filter remote branches by name or last used")
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.toggle_branch_filter_popover(
-                                        BranchFilterTarget::Remote,
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        ),
-                )
+                .child(self.render_popover_trigger(
+                    SidebarPopover::BranchFilter(BranchFilterTarget::Remote),
+                    "remote-branch-filters",
+                    "Filter remote branches by name or last used",
+                    remote_filters_active,
+                    cx,
+                ))
                 .child(
                     div()
                         .h_flex()
@@ -2745,90 +3029,83 @@ impl Render for Sidebar {
             if !self.flattened_tags.is_empty() {
                 let flattened = self.flattened_tags.clone();
                 let list_height = list_heights.tags;
+                let show_tags_scrollbar = flattened.len() as f32 * item_h > list_height + 0.5;
                 let tags = self.tags.clone();
                 let selected_tag = self.selected_tag.clone();
                 let colors = colors.clone();
                 let w = Rc::new(sidebar_weak.clone());
 
-                content =
-                    content.child(
-                        uniform_list(
-                            "tags-list",
-                            flattened.len(),
-                            move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
-                                let w = w.clone();
-                                range
-                                    .map(|i| {
-                                        let tag_idx = flattened[i];
-                                        let tag = &tags[tag_idx];
-                                        let kb_active = keyboard_index == Some(nav_base + i);
-                                        let is_selected =
-                                            selected_tag.as_ref().is_some_and(|s| s == &tag.name);
-                                        let name: SharedString = tag.name.clone().into();
-                                        let tag_select = name.clone();
-                                        let tag_delete = name.clone();
-                                        let tag_checkout = name.clone();
+                let list = uniform_list(
+                    "tags-list",
+                    flattened.len(),
+                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                        let w = w.clone();
+                        range
+                            .map(|i| {
+                                let tag_idx = flattened[i];
+                                let tag = &tags[tag_idx];
+                                let kb_active = keyboard_index == Some(nav_base + i);
+                                let is_selected =
+                                    selected_tag.as_ref().is_some_and(|s| s == &tag.name);
+                                let name: SharedString = tag.name.clone().into();
+                                let tag_select = name.clone();
+                                let tag_delete = name.clone();
+                                let tag_checkout = name.clone();
 
-                                        let mut item = div()
-                                            .id(ElementId::NamedInteger(
-                                                "tag-item".into(),
-                                                i as u64,
-                                            ))
-                                            .h_flex()
-                                            .w_full()
-                                            .h(px(item_h))
-                                            .px_2()
-                                            .pl(px(16.))
-                                            .gap_1()
-                                            .items_center()
-                                            .overflow_hidden()
-                                            .when(is_selected, |el| {
-                                                el.bg(colors.ghost_element_selected)
-                                                    .border_l_2()
-                                                    .border_color(kb_accent)
-                                            })
-                                            .when(kb_active && !is_selected, |el| {
-                                                el.bg(colors.ghost_element_hover)
-                                                    .border_l_2()
-                                                    .border_color(kb_accent)
-                                            })
-                                            .hover(|s| s.bg(colors.ghost_element_hover))
-                                            .active(|s| s.bg(colors.ghost_element_active))
-                                            .cursor_pointer();
+                                let mut item = div()
+                                    .id(ElementId::NamedInteger("tag-item".into(), i as u64))
+                                    .h_flex()
+                                    .w_full()
+                                    .h(px(item_h))
+                                    .px_2()
+                                    .pl(px(16.))
+                                    .gap_1()
+                                    .items_center()
+                                    .overflow_hidden()
+                                    .when(is_selected, |el| {
+                                        el.bg(colors.ghost_element_selected)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .when(kb_active && !is_selected, |el| {
+                                        el.bg(colors.ghost_element_hover)
+                                            .border_l_2()
+                                            .border_color(kb_accent)
+                                    })
+                                    .hover(|s| s.bg(colors.ghost_element_hover))
+                                    .active(|s| s.bg(colors.ghost_element_active))
+                                    .cursor_pointer();
 
-                                        let w_sel = w.clone();
-                                        item = item.on_click(
-                                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                                let _ = w_sel.clone().update(
-                                                    cx,
-                                                    |this: &mut Sidebar, cx| {
-                                                        this.selected_tag =
-                                                            Some(tag_select.to_string());
-                                                        cx.emit(SidebarEvent::TagSelected(
-                                                            tag_select.to_string(),
-                                                        ));
-                                                    },
-                                                );
-                                            },
-                                        );
+                                let w_sel = w.clone();
+                                item = item.on_click(
+                                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                        let _ =
+                                            w_sel.clone().update(cx, |this: &mut Sidebar, cx| {
+                                                this.selected_tag = Some(tag_select.to_string());
+                                                cx.emit(SidebarEvent::TagSelected(
+                                                    tag_select.to_string(),
+                                                ));
+                                            });
+                                    },
+                                );
 
-                                        item = item
-                                            .child(
-                                                rgitui_ui::Icon::new(IconName::Tag)
-                                                    .size(rgitui_ui::IconSize::XSmall)
-                                                    .color(Color::Warning),
-                                            )
-                                            .child(
-                                                Label::new(name)
-                                                    .size(LabelSize::XSmall)
-                                                    .color(Color::Warning),
-                                            )
-                                            .child(div().flex_1());
+                                item = item
+                                    .child(
+                                        rgitui_ui::Icon::new(IconName::Tag)
+                                            .size(rgitui_ui::IconSize::XSmall)
+                                            .color(Color::Warning),
+                                    )
+                                    .child(
+                                        Label::new(name)
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Warning),
+                                    )
+                                    .child(div().flex_1());
 
-                                        // Checkout button
-                                        let w_chk = w.clone();
-                                        let tc = tag_checkout.clone();
-                                        item = item.child(
+                                // Checkout button
+                                let w_chk = w.clone();
+                                let tc = tag_checkout.clone();
+                                item = item.child(
                                     IconButton::new(
                                         ElementId::NamedInteger("checkout-tag".into(), i as u64),
                                         IconName::ArrowDown,
@@ -2848,10 +3125,10 @@ impl Render for Sidebar {
                                     ),
                                 );
 
-                                        // Delete button
-                                        let w_del = w.clone();
-                                        let td = tag_delete.clone();
-                                        item.child(
+                                // Delete button
+                                let w_del = w.clone();
+                                let td = tag_delete.clone();
+                                item.child(
                                     IconButton::new(
                                         ElementId::NamedInteger("delete-tag".into(), i as u64),
                                         IconName::Trash,
@@ -2870,14 +3147,27 @@ impl Render for Sidebar {
                                         },
                                     ),
                                 )
-                                    })
-                                    .collect()
-                            },
-                        )
+                            })
+                            .collect()
+                    },
+                )
+                .h_full()
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .track_scroll(&self.tags_scroll);
+                content = content.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .w_full()
                         .h(px(list_height))
-                        .with_sizing_behavior(ListSizingBehavior::Auto)
-                        .track_scroll(&self.tags_scroll),
-                    );
+                        .child(div().flex_1().min_w_0().h_full().child(list))
+                        .when(show_tags_scrollbar, |el| {
+                            el.child(Scrollbar::vertical(
+                                "tags-scrollbar",
+                                self.tags_scroll.clone(),
+                            ))
+                        }),
+                );
             }
         }
 
@@ -3482,13 +3772,20 @@ impl Render for Sidebar {
                     ),
                 )
             })
+            .child(self.render_popover_trigger(
+                SidebarPopover::ChangeListOptions(ChangeList::Staged),
+                "staged-options",
+                "Staged list options",
+                show_line_stats,
+                cx,
+            ))
             .child(
                 div()
                     .h_flex()
                     .h(px(16.))
                     .min_w(px(20.))
                     .px(px(6.))
-                    .rounded(px(8.))
+                    .rounded(px(5.))
                     .bg(if staged_count > 0 {
                         colors.ghost_element_selected
                     } else {
@@ -3639,6 +3936,16 @@ impl Render for Sidebar {
                                                         .child(rgitui_ui::Icon::new(IconName::Minus)),
                                                 ),
                                         )
+                                        .when(
+                                            show_line_stats
+                                                && file.kind != FileChangeKind::Conflicted,
+                                            |el| {
+                                                el.child(DiffStat::new(
+                                                    file.additions,
+                                                    file.deletions,
+                                                ))
+                                            },
+                                        )
                                         .into_any_element()
                                 }
                                 FlatFileItem::Dir { dir_key, label, file_count, collapsed, indent } => {
@@ -3681,7 +3988,7 @@ impl Render for Sidebar {
                                         .child(
                                             div()
                                                 .h_flex().h(px(16.)).min_w(px(20.)).px(px(6.))
-                                                .rounded(px(8.)).bg(colors.ghost_element_hover)
+                                                .rounded(px(5.)).bg(colors.ghost_element_hover)
                                                 .items_center().justify_center()
                                                 .child(Label::new(SharedString::from(format!("{}", file_count))).size(LabelSize::XSmall).color(Color::Default)),
                                         )
@@ -3813,13 +4120,20 @@ impl Render for Sidebar {
                     ),
                 )
             })
+            .child(self.render_popover_trigger(
+                SidebarPopover::ChangeListOptions(ChangeList::Unstaged),
+                "unstaged-options",
+                "Unstaged list options",
+                show_line_stats,
+                cx,
+            ))
             .child(
                 div()
                     .h_flex()
                     .h(px(16.))
                     .min_w(px(20.))
                     .px(px(6.))
-                    .rounded(px(8.))
+                    .rounded(px(5.))
                     .bg(if unstaged_count > 0 {
                         colors.ghost_element_selected
                     } else {
@@ -3969,7 +4283,7 @@ impl Render for Sidebar {
                                                     })
                                                     .ok();
                                             })
-                                            .into_any_element()
+                                        .into_any_element()
                                         } else {
                                             div()
                                                 .pr(px(4.))
@@ -4033,6 +4347,16 @@ impl Render for Sidebar {
                                                 )
                                                 .into_any_element()
                                         })
+                                        .when(
+                                            show_line_stats
+                                                && file.kind != FileChangeKind::Conflicted,
+                                            |el| {
+                                                el.child(DiffStat::new(
+                                                    file.additions,
+                                                    file.deletions,
+                                                ))
+                                            },
+                                        )
                                         .into_any_element()
                                 }
                                 FlatFileItem::Dir { dir_key, label, file_count, collapsed, indent } => {
@@ -4075,7 +4399,7 @@ impl Render for Sidebar {
                                         .child(
                                             div()
                                                 .h_flex().h(px(16.)).min_w(px(20.)).px(px(6.))
-                                                .rounded(px(8.)).bg(colors.ghost_element_hover)
+                                                .rounded(px(5.)).bg(colors.ghost_element_hover)
                                                 .items_center().justify_center()
                                                 .child(Label::new(SharedString::from(format!("{}", file_count))).size(LabelSize::XSmall).color(Color::Default)),
                                         )
@@ -4148,7 +4472,13 @@ impl Render for Sidebar {
                 )
                 .on_mouse_move(|_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
                     cx.stop_propagation();
-                });
+                })
+                // A press anywhere outside the menu closes it, including in
+                // other panels. A right-click on another stash then opens that
+                // stash's menu in its place.
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.dismiss_stash_context_menu(cx);
+                }));
 
             // Apply
             {
@@ -4324,173 +4654,6 @@ impl Render for Sidebar {
             }
 
             panel = panel.child(menu);
-        }
-
-        if let Some(target) = self.branch_filter_popover {
-            let (title, editor, active_age, filters_active) = match target {
-                BranchFilterTarget::Local => (
-                    "Branch filters",
-                    self.branch_filter_editor.clone(),
-                    self.local_branch_age_filter,
-                    !self.branch_filter.is_empty()
-                        || self.my_branches_active
-                        || self.local_branch_age_filter != BranchAgeFilter::Any,
-                ),
-                BranchFilterTarget::Remote => (
-                    "Remote branch filters",
-                    self.remote_branch_filter_editor.clone(),
-                    self.remote_branch_age_filter,
-                    !self.remote_branch_filter.is_empty()
-                        || self.remote_branch_age_filter != BranchAgeFilter::Any,
-                ),
-            };
-            let weak = cx.weak_entity();
-            let mut popover = div()
-                .id("branch-filter-popover")
-                .occlude()
-                .absolute()
-                .right(px(4.))
-                .top(px(header_h + item_h + 4.))
-                .w(px(BRANCH_FILTER_POPOVER_WIDTH))
-                .v_flex()
-                .gap(px(6.))
-                .p_2()
-                .bg(colors.elevated_surface_background)
-                .border_1()
-                .border_color(colors.border)
-                .rounded(px(6.))
-                .elevation_3(cx)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
-                        cx.stop_propagation();
-                    },
-                )
-                .on_mouse_move(|_: &MouseMoveEvent, _: &mut Window, cx: &mut App| {
-                    cx.stop_propagation();
-                })
-                .child(
-                    Label::new(title)
-                        .size(LabelSize::XSmall)
-                        .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Default),
-                )
-                .child(
-                    Label::new("Name")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
-                )
-                .child(div().w_full().child(editor))
-                .child(
-                    Label::new("Last used")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
-                );
-
-            for (index, age_filter) in BranchAgeFilter::OPTIONS.into_iter().enumerate() {
-                let selected = age_filter == active_age;
-                let weak = weak.clone();
-                popover = popover.child(
-                    div()
-                        .id(ElementId::NamedInteger(
-                            "branch-age-filter".into(),
-                            index as u64,
-                        ))
-                        .h_flex()
-                        .w_full()
-                        .h(px(24.))
-                        .px_2()
-                        .gap_1()
-                        .items_center()
-                        .rounded(px(4.))
-                        .when(selected, |el| el.bg(colors.ghost_element_selected))
-                        .hover(|el| el.bg(colors.ghost_element_hover))
-                        .cursor_pointer()
-                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                            weak.update(cx, |this, cx| {
-                                this.set_branch_age_filter(target, age_filter, cx);
-                            })
-                            .ok();
-                        })
-                        .child(div().w(px(14.)).flex_shrink_0().when(selected, |el| {
-                            el.child(
-                                rgitui_ui::Icon::new(IconName::Check)
-                                    .size(rgitui_ui::IconSize::XSmall)
-                                    .color(Color::Accent),
-                            )
-                        }))
-                        .child(
-                            Label::new(age_filter.label())
-                                .size(LabelSize::XSmall)
-                                .color(if selected {
-                                    Color::Accent
-                                } else {
-                                    Color::Default
-                                }),
-                        ),
-                );
-            }
-
-            if target == BranchFilterTarget::Local {
-                let weak = weak.clone();
-                popover = popover.child(
-                    div()
-                        .id("my-branches-filter")
-                        .h_flex()
-                        .w_full()
-                        .h(px(26.))
-                        .px_2()
-                        .gap_2()
-                        .items_center()
-                        .rounded(px(4.))
-                        .when(self.my_branches_active, |el| {
-                            el.bg(colors.ghost_element_selected)
-                        })
-                        .hover(|el| el.bg(colors.ghost_element_hover))
-                        .cursor_pointer()
-                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                            weak.update(cx, |this, cx| {
-                                this.my_branches_active = !this.my_branches_active;
-                                this.rebuild_flattened_branches();
-                                this.rebuild_nav_items();
-                                cx.notify();
-                            })
-                            .ok();
-                        })
-                        .child(
-                            rgitui_ui::Icon::new(IconName::User)
-                                .size(rgitui_ui::IconSize::XSmall)
-                                .color(if self.my_branches_active {
-                                    Color::Accent
-                                } else {
-                                    Color::Muted
-                                }),
-                        )
-                        .child(
-                            Label::new("Only my branches")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Default),
-                        ),
-                );
-            }
-
-            let weak = weak.clone();
-            popover = popover.child(
-                div().w_full().flex().justify_end().child(
-                    Button::new("clear-branch-filters", "Clear")
-                        .size(ButtonSize::Compact)
-                        .style(ButtonStyle::Subtle)
-                        .disabled(!filters_active)
-                        .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                            weak.update(cx, |this, cx| {
-                                this.clear_branch_filters(target, cx);
-                            })
-                            .ok();
-                        }),
-                ),
-            );
-
-            panel = panel.child(popover);
         }
 
         panel
@@ -5039,6 +5202,49 @@ mod tests {
     }
 
     #[test]
+    fn a_press_outside_closes_the_open_popover() {
+        let staged = SidebarPopover::ChangeListOptions(ChangeList::Staged);
+        let local = SidebarPopover::BranchFilter(BranchFilterTarget::Local);
+
+        // Anywhere else in the window, including other panels.
+        assert!(outside_press_closes_popover(Some(staged), None));
+        // Another header's button: close this one; that button opens its own.
+        assert!(outside_press_closes_popover(Some(staged), Some(local)));
+        // Nothing open, nothing to close.
+        assert!(!outside_press_closes_popover(None, Some(local)));
+    }
+
+    /// The open popover's own button toggles it closed on click. Closing it on
+    /// the press as well would let that click reopen it.
+    #[test]
+    fn a_press_on_the_open_popovers_own_button_is_left_to_the_button() {
+        let unstaged = SidebarPopover::ChangeListOptions(ChangeList::Unstaged);
+        assert!(!outside_press_closes_popover(
+            Some(unstaged),
+            Some(unstaged)
+        ));
+    }
+
+    #[test]
+    fn tags_stop_growing_at_eight_rows_and_scroll() {
+        for compactness in [
+            Compactness::Compact,
+            Compactness::Default,
+            Compactness::Comfortable,
+        ] {
+            assert_eq!(section_row_cap(SidebarSection::Tags, compactness), Some(8));
+            assert_eq!(
+                section_row_cap(SidebarSection::LocalBranches, compactness),
+                Some(branch_viewport_rows(compactness))
+            );
+            assert_eq!(
+                section_row_cap(SidebarSection::UnstagedChanges, compactness),
+                None
+            );
+        }
+    }
+
+    #[test]
     fn branch_age_filter_uses_last_commit_time() {
         let now = 2_000_000_000;
         let mut recent = make_branch("recent");
@@ -5153,5 +5359,117 @@ mod tests {
             additions: 0,
             deletions: 0,
         }
+    }
+}
+
+/// Drives a real `Sidebar` in a headless window to check that its header
+/// popovers close on a press anywhere outside them, not only inside the sidebar.
+#[cfg(test)]
+mod popover_view_tests {
+    use gpui::prelude::*;
+    use gpui::{div, point, px, Context, Entity, MouseButton, Render, Window};
+    use rgitui_git::{FileChangeKind, FileStatus};
+    use rgitui_test_support::ViewTest;
+
+    use super::{ChangeList, Sidebar, SidebarPopover};
+
+    const SIDEBAR_WIDTH: f32 = 400.0;
+
+    /// The sidebar beside an empty panel standing in for the commit graph.
+    struct Host {
+        sidebar: Entity<Sidebar>,
+    }
+
+    impl Host {
+        fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+            rgitui_settings::init_test(cx);
+            let sidebar = cx.new(Sidebar::new);
+            sidebar.update(cx, |sidebar, cx| {
+                let file = FileStatus {
+                    path: "src/main.rs".into(),
+                    kind: FileChangeKind::Modified,
+                    old_path: None,
+                    additions: 3,
+                    deletions: 1,
+                };
+                sidebar.update_status(vec![file.clone()], vec![file], cx);
+            });
+            Self { sidebar }
+        }
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_row()
+                .child(
+                    div()
+                        .w(px(SIDEBAR_WIDTH))
+                        .h_full()
+                        .child(self.sidebar.clone()),
+                )
+                .child(div().id("graph-stand-in").flex_1().h_full())
+        }
+    }
+
+    fn open_popover(host: &ViewTest<Host>) -> Option<SidebarPopover> {
+        host.read(|host, cx| host.sidebar.read(cx).open_popover)
+    }
+
+    fn open_staged_options(host: &mut ViewTest<Host>) {
+        host.update(|host, window, cx| {
+            host.sidebar.update(cx, |sidebar, cx| {
+                sidebar.toggle_popover(
+                    SidebarPopover::ChangeListOptions(ChangeList::Staged),
+                    window,
+                    cx,
+                );
+            });
+        });
+        host.draw();
+        assert_eq!(
+            open_popover(host),
+            Some(SidebarPopover::ChangeListOptions(ChangeList::Staged))
+        );
+    }
+
+    #[test]
+    fn a_click_in_another_panel_closes_the_popover() {
+        let mut host = ViewTest::open(Host::new);
+        host.draw();
+        open_staged_options(&mut host);
+
+        host.simulate_click(point(px(SIDEBAR_WIDTH + 300.), px(300.)), MouseButton::Left);
+
+        assert_eq!(open_popover(&host), None);
+    }
+
+    #[test]
+    fn a_click_elsewhere_in_the_sidebar_closes_the_popover() {
+        let mut host = ViewTest::open(Host::new);
+        host.draw();
+        open_staged_options(&mut host);
+
+        host.simulate_click(point(px(40.), px(900.)), MouseButton::Left);
+
+        assert_eq!(open_popover(&host), None);
+    }
+
+    #[test]
+    fn a_click_in_another_panel_closes_the_stash_menu() {
+        let mut host = ViewTest::open(Host::new);
+        host.draw();
+        host.update(|host, _, cx| {
+            host.sidebar.update(cx, |sidebar, cx| {
+                sidebar.show_stash_context_menu(0, point(px(40.), px(200.)), cx);
+            });
+        });
+        host.draw();
+
+        host.simulate_click(point(px(SIDEBAR_WIDTH + 300.), px(300.)), MouseButton::Left);
+
+        assert!(host.read(|host, cx| host.sidebar.read(cx).stash_context_menu.is_none()));
     }
 }
