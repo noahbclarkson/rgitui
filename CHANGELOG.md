@@ -1,40 +1,124 @@
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-07
+
+A conflict-resolution and AI release. Conflicted files open in a three-way
+resolver that saves and stages the result, and they can no longer be staged
+with their conflict markers left in. AI commit messages are rebuilt around five
+providers, each with its own key and a model list fetched from the provider,
+and generation can now be stopped, redone and undone. The commit graph can be
+hidden, a detached HEAD says where it is and offers the way back, and keyboard
+shortcuts keep working after a dialog closes.
+
+> **Upgrade recommended:** with *Use AI tools* on, which was the default, the
+> model could ask for `.env`, private keys and other credential files in the
+> repository and have their contents sent to the AI provider. Stage and Stage
+> All also staged a conflicted file as it stood, conflict markers included.
+
 ### Added
 
-- **Conflicted files now open a complete three-way resolver.** Each unresolved
-  region shows Current, an editable-by-choice Result, and Incoming side by side.
-  Regions can take either side, both sides in either order, or be reset before
-  the complete byte-preserving result is saved and staged. Whole-file choices
-  handle binary, add/add, modify/delete, executable and special-file conflicts;
-  an editor handoff supports manual resolutions. Stale resolver views and raw
-  conflict markers are rejected instead of silently overwriting or staging
-  them, and ordinary Stage / Stage All no longer bypasses the resolver. (#77)
+#### Conflict resolution
+
+- **Conflicted files open in a three-way resolver.** Clicking one in the
+  Unstaged list, or its new *Resolve* button, shows each conflict with Current,
+  Result and Incoming side by side. A conflict takes *Use Current*, *Use
+  Incoming*, both sides in either order, or *Reset* (`1`, `3`, `b`, `Shift+B`,
+  `0`), and *All Current* / *All Incoming* fill whichever are still unresolved.
+  *Save & Stage* (`Ctrl+Enter`) writes the file and stages it once every
+  conflict has a result, keeping the file's exact bytes, CRLF line endings and
+  a missing final newline included. In 0.4.1 a conflicted file opened as an
+  ordinary diff with the markers in it. (#78, closes #77)
+- **Conflicts with no text to merge are resolved as a whole file.** Binary
+  files, symlinks, submodules and modify/delete conflicts offer *Use Current*
+  or *Use Incoming* for the whole file, and choosing the deleted side stages
+  the deletion. (#78)
+- **A conflict that needs hand-editing can be finished in an editor.** The
+  Result is filled by choices, not typed into. *Open File* (`e`) opens the
+  working copy in the configured editor, and *Stage Working Copy* stages it
+  after checking that no conflict markers are left. (#78)
+- **The resolver will not overwrite what it has not seen.** Saving is refused
+  when the conflict changed in the index, or the file changed on disk, while
+  the resolver was open. (#78)
+
+#### AI commit messages
+
+- **OpenRouter joins Google Gemini, OpenAI, Anthropic and DeepSeek**, and
+  Settings > AI is rebuilt as a list of providers. Each one keeps its own API
+  key in the OS keychain and its own model, so switching provider no longer
+  means re-entering a key and losing the model choice. *Test* checks a key
+  against the provider, and *Get a key* opens the page where one is created.
+  (#79)
+- **The model list comes from the provider.** A searchable picker replaces the
+  fixed row of model buttons and lists what the provider currently offers,
+  with each model's context size and, where the provider reports them, its
+  price and whether it supports tools. *Cheap*, *Tools* and *Free* narrow the
+  list, and an id that is not listed can be typed and used. A saved model the
+  provider no longer lists is flagged with a suggested replacement. The list is
+  cached, falls back to one shipped with rgitui, and has a *Refresh* button.
+  (#79, #82)
+- **Custom endpoints for OpenAI-compatible providers.** *Base URL*, under
+  *Advanced*, points OpenAI, DeepSeek or OpenRouter at a gateway or a local
+  server, and a custom endpoint works without an API key for servers that do
+  not ask for one. The URL must be `https://`, or `http://` for localhost, and
+  Settings names the host the key will be sent to. (#79)
+- **Generation shows what it is doing, and can be stopped, redone and
+  undone.** While it runs, the commit panel names the step, such as *Reading
+  src/main.rs* or *Thinking…*, beside a button that stops it. Afterwards
+  *Regenerate* asks again, its menu regenerates in another commit style for
+  that one request, and *Undo* restores the message the AI replaced. (#79,
+  #80)
+
+#### Interface
+
 - **The commit graph can be hidden** with `Ctrl+Shift+G`, the chevron in the
-  bottom panel's tab bar, or the palette, so the diff fills the center column.
-  The diff viewer is no longer capped at 600px either: it can grow until the
-  graph is down to a sliver. (#83)
+  bottom panel's tab bar, or *View: Toggle Commit Graph* in the palette, so the
+  diff fills the center column. The choice is saved with the layout. The diff
+  viewer is no longer capped at 600px either: it can grow until the graph is
+  down to 120px. (#83, closes #81)
 - **A detached HEAD says so, and offers the way back.** A banner names the
   commit HEAD is detached at, with *Show in Graph* and a *Return to* button for
-  the branch HEAD was on (or *Switch Branch…* when there is none). The same move is
-  available anywhere as *Git: Switch to Previous Branch*, which works like
-  `git switch -`. (#85)
+  the branch HEAD was on, or *Switch Branch…*, which opens the branch list in
+  the sidebar, when there is none. The same move is in the palette as *Git:
+  Switch to Previous Branch*, which works like `git switch -` and can be given
+  a shortcut. (#86, closes #85)
 - **Line counts in the Staged and Unstaged lists.** The ⋯ button on either
   header toggles a +N −N count and bar beside each file. The choice is saved and
   off by default, and the counts are not computed while it is off. (#87)
 
 ### Changed
 
+- **Stage and Stage All leave conflicted files alone.** In the Unstaged list a
+  conflicted file's Stage and Discard buttons are replaced by *Resolve*.
+  Staging one is refused with a pointer to the resolver, and Stage All stages
+  everything else and skips conflicted files without saying so. Both used to
+  stage the file as it stood, conflict markers included. A file resolved by
+  hand is staged with *Stage Working Copy* in the resolver. (#78)
 - **Double-clicking a commit checks out its branch.** When a local branch
   points at the commit, that branch is checked out instead of detaching HEAD at
-  the same commit; double-clicking the commit the current branch is on does
-  nothing. Commits with no local branch still detach, and *Checkout commit* in
-  the context menu always does. (#85)
+  the same commit; when it is the current branch, a toast says it is already
+  checked out. Commits with no local branch still detach, and *Checkout
+  commit* in the context menu always does. (#86)
 - **HEAD is easier to find in the graph.** Its badge reads *→ HEAD*, or *→ HEAD
   (detached)*, and the row keeps its marker while selected. A detached HEAD's
   row is tinted in the warning colour rather than a blue that read as a
   selection. The title and status bars name the commit a detached HEAD is on
-  instead of just "detached". (#85)
+  instead of just "detached". (#86)
+- **The AI button says why it is unavailable.** It reads *AI is off*, *Add an
+  API key* or *Stage files to use AI*, and the first two open Settings > AI.
+  AI errors stay on screen with an *Open Settings* button. (#79)
+- **AI settings are renamed, and the Settings window has no Save button.**
+  *Inject project context* is now *Include project context*, and *Use AI
+  tools* is *Let the model read files*. Text fields save on Enter or when they
+  lose focus. (#79)
+- **AI settings and keys are migrated on first launch.** The saved API key is
+  copied to the active provider's keychain entry, and the old entry is left in
+  place so 0.4.1 still finds it. A saved `gemini-2.0-flash` (the old default),
+  `gemini-1.5-flash`, `gemini-1.5-pro`, `claude-sonnet-4-5-20241022`, `o1`,
+  `o1-mini`, `o3` or `o4-mini` is replaced with its provider's new default,
+  and any other saved model is kept. (#79)
+- **Less of a large change is put in the AI prompt.** The staged diff is cut
+  off at 40 KB rather than 200 KB, and the list of changed files at 8 KB. With
+  tools on, the model reads what it needs beyond that. (#79, #80)
 - **The Tags section stops growing at 8 rows** and scrolls, like Branches.
   (#87)
 - **Badges have tighter corners**, and two-letter initials in co-author avatars
@@ -42,29 +126,73 @@
 
 ### Fixed
 
+#### AI commit messages
+
+- **The AI could be handed `.env` and other secrets.** With tools on, a file
+  request was refused only when the path left the repository, so a model that
+  asked for `.env` got it. File reads now refuse `.git/`, credential and key
+  files (`.env*`, `credentials*`, `secrets*`, SSH keys, `.pem`, `.key` and
+  similar) and anything git-ignored, and the file listing leaves out
+  git-ignored paths too. (#79, #80)
+- **The Gemini API key was sent in the request URL.** It now goes in a header.
+  (#79)
+- **Anthropic never produced a commit message with tools on**, which was the
+  default: the first request was sent with an empty conversation. (#79)
+- **Generation with tools could end in "Max tool iterations reached" and no
+  message.** The model had three rounds and could spend all of them asking for
+  context. It now has eight, is reminded as they run out, gets no tools on the
+  last round so it has to answer, and a draft it wrote alongside a tool request
+  is kept. (#80)
+- **A stalled request left the spinner running.** There was no timeout and no
+  way to cancel. A request now times out after 60 seconds and a whole
+  generation after 180. (#79, #80)
+- **A generated message could land in another tab's commit box.** The result
+  went to whichever tab was active when it arrived; it now goes to the
+  repository it was generated for. (#79)
+- **`Ctrl+G` sent a request with AI turned off.** Only the button checked; the
+  shortcut and the palette now follow the same rules. (#79)
+- **A fresh install showed no model selected**, because the default was not in
+  the list of models offered. (#79)
+
+#### Keyboard and focus
+
 - **Keyboard shortcuts stopped working after the command palette or a dialog
   closed**, until a panel was clicked. Focus is now handed back whenever an
   overlay closes, and whenever the panel holding it is swapped out: Esc in
   Reflog, File History, Blame, Submodules, Bisect or Search, or switching tab.
-  (#84, #85)
+  (#84, #86)
 - **The Stash button and `Ctrl+Z` showed nothing** once a repository was open;
   the stash dialog is drawn again. (#84)
-- **Debug builds crashed on Windows** with a main-thread stack overflow. (#84)
-- **Linux packages reported version 0.1.0.** The AppImage's desktop entry now
-  carries `X-AppImage-Version`, and the AppStream metainfo lists every release,
-  so AppImage managers and software centres show the real version. A test fails
-  when the metainfo falls behind the crate version or this changelog. (#85)
-- **Rename Branch offered to rename a branch called `HEAD`** while HEAD was
-  detached, and the title bar named it as if it were a branch. (#85)
+- **The command palette could offer commands for a state the repository had
+  left.** Which stash, changes and remote commands it lists was decided from a
+  snapshot that a background refresh did not rebuild, so a command stayed
+  hidden, or on offer, until a selection or tab change rebuilt it. (#86)
+- **Arrow keys in the diff viewer lost their place.** With wrapping off, moving
+  past the bottom edge scrolled a full page; the first press started from the
+  top of the file rather than the top of the screen; and a clicked line did
+  not move the cursor. The cursor now moves one row at a time from where you
+  are looking, and switching between unified and split keeps the scroll
+  position. (#87)
+
+#### Interface
+
 - **Sidebar popovers and the stash menu stayed open** after a click in another
   panel, such as the graph. They now close on a click anywhere outside them.
   The remote branch filter also opens under its own button instead of at the
   top of the sidebar. (#87)
-- **Arrow keys in the diff viewer** jumped a full page past the bottom edge,
-  started from the top of the file after scrolling with the wheel, and ignored
-  a clicked line. The cursor now moves one row at a time from where you are
-  looking, and switching between unified and split keeps the scroll position.
-  (#87)
+- **Rename Branch offered to rename a branch called `HEAD`** while HEAD was
+  detached, and the title bar named it as if it were a branch. (#86)
+
+#### Packaging and builds
+
+- **Linux packages reported version 0.1.0.** The AppImage's desktop entry now
+  carries `X-AppImage-Version`, and the AppStream metainfo lists every release,
+  so AppImage managers and software centres show the real version. A test fails
+  when the metainfo falls behind the crate version or this changelog. (#86,
+  fixes #85)
+- **Debug builds crashed on Windows** with a main-thread stack overflow about a
+  second after a repository loaded. Windows binaries now reserve an 8 MB
+  stack, the size Linux and macOS already give the main thread. (#84)
 
 ## [0.4.1] - 2026-08-26
 
@@ -1183,7 +1311,8 @@ establishes a feature-complete baseline for day-to-day use.
 - Only x86_64 Windows and Linux, and x86_64/aarch64 macOS are built by CI.
   Other architectures can be compiled locally with `cargo build --release`.
 
-[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/noahbclarkson/rgitui/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/noahbclarkson/rgitui/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/noahbclarkson/rgitui/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/noahbclarkson/rgitui/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/noahbclarkson/rgitui/compare/v0.3.1...v0.3.2
