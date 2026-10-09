@@ -2728,8 +2728,8 @@ impl SettingsView {
 
         let mut profiles_card = Self::setting_card(cx);
         profiles_card = profiles_card.child(Self::setting_label(
-            "Profiles",
-            "All saved accounts live here. Select one to connect it, paste a token, or adjust host matching.",
+            language.tr(TrKey::AuthProfilesTitle),
+            language.tr(TrKey::AuthProfilesDesc),
         ));
 
         if self.git_providers.is_empty() {
@@ -2744,16 +2744,14 @@ impl SettingsView {
                     .border_1()
                     .border_color(colors.border_variant)
                     .child(
-                        Label::new("No provider accounts configured yet.")
+                        Label::new(language.tr(TrKey::AuthProfilesEmptyTitle))
                             .size(LabelSize::Small)
                             .weight(FontWeight::SEMIBOLD),
                     )
                     .child(
-                        Label::new(
-                            "Add a GitHub account to start with the default flow, or choose Manual / Custom Host for enterprise and other HTTPS remotes.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(language.tr(TrKey::AuthProfilesEmptyDesc))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             );
         } else {
@@ -3139,8 +3137,8 @@ impl SettingsView {
         let mut https_card = Self::setting_card(cx);
         https_card = https_card
             .child(Self::setting_label(
-                "Fallback HTTPS Token / PAT",
-                "Used only when no profile-specific account matches the remote host. Leave this empty unless you truly need a generic fallback.",
+                language.tr(TrKey::AuthHttpsFallbackTitle),
+                language.tr(TrKey::AuthHttpsFallbackDesc),
             ))
             .child(self.masked_editor_row(
                 "git-https-token-input",
@@ -3158,8 +3156,8 @@ impl SettingsView {
         let mut ssh_card = Self::setting_card(cx);
         ssh_card = ssh_card
             .child(Self::setting_label(
-                "SSH Key Override",
-                "Optional. If set, this key is tried first for SSH remotes. If SSH fails and you have a GitHub account above, rgitui automatically falls back to HTTPS.",
+                language.tr(TrKey::AuthSshOverrideTitle),
+                language.tr(TrKey::AuthSshOverrideDesc),
             ))
             .child(
                 div()
@@ -3167,13 +3165,9 @@ impl SettingsView {
                     .w_full()
                     .gap(px(6.))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.icon_editor_row(
-                                &self.git_ssh_key_path_editor,
-                                IconName::File,
-                            )),
+                        div().flex_1().min_w_0().child(
+                            self.icon_editor_row(&self.git_ssh_key_path_editor, IconName::File),
+                        ),
                     )
                     .when(has_ssh_key, |el| {
                         el.child(
@@ -3205,17 +3199,12 @@ impl SettingsView {
                         .border_1()
                         .border_color(colors.border_variant)
                         .child(
-                            div()
-                                .v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap(px(2.))
-                                .child(
-                                    Label::new(format!("Detected: {}", key_path.clone()))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted)
-                                        .truncate(),
-                                ),
+                            div().v_flex().flex_1().min_w_0().gap(px(2.)).child(
+                                Label::new(format!("Detected: {}", key_path.clone()))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted)
+                                    .truncate(),
+                            ),
                         )
                         .when(!already_selected, |el| {
                             el.child(
@@ -3248,12 +3237,12 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Sign Commits")
+                                Label::new(language.tr(TrKey::AuthSignCommitsTitle))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new("Sign commits with your configured GPG key.")
+                                Label::new(language.tr(TrKey::AuthSignCommitsDesc))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             ),
@@ -3277,8 +3266,8 @@ impl SettingsView {
                     ),
             )
             .child(Self::setting_label(
-                "GPG Key ID",
-                "Leave empty to use your existing git config default signing key.",
+                language.tr(TrKey::AuthGpgKeyTitle),
+                language.tr(TrKey::AuthGpgKeyDesc),
             ))
             .child(self.icon_editor_row(&self.git_gpg_key_id_editor, IconName::Eye));
         section = section.child(gpg_card);
@@ -3289,29 +3278,23 @@ impl SettingsView {
                     .v_flex()
                     .gap(px(6.))
                     .child(Self::setting_label(
-                        "How Authentication Works",
-                        "rgitui detects the remote URL protocol and authenticates accordingly.",
+                        language.tr(TrKey::AuthHowTitle),
+                        language.tr(TrKey::AuthHowDesc),
                     ))
                     .child(
-                        Label::new(
-                            "HTTPS remotes: uses your GitHub account token (above), or falls back to your system git credential helper (e.g. gh auth).",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(language.tr(TrKey::AuthHowHttps))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     )
                     .child(
-                        Label::new(
-                            "SSH remotes: if no SSH key is configured above, and your system has an HTTPS credential helper, rgitui automatically rewrites SSH to HTTPS so your GitHub login works.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(language.tr(TrKey::AuthHowSshFallback))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     )
                     .child(
-                        Label::new(
-                            "SSH remotes with a key: uses the SSH key path above (or ssh-agent) directly.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(language.tr(TrKey::AuthHowSshKey))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             ),
         );

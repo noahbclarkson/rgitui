@@ -400,6 +400,74 @@ impl Language {
                 Language::English => "Manual / Custom Host",
                 Language::SimplifiedChinese => "手动 / 自定义主机",
             },
+            (_, TrKey::AuthProfilesTitle) => match self {
+                Language::English => "Profiles",
+                Language::SimplifiedChinese => "账户档案",
+            },
+            (_, TrKey::AuthProfilesDesc) => match self {
+                Language::English => "All saved accounts live here. Select one to connect it, paste a token, or adjust host matching.",
+                Language::SimplifiedChinese => "所有已保存的账户都在这里。选择一个进行连接、粘贴令牌或调整主机匹配。",
+            },
+            (_, TrKey::AuthProfilesEmptyTitle) => match self {
+                Language::English => "No provider accounts configured yet.",
+                Language::SimplifiedChinese => "尚未配置服务商账户。",
+            },
+            (_, TrKey::AuthProfilesEmptyDesc) => match self {
+                Language::English => "Add a GitHub account to start with the default flow, or choose Manual / Custom Host for enterprise and other HTTPS remotes.",
+                Language::SimplifiedChinese => "先添加 GitHub 账户以使用默认流程；企业版与其他 HTTPS 远程请选择“手动 / 自定义主机”。",
+            },
+            (_, TrKey::AuthHttpsFallbackTitle) => match self {
+                Language::English => "Fallback HTTPS Token / PAT",
+                Language::SimplifiedChinese => "备用 HTTPS 令牌 / PAT",
+            },
+            (_, TrKey::AuthHttpsFallbackDesc) => match self {
+                Language::English => "Used only when no profile-specific account matches the remote host. Leave this empty unless you truly need a generic fallback.",
+                Language::SimplifiedChinese => "仅在没有账户档案匹配远程主机时使用。除非确实需要通用备用，否则请留空。",
+            },
+            (_, TrKey::AuthSshOverrideTitle) => match self {
+                Language::English => "SSH Key Override",
+                Language::SimplifiedChinese => "SSH 密钥覆盖",
+            },
+            (_, TrKey::AuthSshOverrideDesc) => match self {
+                Language::English => "Optional. If set, this key is tried first for SSH remotes. If SSH fails and you have a GitHub account above, rgitui automatically falls back to HTTPS.",
+                Language::SimplifiedChinese => "可选。如果设置，SSH 远程将优先尝试此密钥。如果 SSH 失败且上方已配置 GitHub 账户，rgitui 会自动回退到 HTTPS。",
+            },
+            (_, TrKey::AuthSignCommitsTitle) => match self {
+                Language::English => "Sign Commits",
+                Language::SimplifiedChinese => "签署提交",
+            },
+            (_, TrKey::AuthSignCommitsDesc) => match self {
+                Language::English => "Sign commits with your configured GPG key.",
+                Language::SimplifiedChinese => "使用你配置的 GPG 密钥签署提交。",
+            },
+            (_, TrKey::AuthGpgKeyTitle) => match self {
+                Language::English => "GPG Key ID",
+                Language::SimplifiedChinese => "GPG 密钥 ID",
+            },
+            (_, TrKey::AuthGpgKeyDesc) => match self {
+                Language::English => "Leave empty to use your existing git config default signing key.",
+                Language::SimplifiedChinese => "留空则使用现有 git 配置中的默认签名密钥。",
+            },
+            (_, TrKey::AuthHowTitle) => match self {
+                Language::English => "How Authentication Works",
+                Language::SimplifiedChinese => "认证工作原理",
+            },
+            (_, TrKey::AuthHowDesc) => match self {
+                Language::English => "rgitui detects the remote URL protocol and authenticates accordingly.",
+                Language::SimplifiedChinese => "rgitui 会检测远程 URL 协议并据此进行认证。",
+            },
+            (_, TrKey::AuthHowHttps) => match self {
+                Language::English => "HTTPS remotes: uses your GitHub account token (above), or falls back to your system git credential helper (e.g. gh auth).",
+                Language::SimplifiedChinese => "HTTPS 远程：使用你的 GitHub 账户令牌（见上方），或回退到系统 git 凭证助手（例如 gh auth）。",
+            },
+            (_, TrKey::AuthHowSshFallback) => match self {
+                Language::English => "SSH remotes: if no SSH key is configured above, and your system has an HTTPS credential helper, rgitui automatically rewrites SSH to HTTPS so your GitHub login works.",
+                Language::SimplifiedChinese => "SSH 远程：如果上方未配置 SSH 密钥，且系统装有 HTTPS 凭证助手，rgitui 会自动将 SSH 改写为 HTTPS，以便 GitHub 登录生效。",
+            },
+            (_, TrKey::AuthHowSshKey) => match self {
+                Language::English => "SSH remotes with a key: uses the SSH key path above (or ssh-agent) directly.",
+                Language::SimplifiedChinese => "带密钥的 SSH 远程：直接使用上方的 SSH 密钥路径（或 ssh-agent）。",
+            },
             (_, TrKey::AiPageDesc) => match self {
                 Language::English => "Providers, models, and how commit messages get written.",
                 Language::SimplifiedChinese => "服务商、模型，以及提交信息的生成方式。",
@@ -2169,6 +2237,23 @@ pub enum TrKey {
     SignInGitHub,
     AddGitLab,
     ManualCustom,
+    AuthProfilesTitle,
+    AuthProfilesDesc,
+    AuthProfilesEmptyTitle,
+    AuthProfilesEmptyDesc,
+    AuthHttpsFallbackTitle,
+    AuthHttpsFallbackDesc,
+    AuthSshOverrideTitle,
+    AuthSshOverrideDesc,
+    AuthSignCommitsTitle,
+    AuthSignCommitsDesc,
+    AuthGpgKeyTitle,
+    AuthGpgKeyDesc,
+    AuthHowTitle,
+    AuthHowDesc,
+    AuthHowHttps,
+    AuthHowSshFallback,
+    AuthHowSshKey,
     AiPageDesc,
     AiSectionConnection,
     AiSectionBehaviour,
@@ -4446,6 +4531,23 @@ mod tests {
             TrKey::SignInGitHub,
             TrKey::AddGitLab,
             TrKey::ManualCustom,
+            TrKey::AuthProfilesTitle,
+            TrKey::AuthProfilesDesc,
+            TrKey::AuthProfilesEmptyTitle,
+            TrKey::AuthProfilesEmptyDesc,
+            TrKey::AuthHttpsFallbackTitle,
+            TrKey::AuthHttpsFallbackDesc,
+            TrKey::AuthSshOverrideTitle,
+            TrKey::AuthSshOverrideDesc,
+            TrKey::AuthSignCommitsTitle,
+            TrKey::AuthSignCommitsDesc,
+            TrKey::AuthGpgKeyTitle,
+            TrKey::AuthGpgKeyDesc,
+            TrKey::AuthHowTitle,
+            TrKey::AuthHowDesc,
+            TrKey::AuthHowHttps,
+            TrKey::AuthHowSshFallback,
+            TrKey::AuthHowSshKey,
             TrKey::AiPageDesc,
             TrKey::AiSectionConnection,
             TrKey::AiSectionBehaviour,
@@ -4960,6 +5062,68 @@ mod tests {
         assert_eq!(
             Language::English.tr(TrKey::CloneUrlPh),
             "Repository URL (e.g. https://github.com/user/repo.git)"
+        );
+        assert_eq!(Language::English.tr(TrKey::AuthProfilesTitle), "Profiles");
+        assert_eq!(
+            Language::English.tr(TrKey::AuthProfilesDesc),
+            "All saved accounts live here. Select one to connect it, paste a token, or adjust host matching."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthProfilesEmptyTitle),
+            "No provider accounts configured yet."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthProfilesEmptyDesc),
+            "Add a GitHub account to start with the default flow, or choose Manual / Custom Host for enterprise and other HTTPS remotes."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHttpsFallbackTitle),
+            "Fallback HTTPS Token / PAT"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHttpsFallbackDesc),
+            "Used only when no profile-specific account matches the remote host. Leave this empty unless you truly need a generic fallback."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthSshOverrideTitle),
+            "SSH Key Override"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthSshOverrideDesc),
+            "Optional. If set, this key is tried first for SSH remotes. If SSH fails and you have a GitHub account above, rgitui automatically falls back to HTTPS."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthSignCommitsTitle),
+            "Sign Commits"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthSignCommitsDesc),
+            "Sign commits with your configured GPG key."
+        );
+        assert_eq!(Language::English.tr(TrKey::AuthGpgKeyTitle), "GPG Key ID");
+        assert_eq!(
+            Language::English.tr(TrKey::AuthGpgKeyDesc),
+            "Leave empty to use your existing git config default signing key."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowTitle),
+            "How Authentication Works"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowDesc),
+            "rgitui detects the remote URL protocol and authenticates accordingly."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowHttps),
+            "HTTPS remotes: uses your GitHub account token (above), or falls back to your system git credential helper (e.g. gh auth)."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowSshFallback),
+            "SSH remotes: if no SSH key is configured above, and your system has an HTTPS credential helper, rgitui automatically rewrites SSH to HTTPS so your GitHub login works."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowSshKey),
+            "SSH remotes with a key: uses the SSH key path above (or ssh-agent) directly."
         );
     }
 
