@@ -564,7 +564,11 @@ impl SettingsView {
                 .global::<SettingsState>()
                 .ai_api_key_for(*provider)
                 .unwrap_or_default();
-            let placeholder = format!("Paste your {} API key", provider.display_name());
+            let placeholder = settings.language.tr(TrKey::AiKeyPlaceholderFmt).replacen(
+                "{}",
+                provider.display_name(),
+                1,
+            );
             let editor = cx.new(|cx| {
                 let mut input = TextInput::new(cx);
                 input.set_placeholder(placeholder);
@@ -4348,6 +4352,16 @@ impl SettingsView {
         self.editor_command_editor.update(cx, |ed, _| {
             ed.set_placeholder(sync.tr(TrKey::SetCustomCmdPh));
         });
+        for provider in AiProvider::ALL {
+            if let Some(editor) = self.ai_key_editors.get(provider) {
+                let placeholder =
+                    sync.tr(TrKey::AiKeyPlaceholderFmt)
+                        .replacen("{}", provider.display_name(), 1);
+                editor.update(cx, |ed, _| {
+                    ed.set_placeholder(placeholder);
+                });
+            }
+        }
         // Give wrapping text a definite width during GPUI's measurement pass.
         // A percentage width beneath the scroll container is resolved too late
         // by the macOS text system and can cache a one-glyph wrap width.

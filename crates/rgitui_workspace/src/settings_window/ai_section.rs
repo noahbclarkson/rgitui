@@ -521,35 +521,47 @@ impl SettingsView {
         let provider = self.ai_provider;
         let state = self.connection_state(provider);
         let enabled = self.ai_enabled;
+        let language = self.language;
 
-        let detail = if !enabled {
-            "AI is turned off. Nothing will be sent to any provider.".to_string()
-        } else {
-            match state {
-                ConnectionState::Connected => {
-                    let verified = self
-                        .ai_verified_at
-                        .get(&provider)
-                        .map(|at| format!(" · verified {}", relative_age(at.elapsed())))
-                        .unwrap_or_default();
-                    format!(
-                        "{} · {}{}",
+        let detail =
+            if !enabled {
+                language.tr(TrKey::AiStatusOff).to_string()
+            } else {
+                match state {
+                    ConnectionState::Connected => {
+                        let verified = self
+                            .ai_verified_at
+                            .get(&provider)
+                            .map(|at| format!(" · verified {}", relative_age(at.elapsed())))
+                            .unwrap_or_default();
+                        format!(
+                            "{} · {}{}",
+                            provider.display_name(),
+                            self.ai_model,
+                            verified
+                        )
+                    }
+                    ConnectionState::Testing => language.tr(TrKey::AiStatusTestingFmt).replacen(
+                        "{}",
                         provider.display_name(),
-                        self.ai_model,
-                        verified
-                    )
+                        1,
+                    ),
+                    ConnectionState::Failed => self
+                        .ai_connection_error
+                        .get(&provider)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            language.tr(TrKey::AiStatusRejectedFmt).replacen(
+                                "{}",
+                                provider.display_name(),
+                                1,
+                            )
+                        }),
+                    ConnectionState::Unconfigured => language
+                        .tr(TrKey::AiStatusAddKeyFmt)
+                        .replacen("{}", provider.display_name(), 1),
                 }
-                ConnectionState::Testing => format!("Testing {}…", provider.display_name()),
-                ConnectionState::Failed => self
-                    .ai_connection_error
-                    .get(&provider)
-                    .cloned()
-                    .unwrap_or_else(|| format!("{} rejected this key.", provider.display_name())),
-                ConnectionState::Unconfigured => {
-                    format!("Add a {} API key to get started.", provider.display_name())
-                }
-            }
-        };
+            };
 
         div()
             .flex()
@@ -569,7 +581,7 @@ impl SettingsView {
                         } else {
                             ConnectionState::Unconfigured
                         },
-                        "AI Commit Messages",
+                        language.tr(TrKey::AiStatusTitle),
                     )
                     .detail(detail),
                 ),
@@ -589,7 +601,7 @@ impl SettingsView {
                         this.save_settings(cx);
                     }))
                     .child(
-                        Label::new("Enabled")
+                        Label::new(language.tr(TrKey::AiEnabledToggle))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     )
@@ -768,6 +780,7 @@ impl SettingsView {
         // `div().flex().flex_col()`, never `v_flex()`/`h_flex()` here: the
         // forced vertical centring in the shared helpers is a recurring cause
         // of broken scroll containers and misaligned children.
+        let language = self.language;
         let mut body = div()
             .flex()
             .flex_col()
@@ -795,12 +808,12 @@ impl SettingsView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("Connect an AI provider")
+                        Label::new(language.tr(TrKey::AiConnectTitle))
                             .size(LabelSize::Default)
                             .weight(FontWeight::SEMIBOLD),
                     )
                     .child(
-                        Label::new("rgitui writes commit messages from your staged diff.")
+                        Label::new(language.tr(TrKey::AiConnectDesc))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
@@ -813,14 +826,14 @@ impl SettingsView {
         let status_line: Option<SharedString> = match state {
             ConnectionState::Connected if self.provider_has_key(provider) => Some(
                 match self.ai_verified_at.get(&provider) {
-                    Some(at) => format!(
-                        "Verified {} · stored in {}",
-                        relative_age(at.elapsed()),
-                        credential_store_name()
-                    ),
-                    None => format!(
-                        "Key stored in {}. Test it to confirm it works.",
-                        credential_store_name()
+                    Some(at) => language
+                        .tr(TrKey::AiKeyVerifiedFmt)
+                        .replacen("{}", &relative_age(at.elapsed()), 1)
+                        .replacen("{}", credential_store_name(), 1),
+                    None => language.tr(TrKey::AiKeyStoredHintFmt).replacen(
+                        "{}",
+                        credential_store_name(),
+                        1,
                     ),
                 }
                 .into(),
@@ -828,27 +841,31 @@ impl SettingsView {
             // A keyless custom endpoint is configured without a stored key,
             // so it needs its own line rather than the "add a key" default.
             ConnectionState::Connected if configured => Some(
-                format!(
-                    "No API key needed — requests go to {}.",
-                    rgitui_ai::effective_host(provider, &self.ai_base_url_override)
-                )
-                .into(),
+                language
+                    .tr(TrKey::AiNoKeyHintFmt)
+                    .replacen(
+                        "{}",
+                        &rgitui_ai::effective_host(provider, &self.ai_base_url_override),
+                        1,
+                    )
+                    .into(),
             ),
-            ConnectionState::Testing => {
-                Some(format!("Testing {}…", provider.display_name()).into())
-            }
+            ConnectionState::Testing => Some(
+                language
+                    .tr(TrKey::AiStatusTestingFmt)
+                    .replacen("{}", provider.display_name(), 1)
+                    .into(),
+            ),
             ConnectionState::Failed => self
                 .ai_connection_error
                 .get(&provider)
                 .cloned()
                 .map(SharedString::from),
             _ => Some(
-                format!(
-                    "Keys are stored in {}, never in settings.json, and are only read when a \
-                     request is sent.",
-                    credential_store_name()
-                )
-                .into(),
+                language
+                    .tr(TrKey::AiKeysStoredNoteFmt)
+                    .replacen("{}", credential_store_name(), 1)
+                    .into(),
             ),
         };
         if let Some(line) = status_line {
@@ -902,7 +919,7 @@ impl SettingsView {
                     .items_center()
                     .gap(px(8.))
                     .child(
-                        Label::new("API key")
+                        Label::new(self.language.tr(TrKey::AiApiKeyLabel))
                             .size(LabelSize::Small)
                             .weight(FontWeight::SEMIBOLD),
                     )
@@ -919,7 +936,7 @@ impl SettingsView {
                     .child(
                         Button::new(
                             ElementId::Name(format!("ai-key-url-{}", provider.id()).into()),
-                            "Get a key",
+                            self.language.tr(TrKey::AiGetKeyBtn),
                         )
                         .style(ButtonStyle::Subtle)
                         .size(ButtonSize::Compact)
@@ -1021,7 +1038,7 @@ impl SettingsView {
             .w_full()
             .gap(px(4.))
             .child(
-                Label::new("Model")
+                Label::new(self.language.tr(TrKey::AiModelLabel))
                     .size(LabelSize::Small)
                     .weight(FontWeight::SEMIBOLD),
             )
@@ -1078,10 +1095,12 @@ impl SettingsView {
         match &status {
             PinnedModelStatus::Missing { suggestion } => {
                 let mut warning = div().flex().flex_row().items_center().gap(px(6.)).child(
-                    Label::new(format!(
-                        "`{pinned}` is not in {}'s current model list. It may have been retired.",
-                        provider.display_name()
-                    ))
+                    Label::new(
+                        self.language
+                            .tr(TrKey::AiModelMissingFmt)
+                            .replacen("{}", pinned.as_str(), 1)
+                            .replacen("{}", provider.display_name(), 1),
+                    )
                     .size(LabelSize::XSmall)
                     .color(Color::Warning),
                 );
@@ -1091,7 +1110,11 @@ impl SettingsView {
                             ElementId::Name(
                                 format!("ai-model-suggestion-{}", provider.id()).into(),
                             ),
-                            format!("Use {suggestion}"),
+                            self.language.tr(TrKey::AiUseSuggestionFmt).replacen(
+                                "{}",
+                                &suggestion,
+                                1,
+                            ),
                         )
                         .style(ButtonStyle::Subtle)
                         .size(ButtonSize::Compact)
@@ -1129,11 +1152,12 @@ impl SettingsView {
                 .items_center()
                 .gap(px(8.))
                 .child(
-                    Label::new(format!(
-                        "{} models · {}",
-                        models.len(),
-                        catalog_source_label(source)
-                    ))
+                    Label::new(
+                        self.language
+                            .tr(TrKey::AiModelCountFmt)
+                            .replacen("{}", &models.len().to_string(), 1)
+                            .replacen("{}", &catalog_source_label(source), 1),
+                    )
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
                 )
@@ -1142,9 +1166,9 @@ impl SettingsView {
                     Button::new(
                         ElementId::Name(format!("ai-model-refresh-{}", provider.id()).into()),
                         if refreshing {
-                            "Refreshing…"
+                            self.language.tr(TrKey::AiRefreshingBtn)
                         } else {
-                            "Refresh"
+                            self.language.tr(TrKey::AiRefreshBtn)
                         },
                     )
                     .style(ButtonStyle::Subtle)
@@ -1195,7 +1219,7 @@ impl SettingsView {
                 .child(
                     Button::new(
                         ElementId::Name(format!("ai-connect-{}", provider.id()).into()),
-                        "Connect",
+                        self.language.tr(TrKey::AiConnectBtn),
                     )
                     .style(ButtonStyle::Filled)
                     .size(ButtonSize::Compact)
@@ -1218,7 +1242,7 @@ impl SettingsView {
             row = row.child(
                 Button::new(
                     ElementId::Name(format!("ai-use-{}", provider.id()).into()),
-                    "Use this provider",
+                    self.language.tr(TrKey::AiUseProviderBtn),
                 )
                 .style(ButtonStyle::Filled)
                 .size(ButtonSize::Compact)
@@ -1234,7 +1258,11 @@ impl SettingsView {
         row.child(
             Button::new(
                 ElementId::Name(format!("ai-test-{}", provider.id()).into()),
-                if testing { "Testing…" } else { "Test" },
+                if testing {
+                    self.language.tr(TrKey::AiTestingBtn)
+                } else {
+                    self.language.tr(TrKey::AiTestBtn)
+                },
             )
             .style(ButtonStyle::Outlined)
             .size(ButtonSize::Compact)
@@ -1249,7 +1277,7 @@ impl SettingsView {
         .child(
             Button::new(
                 ElementId::Name(format!("ai-remove-{}", provider.id()).into()),
-                "Remove key",
+                self.language.tr(TrKey::AiRemoveKeyBtn),
             )
             .style(ButtonStyle::Subtle)
             .size(ButtonSize::Compact)
@@ -1284,10 +1312,11 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let open = self.ai_advanced_open;
+        let language = self.language;
         let mut column = div().flex().flex_col().w_full().gap(px(6.)).child(
             Disclosure::new(
                 ElementId::Name(format!("ai-advanced-{}", provider.id()).into()),
-                "Advanced",
+                language.tr(TrKey::AiAdvancedLabel),
                 open,
             )
             .tab_index(tab_base + 9)
@@ -1306,7 +1335,7 @@ impl SettingsView {
 
         column = column
             .child(
-                Label::new("Base URL")
+                Label::new(language.tr(TrKey::AiBaseUrlLabel))
                     .size(LabelSize::Small)
                     .weight(FontWeight::SEMIBOLD),
             )
@@ -1315,15 +1344,14 @@ impl SettingsView {
                 Label::new(if overridden {
                     // Say plainly where the key goes. A user pointing this at
                     // a third-party gateway should see that stated.
-                    format!(
-                        "Requests go to {host} instead of {}. Your API key is sent to that host.",
-                        provider.default_host()
-                    )
+                    language
+                        .tr(TrKey::AiBaseUrlOverriddenFmt)
+                        .replacen("{}", host.as_str(), 1)
+                        .replacen("{}", provider.default_host(), 1)
                 } else {
-                    format!(
-                        "Empty means use {}. Only OpenAI-compatible providers honour an override.",
-                        provider.default_host()
-                    )
+                    language
+                        .tr(TrKey::AiBaseUrlEmptyFmt)
+                        .replacen("{}", provider.default_host(), 1)
                 })
                 .size(LabelSize::XSmall)
                 .color(if overridden {
@@ -1360,14 +1388,14 @@ impl SettingsView {
                         div()
                             .flex()
                             .flex_col()
-                            .child(Label::new("Send attribution headers").size(LabelSize::Small))
                             .child(
-                                Label::new(
-                                    "Adds HTTP-Referer and X-Title so rgitui appears on \
-                                     OpenRouter's public leaderboard. Never functional.",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                                Label::new(language.tr(TrKey::AiAttributionTitle))
+                                    .size(LabelSize::Small),
+                            )
+                            .child(
+                                Label::new(language.tr(TrKey::AiAttributionDesc))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
                             ),
                     ),
             );
@@ -1377,13 +1405,14 @@ impl SettingsView {
     }
 
     fn render_behaviour_card(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = self.language;
         let style = CommitStyle::from_id(&self.ai_commit_style).unwrap_or_default();
         let ids: Vec<&str> = CommitStyle::ALL.iter().map(|style| style.id()).collect();
 
         Self::setting_card(cx)
             .child(Self::setting_label(
-                "Commit style",
-                "How the AI should format commit messages.",
+                language.tr(TrKey::AiCommitStyleTitle),
+                language.tr(TrKey::AiCommitStyleDesc),
             ))
             .child(self.pill_group(
                 "commit-style",
@@ -1406,9 +1435,8 @@ impl SettingsView {
             .child(self.render_behaviour_toggle(
                 BehaviourToggle {
                     id: "ai-inject-ctx",
-                    title: "Include project context",
-                    detail:
-                        "Adds README.md, CLAUDE.md and AGENTS.md to the prompt. ~4k extra tokens per request.",
+                    title: language.tr(TrKey::AiCtxTitle),
+                    detail: language.tr(TrKey::AiCtxDesc),
                     checked: self.ai_inject_project_context,
                     tab_index: SETTINGS_TAB_INDEX_BASE + 80,
                 },
@@ -1421,9 +1449,8 @@ impl SettingsView {
             .child(self.render_behaviour_toggle(
                 BehaviourToggle {
                     id: "ai-use-tools",
-                    title: "Let the model read files",
-                    detail: "The model may request file contents and commit history. Slower and \
-                             more expensive; usually a better message.",
+                    title: language.tr(TrKey::AiToolsTitle),
+                    detail: language.tr(TrKey::AiToolsDesc),
                     checked: self.ai_use_tools,
                     tab_index: SETTINGS_TAB_INDEX_BASE + 81,
                 },
