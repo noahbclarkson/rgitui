@@ -658,6 +658,29 @@ impl CommandId {
         self.meta().description()
     }
 
+    /// Localized description for the settings shortcuts quick reference.
+    ///
+    /// Only the eight quick-reference rows have a Chinese string; every other
+    /// command falls back to the English doc comment so `docs/KEYBINDINGS.md`
+    /// and the keymap schema stay byte-identical to [`CommandId::description`].
+    pub fn description_tr(self, lang: rgitui_settings::Language) -> &'static str {
+        use rgitui_settings::Language::{English, SimplifiedChinese};
+        match lang {
+            English => self.description(),
+            SimplifiedChinese => match self {
+                CommandId::CommandPalette => "切换命令面板。",
+                CommandId::Search => "搜索提交图。",
+                CommandId::StageAll => "暂存工作树中的所有更改。",
+                CommandId::UnstageAll => "取消暂存所有已暂存的更改。",
+                CommandId::Commit => "使用提交面板中的信息提交已暂存的更改。",
+                CommandId::OpenRepo => "打开仓库选择器。",
+                CommandId::Refresh => "从磁盘重新加载仓库状态。",
+                CommandId::Settings => "打开设置窗口。",
+                _ => self.description(),
+            },
+        }
+    }
+
     /// Whether this command is offered in the command palette.
     pub fn in_palette(self) -> bool {
         self.meta().in_palette
@@ -1166,6 +1189,86 @@ mod tests {
                 std::ptr::fn_addr_eq(command.predicate(), expected),
                 "{} availability predicate disagrees with the registry",
                 command.id
+            );
+        }
+    }
+
+    /// The eight settings quick-reference rows. Both languages must be
+    /// non-empty so no row ever renders blank.
+    #[test]
+    fn quick_reference_descriptions_are_translated_in_both_languages() {
+        use rgitui_settings::Language;
+        let ids = [
+            CommandId::CommandPalette,
+            CommandId::Search,
+            CommandId::StageAll,
+            CommandId::UnstageAll,
+            CommandId::Commit,
+            CommandId::OpenRepo,
+            CommandId::Refresh,
+            CommandId::Settings,
+        ];
+        for id in ids {
+            assert!(
+                !id.description_tr(Language::English).is_empty(),
+                "{id:?} has no English description"
+            );
+            assert!(
+                !id.description_tr(Language::SimplifiedChinese).is_empty(),
+                "{id:?} has no Chinese description"
+            );
+        }
+    }
+
+    /// The English branch must preserve the doc-comment literals byte for
+    /// byte, and Chinese must differ from English for the eight rows.
+    #[test]
+    fn quick_reference_english_descriptions_keep_the_source_literals() {
+        use rgitui_settings::Language;
+        let expected: &[(CommandId, &str)] = &[
+            (CommandId::CommandPalette, "Toggle the command palette."),
+            (CommandId::Search, "Search the commit graph."),
+            (
+                CommandId::StageAll,
+                "Stage every change in the working tree.",
+            ),
+            (
+                CommandId::UnstageAll,
+                "Unstage everything currently staged.",
+            ),
+            (
+                CommandId::Commit,
+                "Commit the staged changes using the message in the commit panel.",
+            ),
+            (CommandId::OpenRepo, "Open the repository picker."),
+            (CommandId::Refresh, "Reload the repository state from disk."),
+            (CommandId::Settings, "Open the settings window."),
+        ];
+        for (id, literal) in expected {
+            assert_eq!(id.description(), *literal, "{id:?} doc comment drifted");
+            assert_eq!(
+                id.description_tr(Language::English),
+                *literal,
+                "{id:?} English translation drifted from the doc comment"
+            );
+            assert_ne!(
+                id.description_tr(Language::SimplifiedChinese),
+                *literal,
+                "{id:?} Chinese translation is still English"
+            );
+        }
+    }
+
+    /// Commands outside the quick reference fall back to the English doc
+    /// comment in both languages.
+    #[test]
+    fn untranslated_commands_fall_back_to_english() {
+        use rgitui_settings::Language;
+        for id in [CommandId::Fetch, CommandId::Push, CommandId::Blame] {
+            assert_eq!(id.description_tr(Language::English), id.description());
+            assert_eq!(
+                id.description_tr(Language::SimplifiedChinese),
+                id.description()
             );
         }
     }

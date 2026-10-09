@@ -4236,7 +4236,8 @@ impl SettingsView {
     /// keymap currently binds it to.
     ///
     /// A binding the user defined is tinted and labelled, matching the badge in
-    /// the full shortcut reference.
+    /// the full shortcut reference. The description is localized; the keystroke
+    /// comes from the keymap in force and is never translated.
     fn render_shortcut_row(&self, id: CommandId, cx: &Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
         let summary = crate::keymap::summary(cx);
@@ -4257,7 +4258,7 @@ impl SettingsView {
             .gap(px(6.))
             .py(px(4.))
             .child(
-                Label::new(SharedString::from(id.description()))
+                Label::new(SharedString::from(id.description_tr(self.language)))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             )
