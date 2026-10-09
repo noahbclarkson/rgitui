@@ -21,7 +21,7 @@ use gpui::{
 use rgitui_ai::catalog::{CatalogSource, ModelInfo};
 use rgitui_settings::{
     config_dir, AiProvider, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
-    GitProviderSettings, GraphStyle, SettingsState,
+    GitProviderSettings, GraphStyle, Language, SettingsState, TrKey,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
@@ -435,6 +435,10 @@ pub struct SettingsView {
     // General state
     /// Auto-fetch interval, chosen from a dropdown rather than a pill row.
     auto_fetch_select: Entity<rgitui_ui::Select>,
+    /// Interface language dropdown. Options show native names so each choice
+    /// is recognizable regardless of the active language.
+    language_select: Entity<rgitui_ui::Select>,
+    language: Language,
     max_recent_repos: usize,
     compactness: Compactness,
     font_size: u32,
@@ -641,6 +645,34 @@ impl SettingsView {
                     // than silently resetting the user's choice.
                     if let Ok(interval) = id.parse::<AutoFetchInterval>() {
                         this.auto_fetch_interval = interval;
+                        this.save_settings(cx);
+                    }
+                }
+            },
+        )
+        .detach();
+
+        let language_select = cx.new(|cx| {
+            let mut select = rgitui_ui::Select::new("language-select", cx);
+            select.set_options(
+                Language::ALL
+                    .iter()
+                    .map(|language| {
+                        rgitui_ui::SelectOption::new(language.id(), language.native_name())
+                    })
+                    .collect(),
+                cx,
+            );
+            select.set_selected(Some(settings.language.id().into()), cx);
+            select
+        });
+        cx.subscribe(
+            &language_select,
+            |this: &mut Self, _, event: &rgitui_ui::SelectEvent, cx| {
+                if let rgitui_ui::SelectEvent::Changed(id) = event {
+                    // Same drift guard as the auto-fetch dropdown above.
+                    if let Ok(language) = id.parse::<Language>() {
+                        this.language = language;
                         this.save_settings(cx);
                     }
                 }
@@ -1011,6 +1043,8 @@ impl SettingsView {
             show_subject_column: settings.show_subject_column,
             auto_fetch_interval: settings.auto_fetch_interval,
             auto_fetch_select,
+            language: settings.language,
+            language_select,
             confirm_destructive_operations: settings.confirm_destructive_operations,
             auto_check_updates: settings.auto_check_updates,
             watch_all_worktrees: settings.watch_all_worktrees,
@@ -1091,6 +1125,7 @@ impl SettingsView {
                 self.graph_style = s.graph_style;
                 self.show_subject_column = s.show_subject_column;
                 self.auto_fetch_interval = s.auto_fetch_interval;
+                self.language = s.language;
                 self.confirm_destructive_operations = s.confirm_destructive_operations;
                 self.auto_check_updates = s.auto_check_updates;
                 self.watch_all_worktrees = s.watch_all_worktrees;
@@ -1128,6 +1163,10 @@ impl SettingsView {
         let interval = self.auto_fetch_interval.to_string();
         self.auto_fetch_select.update(cx, |select, cx| {
             select.set_selected(Some(interval.into()), cx)
+        });
+        let language_id = self.language.id();
+        self.language_select.update(cx, |select, cx| {
+            select.set_selected(Some(language_id.into()), cx)
         });
         self.git_https_token_editor
             .update(cx, |e, cx| e.set_text(git_https_token_val, cx));
@@ -1251,12 +1290,17 @@ impl SettingsView {
         if self.dismiss_model_picker(cx) {
             return true;
         }
-        let select_open = self.auto_fetch_select.read(cx).is_open();
-        if select_open {
+        let auto_fetch_open = self.auto_fetch_select.read(cx).is_open();
+        if auto_fetch_open {
             self.auto_fetch_select
                 .update(cx, |select, cx| select.close(cx));
         }
-        select_open
+        let language_open = self.language_select.read(cx).is_open();
+        if language_open {
+            self.language_select
+                .update(cx, |select, cx| select.close(cx));
+        }
+        auto_fetch_open || language_open
     }
 
     /// Commit any text fields that have not yet been submitted via Enter and
@@ -1340,6 +1384,7 @@ impl SettingsView {
             state.settings_mut().graph_style = self.graph_style;
             state.settings_mut().show_subject_column = self.show_subject_column;
             state.settings_mut().auto_fetch_interval = self.auto_fetch_interval;
+            state.settings_mut().language = self.language;
             state.settings_mut().confirm_destructive_operations =
                 self.confirm_destructive_operations;
             state.settings_mut().auto_check_updates = self.auto_check_updates;
@@ -2157,12 +2202,25 @@ impl SettingsView {
     // ── Sidebar navigation ──────────────────────────────────────────────
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
+        let language = self.language;
 
-        let sections: [(SettingsSection, IconName, &str); 4] = [
-            (SettingsSection::Theme, IconName::Eye, "Appearance"),
-            (SettingsSection::Ai, IconName::Sparkle, "AI"),
-            (SettingsSection::Auth, IconName::GitBranch, "Auth"),
-            (SettingsSection::General, IconName::Settings, "General"),
+        let sections: [(SettingsSection, IconName, TrKey); 4] = [
+            (
+                SettingsSection::Theme,
+                IconName::Eye,
+                TrKey::SectionAppearance,
+            ),
+            (SettingsSection::Ai, IconName::Sparkle, TrKey::SectionAi),
+            (
+                SettingsSection::Auth,
+                IconName::GitBranch,
+                TrKey::SectionAuth,
+            ),
+            (
+                SettingsSection::General,
+                IconName::Settings,
+                TrKey::SectionGeneral,
+            ),
         ];
 
         let mut sidebar = div()
@@ -2192,15 +2250,16 @@ impl SettingsView {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Preferences")
+                    Label::new(language.tr(TrKey::Preferences))
                         .size(LabelSize::Small)
                         .weight(FontWeight::BOLD)
                         .color(Color::Muted),
                 ),
         );
 
-        for (index, (section, icon, label)) in sections.into_iter().enumerate() {
+        for (index, (section, icon, key)) in sections.into_iter().enumerate() {
             let is_active = section == self.active_section;
+            let label = language.tr(key);
             let label_str: SharedString = label.into();
 
             sidebar = sidebar.child(
@@ -3263,14 +3322,43 @@ impl SettingsView {
     fn render_general_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let current_max = self.max_recent_repos;
+        let language = self.language;
+        let language_select = self.language_select.clone();
 
         let mut section = div().v_flex().w_full().gap(px(16.));
 
         section = section.child(Self::section_header(
             IconName::Settings,
-            "General",
-            "Application preferences and behavior.",
+            language.tr(TrKey::GeneralTitle),
+            language.tr(TrKey::GeneralDesc),
         ));
+
+        // Language card
+        let mut language_card = Self::setting_card(cx);
+        language_card = language_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(
+                            Label::new(language.tr(TrKey::LanguageTitle))
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            Label::new(language.tr(TrKey::LanguageDesc))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
+                )
+                .child(language_select),
+        );
+        section = section.child(language_card);
 
         // Recent repos card
         let mut repos_card = Self::setting_card(cx);
@@ -3285,12 +3373,12 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Max Recent Repositories")
+                            Label::new(language.tr(TrKey::MaxRecentTitle))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new("Number of repos shown in the recent list.")
+                            Label::new(language.tr(TrKey::MaxRecentDesc))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -3353,14 +3441,18 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "UI Density",
-                    "Adjust the spacing and sizing of UI elements.",
+                    language.tr(TrKey::UiDensityTitle),
+                    language.tr(TrKey::UiDensityDesc),
                 ))
                 .child({
-                    let options: [(&str, &str, Compactness); 3] = [
-                        ("compact", "Compact", Compactness::Compact),
-                        ("default", "Default", Compactness::Default),
-                        ("comfortable", "Comfortable", Compactness::Comfortable),
+                    let options: [(&str, TrKey, Compactness); 3] = [
+                        ("compact", TrKey::DensityCompact, Compactness::Compact),
+                        ("default", TrKey::DensityDefault, Compactness::Default),
+                        (
+                            "comfortable",
+                            TrKey::DensityComfortable,
+                            Compactness::Comfortable,
+                        ),
                     ];
                     let mut row = div()
                         .h_flex()
@@ -3368,7 +3460,8 @@ impl SettingsView {
                         .p(px(3.))
                         .rounded(px(8.))
                         .bg(colors.element_background);
-                    for (id, label, variant) in options {
+                    for (id, key, variant) in options {
+                        let label = language.tr(key);
                         let is_selected = current_compactness == variant;
                         let hover_bg = colors.ghost_element_hover;
                         let mut btn = div()
@@ -3422,12 +3515,12 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Font Size")
+                            Label::new(language.tr(TrKey::FontSizeTitle))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new("Base font size for the user interface (8 - 24).")
+                            Label::new(language.tr(TrKey::FontSizeDesc))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),

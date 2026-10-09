@@ -201,6 +201,161 @@ impl FromStr for Compactness {
     }
 }
 
+/// Interface language for localizable UI text.
+///
+/// The stable on-disk id is [`Language::id`] (`"en"` / `"zh-CN"`); the
+/// dropdown always shows [`Language::native_name`] so each option is
+/// recognizable regardless of the active language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    #[default]
+    English,
+    SimplifiedChinese,
+}
+
+impl Language {
+    /// Every language, in the order the settings UI lists them.
+    pub const ALL: &'static [Language] = &[Language::English, Language::SimplifiedChinese];
+
+    /// Stable identifier used on disk and as the settings dropdown id.
+    pub fn id(self) -> &'static str {
+        match self {
+            Language::English => "en",
+            Language::SimplifiedChinese => "zh-CN",
+        }
+    }
+
+    /// Native display name. Deliberately not translated: "English" must read
+    /// "English" even while the UI is Chinese, and vice versa.
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Language::English => "English",
+            Language::SimplifiedChinese => "简体中文",
+        }
+    }
+
+    /// Localize `key`. Missing Chinese entries fall back to English by
+    /// construction: every arm pairs `(self, key)` explicitly.
+    pub fn tr(self, key: TrKey) -> &'static str {
+        match (self, key) {
+            (_, TrKey::Preferences) => match self {
+                Language::English => "Preferences",
+                Language::SimplifiedChinese => "偏好设置",
+            },
+            (_, TrKey::SectionAppearance) => match self {
+                Language::English => "Appearance",
+                Language::SimplifiedChinese => "外观",
+            },
+            (_, TrKey::SectionAi) => "AI",
+            (_, TrKey::SectionAuth) => match self {
+                Language::English => "Auth",
+                Language::SimplifiedChinese => "认证",
+            },
+            (_, TrKey::SectionGeneral) => match self {
+                Language::English => "General",
+                Language::SimplifiedChinese => "通用",
+            },
+            (_, TrKey::GeneralTitle) => match self {
+                Language::English => "General",
+                Language::SimplifiedChinese => "通用",
+            },
+            (_, TrKey::GeneralDesc) => match self {
+                Language::English => "Application preferences and behavior.",
+                Language::SimplifiedChinese => "应用偏好与行为。",
+            },
+            (_, TrKey::LanguageTitle) => match self {
+                Language::English => "Language",
+                Language::SimplifiedChinese => "语言",
+            },
+            (_, TrKey::LanguageDesc) => match self {
+                Language::English => "Switch the interface language.",
+                Language::SimplifiedChinese => "切换界面语言。",
+            },
+            (_, TrKey::MaxRecentTitle) => match self {
+                Language::English => "Max Recent Repositories",
+                Language::SimplifiedChinese => "最大最近仓库数",
+            },
+            (_, TrKey::MaxRecentDesc) => match self {
+                Language::English => "Number of repos shown in the recent list.",
+                Language::SimplifiedChinese => "最近列表中显示的仓库数量。",
+            },
+            (_, TrKey::UiDensityTitle) => match self {
+                Language::English => "UI Density",
+                Language::SimplifiedChinese => "界面密度",
+            },
+            (_, TrKey::UiDensityDesc) => match self {
+                Language::English => "Adjust the spacing and sizing of UI elements.",
+                Language::SimplifiedChinese => "调整界面元素的间距与尺寸。",
+            },
+            (_, TrKey::DensityCompact) => match self {
+                Language::English => "Compact",
+                Language::SimplifiedChinese => "紧凑",
+            },
+            (_, TrKey::DensityDefault) => match self {
+                Language::English => "Default",
+                Language::SimplifiedChinese => "默认",
+            },
+            (_, TrKey::DensityComfortable) => match self {
+                Language::English => "Comfortable",
+                Language::SimplifiedChinese => "舒适",
+            },
+            (_, TrKey::FontSizeTitle) => match self {
+                Language::English => "Font Size",
+                Language::SimplifiedChinese => "字号",
+            },
+            (_, TrKey::FontSizeDesc) => match self {
+                Language::English => "Base font size for the user interface (8 - 24).",
+                Language::SimplifiedChinese => "界面基础字号（8 - 24）。",
+            },
+        }
+    }
+}
+
+impl fmt::Display for Language {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.native_name())
+    }
+}
+
+impl FromStr for Language {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().replace('-', "_").as_str() {
+            "en" | "english" => Ok(Language::English),
+            "zh_cn" | "zh" | "chinese" | "simplified_chinese" | "简体中文" => {
+                Ok(Language::SimplifiedChinese)
+            }
+            _ => Err(format!("Unknown language: {}", s)),
+        }
+    }
+}
+
+/// Keys for localizable UI text. One variant per string the settings frame
+/// translates; rendering code passes these to [`Language::tr`] instead of
+/// hardcoding English.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrKey {
+    Preferences,
+    SectionAppearance,
+    SectionAi,
+    SectionAuth,
+    SectionGeneral,
+    GeneralTitle,
+    GeneralDesc,
+    LanguageTitle,
+    LanguageDesc,
+    MaxRecentTitle,
+    MaxRecentDesc,
+    UiDensityTitle,
+    UiDensityDesc,
+    DensityCompact,
+    DensityDefault,
+    DensityComfortable,
+    FontSizeTitle,
+    FontSizeDesc,
+}
+
 /// Application settings persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -232,6 +387,8 @@ pub struct AppSettings {
     pub compactness: Compactness,
     #[serde(default = "default_appearance_mode")]
     pub appearance_mode: AppearanceMode,
+    #[serde(default)]
+    pub language: Language,
     #[serde(default)]
     pub terminal_command: String,
     #[serde(default)]
@@ -288,7 +445,7 @@ pub struct SavedWindowBounds {
 }
 
 /// Current settings version. Increment when making breaking changes.
-const CURRENT_SETTINGS_VERSION: u32 = 3;
+const CURRENT_SETTINGS_VERSION: u32 = 4;
 
 fn default_settings_version() -> u32 {
     CURRENT_SETTINGS_VERSION
@@ -768,6 +925,7 @@ impl Default for AppSettings {
             clean_exit: true, // First run is considered clean
             compactness: Compactness::default(),
             appearance_mode: default_appearance_mode(),
+            language: Language::default(),
             terminal_command: String::new(),
             editor_command: String::new(),
             font_size: default_font_size(),
@@ -1071,6 +1229,15 @@ impl SettingsState {
             self.settings.version = 3;
             migrated = true;
             log::info!("Migrated settings from version 2 to 3");
+        }
+
+        // Migration 3 -> 4: interface language added. Existing installs keep
+        // English; serde defaults already cover the missing field.
+        if self.settings.version == 3 {
+            self.settings.language = Language::default();
+            self.settings.version = 4;
+            migrated = true;
+            log::info!("Migrated settings from version 3 to 4");
         }
 
         // Ensure version is current
@@ -1964,6 +2131,77 @@ mod tests {
         state.migrate_settings();
 
         assert_eq!(state.settings.ai.model, "gemini-2.5-pro");
+    }
+
+    // ── interface language ──────────────────────────────────────
+
+    #[test]
+    fn language_ids_are_stable_and_unique() {
+        assert_eq!(Language::English.id(), "en");
+        assert_eq!(Language::SimplifiedChinese.id(), "zh-CN");
+        assert_eq!(Language::ALL.len(), 2);
+        assert_eq!("en".parse::<Language>().unwrap(), Language::English);
+        assert_eq!(
+            "zh-CN".parse::<Language>().unwrap(),
+            Language::SimplifiedChinese
+        );
+        assert_eq!(
+            "zh_cn".parse::<Language>().unwrap(),
+            Language::SimplifiedChinese
+        );
+        assert_eq!(
+            "简体中文".parse::<Language>().unwrap(),
+            Language::SimplifiedChinese
+        );
+        assert!("fr".parse::<Language>().is_err());
+    }
+
+    #[test]
+    fn language_dropdown_labels_stay_native() {
+        assert_eq!(Language::English.native_name(), "English");
+        assert_eq!(Language::SimplifiedChinese.native_name(), "简体中文");
+    }
+
+    #[test]
+    fn every_translated_key_is_non_empty_in_both_languages() {
+        let keys = [
+            TrKey::Preferences,
+            TrKey::SectionAppearance,
+            TrKey::SectionAi,
+            TrKey::SectionAuth,
+            TrKey::SectionGeneral,
+            TrKey::GeneralTitle,
+            TrKey::GeneralDesc,
+            TrKey::LanguageTitle,
+            TrKey::LanguageDesc,
+            TrKey::MaxRecentTitle,
+            TrKey::MaxRecentDesc,
+            TrKey::UiDensityTitle,
+            TrKey::UiDensityDesc,
+            TrKey::DensityCompact,
+            TrKey::DensityDefault,
+            TrKey::DensityComfortable,
+            TrKey::FontSizeTitle,
+            TrKey::FontSizeDesc,
+        ];
+        for key in keys {
+            assert!(!Language::English.tr(key).is_empty());
+            assert!(!Language::SimplifiedChinese.tr(key).is_empty());
+        }
+        assert_eq!(Language::SimplifiedChinese.tr(TrKey::SectionAi), "AI");
+    }
+
+    #[test]
+    fn v3_settings_default_to_english_and_migrate_to_v4() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{ "version": 3 }"#).expect("v3 file parses");
+        assert_eq!(settings.language, Language::English);
+
+        let mut state = test_settings_state();
+        state.settings.version = 3;
+        assert!(state.migrate_settings());
+        assert_eq!(state.settings.version, CURRENT_SETTINGS_VERSION);
+        assert_eq!(state.settings.language, Language::English);
     }
 
     #[test]

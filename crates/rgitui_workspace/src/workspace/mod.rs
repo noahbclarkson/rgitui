@@ -988,6 +988,16 @@ impl Workspace {
             "Menlo",
             #[cfg(target_os = "linux")]
             "DejaVu Sans Mono",
+            // CJK fallbacks so the Chinese UI does not render as tofu. These
+            // are system fonts on their respective platforms; nothing is
+            // embedded, so installs without them simply fall through.
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "WenQuanYi Micro Hei",
+            #[cfg(target_os = "windows")]
+            "Microsoft YaHei",
+            #[cfg(target_os = "macos")]
+            "PingFang SC",
             "Courier New",
         ];
         let fallbacks: Vec<String> = candidates
