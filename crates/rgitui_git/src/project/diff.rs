@@ -1,9 +1,11 @@
 use anyhow::Result;
 use git2::{DiffOptions, IndexEntry, MergeFileOptions, Repository};
+use rgitui_settings::TrKey;
 use std::path::{Path, PathBuf};
 
 use crate::types::*;
 
+use super::op_i18n::{op_err_text, op_msg};
 use super::refresh::gather_refresh_data_lightweight_cached;
 use super::RefreshData;
 
@@ -780,8 +782,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Stage hunk failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrStageHunkFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -863,8 +865,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstage hunk failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrUnstageHunkFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -953,8 +955,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Stage lines failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrStageLinesFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1045,8 +1047,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstage lines failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrUnstageLinesFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );

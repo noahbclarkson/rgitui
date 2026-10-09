@@ -1,11 +1,13 @@
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
+use rgitui_settings::TrKey;
 
 use crate::types::*;
 
 use super::argsafe::sh_quote;
 use super::ensure_clean_worktree;
+use super::op_i18n::{op_err_text, op_error, op_msg};
 use super::refresh::gather_refresh_data;
 use super::{GitProject, GitProjectEvent, RefreshData};
 
@@ -39,7 +41,7 @@ impl GitProject {
                 .background_executor()
                 .spawn(async move {
                     if entries.is_empty() {
-                        anyhow::bail!("No entries provided for interactive rebase");
+                        return Err(op_error(TrKey::ErrNoRebaseEntries, vec![]));
                     }
 
                     let base_oid = {
@@ -73,12 +75,10 @@ impl GitProject {
                         let range_set: std::collections::HashSet<git2::Oid> =
                             range.iter().copied().collect();
                         if plan_set != range_set {
-                            anyhow::bail!(
-                                "Interactive rebase plan does not match the current branch's \
-                                 history (the selected commits are not exactly the last {} \
-                                 first-parent commits of HEAD). Refresh and try again.",
-                                entries.len()
-                            );
+                            return Err(op_error(
+                                TrKey::ErrRebasePlanMismatchFmt,
+                                vec![entries.len().to_string()],
+                            ));
                         }
 
                         base.to_string()
@@ -217,7 +217,7 @@ impl GitProject {
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Rebase,
-                                    "Rebase paused due to conflicts",
+                                    op_msg(cx, TrKey::ErrRebasePaused, vec![]),
                                     user_msg,
                                     (None, branch_name.clone(), false),
                                     cx,
@@ -241,8 +241,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Rebase,
-                                "Interactive rebase failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrRebaseFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );

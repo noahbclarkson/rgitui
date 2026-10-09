@@ -5,10 +5,12 @@ use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use rgitui_settings::current_git_auth_runtime;
+use rgitui_settings::TrKey;
 
 use crate::types::*;
 
 use super::auth::inject_https_credentials;
+use super::op_i18n::{op_err_text, op_error, op_msg};
 use super::refresh::{gather_refresh_data, gather_refresh_data_lightweight_cached};
 use super::worktree_patch::{clean_worktree_bytes, smudge_canonical_bytes};
 use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent, RefreshData};
@@ -29,7 +31,7 @@ use super::{ensure_clean_worktree, head_branch_name, GitProject, GitProjectEvent
 fn finish_merge_commit(repo: &Repository) -> Result<String> {
     let merge_head_path = repo.path().join("MERGE_HEAD");
     if !merge_head_path.exists() {
-        anyhow::bail!("Repository is not in a merge state (no MERGE_HEAD to continue).");
+        return Err(op_error(TrKey::ErrNotMergeState, vec![]));
     }
 
     let mut index = repo.index()?;
@@ -139,17 +141,20 @@ fn checkout_tree_safe(repo: &Repository, target: &git2::Object<'_>, operation: &
         Err(err) if err.code() == git2::ErrorCode::Conflict => {
             let paths = conflicts.into_inner();
             if paths.is_empty() {
-                anyhow::bail!(
-                    "{} would overwrite local changes. Commit, stash, or discard them first.",
-                    operation
-                );
+                return Err(op_error(
+                    TrKey::ErrOverwriteLocalFmt,
+                    vec![operation.to_string()],
+                ));
             }
-            anyhow::bail!(
-                "{} would overwrite {}. Commit, stash, move, or delete {} first.",
-                operation,
-                format_path_list(&paths),
-                if paths.len() == 1 { "it" } else { "them" }
-            );
+            let key = if paths.len() == 1 {
+                TrKey::ErrOverwritePathOneFmt
+            } else {
+                TrKey::ErrOverwritePathManyFmt
+            };
+            Err(op_error(
+                key,
+                vec![operation.to_string(), format_path_list(&paths)],
+            ))
         }
         Err(err) => Err(err.into()),
     }
@@ -191,10 +196,10 @@ impl GitProject {
                     let mut index = repo.index()?;
                     for path in &task_paths {
                         if index.conflict_get(path).is_ok() {
-                            anyhow::bail!(
-                                "'{}' has unresolved conflicts. Open the conflict resolver before staging it.",
-                                path.display()
-                            );
+                            return Err(op_error(
+                                TrKey::ErrStagingConflictFmt,
+                                vec![path.display().to_string()],
+                            ));
                         }
                         if worktree_path.join(path).exists() {
                             index.add_path(path)?;
@@ -235,8 +240,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Stage failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrStageFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -328,8 +333,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstage failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrUnstageFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -417,8 +422,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stage,
-                                "Stage all failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrStageAllFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -488,8 +493,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Unstage,
-                                "Unstage all failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrUnstageAllFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -538,7 +543,7 @@ impl GitProject {
                     let sig = repo.signature()?;
                     let mut index = repo.index()?;
                     if index.is_empty() {
-                        anyhow::bail!("There are no staged changes to commit.")
+                        return Err(op_error(TrKey::ErrNoStagedChanges, vec![]));
                     }
                     let tree_oid = index.write_tree()?;
                     let tree = repo.find_tree(tree_oid)?;
@@ -556,9 +561,7 @@ impl GitProject {
                                 | git2::RepositoryState::RebaseMerge
                         )
                     {
-                        anyhow::bail!(
-                            "Cannot amend during a rebase. Continue or abort the rebase first."
-                        );
+                        return Err(op_error(TrKey::ErrCannotAmendRebase, vec![]));
                     }
 
                     // A plain commit made while a merge is in progress must finalize
@@ -711,11 +714,11 @@ impl GitProject {
                             operation_id,
                             GitOperationKind::Commit,
                             if amend {
-                                "Amend failed"
+                                op_msg(cx, TrKey::ErrAmendFailed, vec![])
                             } else {
-                                "Commit failed"
+                                op_msg(cx, TrKey::ErrCommitFailed, vec![])
                             },
-                            e.to_string(),
+                            op_err_text(cx, &e),
                             (None, branch_name.clone(), false),
                             cx,
                         );
@@ -761,11 +764,10 @@ impl GitProject {
                                 let remote_ref = format!("refs/remotes/{}", task_name);
                                 if let Ok(remote_obj) = repo.revparse_single(&remote_ref) {
                                     let Some((_remote, short)) = task_name.split_once('/') else {
-                                        anyhow::bail!(
-                                            "Invalid remote branch name '{}'. \
-                                            Expected 'remote/branch' format.",
-                                            task_name
-                                        );
+                                        return Err(op_error(
+                                            TrKey::ErrInvalidRemoteBranchFmt,
+                                            vec![task_name.clone()],
+                                        ));
                                     };
                                     let local_branch_name = short;
 
@@ -774,11 +776,10 @@ impl GitProject {
                                         .find_branch(local_branch_name, git2::BranchType::Local)
                                         .is_ok()
                                     {
-                                        anyhow::bail!(
-                                            "A local branch named '{}' already exists. \
-                                            Please delete or rename it first.",
-                                            local_branch_name
-                                        );
+                                        return Err(op_error(
+                                            TrKey::ErrLocalBranchExistsFmt,
+                                            vec![local_branch_name.to_string()],
+                                        ));
                                     }
 
                                     // Create the local tracking branch at the remote's commit.
@@ -794,18 +795,20 @@ impl GitProject {
 
                                     (remote_obj, local_branch_name.to_string(), true)
                                 } else {
-                                    anyhow::bail!(
-                                        "Branch '{}' not found as a local or remote branch. \
-                                        Try fetching to update remote refs.",
-                                        task_name
-                                    );
+                                    return Err(op_error(
+                                        TrKey::ErrBranchNotFoundFmt,
+                                        vec![task_name.clone()],
+                                    ));
                                 }
                             }
                         };
 
                     // Bail if already on the target branch (use local name for tracking).
                     if current_branch.as_deref() == Some(local_branch_name.as_str()) {
-                        anyhow::bail!("Already on branch '{}'.", local_branch_name);
+                        return Err(op_error(
+                            TrKey::ErrAlreadyOnBranchFmt,
+                            vec![local_branch_name.clone()],
+                        ));
                     }
 
                     let head_ref = if is_tracking {
@@ -852,8 +855,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
-                                format!("Checkout of '{}' failed", name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrCheckoutBranchFailedFmt, vec![name.clone()]),
+                                op_err_text(cx, &e),
                                 (None, Some(name.clone()), true),
                                 cx,
                             );
@@ -915,8 +918,12 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
-                                format!("Checkout of {} failed", short_id),
-                                e.to_string(),
+                                op_msg(
+                                    cx,
+                                    TrKey::ErrCheckoutCommitFailedFmt,
+                                    vec![short_id.clone()],
+                                ),
+                                op_err_text(cx, &e),
                                 (None, Some(short_id.clone()), true),
                                 cx,
                             );
@@ -981,8 +988,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Checkout,
-                                format!("Checkout of tag '{}' failed", name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrCheckoutTagFailedFmt, vec![name.clone()]),
+                                op_err_text(cx, &e),
                                 (None, Some(name.clone()), true),
                                 cx,
                             );
@@ -1028,7 +1035,7 @@ impl GitProject {
                         } else {
                             let obj = repo.revparse_single(r)?;
                             obj.peel_to_commit().map_err(|_| {
-                                anyhow::anyhow!("'{}' does not resolve to a commit", r)
+                                op_error(TrKey::ErrBaseNotCommitFmt, vec![r.to_string()])
                             })?
                         }
                     } else {
@@ -1061,8 +1068,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Branch '{}' could not be created", name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrBranchCreateFailedFmt, vec![name.clone()]),
+                                op_err_text(cx, &e),
                                 (None, Some(name.clone()), false),
                                 cx,
                             );
@@ -1118,8 +1125,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Delete branch '{}' failed", name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrBranchDeleteFailedFmt, vec![name.clone()]),
+                                op_err_text(cx, &e),
                                 (None, Some(name.clone()), false),
                                 cx,
                             );
@@ -1182,8 +1189,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Branch,
-                                format!("Rename branch '{}' failed", old_name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrBranchRenameFailedFmt, vec![old_name.clone()]),
+                                op_err_text(cx, &e),
                                 (None, Some(old_name.clone()), false),
                                 cx,
                             );
@@ -1244,8 +1251,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Tag,
-                                format!("Tag '{}' could not be created", name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrTagCreateFailedFmt, vec![name.clone()]),
+                                op_err_text(cx, &e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -1300,8 +1307,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Tag,
-                                format!("Delete tag '{}' failed", name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrTagDeleteFailedFmt, vec![name.clone()]),
+                                op_err_text(cx, &e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -1364,8 +1371,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                "Save stash failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrStashSaveFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1445,8 +1452,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Pop stash #{} failed", index),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrStashPopFailedFmt, vec![index.to_string()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1530,8 +1537,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Apply stash #{} failed", index),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrStashApplyFailedFmt, vec![index.to_string()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1585,8 +1592,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Drop stash #{} failed", index),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrStashDropFailedFmt, vec![index.to_string()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1649,7 +1656,10 @@ impl GitProject {
                     })?;
 
                     let stash_oid = *stash_oids.get(stash_index).ok_or_else(|| {
-                        anyhow::anyhow!("Stash index {} out of range", stash_index)
+                        op_error(
+                            TrKey::ErrStashIndexOutOfRangeFmt,
+                            vec![stash_index.to_string()],
+                        )
                     })?;
 
                     // `git stash branch`: create the branch at the commit HEAD was
@@ -1699,8 +1709,12 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Stash,
-                                format!("Create branch from stash #{} failed", stash_index),
-                                e.to_string(),
+                                op_msg(
+                                    cx,
+                                    TrKey::ErrStashBranchFailedFmt,
+                                    vec![stash_index.to_string()],
+                                ),
+                                op_err_text(cx, &e),
                                 (None, current_branch, false),
                                 cx,
                             );
@@ -1803,8 +1817,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Discard,
-                                "Discard changes failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrDiscardFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -1911,8 +1925,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Clean,
-                                "Clean failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrCleanFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -1976,8 +1990,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                "Reset to HEAD failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrResetHeadFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2047,8 +2061,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Reset to {} failed", short_id),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrResetFailedFmt, vec![short_id.clone()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2116,8 +2130,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Soft reset to {} failed", short_id),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrResetSoftFailedFmt, vec![short_id.clone()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2187,8 +2201,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Reset,
-                                format!("Mixed reset to {} failed", short_id),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrResetMixedFailedFmt, vec![short_id.clone()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2253,8 +2267,8 @@ impl GitProject {
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Revert,
-                                    format!("Revert of {} needs conflict resolution", short_id),
-                                    "Resolve the conflicts in the working tree, then commit the revert manually.".to_string(),
+                                    op_msg(cx, TrKey::ErrRevertConflictFmt, vec![short_id.clone()]),
+                                    op_msg(cx, TrKey::ErrRevertGuide, vec![]),
                                     (None, branch_name.clone(), false),
                                     cx,
                                 );
@@ -2276,8 +2290,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Revert,
-                                format!("Revert of {} failed", short_id),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrRevertFailedFmt, vec![short_id.clone()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2342,8 +2356,8 @@ impl GitProject {
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::CherryPick,
-                                    format!("Cherry-pick of {} needs conflict resolution", short_id),
-                                    "Resolve the conflicts in the working tree, then commit the cherry-pick manually.".to_string(),
+                                    op_msg(cx, TrKey::ErrCherryPickConflictFmt, vec![short_id.clone()]),
+                                    op_msg(cx, TrKey::ErrCherryPickGuide, vec![]),
                                     (None, branch_name.clone(), false),
                                     cx,
                                 );
@@ -2365,8 +2379,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::CherryPick,
-                                format!("Cherry-pick of {} failed", short_id),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrCherryPickFailedFmt, vec![short_id.clone()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2446,8 +2460,12 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Merge,
-                                format!("Failed to abort {}", state_label.to_lowercase()),
-                                e.to_string(),
+                                op_msg(
+                                    cx,
+                                    TrKey::ErrAbortFailedFmt,
+                                    vec![state_label.to_lowercase()],
+                                ),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2500,9 +2518,7 @@ impl GitProject {
 
                     let index = repo.index()?;
                     if index.has_conflicts() {
-                        anyhow::bail!(
-                            "There are still unresolved conflicts. Resolve all conflicts before continuing."
-                        );
+                        return Err(op_error(TrKey::ErrUnresolvedConflicts, vec![]));
                     }
                     drop(index);
 
@@ -2512,10 +2528,12 @@ impl GitProject {
                             drop(repo);
                             run_continue_subcommand(&worktree_path, subcommand)?
                         }
-                        None => anyhow::bail!(
-                            "There is no {} to continue.",
-                            state.label().to_lowercase()
-                        ),
+                        None => {
+                            return Err(op_error(
+                                TrKey::ErrNothingToContinueFmt,
+                                vec![state.label().to_lowercase()],
+                            ));
+                        }
                     };
 
                     let data = gather_refresh_data(&repo_path, commit_limit)?;
@@ -2541,8 +2559,12 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 kind,
-                                format!("Could not continue {}", state_label.to_lowercase()),
-                                e.to_string(),
+                                op_msg(
+                                    cx,
+                                    TrKey::ErrContinueFailedFmt,
+                                    vec![state_label.to_lowercase()],
+                                ),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2667,7 +2689,7 @@ impl GitProject {
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Merge,
-                                    format!("Merge conflicts in '{}'", branch_name),
+                                    op_msg(cx, TrKey::ErrMergeConflictFmt, vec![branch_name.clone()]),
                                     user_msg,
                                     (None, current_branch.clone(), false),
                                     cx,
@@ -2687,8 +2709,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Merge,
-                                format!("Merge of '{}' failed", branch_name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrMergeFailedFmt, vec![branch_name.clone()]),
+                                op_err_text(cx, &e),
                                 (None, current_branch.clone(), false),
                                 cx,
                             );
@@ -2748,8 +2770,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::RemoveRemote,
-                                "Removing remote failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrRemoveRemoteFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -2838,7 +2860,7 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Clone,
-                                "Clone failed",
+                                op_msg(cx, TrKey::ErrCloneFailed, vec![]),
                                 toast_message,
                                 (None, None, false),
                                 cx,
@@ -2910,8 +2932,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Failed to start bisect",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrBisectStartFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3016,8 +3038,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Failed to mark {} as good", short_id),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrBisectGoodFailedFmt, vec![short_id.clone()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3122,8 +3144,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Failed to mark {} as bad", short_id),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrBisectBadFailedFmt, vec![short_id.clone()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3210,7 +3232,7 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Bisect exhausted".to_string(),
+                                op_msg(cx, TrKey::ErrBisectExhausted, vec![]),
                                 msg,
                                 (None, branch_name.clone(), false),
                                 cx,
@@ -3247,8 +3269,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                format!("Failed to skip {}", short_id),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrBisectSkipFailedFmt, vec![short_id.clone()]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3315,8 +3337,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Bisect,
-                                "Failed to reset bisect",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrBisectResetFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3391,8 +3413,12 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Worktree,
-                                format!("Create worktree '{}' failed", name_clone),
-                                e.to_string(),
+                                op_msg(
+                                    cx,
+                                    TrKey::ErrWorktreeCreateFailedFmt,
+                                    vec![name_clone.clone()],
+                                ),
+                                op_err_text(cx, &e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -3456,8 +3482,12 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Worktree,
-                                format!("Remove worktree '{}' failed", display_path),
-                                e.to_string(),
+                                op_msg(
+                                    cx,
+                                    TrKey::ErrWorktreeRemoveFailedFmt,
+                                    vec![display_path.clone()],
+                                ),
+                                op_err_text(cx, &e),
                                 (None, this.head_branch.clone(), false),
                                 cx,
                             );
@@ -3569,8 +3599,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::ResolveConflict,
-                                "Conflict resolution failed",
-                                error.to_string(),
+                                op_msg(cx, TrKey::ErrConflictResolveFailed, vec![]),
+                                op_err_text(cx, &error),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
@@ -3676,8 +3706,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::ResolveConflict,
-                                "Conflict resolution failed",
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrConflictResolveFailed, vec![]),
+                                op_err_text(cx, &e),
                                 (None, branch_name.clone(), false),
                                 cx,
                             );
