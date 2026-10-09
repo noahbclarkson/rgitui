@@ -2096,6 +2096,330 @@ impl Language {
                 Language::English => "{} changed",
                 Language::SimplifiedChinese => "已更改 {}",
             },
+            (_, TrKey::ErrStageFailed) => match self {
+                Language::English => "Stage failed",
+                Language::SimplifiedChinese => "暂存失败",
+            },
+            (_, TrKey::ErrUnstageFailed) => match self {
+                Language::English => "Unstage failed",
+                Language::SimplifiedChinese => "取消暂存失败",
+            },
+            (_, TrKey::ErrStageAllFailed) => match self {
+                Language::English => "Stage all failed",
+                Language::SimplifiedChinese => "全部暂存失败",
+            },
+            (_, TrKey::ErrUnstageAllFailed) => match self {
+                Language::English => "Unstage all failed",
+                Language::SimplifiedChinese => "全部取消暂存失败",
+            },
+            (_, TrKey::ErrCommitFailed) => match self {
+                Language::English => "Commit failed",
+                Language::SimplifiedChinese => "提交失败",
+            },
+            (_, TrKey::ErrAmendFailed) => match self {
+                Language::English => "Amend failed",
+                Language::SimplifiedChinese => "修正提交失败",
+            },
+            (_, TrKey::ErrCheckoutBranchFailedFmt) => match self {
+                Language::English => "Checkout of '{}' failed",
+                Language::SimplifiedChinese => "检出 '{}' 失败",
+            },
+            (_, TrKey::ErrCheckoutCommitFailedFmt) => match self {
+                Language::English => "Checkout of {} failed",
+                Language::SimplifiedChinese => "检出 {} 失败",
+            },
+            (_, TrKey::ErrCheckoutTagFailedFmt) => match self {
+                Language::English => "Checkout of tag '{}' failed",
+                Language::SimplifiedChinese => "检出标签 '{}' 失败",
+            },
+            (_, TrKey::ErrBranchCreateFailedFmt) => match self {
+                Language::English => "Branch '{}' could not be created",
+                Language::SimplifiedChinese => "无法创建分支 '{}'",
+            },
+            (_, TrKey::ErrBranchDeleteFailedFmt) => match self {
+                Language::English => "Delete branch '{}' failed",
+                Language::SimplifiedChinese => "删除分支 '{}' 失败",
+            },
+            (_, TrKey::ErrBranchRenameFailedFmt) => match self {
+                Language::English => "Rename branch '{}' failed",
+                Language::SimplifiedChinese => "重命名分支 '{}' 失败",
+            },
+            (_, TrKey::ErrTagCreateFailedFmt) => match self {
+                Language::English => "Tag '{}' could not be created",
+                Language::SimplifiedChinese => "无法创建标签 '{}'",
+            },
+            (_, TrKey::ErrTagDeleteFailedFmt) => match self {
+                Language::English => "Delete tag '{}' failed",
+                Language::SimplifiedChinese => "删除标签 '{}' 失败",
+            },
+            (_, TrKey::ErrStashSaveFailed) => match self {
+                Language::English => "Save stash failed",
+                Language::SimplifiedChinese => "保存储藏失败",
+            },
+            (_, TrKey::ErrStashPopFailedFmt) => match self {
+                Language::English => "Pop stash #{} failed",
+                Language::SimplifiedChinese => "弹出储藏 #{} 失败",
+            },
+            (_, TrKey::ErrStashApplyFailedFmt) => match self {
+                Language::English => "Apply stash #{} failed",
+                Language::SimplifiedChinese => "应用储藏 #{} 失败",
+            },
+            (_, TrKey::ErrStashDropFailedFmt) => match self {
+                Language::English => "Drop stash #{} failed",
+                Language::SimplifiedChinese => "丢弃储藏 #{} 失败",
+            },
+            (_, TrKey::ErrStashBranchFailedFmt) => match self {
+                Language::English => "Create branch from stash #{} failed",
+                Language::SimplifiedChinese => "从储藏 #{} 创建分支失败",
+            },
+            (_, TrKey::ErrDiscardFailed) => match self {
+                Language::English => "Discard changes failed",
+                Language::SimplifiedChinese => "丢弃更改失败",
+            },
+            (_, TrKey::ErrCleanFailed) => match self {
+                Language::English => "Clean failed",
+                Language::SimplifiedChinese => "清理失败",
+            },
+            (_, TrKey::ErrResetHeadFailed) => match self {
+                Language::English => "Reset to HEAD failed",
+                Language::SimplifiedChinese => "重置到 HEAD 失败",
+            },
+            (_, TrKey::ErrResetFailedFmt) => match self {
+                Language::English => "Reset to {} failed",
+                Language::SimplifiedChinese => "重置到 {} 失败",
+            },
+            (_, TrKey::ErrResetSoftFailedFmt) => match self {
+                Language::English => "Soft reset to {} failed",
+                Language::SimplifiedChinese => "软重置到 {} 失败",
+            },
+            (_, TrKey::ErrResetMixedFailedFmt) => match self {
+                Language::English => "Mixed reset to {} failed",
+                Language::SimplifiedChinese => "混合重置到 {} 失败",
+            },
+            (_, TrKey::ErrRevertConflictFmt) => match self {
+                Language::English => "Revert of {} needs conflict resolution",
+                Language::SimplifiedChinese => "还原 {} 需要解决冲突",
+            },
+            (_, TrKey::ErrRevertFailedFmt) => match self {
+                Language::English => "Revert of {} failed",
+                Language::SimplifiedChinese => "还原 {} 失败",
+            },
+            (_, TrKey::ErrRevertGuide) => match self {
+                Language::English => "Resolve the conflicts in the working tree, then commit the revert manually.",
+                Language::SimplifiedChinese => "请解决工作树中的冲突，然后手动提交此次还原。",
+            },
+            (_, TrKey::ErrCherryPickConflictFmt) => match self {
+                Language::English => "Cherry-pick of {} needs conflict resolution",
+                Language::SimplifiedChinese => "拣选 {} 需要解决冲突",
+            },
+            (_, TrKey::ErrCherryPickFailedFmt) => match self {
+                Language::English => "Cherry-pick of {} failed",
+                Language::SimplifiedChinese => "拣选 {} 失败",
+            },
+            (_, TrKey::ErrCherryPickGuide) => match self {
+                Language::English => "Resolve the conflicts in the working tree, then commit the cherry-pick manually.",
+                Language::SimplifiedChinese => "请解决工作树中的冲突，然后手动提交此次拣选。",
+            },
+            (_, TrKey::ErrAbortFailedFmt) => match self {
+                Language::English => "Failed to abort {}",
+                Language::SimplifiedChinese => "中止 {} 失败",
+            },
+            (_, TrKey::ErrContinueFailedFmt) => match self {
+                Language::English => "Could not continue {}",
+                Language::SimplifiedChinese => "无法继续 {}",
+            },
+            (_, TrKey::ErrMergeConflictFmt) => match self {
+                Language::English => "Merge conflicts in '{}'",
+                Language::SimplifiedChinese => "合并 '{}' 存在冲突",
+            },
+            (_, TrKey::ErrMergeFailedFmt) => match self {
+                Language::English => "Merge of '{}' failed",
+                Language::SimplifiedChinese => "合并 '{}' 失败",
+            },
+            (_, TrKey::ErrRemoveRemoteFailed) => match self {
+                Language::English => "Removing remote failed",
+                Language::SimplifiedChinese => "移除远程失败",
+            },
+            (_, TrKey::ErrCloneFailed) => match self {
+                Language::English => "Clone failed",
+                Language::SimplifiedChinese => "克隆失败",
+            },
+            (_, TrKey::ErrBisectStartFailed) => match self {
+                Language::English => "Failed to start bisect",
+                Language::SimplifiedChinese => "启动 bisect 失败",
+            },
+            (_, TrKey::ErrBisectGoodFailedFmt) => match self {
+                Language::English => "Failed to mark {} as good",
+                Language::SimplifiedChinese => "无法将 {} 标记为正常",
+            },
+            (_, TrKey::ErrBisectBadFailedFmt) => match self {
+                Language::English => "Failed to mark {} as bad",
+                Language::SimplifiedChinese => "无法将 {} 标记为有问题",
+            },
+            (_, TrKey::ErrBisectExhausted) => match self {
+                Language::English => "Bisect exhausted",
+                Language::SimplifiedChinese => "Bisect 已穷尽候选提交",
+            },
+            (_, TrKey::ErrBisectSkipFailedFmt) => match self {
+                Language::English => "Failed to skip {}",
+                Language::SimplifiedChinese => "无法跳过 {}",
+            },
+            (_, TrKey::ErrBisectResetFailed) => match self {
+                Language::English => "Failed to reset bisect",
+                Language::SimplifiedChinese => "重置 bisect 失败",
+            },
+            (_, TrKey::ErrWorktreeCreateFailedFmt) => match self {
+                Language::English => "Create worktree '{}' failed",
+                Language::SimplifiedChinese => "创建工作树 '{}' 失败",
+            },
+            (_, TrKey::ErrWorktreeRemoveFailedFmt) => match self {
+                Language::English => "Remove worktree '{}' failed",
+                Language::SimplifiedChinese => "移除工作树 '{}' 失败",
+            },
+            (_, TrKey::ErrFetchFailedFmt) => match self {
+                Language::English => "Fetch from '{}' failed",
+                Language::SimplifiedChinese => "从 '{}' 获取失败",
+            },
+            (_, TrKey::ErrPullConflictFmt) => match self {
+                Language::English => "Pull from '{}' has conflicts",
+                Language::SimplifiedChinese => "从 '{}' 拉取存在冲突",
+            },
+            (_, TrKey::ErrPullFailedFmt) => match self {
+                Language::English => "Pull from '{}' failed",
+                Language::SimplifiedChinese => "从 '{}' 拉取失败",
+            },
+            (_, TrKey::ErrPushFailedFmt) => match self {
+                Language::English => "Push to '{}' failed",
+                Language::SimplifiedChinese => "向 '{}' 推送失败",
+            },
+            (_, TrKey::ErrFetchNotStarted) => match self {
+                Language::English => "Fetch could not start",
+                Language::SimplifiedChinese => "获取无法启动",
+            },
+            (_, TrKey::ErrPullNotStarted) => match self {
+                Language::English => "Pull could not start",
+                Language::SimplifiedChinese => "拉取无法启动",
+            },
+            (_, TrKey::ErrPushNotStarted) => match self {
+                Language::English => "Push could not start",
+                Language::SimplifiedChinese => "推送无法启动",
+            },
+            (_, TrKey::ErrRebasePaused) => match self {
+                Language::English => "Rebase paused due to conflicts",
+                Language::SimplifiedChinese => "变基因冲突已暂停",
+            },
+            (_, TrKey::ErrRebaseFailed) => match self {
+                Language::English => "Interactive rebase failed",
+                Language::SimplifiedChinese => "交互式变基失败",
+            },
+            (_, TrKey::ErrStageHunkFailed) => match self {
+                Language::English => "Stage hunk failed",
+                Language::SimplifiedChinese => "暂存代码块失败",
+            },
+            (_, TrKey::ErrUnstageHunkFailed) => match self {
+                Language::English => "Unstage hunk failed",
+                Language::SimplifiedChinese => "取消暂存代码块失败",
+            },
+            (_, TrKey::ErrStageLinesFailed) => match self {
+                Language::English => "Stage lines failed",
+                Language::SimplifiedChinese => "暂存选中行失败",
+            },
+            (_, TrKey::ErrUnstageLinesFailed) => match self {
+                Language::English => "Unstage lines failed",
+                Language::SimplifiedChinese => "取消暂存选中行失败",
+            },
+            (_, TrKey::ErrConflictResolveFailed) => match self {
+                Language::English => "Conflict resolution failed",
+                Language::SimplifiedChinese => "冲突解决失败",
+            },
+            (_, TrKey::ErrAlreadyOnBranchFmt) => match self {
+                Language::English => "Already on branch '{}'.",
+                Language::SimplifiedChinese => "已位于分支 '{}'。",
+            },
+            (_, TrKey::ErrCleanWorktreeFmt) => match self {
+                Language::English => "{} requires a clean working tree. Commit, stash, or discard your changes to tracked files first.",
+                Language::SimplifiedChinese => "{} 需要干净的工作树，请先提交、储藏或丢弃已跟踪文件的更改。",
+            },
+            (_, TrKey::ErrHeadDetached) => match self {
+                Language::English => "HEAD is detached. Switch to a branch before running this operation.",
+                Language::SimplifiedChinese => "HEAD 已分离，请先切换到某个分支再执行此操作。",
+            },
+            (_, TrKey::ErrBranchNameUnknown) => match self {
+                Language::English => "Failed to determine the current branch name",
+                Language::SimplifiedChinese => "无法确定当前分支名",
+            },
+            (_, TrKey::ErrNoRemotes) => match self {
+                Language::English => "No remotes configured. Add one with: git remote add origin <url>",
+                Language::SimplifiedChinese => "尚未配置远程仓库，请先添加：git remote add origin <url>",
+            },
+            (_, TrKey::ErrNoUsableRemotes) => match self {
+                Language::English => "No usable git remotes are configured.",
+                Language::SimplifiedChinese => "没有可用的 git 远程配置。",
+            },
+            (_, TrKey::ErrNoStagedChanges) => match self {
+                Language::English => "There are no staged changes to commit.",
+                Language::SimplifiedChinese => "没有已暂存的更改可提交。",
+            },
+            (_, TrKey::ErrCannotAmendRebase) => match self {
+                Language::English => "Cannot amend during a rebase. Continue or abort the rebase first.",
+                Language::SimplifiedChinese => "变基期间无法修正提交，请先继续或中止变基。",
+            },
+            (_, TrKey::ErrOverwriteLocalFmt) => match self {
+                Language::English => "{} would overwrite local changes. Commit, stash, or discard them first.",
+                Language::SimplifiedChinese => "{} 会覆盖本地更改，请先提交、储藏或丢弃它们。",
+            },
+            (_, TrKey::ErrOverwritePathOneFmt) => match self {
+                Language::English => "{} would overwrite {}. Commit, stash, move, or delete it first.",
+                Language::SimplifiedChinese => "{} 会覆盖 {}，请先提交、储藏、移动或删除该文件。",
+            },
+            (_, TrKey::ErrOverwritePathManyFmt) => match self {
+                Language::English => "{} would overwrite {}. Commit, stash, move, or delete them first.",
+                Language::SimplifiedChinese => "{} 会覆盖 {}，请先提交、储藏、移动或删除这些文件。",
+            },
+            (_, TrKey::ErrStagingConflictFmt) => match self {
+                Language::English => "'{}' has unresolved conflicts. Open the conflict resolver before staging it.",
+                Language::SimplifiedChinese => "'{}' 存在未解决的冲突，请先打开冲突解决器再暂存。",
+            },
+            (_, TrKey::ErrBranchNotFoundFmt) => match self {
+                Language::English => "Branch '{}' not found as a local or remote branch. Try fetching to update remote refs.",
+                Language::SimplifiedChinese => "找不到分支 '{}'（本地和远程均无），请先获取以更新远程引用。",
+            },
+            (_, TrKey::ErrLocalBranchExistsFmt) => match self {
+                Language::English => "A local branch named '{}' already exists. Please delete or rename it first.",
+                Language::SimplifiedChinese => "本地分支 '{}' 已存在，请先删除或重命名它。",
+            },
+            (_, TrKey::ErrInvalidRemoteBranchFmt) => match self {
+                Language::English => "Invalid remote branch name '{}'. Expected 'remote/branch' format.",
+                Language::SimplifiedChinese => "远程分支名 '{}' 无效，应为 'remote/branch' 格式。",
+            },
+            (_, TrKey::ErrNotMergeState) => match self {
+                Language::English => "Repository is not in a merge state (no MERGE_HEAD to continue).",
+                Language::SimplifiedChinese => "仓库当前不在合并状态（缺少 MERGE_HEAD，无法继续）。",
+            },
+            (_, TrKey::ErrUnresolvedConflicts) => match self {
+                Language::English => "There are still unresolved conflicts. Resolve all conflicts before continuing.",
+                Language::SimplifiedChinese => "仍有未解决的冲突，请先解决所有冲突再继续。",
+            },
+            (_, TrKey::ErrNothingToContinueFmt) => match self {
+                Language::English => "There is no {} to continue.",
+                Language::SimplifiedChinese => "当前没有可继续的 {}。",
+            },
+            (_, TrKey::ErrNoRebaseEntries) => match self {
+                Language::English => "No entries provided for interactive rebase",
+                Language::SimplifiedChinese => "未提供交互式变基条目",
+            },
+            (_, TrKey::ErrRebasePlanMismatchFmt) => match self {
+                Language::English => "Interactive rebase plan does not match the current branch's history (the selected commits are not exactly the last {} first-parent commits of HEAD). Refresh and try again.",
+                Language::SimplifiedChinese => "交互式变基计划与当前分支历史不匹配（所选提交并非 HEAD 末尾连续的 {} 个第一父系提交），请刷新后重试。",
+            },
+            (_, TrKey::ErrStashIndexOutOfRangeFmt) => match self {
+                Language::English => "Stash index {} out of range",
+                Language::SimplifiedChinese => "储藏索引 {} 超出范围",
+            },
+            (_, TrKey::ErrBaseNotCommitFmt) => match self {
+                Language::English => "'{}' does not resolve to a commit",
+                Language::SimplifiedChinese => "'{}' 无法解析为提交",
+            },
             (_, TrKey::SignedBadge) => match self {
                 Language::English => "✓ Signed",
                 Language::SimplifiedChinese => "✓ 已签名",
@@ -2594,6 +2918,87 @@ pub enum TrKey {
     StatusStagedFmt,
     StatusChangedFmt,
     SignedBadge,
+    ErrStageFailed,
+    ErrUnstageFailed,
+    ErrStageAllFailed,
+    ErrUnstageAllFailed,
+    ErrCommitFailed,
+    ErrAmendFailed,
+    ErrCheckoutBranchFailedFmt,
+    ErrCheckoutCommitFailedFmt,
+    ErrCheckoutTagFailedFmt,
+    ErrBranchCreateFailedFmt,
+    ErrBranchDeleteFailedFmt,
+    ErrBranchRenameFailedFmt,
+    ErrTagCreateFailedFmt,
+    ErrTagDeleteFailedFmt,
+    ErrStashSaveFailed,
+    ErrStashPopFailedFmt,
+    ErrStashApplyFailedFmt,
+    ErrStashDropFailedFmt,
+    ErrStashBranchFailedFmt,
+    ErrDiscardFailed,
+    ErrCleanFailed,
+    ErrResetHeadFailed,
+    ErrResetFailedFmt,
+    ErrResetSoftFailedFmt,
+    ErrResetMixedFailedFmt,
+    ErrRevertConflictFmt,
+    ErrRevertFailedFmt,
+    ErrRevertGuide,
+    ErrCherryPickConflictFmt,
+    ErrCherryPickFailedFmt,
+    ErrCherryPickGuide,
+    ErrAbortFailedFmt,
+    ErrContinueFailedFmt,
+    ErrMergeConflictFmt,
+    ErrMergeFailedFmt,
+    ErrRemoveRemoteFailed,
+    ErrCloneFailed,
+    ErrBisectStartFailed,
+    ErrBisectGoodFailedFmt,
+    ErrBisectBadFailedFmt,
+    ErrBisectExhausted,
+    ErrBisectSkipFailedFmt,
+    ErrBisectResetFailed,
+    ErrWorktreeCreateFailedFmt,
+    ErrWorktreeRemoveFailedFmt,
+    ErrFetchFailedFmt,
+    ErrPullConflictFmt,
+    ErrPullFailedFmt,
+    ErrPushFailedFmt,
+    ErrFetchNotStarted,
+    ErrPullNotStarted,
+    ErrPushNotStarted,
+    ErrRebasePaused,
+    ErrRebaseFailed,
+    ErrStageHunkFailed,
+    ErrUnstageHunkFailed,
+    ErrStageLinesFailed,
+    ErrUnstageLinesFailed,
+    ErrConflictResolveFailed,
+    ErrAlreadyOnBranchFmt,
+    ErrCleanWorktreeFmt,
+    ErrHeadDetached,
+    ErrBranchNameUnknown,
+    ErrNoRemotes,
+    ErrNoUsableRemotes,
+    ErrNoStagedChanges,
+    ErrCannotAmendRebase,
+    ErrOverwriteLocalFmt,
+    ErrOverwritePathOneFmt,
+    ErrOverwritePathManyFmt,
+    ErrStagingConflictFmt,
+    ErrBranchNotFoundFmt,
+    ErrLocalBranchExistsFmt,
+    ErrInvalidRemoteBranchFmt,
+    ErrNotMergeState,
+    ErrUnresolvedConflicts,
+    ErrNothingToContinueFmt,
+    ErrNoRebaseEntries,
+    ErrRebasePlanMismatchFmt,
+    ErrStashIndexOutOfRangeFmt,
+    ErrBaseNotCommitFmt,
 }
 
 /// Application settings persisted to disk.
@@ -4871,6 +5276,87 @@ mod tests {
             TrKey::StatusStagedFmt,
             TrKey::StatusChangedFmt,
             TrKey::SignedBadge,
+            TrKey::ErrStageFailed,
+            TrKey::ErrUnstageFailed,
+            TrKey::ErrStageAllFailed,
+            TrKey::ErrUnstageAllFailed,
+            TrKey::ErrCommitFailed,
+            TrKey::ErrAmendFailed,
+            TrKey::ErrCheckoutBranchFailedFmt,
+            TrKey::ErrCheckoutCommitFailedFmt,
+            TrKey::ErrCheckoutTagFailedFmt,
+            TrKey::ErrBranchCreateFailedFmt,
+            TrKey::ErrBranchDeleteFailedFmt,
+            TrKey::ErrBranchRenameFailedFmt,
+            TrKey::ErrTagCreateFailedFmt,
+            TrKey::ErrTagDeleteFailedFmt,
+            TrKey::ErrStashSaveFailed,
+            TrKey::ErrStashPopFailedFmt,
+            TrKey::ErrStashApplyFailedFmt,
+            TrKey::ErrStashDropFailedFmt,
+            TrKey::ErrStashBranchFailedFmt,
+            TrKey::ErrDiscardFailed,
+            TrKey::ErrCleanFailed,
+            TrKey::ErrResetHeadFailed,
+            TrKey::ErrResetFailedFmt,
+            TrKey::ErrResetSoftFailedFmt,
+            TrKey::ErrResetMixedFailedFmt,
+            TrKey::ErrRevertConflictFmt,
+            TrKey::ErrRevertFailedFmt,
+            TrKey::ErrRevertGuide,
+            TrKey::ErrCherryPickConflictFmt,
+            TrKey::ErrCherryPickFailedFmt,
+            TrKey::ErrCherryPickGuide,
+            TrKey::ErrAbortFailedFmt,
+            TrKey::ErrContinueFailedFmt,
+            TrKey::ErrMergeConflictFmt,
+            TrKey::ErrMergeFailedFmt,
+            TrKey::ErrRemoveRemoteFailed,
+            TrKey::ErrCloneFailed,
+            TrKey::ErrBisectStartFailed,
+            TrKey::ErrBisectGoodFailedFmt,
+            TrKey::ErrBisectBadFailedFmt,
+            TrKey::ErrBisectExhausted,
+            TrKey::ErrBisectSkipFailedFmt,
+            TrKey::ErrBisectResetFailed,
+            TrKey::ErrWorktreeCreateFailedFmt,
+            TrKey::ErrWorktreeRemoveFailedFmt,
+            TrKey::ErrFetchFailedFmt,
+            TrKey::ErrPullConflictFmt,
+            TrKey::ErrPullFailedFmt,
+            TrKey::ErrPushFailedFmt,
+            TrKey::ErrFetchNotStarted,
+            TrKey::ErrPullNotStarted,
+            TrKey::ErrPushNotStarted,
+            TrKey::ErrRebasePaused,
+            TrKey::ErrRebaseFailed,
+            TrKey::ErrStageHunkFailed,
+            TrKey::ErrUnstageHunkFailed,
+            TrKey::ErrStageLinesFailed,
+            TrKey::ErrUnstageLinesFailed,
+            TrKey::ErrConflictResolveFailed,
+            TrKey::ErrAlreadyOnBranchFmt,
+            TrKey::ErrCleanWorktreeFmt,
+            TrKey::ErrHeadDetached,
+            TrKey::ErrBranchNameUnknown,
+            TrKey::ErrNoRemotes,
+            TrKey::ErrNoUsableRemotes,
+            TrKey::ErrNoStagedChanges,
+            TrKey::ErrCannotAmendRebase,
+            TrKey::ErrOverwriteLocalFmt,
+            TrKey::ErrOverwritePathOneFmt,
+            TrKey::ErrOverwritePathManyFmt,
+            TrKey::ErrStagingConflictFmt,
+            TrKey::ErrBranchNotFoundFmt,
+            TrKey::ErrLocalBranchExistsFmt,
+            TrKey::ErrInvalidRemoteBranchFmt,
+            TrKey::ErrNotMergeState,
+            TrKey::ErrUnresolvedConflicts,
+            TrKey::ErrNothingToContinueFmt,
+            TrKey::ErrNoRebaseEntries,
+            TrKey::ErrRebasePlanMismatchFmt,
+            TrKey::ErrStashIndexOutOfRangeFmt,
+            TrKey::ErrBaseNotCommitFmt,
         ];
         for key in keys {
             assert!(!Language::English.tr(key).is_empty());
@@ -4960,6 +5446,311 @@ mod tests {
         assert_eq!(
             Language::English.tr(TrKey::CloneUrlPh),
             "Repository URL (e.g. https://github.com/user/repo.git)"
+        );
+        // Git operation errors: English must stay byte-identical to the
+        // legacy `format!` strings they replace.
+        assert_eq!(Language::English.tr(TrKey::ErrStageFailed), "Stage failed");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnstageFailed),
+            "Unstage failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStageAllFailed),
+            "Stage all failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnstageAllFailed),
+            "Unstage all failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCommitFailed),
+            "Commit failed"
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrAmendFailed), "Amend failed");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCheckoutBranchFailedFmt),
+            "Checkout of '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCheckoutCommitFailedFmt),
+            "Checkout of {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCheckoutTagFailedFmt),
+            "Checkout of tag '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBranchCreateFailedFmt),
+            "Branch '{}' could not be created"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBranchDeleteFailedFmt),
+            "Delete branch '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBranchRenameFailedFmt),
+            "Rename branch '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrTagCreateFailedFmt),
+            "Tag '{}' could not be created"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrTagDeleteFailedFmt),
+            "Delete tag '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashSaveFailed),
+            "Save stash failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashPopFailedFmt),
+            "Pop stash #{} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashApplyFailedFmt),
+            "Apply stash #{} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashDropFailedFmt),
+            "Drop stash #{} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashBranchFailedFmt),
+            "Create branch from stash #{} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrDiscardFailed),
+            "Discard changes failed"
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrCleanFailed), "Clean failed");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrResetHeadFailed),
+            "Reset to HEAD failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrResetFailedFmt),
+            "Reset to {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrResetSoftFailedFmt),
+            "Soft reset to {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrResetMixedFailedFmt),
+            "Mixed reset to {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRevertConflictFmt),
+            "Revert of {} needs conflict resolution"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRevertFailedFmt),
+            "Revert of {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRevertGuide),
+            "Resolve the conflicts in the working tree, then commit the revert manually."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCherryPickConflictFmt),
+            "Cherry-pick of {} needs conflict resolution"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCherryPickFailedFmt),
+            "Cherry-pick of {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCherryPickGuide),
+            "Resolve the conflicts in the working tree, then commit the cherry-pick manually."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrAbortFailedFmt),
+            "Failed to abort {}"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrContinueFailedFmt),
+            "Could not continue {}"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrMergeConflictFmt),
+            "Merge conflicts in '{}'"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrMergeFailedFmt),
+            "Merge of '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRemoveRemoteFailed),
+            "Removing remote failed"
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrCloneFailed), "Clone failed");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectStartFailed),
+            "Failed to start bisect"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectGoodFailedFmt),
+            "Failed to mark {} as good"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectBadFailedFmt),
+            "Failed to mark {} as bad"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectExhausted),
+            "Bisect exhausted"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectSkipFailedFmt),
+            "Failed to skip {}"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectResetFailed),
+            "Failed to reset bisect"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrWorktreeCreateFailedFmt),
+            "Create worktree '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrWorktreeRemoveFailedFmt),
+            "Remove worktree '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrFetchFailedFmt),
+            "Fetch from '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPullConflictFmt),
+            "Pull from '{}' has conflicts"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPullFailedFmt),
+            "Pull from '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPushFailedFmt),
+            "Push to '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrFetchNotStarted),
+            "Fetch could not start"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPullNotStarted),
+            "Pull could not start"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPushNotStarted),
+            "Push could not start"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRebasePaused),
+            "Rebase paused due to conflicts"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRebaseFailed),
+            "Interactive rebase failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStageHunkFailed),
+            "Stage hunk failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnstageHunkFailed),
+            "Unstage hunk failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStageLinesFailed),
+            "Stage lines failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnstageLinesFailed),
+            "Unstage lines failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrConflictResolveFailed),
+            "Conflict resolution failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrAlreadyOnBranchFmt),
+            "Already on branch '{}'."
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrCleanWorktreeFmt), "{} requires a clean working tree. Commit, stash, or discard your changes to tracked files first.");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrHeadDetached),
+            "HEAD is detached. Switch to a branch before running this operation."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBranchNameUnknown),
+            "Failed to determine the current branch name"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNoRemotes),
+            "No remotes configured. Add one with: git remote add origin <url>"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNoUsableRemotes),
+            "No usable git remotes are configured."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNoStagedChanges),
+            "There are no staged changes to commit."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCannotAmendRebase),
+            "Cannot amend during a rebase. Continue or abort the rebase first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrOverwriteLocalFmt),
+            "{} would overwrite local changes. Commit, stash, or discard them first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrOverwritePathOneFmt),
+            "{} would overwrite {}. Commit, stash, move, or delete it first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrOverwritePathManyFmt),
+            "{} would overwrite {}. Commit, stash, move, or delete them first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStagingConflictFmt),
+            "'{}' has unresolved conflicts. Open the conflict resolver before staging it."
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrBranchNotFoundFmt), "Branch '{}' not found as a local or remote branch. Try fetching to update remote refs.");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrLocalBranchExistsFmt),
+            "A local branch named '{}' already exists. Please delete or rename it first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrInvalidRemoteBranchFmt),
+            "Invalid remote branch name '{}'. Expected 'remote/branch' format."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNotMergeState),
+            "Repository is not in a merge state (no MERGE_HEAD to continue)."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnresolvedConflicts),
+            "There are still unresolved conflicts. Resolve all conflicts before continuing."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNothingToContinueFmt),
+            "There is no {} to continue."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNoRebaseEntries),
+            "No entries provided for interactive rebase"
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrRebasePlanMismatchFmt), "Interactive rebase plan does not match the current branch's history (the selected commits are not exactly the last {} first-parent commits of HEAD). Refresh and try again.");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashIndexOutOfRangeFmt),
+            "Stash index {} out of range"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBaseNotCommitFmt),
+            "'{}' does not resolve to a commit"
         );
     }
 
