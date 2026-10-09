@@ -412,6 +412,181 @@ impl Language {
                 Language::English => "BEHAVIOUR",
                 Language::SimplifiedChinese => "行为",
             },
+            (_, TrKey::AiStatusTitle) => match self {
+                Language::English => "AI Commit Messages",
+                Language::SimplifiedChinese => "AI 提交信息",
+            },
+            (_, TrKey::AiEnabledToggle) => match self {
+                Language::English => "Enabled",
+                Language::SimplifiedChinese => "启用",
+            },
+            (_, TrKey::AiStatusOff) => match self {
+                Language::English => "AI is turned off. Nothing will be sent to any provider.",
+                Language::SimplifiedChinese => "AI 已关闭，不会向任何服务商发送内容。",
+            },
+            (_, TrKey::AiStatusTestingFmt) => match self {
+                Language::English => "Testing {}…",
+                Language::SimplifiedChinese => "正在测试 {}…",
+            },
+            (_, TrKey::AiStatusRejectedFmt) => match self {
+                Language::English => "{} rejected this key.",
+                Language::SimplifiedChinese => "{} 拒绝了此密钥。",
+            },
+            (_, TrKey::AiStatusAddKeyFmt) => match self {
+                Language::English => "Add a {} API key to get started.",
+                Language::SimplifiedChinese => "添加 {} API 密钥以开始使用。",
+            },
+            (_, TrKey::AiConnectTitle) => match self {
+                Language::English => "Connect an AI provider",
+                Language::SimplifiedChinese => "连接 AI 服务商",
+            },
+            (_, TrKey::AiConnectDesc) => match self {
+                Language::English => "rgitui writes commit messages from your staged diff.",
+                Language::SimplifiedChinese => "rgitui 会根据已暂存的 diff 编写提交信息。",
+            },
+            (_, TrKey::AiApiKeyLabel) => match self {
+                Language::English => "API key",
+                Language::SimplifiedChinese => "API 密钥",
+            },
+            (_, TrKey::AiGetKeyBtn) => match self {
+                Language::English => "Get a key",
+                Language::SimplifiedChinese => "获取密钥",
+            },
+            (_, TrKey::AiKeyVerifiedFmt) => match self {
+                Language::English => "Verified {} · stored in {}",
+                Language::SimplifiedChinese => "已验证（{}）·存储于 {}",
+            },
+            (_, TrKey::AiKeyStoredHintFmt) => match self {
+                Language::English => "Key stored in {}. Test it to confirm it works.",
+                Language::SimplifiedChinese => "密钥存储于 {}，点击测试确认其可用。",
+            },
+            (_, TrKey::AiNoKeyHintFmt) => match self {
+                Language::English => "No API key needed — requests go to {}.",
+                Language::SimplifiedChinese => "无需 API 密钥——请求将发送至 {}。",
+            },
+            (_, TrKey::AiKeysStoredNoteFmt) => match self {
+                Language::English => {
+                    "Keys are stored in {}, never in settings.json, and are only read when a request is sent."
+                }
+                Language::SimplifiedChinese => {
+                    "密钥存储于 {}，从不写入 settings.json，仅在发送请求时读取。"
+                }
+            },
+            (_, TrKey::AiModelLabel) => match self {
+                Language::English => "Model",
+                Language::SimplifiedChinese => "模型",
+            },
+            (_, TrKey::AiModelCountFmt) => match self {
+                Language::English => "{} models · {}",
+                Language::SimplifiedChinese => "{} 个模型 · {}",
+            },
+            (_, TrKey::AiRefreshBtn) => match self {
+                Language::English => "Refresh",
+                Language::SimplifiedChinese => "刷新",
+            },
+            (_, TrKey::AiRefreshingBtn) => match self {
+                Language::English => "Refreshing…",
+                Language::SimplifiedChinese => "刷新中…",
+            },
+            (_, TrKey::AiModelMissingFmt) => match self {
+                Language::English => {
+                    "`{}` is not in {}'s current model list. It may have been retired."
+                }
+                Language::SimplifiedChinese => "`{}` 不在 {} 当前的模型列表中，可能已被下线。",
+            },
+            (_, TrKey::AiUseSuggestionFmt) => match self {
+                Language::English => "Use {}",
+                Language::SimplifiedChinese => "使用 {}",
+            },
+            (_, TrKey::AiConnectBtn) => match self {
+                Language::English => "Connect",
+                Language::SimplifiedChinese => "连接",
+            },
+            (_, TrKey::AiUseProviderBtn) => match self {
+                Language::English => "Use this provider",
+                Language::SimplifiedChinese => "使用此服务商",
+            },
+            (_, TrKey::AiTestBtn) => match self {
+                Language::English => "Test",
+                Language::SimplifiedChinese => "测试",
+            },
+            (_, TrKey::AiTestingBtn) => match self {
+                Language::English => "Testing…",
+                Language::SimplifiedChinese => "测试中…",
+            },
+            (_, TrKey::AiRemoveKeyBtn) => match self {
+                Language::English => "Remove key",
+                Language::SimplifiedChinese => "移除密钥",
+            },
+            (_, TrKey::AiAdvancedLabel) => match self {
+                Language::English => "Advanced",
+                Language::SimplifiedChinese => "高级",
+            },
+            (_, TrKey::AiBaseUrlLabel) => "Base URL",
+            (_, TrKey::AiBaseUrlOverriddenFmt) => match self {
+                Language::English => {
+                    "Requests go to {} instead of {}. Your API key is sent to that host."
+                }
+                Language::SimplifiedChinese => {
+                    "请求将发送至 {} 而非 {}，您的 API 密钥也会被发送到该主机。"
+                }
+            },
+            (_, TrKey::AiBaseUrlEmptyFmt) => match self {
+                Language::English => {
+                    "Empty means use {}. Only OpenAI-compatible providers honour an override."
+                }
+                Language::SimplifiedChinese => {
+                    "留空表示使用 {}，仅 OpenAI 兼容服务商支持覆盖此项。"
+                }
+            },
+            (_, TrKey::AiAttributionTitle) => match self {
+                Language::English => "Send attribution headers",
+                Language::SimplifiedChinese => "发送归因请求头",
+            },
+            (_, TrKey::AiAttributionDesc) => match self {
+                Language::English => {
+                    "Adds HTTP-Referer and X-Title so rgitui appears on OpenRouter's public leaderboard. Never functional."
+                }
+                Language::SimplifiedChinese => {
+                    "附加 HTTP-Referer 与 X-Title 请求头，使 rgitui 出现在 OpenRouter 公开排行榜上，不影响任何功能。"
+                }
+            },
+            (_, TrKey::AiCommitStyleTitle) => match self {
+                Language::English => "Commit style",
+                Language::SimplifiedChinese => "提交信息风格",
+            },
+            (_, TrKey::AiCommitStyleDesc) => match self {
+                Language::English => "How the AI should format commit messages.",
+                Language::SimplifiedChinese => "AI 组织提交信息内容的方式。",
+            },
+            (_, TrKey::AiCtxTitle) => match self {
+                Language::English => "Include project context",
+                Language::SimplifiedChinese => "包含项目上下文",
+            },
+            (_, TrKey::AiCtxDesc) => match self {
+                Language::English => {
+                    "Adds README.md, CLAUDE.md and AGENTS.md to the prompt. ~4k extra tokens per request."
+                }
+                Language::SimplifiedChinese => {
+                    "将 README.md、CLAUDE.md 与 AGENTS.md 加入提示词，每次请求约多消耗 4k token。"
+                }
+            },
+            (_, TrKey::AiToolsTitle) => match self {
+                Language::English => "Let the model read files",
+                Language::SimplifiedChinese => "允许模型读取文件",
+            },
+            (_, TrKey::AiToolsDesc) => match self {
+                Language::English => {
+                    "The model may request file contents and commit history. Slower and more expensive; usually a better message."
+                }
+                Language::SimplifiedChinese => {
+                    "模型可按需读取文件内容与提交历史。速度更慢、费用更高，但提交信息通常更好。"
+                }
+            },
+            (_, TrKey::AiKeyPlaceholderFmt) => match self {
+                Language::English => "Paste your {} API key",
+                Language::SimplifiedChinese => "粘贴您的 {} API 密钥",
+            },
             (_, TrKey::ShowLineNumbersTitle) => match self {
                 Language::English => "Show Line Numbers in Diff",
                 Language::SimplifiedChinese => "在 Diff 中显示行号",
@@ -2172,6 +2347,44 @@ pub enum TrKey {
     AiPageDesc,
     AiSectionConnection,
     AiSectionBehaviour,
+    AiStatusTitle,
+    AiEnabledToggle,
+    AiStatusOff,
+    AiStatusTestingFmt,
+    AiStatusRejectedFmt,
+    AiStatusAddKeyFmt,
+    AiConnectTitle,
+    AiConnectDesc,
+    AiApiKeyLabel,
+    AiGetKeyBtn,
+    AiKeyVerifiedFmt,
+    AiKeyStoredHintFmt,
+    AiNoKeyHintFmt,
+    AiKeysStoredNoteFmt,
+    AiModelLabel,
+    AiModelCountFmt,
+    AiRefreshBtn,
+    AiRefreshingBtn,
+    AiModelMissingFmt,
+    AiUseSuggestionFmt,
+    AiConnectBtn,
+    AiUseProviderBtn,
+    AiTestBtn,
+    AiTestingBtn,
+    AiRemoveKeyBtn,
+    AiAdvancedLabel,
+    AiBaseUrlLabel,
+    AiBaseUrlOverriddenFmt,
+    AiBaseUrlEmptyFmt,
+    AiAttributionTitle,
+    AiAttributionDesc,
+    AiCommitStyleTitle,
+    AiCommitStyleDesc,
+    AiCtxTitle,
+    AiCtxDesc,
+    AiToolsTitle,
+    AiToolsDesc,
+    AiKeyPlaceholderFmt,
     ShowLineNumbersTitle,
     ShowLineNumbersDesc,
     WrapLinesTitle,
@@ -4449,6 +4662,44 @@ mod tests {
             TrKey::AiPageDesc,
             TrKey::AiSectionConnection,
             TrKey::AiSectionBehaviour,
+            TrKey::AiStatusTitle,
+            TrKey::AiEnabledToggle,
+            TrKey::AiStatusOff,
+            TrKey::AiStatusTestingFmt,
+            TrKey::AiStatusRejectedFmt,
+            TrKey::AiStatusAddKeyFmt,
+            TrKey::AiConnectTitle,
+            TrKey::AiConnectDesc,
+            TrKey::AiApiKeyLabel,
+            TrKey::AiGetKeyBtn,
+            TrKey::AiKeyVerifiedFmt,
+            TrKey::AiKeyStoredHintFmt,
+            TrKey::AiNoKeyHintFmt,
+            TrKey::AiKeysStoredNoteFmt,
+            TrKey::AiModelLabel,
+            TrKey::AiModelCountFmt,
+            TrKey::AiRefreshBtn,
+            TrKey::AiRefreshingBtn,
+            TrKey::AiModelMissingFmt,
+            TrKey::AiUseSuggestionFmt,
+            TrKey::AiConnectBtn,
+            TrKey::AiUseProviderBtn,
+            TrKey::AiTestBtn,
+            TrKey::AiTestingBtn,
+            TrKey::AiRemoveKeyBtn,
+            TrKey::AiAdvancedLabel,
+            TrKey::AiBaseUrlLabel,
+            TrKey::AiBaseUrlOverriddenFmt,
+            TrKey::AiBaseUrlEmptyFmt,
+            TrKey::AiAttributionTitle,
+            TrKey::AiAttributionDesc,
+            TrKey::AiCommitStyleTitle,
+            TrKey::AiCommitStyleDesc,
+            TrKey::AiCtxTitle,
+            TrKey::AiCtxDesc,
+            TrKey::AiToolsTitle,
+            TrKey::AiToolsDesc,
+            TrKey::AiKeyPlaceholderFmt,
             TrKey::ShowLineNumbersTitle,
             TrKey::ShowLineNumbersDesc,
             TrKey::WrapLinesTitle,
@@ -4960,6 +5211,119 @@ mod tests {
         assert_eq!(
             Language::English.tr(TrKey::CloneUrlPh),
             "Repository URL (e.g. https://github.com/user/repo.git)"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusTitle),
+            "AI Commit Messages"
+        );
+        assert_eq!(Language::English.tr(TrKey::AiEnabledToggle), "Enabled");
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusOff),
+            "AI is turned off. Nothing will be sent to any provider."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusTestingFmt),
+            "Testing {}…"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusRejectedFmt),
+            "{} rejected this key."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusAddKeyFmt),
+            "Add a {} API key to get started."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiConnectTitle),
+            "Connect an AI provider"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiConnectDesc),
+            "rgitui writes commit messages from your staged diff."
+        );
+        assert_eq!(Language::English.tr(TrKey::AiApiKeyLabel), "API key");
+        assert_eq!(Language::English.tr(TrKey::AiGetKeyBtn), "Get a key");
+        assert_eq!(
+            Language::English.tr(TrKey::AiKeyVerifiedFmt),
+            "Verified {} · stored in {}"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiKeyStoredHintFmt),
+            "Key stored in {}. Test it to confirm it works."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiNoKeyHintFmt),
+            "No API key needed — requests go to {}."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiKeysStoredNoteFmt),
+            "Keys are stored in {}, never in settings.json, and are only read when a request is sent."
+        );
+        assert_eq!(Language::English.tr(TrKey::AiModelLabel), "Model");
+        assert_eq!(
+            Language::English.tr(TrKey::AiModelCountFmt),
+            "{} models · {}"
+        );
+        assert_eq!(Language::English.tr(TrKey::AiRefreshBtn), "Refresh");
+        assert_eq!(Language::English.tr(TrKey::AiRefreshingBtn), "Refreshing…");
+        assert_eq!(
+            Language::English.tr(TrKey::AiModelMissingFmt),
+            "`{}` is not in {}'s current model list. It may have been retired."
+        );
+        assert_eq!(Language::English.tr(TrKey::AiUseSuggestionFmt), "Use {}");
+        assert_eq!(Language::English.tr(TrKey::AiConnectBtn), "Connect");
+        assert_eq!(
+            Language::English.tr(TrKey::AiUseProviderBtn),
+            "Use this provider"
+        );
+        assert_eq!(Language::English.tr(TrKey::AiTestBtn), "Test");
+        assert_eq!(Language::English.tr(TrKey::AiTestingBtn), "Testing…");
+        assert_eq!(Language::English.tr(TrKey::AiRemoveKeyBtn), "Remove key");
+        assert_eq!(Language::English.tr(TrKey::AiAdvancedLabel), "Advanced");
+        assert_eq!(Language::English.tr(TrKey::AiBaseUrlLabel), "Base URL");
+        assert_eq!(
+            Language::English.tr(TrKey::AiBaseUrlOverriddenFmt),
+            "Requests go to {} instead of {}. Your API key is sent to that host."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiBaseUrlEmptyFmt),
+            "Empty means use {}. Only OpenAI-compatible providers honour an override."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiAttributionTitle),
+            "Send attribution headers"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiAttributionDesc),
+            "Adds HTTP-Referer and X-Title so rgitui appears on OpenRouter's public leaderboard. Never functional."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiCommitStyleTitle),
+            "Commit style"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiCommitStyleDesc),
+            "How the AI should format commit messages."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiCtxTitle),
+            "Include project context"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiCtxDesc),
+            "Adds README.md, CLAUDE.md and AGENTS.md to the prompt. ~4k extra tokens per request."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiToolsTitle),
+            "Let the model read files"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiToolsDesc),
+            "The model may request file contents and commit history. Slower and more expensive; usually a better message."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiKeyPlaceholderFmt),
+            "Paste your {} API key"
         );
     }
 
