@@ -4,6 +4,7 @@ use gpui::{
     SharedString, Window,
 };
 use rgitui_ai::CommitStyle;
+use rgitui_settings::{Language, SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, IconButton, IconName, Label, LabelSize,
@@ -173,6 +174,10 @@ impl EventEmitter<CommitPanelEvent> for CommitPanel {}
 
 impl CommitPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         let summary_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
             ti.set_placeholder("Commit summary...");
@@ -417,15 +422,15 @@ impl CommitPanel {
         self.focus_handle.contains_focused(window, cx)
     }
 
-    fn commit_button_label(&self, summary_empty: bool) -> &'static str {
+    fn commit_button_label(&self, summary_empty: bool, language: Language) -> &'static str {
         if self.staged_count == 0 {
-            "No Staged Changes"
+            language.tr(TrKey::CommitNoStaged)
         } else if summary_empty {
-            "No Message"
+            language.tr(TrKey::CommitNoMessage)
         } else if self.amend {
-            "Amend Commit"
+            language.tr(TrKey::CommitAmendBtn)
         } else {
-            "Commit"
+            language.tr(TrKey::CommitBtn)
         }
     }
 
@@ -714,6 +719,10 @@ impl CommitPanel {
 impl Render for CommitPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|state| state.settings().language)
+            .unwrap_or_default();
         let summary_empty = self.summary_editor.read(cx).is_empty();
         let can_commit = !summary_empty && self.staged_count > 0;
         let summary_len = self.summary_editor.read(cx).text().chars().count();
@@ -759,7 +768,7 @@ impl Render for CommitPanel {
             SharedString::default()
         };
 
-        let commit_label = self.commit_button_label(summary_empty);
+        let commit_label = self.commit_button_label(summary_empty, language);
 
         // `has_ai_api_key()` reads the cached flag. The old
         // `ai_api_key().is_some()` deep-cloned the AI key, the HTTPS token and
@@ -834,7 +843,7 @@ impl Render for CommitPanel {
                                 )),
                             )
                             .child(
-                                Label::new("Commit")
+                                Label::new(language.tr(TrKey::CommitBtn))
                                     .size(LabelSize::XSmall)
                                     .weight(gpui::FontWeight::SEMIBOLD)
                                     .color(Color::Muted),
@@ -893,7 +902,7 @@ impl Render for CommitPanel {
                                             .h_flex()
                                             .items_center()
                                             .child(
-                                                Label::new("Summary")
+                                                Label::new(language.tr(TrKey::SummaryLabel))
                                                     .size(LabelSize::XSmall)
                                                     .color(Color::Muted)
                                                     .weight(gpui::FontWeight::MEDIUM),
@@ -920,7 +929,7 @@ impl Render for CommitPanel {
                                             .h_flex()
                                             .items_center()
                                             .child(
-                                                Label::new("Description")
+                                                Label::new(language.tr(TrKey::DescLabel))
                                                     .size(LabelSize::XSmall)
                                                     .color(Color::Muted)
                                                     .weight(gpui::FontWeight::MEDIUM),
@@ -951,7 +960,7 @@ impl Render for CommitPanel {
                                             .w_full()
                                             .items_center()
                                             .child(
-                                                Label::new("Co-Authors")
+                                                Label::new(language.tr(TrKey::CoAuthorsLabel))
                                                     .size(LabelSize::XSmall)
                                                     .color(Color::Muted)
                                                     .weight(gpui::FontWeight::MEDIUM),
@@ -1120,7 +1129,7 @@ impl Render for CommitPanel {
                                         },
                                     ))
                                     .child(
-                                        Label::new("Amend")
+                                        Label::new(language.tr(TrKey::AmendBtn))
                                             .size(LabelSize::XSmall)
                                             .color(Color::Muted),
                                     ),
@@ -1129,7 +1138,7 @@ impl Render for CommitPanel {
                                 !summary_empty || !self.description_editor.read(cx).is_empty(),
                                 |el| {
                                     el.child(
-                                        Button::new("clear-btn", "Clear")
+                                        Button::new("clear-btn", language.tr(TrKey::ClearBtn))
                                             .icon(IconName::X)
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Subtle)
@@ -1155,7 +1164,7 @@ impl Render for CommitPanel {
                             .child(div().flex_1())
                             .when(self.staged_count == 0, |el| {
                                 el.child(
-                                    Label::new("No staged changes")
+                                    Label::new(language.tr(TrKey::NoStagedHint))
                                         .size(LabelSize::XSmall)
                                         .color(Color::Warning),
                                 )

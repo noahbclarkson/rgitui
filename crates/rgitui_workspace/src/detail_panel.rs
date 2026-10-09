@@ -13,7 +13,7 @@ use rgitui_git::{
     compact_ref_labels, BranchInfo, CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel,
     Signature,
 };
-use rgitui_settings::SettingsState;
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     AvatarCache, Badge, ButtonSize, ButtonStyle, DiffStat, Icon, IconButton, IconName, IconSize,
@@ -1263,6 +1263,7 @@ impl Render for DetailPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let compact = &cx.global::<SettingsState>().settings().compactness;
+        let language = cx.global::<SettingsState>().settings().language;
 
         // Compactness-scaled spacing values for header and message cards
         let header_pad_h = px(compact.spacing(12.0));
@@ -1296,7 +1297,7 @@ impl Render for DetailPanel {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Details")
+                            Label::new(language.tr(TrKey::DetailTitle))
                                 .size(LabelSize::Small)
                                 .weight(gpui::FontWeight::SEMIBOLD)
                                 .color(Color::Default),
@@ -1320,13 +1321,13 @@ impl Render for DetailPanel {
                                     .color(Color::Placeholder),
                             )
                             .child(
-                                Label::new("No commit selected")
+                                Label::new(language.tr(TrKey::DetailEmptyTitle))
                                     .size(LabelSize::Small)
                                     .color(Color::Muted)
                                     .weight(gpui::FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new("Select a commit from the graph to view details")
+                                Label::new(language.tr(TrKey::DetailEmptyDesc))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Placeholder),
                             ),
@@ -1402,7 +1403,7 @@ impl Render for DetailPanel {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Details")
+                    Label::new(language.tr(TrKey::DetailTitle))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Default),

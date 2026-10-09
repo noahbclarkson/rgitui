@@ -21,6 +21,7 @@ use rgitui_git::{
     ConflictSnapshot, DiffLine, FileDiff, MergeSection, ThreeWayFileDiff, WorktreePatchDirection,
     WorktreePatchScope, WorktreePatchSource,
 };
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Appearance, Color, StyledExt, ThemeState};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, EstimatedListScroll, Icon, IconName, IconSize, Label,
@@ -885,6 +886,9 @@ impl DiffViewer {
             this.rehighlight(cx);
         })
         .detach();
+        // Re-render immediately when the interface language changes.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
 
         Self {
             diff: None,
@@ -3412,11 +3416,12 @@ impl DiffViewer {
         if self.file_menu_operations().is_empty() {
             return div().into_any_element();
         }
+        let language = cx.global::<SettingsState>().settings().language;
         let tooltip: SharedString = match self.source.revision_label() {
             Some(revision) => format!("Apply or revert this whole file from {revision}").into(),
             None => "Whole-file operations".into(),
         };
-        Button::new("diff-file-menu", "File")
+        Button::new("diff-file-menu", language.tr(TrKey::DiffFileBtn))
             .size(ButtonSize::Compact)
             .style(ButtonStyle::Subtle)
             .tooltip(tooltip)
@@ -3549,6 +3554,7 @@ impl Render for DiffViewer {
             self.sbs_rows.len()
         );
         let colors = cx.colors();
+        let language = cx.global::<SettingsState>().settings().language;
 
         let has_content = self.diff.is_some() || self.three_way_diff.is_some();
         if self.error.is_some() || self.loading || !has_content {
@@ -3610,7 +3616,7 @@ impl Render for DiffViewer {
                 )
                 .when(is_conflict, |element| {
                     element.child(
-                        Button::new("conflict-error-open", "Open File")
+                        Button::new("conflict-error-open", language.tr(TrKey::DiffOpenFile))
                             .size(ButtonSize::Compact)
                             .style(ButtonStyle::Outlined)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -3631,12 +3637,12 @@ impl Render for DiffViewer {
                         .color(Color::Placeholder),
                 )
                 .child(
-                    Label::new("Select a file to view changes")
+                    Label::new(language.tr(TrKey::DiffEmptyTitle))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Click a file in the sidebar or detail panel")
+                    Label::new(language.tr(TrKey::DiffEmptyDesc))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -5207,7 +5213,7 @@ impl Render for DiffViewer {
                                     )),
                             )
                             .child(
-                                Button::new("conflict-open-editor", "Open File")
+                                Button::new("conflict-open-editor", language.tr(TrKey::DiffOpenFile))
                                     .size(ButtonSize::Compact)
                                     .style(ButtonStyle::Subtle)
                                     .tooltip("Open the working file in your configured editor")

@@ -308,6 +308,470 @@ impl Language {
                 Language::English => "Base font size for the user interface (8 - 24).",
                 Language::SimplifiedChinese => "界面基础字号（8 - 24）。",
             },
+            (_, TrKey::GeneralPageDesc) => match self {
+                Language::English => "General application behavior and workspace defaults.",
+                Language::SimplifiedChinese => "通用应用行为与工作区默认设置。",
+            },
+            (_, TrKey::ThemeSectionDesc) => match self {
+                Language::English => "Customize the look and feel of the application.",
+                Language::SimplifiedChinese => "自定义应用的外观与体验。",
+            },
+            (_, TrKey::ThemePageDesc) => match self {
+                Language::English => "Theme, layout, and visual defaults for the application.",
+                Language::SimplifiedChinese => "应用的主题、布局与视觉默认设置。",
+            },
+            (_, TrKey::AppearanceModeTitle) => match self {
+                Language::English => "Appearance Mode",
+                Language::SimplifiedChinese => "外观模式",
+            },
+            (_, TrKey::AppearanceModeDesc) => match self {
+                Language::English => "Choose whether to show light or dark themes, or auto-detect.",
+                Language::SimplifiedChinese => "选择显示浅色或深色主题，或跟随系统自动切换。",
+            },
+            (_, TrKey::ModeAuto) => match self {
+                Language::English => "Auto",
+                Language::SimplifiedChinese => "自动",
+            },
+            (_, TrKey::ModeLight) => match self {
+                Language::English => "Light",
+                Language::SimplifiedChinese => "浅色",
+            },
+            (_, TrKey::ModeDark) => match self {
+                Language::English => "Dark",
+                Language::SimplifiedChinese => "深色",
+            },
+            (_, TrKey::ColorThemeTitle) => match self {
+                Language::English => "Color Theme",
+                Language::SimplifiedChinese => "配色主题",
+            },
+            (_, TrKey::ColorThemeDesc) => match self {
+                Language::English => "Select a theme to change all interface colors.",
+                Language::SimplifiedChinese => "选择主题以更改全部界面颜色。",
+            },
+            (_, TrKey::ActiveBadge) => match self {
+                Language::English => "Active",
+                Language::SimplifiedChinese => "使用中",
+            },
+            (_, TrKey::CustomThemeTitle) => match self {
+                Language::English => "Custom Theme Editor",
+                Language::SimplifiedChinese => "自定义主题编辑器",
+            },
+            (_, TrKey::CustomThemeDesc) => match self {
+                Language::English => "Edit colors, create custom themes, and export as JSON.",
+                Language::SimplifiedChinese => "编辑颜色、创建自定义主题并导出为 JSON。",
+            },
+            (_, TrKey::EditThemeBtn) => match self {
+                Language::English => "Edit Theme",
+                Language::SimplifiedChinese => "编辑主题",
+            },
+            (_, TrKey::AccountsTitle) => match self {
+                Language::English => "Accounts",
+                Language::SimplifiedChinese => "账户",
+            },
+            (_, TrKey::AccountsDesc) => match self {
+                Language::English => "Account profiles, HTTPS tokens, and SSH configuration.",
+                Language::SimplifiedChinese => "账户档案、HTTPS 令牌与 SSH 配置。",
+            },
+            (_, TrKey::AccountsHeader) => match self {
+                Language::English => "Accounts & Credentials",
+                Language::SimplifiedChinese => "账户与凭证",
+            },
+            (_, TrKey::AccountsSectionDesc) => match self {
+                Language::English => "Use browser sign-in for GitHub or GitLab, manage all account profiles in one place, and keep SSH separate from HTTPS tokens.",
+                Language::SimplifiedChinese => "使用浏览器登录 GitHub 或 GitLab，在一处管理所有账户档案，并将 SSH 与 HTTPS 令牌分开管理。",
+            },
+            (_, TrKey::QuickSetupTitle) => match self {
+                Language::English => "Quick Setup",
+                Language::SimplifiedChinese => "快速设置",
+            },
+            (_, TrKey::QuickSetupDesc) => match self {
+                Language::English => "Start by adding the provider account you want to use. Browser sign-in is the primary path. Manual setup is available for self-hosted or custom HTTPS remotes.",
+                Language::SimplifiedChinese => "先添加要使用的服务商账户。推荐使用浏览器登录；自建或自定义 HTTPS 远程可使用手动设置。",
+            },
+            (_, TrKey::SignInGitHub) => match self {
+                Language::English => "Sign in with GitHub",
+                Language::SimplifiedChinese => "使用 GitHub 登录",
+            },
+            (_, TrKey::AddGitLab) => match self {
+                Language::English => "Add GitLab Account",
+                Language::SimplifiedChinese => "添加 GitLab 账户",
+            },
+            (_, TrKey::ManualCustom) => match self {
+                Language::English => "Manual / Custom Host",
+                Language::SimplifiedChinese => "手动 / 自定义主机",
+            },
+            (_, TrKey::AiPageDesc) => match self {
+                Language::English => "Providers, models, and how commit messages get written.",
+                Language::SimplifiedChinese => "服务商、模型，以及提交信息的生成方式。",
+            },
+            (_, TrKey::AiSectionConnection) => match self {
+                Language::English => "CONNECTION",
+                Language::SimplifiedChinese => "连接",
+            },
+            (_, TrKey::AiSectionBehaviour) => match self {
+                Language::English => "BEHAVIOUR",
+                Language::SimplifiedChinese => "行为",
+            },
+            (_, TrKey::ShowLineNumbersTitle) => match self {
+                Language::English => "Show Line Numbers in Diff",
+                Language::SimplifiedChinese => "在 Diff 中显示行号",
+            },
+            (_, TrKey::ShowLineNumbersDesc) => match self {
+                Language::English => "Display line numbers alongside diff content.",
+                Language::SimplifiedChinese => "在 diff 内容旁显示行号。",
+            },
+            (_, TrKey::WrapLinesTitle) => match self {
+                Language::English => "Wrap Long Lines in Diff",
+                Language::SimplifiedChinese => "在 Diff 中自动换行",
+            },
+            (_, TrKey::WrapLinesDesc) => match self {
+                Language::English => "Wrap overflowing lines instead of scrolling horizontally.",
+                Language::SimplifiedChinese => "超长行自动换行，而非横向滚动。",
+            },
+            (_, TrKey::DiffModeTitle) => match self {
+                Language::English => "Default Diff View Mode",
+                Language::SimplifiedChinese => "默认 Diff 视图",
+            },
+            (_, TrKey::DiffModeDesc) => match self {
+                Language::English => "Choose how diffs are displayed.",
+                Language::SimplifiedChinese => "选择 diff 的显示方式。",
+            },
+            (_, TrKey::DiffUnified) => match self {
+                Language::English => "Unified",
+                Language::SimplifiedChinese => "统一视图",
+            },
+            (_, TrKey::DiffSideBySide) => match self {
+                Language::English => "Side-by-Side",
+                Language::SimplifiedChinese => "并排视图",
+            },
+            (_, TrKey::GraphTitle) => match self {
+                Language::English => "Graph Style",
+                Language::SimplifiedChinese => "提交图样式",
+            },
+            (_, TrKey::GraphDesc) => match self {
+                Language::English => "Visual style for the commit graph rendering.",
+                Language::SimplifiedChinese => "提交图渲染的视觉样式。",
+            },
+            (_, TrKey::GraphRails) => match self {
+                Language::English => "Rails",
+                Language::SimplifiedChinese => "轨道",
+            },
+            (_, TrKey::GraphCurved) => match self {
+                Language::English => "Curved",
+                Language::SimplifiedChinese => "曲线",
+            },
+            (_, TrKey::GraphAngular) => match self {
+                Language::English => "Angular",
+                Language::SimplifiedChinese => "折线",
+            },
+            (_, TrKey::ShowSubjectTitle) => match self {
+                Language::English => "Show Subject Column",
+                Language::SimplifiedChinese => "显示主题列",
+            },
+            (_, TrKey::ShowSubjectDesc) => match self {
+                Language::English => "Display commit subject in the graph.",
+                Language::SimplifiedChinese => "在提交图中显示提交主题。",
+            },
+            (_, TrKey::AutoFetchTitle) => match self {
+                Language::English => "Auto-Fetch Interval",
+                Language::SimplifiedChinese => "自动获取间隔",
+            },
+            (_, TrKey::AutoFetchDesc) => match self {
+                Language::English => "How often to automatically fetch from remotes in the background.",
+                Language::SimplifiedChinese => "后台自动从远程获取的时间间隔。",
+            },
+            (_, TrKey::ConfirmDestructiveTitle) => match self {
+                Language::English => "Confirm Before Destructive Operations",
+                Language::SimplifiedChinese => "危险操作前确认",
+            },
+            (_, TrKey::ConfirmDestructiveDesc) => match self {
+                Language::English => "Show a confirmation dialog before force push, branch delete, discard changes, and similar actions.",
+                Language::SimplifiedChinese => "在强制推送、删除分支、丢弃更改等操作前弹出确认框。",
+            },
+            (_, TrKey::CheckUpdatesTitle) => match self {
+                Language::English => "Check for Updates on Startup",
+                Language::SimplifiedChinese => "启动时检查更新",
+            },
+            (_, TrKey::CheckUpdatesDesc) => match self {
+                Language::English => "Contact api.github.com once per day to see if a newer release is available. Turn off to keep rgitui offline.",
+                Language::SimplifiedChinese => "每天联系一次 api.github.com 检查新版本。关闭可保持 rgitui 离线。",
+            },
+            (_, TrKey::WatchWorktreesTitle) => match self {
+                Language::English => "Watch All Worktrees",
+                Language::SimplifiedChinese => "监视所有工作树",
+            },
+            (_, TrKey::WatchWorktreesDesc) => match self {
+                Language::English => "Refresh the graph whenever files change in any linked worktree, not just the current one. Useful when you have multiple worktrees open and work is happening in them in parallel.",
+                Language::SimplifiedChinese => "任何关联工作树文件变化时都刷新提交图，而不仅是当前工作树。并行使用多个工作树时很有用。",
+            },
+            (_, TrKey::ExternalToolsTitle) => match self {
+                Language::English => "External Tools",
+                Language::SimplifiedChinese => "外部工具",
+            },
+            (_, TrKey::ExternalToolsDesc) => match self {
+                Language::English => "Select a detected application or enter a custom command.",
+                Language::SimplifiedChinese => "选择检测到的应用或输入自定义命令。",
+            },
+            (_, TrKey::TerminalLabel) => match self {
+                Language::English => "Terminal",
+                Language::SimplifiedChinese => "终端",
+            },
+            (_, TrKey::EditorLabel) => match self {
+                Language::English => "Editor",
+                Language::SimplifiedChinese => "编辑器",
+            },
+            (_, TrKey::CustomCommandLabel) => match self {
+                Language::English => "Custom command (overrides selection)",
+                Language::SimplifiedChinese => "自定义命令（覆盖所选项）",
+            },
+            (_, TrKey::ShortcutsTitle) => match self {
+                Language::English => "Keyboard Shortcuts",
+                Language::SimplifiedChinese => "键盘快捷键",
+            },
+            (_, TrKey::ShortcutsDesc) => match self {
+                Language::English => "The bindings in force for a few common actions. Open the full reference from the workspace for all of them.",
+                Language::SimplifiedChinese => "几个常用操作的当前绑定。从工作区可打开完整快捷键参考。",
+            },
+            (_, TrKey::ConfigTitle) => match self {
+                Language::English => "Config File",
+                Language::SimplifiedChinese => "配置文件",
+            },
+            (_, TrKey::ConfigDesc) => match self {
+                Language::English => "Location of the settings file on disk.",
+                Language::SimplifiedChinese => "磁盘上设置文件的位置。",
+            },
+            (_, TrKey::RevealBtn) => match self {
+                Language::English => "Reveal",
+                Language::SimplifiedChinese => "打开所在目录",
+            },
+            (_, TrKey::EditKeymapBtn) => match self {
+                Language::English => "Edit keymap.json",
+                Language::SimplifiedChinese => "编辑 keymap.json",
+            },
+            (_, TrKey::SavedFeedback) => match self {
+                Language::English => "Saved",
+                Language::SimplifiedChinese => "已保存",
+            },
+            (_, TrKey::TbFetch) => match self {
+                Language::English => "Fetch",
+                Language::SimplifiedChinese => "获取",
+            },
+            (_, TrKey::TbFetching) => match self {
+                Language::English => "Fetching...",
+                Language::SimplifiedChinese => "获取中…",
+            },
+            (_, TrKey::TbPull) => match self {
+                Language::English => "Pull",
+                Language::SimplifiedChinese => "拉取",
+            },
+            (_, TrKey::TbPulling) => match self {
+                Language::English => "Pulling...",
+                Language::SimplifiedChinese => "拉取中…",
+            },
+            (_, TrKey::TbPush) => match self {
+                Language::English => "Push",
+                Language::SimplifiedChinese => "推送",
+            },
+            (_, TrKey::TbPushing) => match self {
+                Language::English => "Pushing...",
+                Language::SimplifiedChinese => "推送中…",
+            },
+            (_, TrKey::TbBranch) => match self {
+                Language::English => "Branch",
+                Language::SimplifiedChinese => "分支",
+            },
+            (_, TrKey::TbStash) => match self {
+                Language::English => "Stash",
+                Language::SimplifiedChinese => "储藏",
+            },
+            (_, TrKey::TbPop) => match self {
+                Language::English => "Pop",
+                Language::SimplifiedChinese => "弹出",
+            },
+            (_, TrKey::TbCreatePr) => match self {
+                Language::English => "Create PR",
+                Language::SimplifiedChinese => "创建 PR",
+            },
+            (_, TrKey::StatusClean) => match self {
+                Language::English => "Clean",
+                Language::SimplifiedChinese => "干净",
+            },
+            (_, TrKey::StatusDetached) => match self {
+                Language::English => "DETACHED",
+                Language::SimplifiedChinese => "已分离",
+            },
+            (_, TrKey::SideBranches) => match self {
+                Language::English => "Branches",
+                Language::SimplifiedChinese => "分支",
+            },
+            (_, TrKey::SideRemotes) => match self {
+                Language::English => "Remotes",
+                Language::SimplifiedChinese => "远程",
+            },
+            (_, TrKey::SideRemoteBranches) => match self {
+                Language::English => "Remote Branches",
+                Language::SimplifiedChinese => "远程分支",
+            },
+            (_, TrKey::SideTags) => match self {
+                Language::English => "Tags",
+                Language::SimplifiedChinese => "标签",
+            },
+            (_, TrKey::SideStashes) => match self {
+                Language::English => "Stashes",
+                Language::SimplifiedChinese => "储藏",
+            },
+            (_, TrKey::SideWorktrees) => match self {
+                Language::English => "Worktrees",
+                Language::SimplifiedChinese => "工作树",
+            },
+            (_, TrKey::SideStaged) => match self {
+                Language::English => "Staged",
+                Language::SimplifiedChinese => "已暂存",
+            },
+            (_, TrKey::SideUnstaged) => match self {
+                Language::English => "Unstaged",
+                Language::SimplifiedChinese => "未暂存",
+            },
+            (_, TrKey::SideStageAll) => match self {
+                Language::English => "Stage All",
+                Language::SimplifiedChinese => "全部暂存",
+            },
+            (_, TrKey::SideUnstageAll) => match self {
+                Language::English => "Unstage All",
+                Language::SimplifiedChinese => "全部取消暂存",
+            },
+            (_, TrKey::SideNewWorktree) => match self {
+                Language::English => "New Worktree",
+                Language::SimplifiedChinese => "新建工作树",
+            },
+            (_, TrKey::SideWorkingClean) => match self {
+                Language::English => "Working tree clean",
+                Language::SimplifiedChinese => "工作树干净",
+            },
+            (_, TrKey::SideNoStaged) => match self {
+                Language::English => "No staged changes",
+                Language::SimplifiedChinese => "暂无已暂存的更改",
+            },
+            (_, TrKey::CommitBtn) => match self {
+                Language::English => "Commit",
+                Language::SimplifiedChinese => "提交",
+            },
+            (_, TrKey::CommitNoStaged) => match self {
+                Language::English => "No Staged Changes",
+                Language::SimplifiedChinese => "暂无已暂存的更改",
+            },
+            (_, TrKey::CommitNoMessage) => match self {
+                Language::English => "No Message",
+                Language::SimplifiedChinese => "请输入提交信息",
+            },
+            (_, TrKey::CommitAmendBtn) => match self {
+                Language::English => "Amend Commit",
+                Language::SimplifiedChinese => "修正提交",
+            },
+            (_, TrKey::AmendBtn) => match self {
+                Language::English => "Amend",
+                Language::SimplifiedChinese => "修正",
+            },
+            (_, TrKey::ClearBtn) => match self {
+                Language::English => "Clear",
+                Language::SimplifiedChinese => "清空",
+            },
+            (_, TrKey::SummaryLabel) => match self {
+                Language::English => "Summary",
+                Language::SimplifiedChinese => "摘要",
+            },
+            (_, TrKey::DescLabel) => match self {
+                Language::English => "Description",
+                Language::SimplifiedChinese => "详细描述",
+            },
+            (_, TrKey::CoAuthorsLabel) => match self {
+                Language::English => "Co-Authors",
+                Language::SimplifiedChinese => "共同作者",
+            },
+            (_, TrKey::NoStagedHint) => match self {
+                Language::English => "No staged changes",
+                Language::SimplifiedChinese => "暂无已暂存的更改",
+            },
+            (_, TrKey::CancelBtn) => match self {
+                Language::English => "Cancel",
+                Language::SimplifiedChinese => "取消",
+            },
+            (_, TrKey::ConfirmHint) => match self {
+                Language::English => "Enter to confirm | Esc to cancel",
+                Language::SimplifiedChinese => "回车确认 | Esc 取消",
+            },
+            (_, TrKey::CfConfirm) => match self {
+                Language::English => "Confirm",
+                Language::SimplifiedChinese => "确认",
+            },
+            (_, TrKey::CfDiscard) => match self {
+                Language::English => "Discard",
+                Language::SimplifiedChinese => "丢弃",
+            },
+            (_, TrKey::CfClean) => match self {
+                Language::English => "Clean",
+                Language::SimplifiedChinese => "清理",
+            },
+            (_, TrKey::CfDeleteBranch) => match self {
+                Language::English => "Delete Branch",
+                Language::SimplifiedChinese => "删除分支",
+            },
+            (_, TrKey::CfDeleteTag) => match self {
+                Language::English => "Delete Tag",
+                Language::SimplifiedChinese => "删除标签",
+            },
+            (_, TrKey::CfRemove) => match self {
+                Language::English => "Remove",
+                Language::SimplifiedChinese => "移除",
+            },
+            (_, TrKey::CfDropStash) => match self {
+                Language::English => "Drop Stash",
+                Language::SimplifiedChinese => "丢弃储藏",
+            },
+            (_, TrKey::CfReset) => match self {
+                Language::English => "Reset",
+                Language::SimplifiedChinese => "重置",
+            },
+            (_, TrKey::CfAbort) => match self {
+                Language::English => "Abort",
+                Language::SimplifiedChinese => "中止",
+            },
+            (_, TrKey::CfForcePush) => match self {
+                Language::English => "Force Push",
+                Language::SimplifiedChinese => "强制推送",
+            },
+            (_, TrKey::CfRemoveWorktree) => match self {
+                Language::English => "Remove Worktree",
+                Language::SimplifiedChinese => "移除工作树",
+            },
+            (_, TrKey::DiffFileBtn) => match self {
+                Language::English => "File",
+                Language::SimplifiedChinese => "文件",
+            },
+            (_, TrKey::DiffEmptyTitle) => match self {
+                Language::English => "Select a file to view changes",
+                Language::SimplifiedChinese => "选择文件以查看更改",
+            },
+            (_, TrKey::DiffEmptyDesc) => match self {
+                Language::English => "Click a file in the sidebar or detail panel",
+                Language::SimplifiedChinese => "点击侧边栏或详情面板中的文件",
+            },
+            (_, TrKey::DiffOpenFile) => match self {
+                Language::English => "Open File",
+                Language::SimplifiedChinese => "打开文件",
+            },
+            (_, TrKey::DetailTitle) => match self {
+                Language::English => "Details",
+                Language::SimplifiedChinese => "详情",
+            },
+            (_, TrKey::DetailEmptyTitle) => match self {
+                Language::English => "No commit selected",
+                Language::SimplifiedChinese => "未选择提交",
+            },
+            (_, TrKey::DetailEmptyDesc) => match self {
+                Language::English => "Select a commit from the graph to view details",
+                Language::SimplifiedChinese => "从提交图中选择一个提交以查看详情",
+            },
         }
     }
 }
@@ -331,9 +795,9 @@ impl FromStr for Language {
     }
 }
 
-/// Keys for localizable UI text. One variant per string the settings frame
-/// translates; rendering code passes these to [`Language::tr`] instead of
-/// hardcoding English.
+/// Keys for localizable UI text. One variant per localizable string;
+/// rendering code passes these to [`Language::tr`] instead of hardcoding
+/// English.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrKey {
     Preferences,
@@ -354,6 +818,122 @@ pub enum TrKey {
     DensityComfortable,
     FontSizeTitle,
     FontSizeDesc,
+    GeneralPageDesc,
+    ThemeSectionDesc,
+    ThemePageDesc,
+    AppearanceModeTitle,
+    AppearanceModeDesc,
+    ModeAuto,
+    ModeLight,
+    ModeDark,
+    ColorThemeTitle,
+    ColorThemeDesc,
+    ActiveBadge,
+    CustomThemeTitle,
+    CustomThemeDesc,
+    EditThemeBtn,
+    AccountsTitle,
+    AccountsDesc,
+    AccountsHeader,
+    AccountsSectionDesc,
+    QuickSetupTitle,
+    QuickSetupDesc,
+    SignInGitHub,
+    AddGitLab,
+    ManualCustom,
+    AiPageDesc,
+    AiSectionConnection,
+    AiSectionBehaviour,
+    ShowLineNumbersTitle,
+    ShowLineNumbersDesc,
+    WrapLinesTitle,
+    WrapLinesDesc,
+    DiffModeTitle,
+    DiffModeDesc,
+    DiffUnified,
+    DiffSideBySide,
+    GraphTitle,
+    GraphDesc,
+    GraphRails,
+    GraphCurved,
+    GraphAngular,
+    ShowSubjectTitle,
+    ShowSubjectDesc,
+    AutoFetchTitle,
+    AutoFetchDesc,
+    ConfirmDestructiveTitle,
+    ConfirmDestructiveDesc,
+    CheckUpdatesTitle,
+    CheckUpdatesDesc,
+    WatchWorktreesTitle,
+    WatchWorktreesDesc,
+    ExternalToolsTitle,
+    ExternalToolsDesc,
+    TerminalLabel,
+    EditorLabel,
+    CustomCommandLabel,
+    ShortcutsTitle,
+    ShortcutsDesc,
+    ConfigTitle,
+    ConfigDesc,
+    RevealBtn,
+    EditKeymapBtn,
+    SavedFeedback,
+    TbFetch,
+    TbFetching,
+    TbPull,
+    TbPulling,
+    TbPush,
+    TbPushing,
+    TbBranch,
+    TbStash,
+    TbPop,
+    TbCreatePr,
+    StatusClean,
+    StatusDetached,
+    SideBranches,
+    SideRemotes,
+    SideRemoteBranches,
+    SideTags,
+    SideStashes,
+    SideWorktrees,
+    SideStaged,
+    SideUnstaged,
+    SideStageAll,
+    SideUnstageAll,
+    SideNewWorktree,
+    SideWorkingClean,
+    SideNoStaged,
+    CommitBtn,
+    CommitNoStaged,
+    CommitNoMessage,
+    CommitAmendBtn,
+    AmendBtn,
+    ClearBtn,
+    SummaryLabel,
+    DescLabel,
+    CoAuthorsLabel,
+    NoStagedHint,
+    CancelBtn,
+    ConfirmHint,
+    CfConfirm,
+    CfDiscard,
+    CfClean,
+    CfDeleteBranch,
+    CfDeleteTag,
+    CfRemove,
+    CfDropStash,
+    CfReset,
+    CfAbort,
+    CfForcePush,
+    CfRemoveWorktree,
+    DiffFileBtn,
+    DiffEmptyTitle,
+    DiffEmptyDesc,
+    DiffOpenFile,
+    DetailTitle,
+    DetailEmptyTitle,
+    DetailEmptyDesc,
 }
 
 /// Application settings persisted to disk.
@@ -2183,12 +2763,153 @@ mod tests {
             TrKey::DensityComfortable,
             TrKey::FontSizeTitle,
             TrKey::FontSizeDesc,
+            TrKey::GeneralPageDesc,
+            TrKey::ThemeSectionDesc,
+            TrKey::ThemePageDesc,
+            TrKey::AppearanceModeTitle,
+            TrKey::AppearanceModeDesc,
+            TrKey::ModeAuto,
+            TrKey::ModeLight,
+            TrKey::ModeDark,
+            TrKey::ColorThemeTitle,
+            TrKey::ColorThemeDesc,
+            TrKey::ActiveBadge,
+            TrKey::CustomThemeTitle,
+            TrKey::CustomThemeDesc,
+            TrKey::EditThemeBtn,
+            TrKey::AccountsTitle,
+            TrKey::AccountsDesc,
+            TrKey::AccountsHeader,
+            TrKey::AccountsSectionDesc,
+            TrKey::QuickSetupTitle,
+            TrKey::QuickSetupDesc,
+            TrKey::SignInGitHub,
+            TrKey::AddGitLab,
+            TrKey::ManualCustom,
+            TrKey::AiPageDesc,
+            TrKey::AiSectionConnection,
+            TrKey::AiSectionBehaviour,
+            TrKey::ShowLineNumbersTitle,
+            TrKey::ShowLineNumbersDesc,
+            TrKey::WrapLinesTitle,
+            TrKey::WrapLinesDesc,
+            TrKey::DiffModeTitle,
+            TrKey::DiffModeDesc,
+            TrKey::DiffUnified,
+            TrKey::DiffSideBySide,
+            TrKey::GraphTitle,
+            TrKey::GraphDesc,
+            TrKey::GraphRails,
+            TrKey::GraphCurved,
+            TrKey::GraphAngular,
+            TrKey::ShowSubjectTitle,
+            TrKey::ShowSubjectDesc,
+            TrKey::AutoFetchTitle,
+            TrKey::AutoFetchDesc,
+            TrKey::ConfirmDestructiveTitle,
+            TrKey::ConfirmDestructiveDesc,
+            TrKey::CheckUpdatesTitle,
+            TrKey::CheckUpdatesDesc,
+            TrKey::WatchWorktreesTitle,
+            TrKey::WatchWorktreesDesc,
+            TrKey::ExternalToolsTitle,
+            TrKey::ExternalToolsDesc,
+            TrKey::TerminalLabel,
+            TrKey::EditorLabel,
+            TrKey::CustomCommandLabel,
+            TrKey::ShortcutsTitle,
+            TrKey::ShortcutsDesc,
+            TrKey::ConfigTitle,
+            TrKey::ConfigDesc,
+            TrKey::RevealBtn,
+            TrKey::EditKeymapBtn,
+            TrKey::SavedFeedback,
+            TrKey::TbFetch,
+            TrKey::TbFetching,
+            TrKey::TbPull,
+            TrKey::TbPulling,
+            TrKey::TbPush,
+            TrKey::TbPushing,
+            TrKey::TbBranch,
+            TrKey::TbStash,
+            TrKey::TbPop,
+            TrKey::TbCreatePr,
+            TrKey::StatusClean,
+            TrKey::StatusDetached,
+            TrKey::SideBranches,
+            TrKey::SideRemotes,
+            TrKey::SideRemoteBranches,
+            TrKey::SideTags,
+            TrKey::SideStashes,
+            TrKey::SideWorktrees,
+            TrKey::SideStaged,
+            TrKey::SideUnstaged,
+            TrKey::SideStageAll,
+            TrKey::SideUnstageAll,
+            TrKey::SideNewWorktree,
+            TrKey::SideWorkingClean,
+            TrKey::SideNoStaged,
+            TrKey::CommitBtn,
+            TrKey::CommitNoStaged,
+            TrKey::CommitNoMessage,
+            TrKey::CommitAmendBtn,
+            TrKey::AmendBtn,
+            TrKey::ClearBtn,
+            TrKey::SummaryLabel,
+            TrKey::DescLabel,
+            TrKey::CoAuthorsLabel,
+            TrKey::NoStagedHint,
+            TrKey::CancelBtn,
+            TrKey::ConfirmHint,
+            TrKey::CfConfirm,
+            TrKey::CfDiscard,
+            TrKey::CfClean,
+            TrKey::CfDeleteBranch,
+            TrKey::CfDeleteTag,
+            TrKey::CfRemove,
+            TrKey::CfDropStash,
+            TrKey::CfReset,
+            TrKey::CfAbort,
+            TrKey::CfForcePush,
+            TrKey::CfRemoveWorktree,
+            TrKey::DiffFileBtn,
+            TrKey::DiffEmptyTitle,
+            TrKey::DiffEmptyDesc,
+            TrKey::DiffOpenFile,
+            TrKey::DetailTitle,
+            TrKey::DetailEmptyTitle,
+            TrKey::DetailEmptyDesc,
         ];
         for key in keys {
             assert!(!Language::English.tr(key).is_empty());
             assert!(!Language::SimplifiedChinese.tr(key).is_empty());
         }
         assert_eq!(Language::SimplifiedChinese.tr(TrKey::SectionAi), "AI");
+    }
+
+    #[test]
+    fn english_branches_keep_the_exact_source_literals() {
+        // Rendering code previously hardcoded these strings; the English
+        // branch must preserve them byte for byte.
+        assert_eq!(Language::English.tr(TrKey::DiffUnified), "Unified");
+        assert_eq!(Language::English.tr(TrKey::DiffSideBySide), "Side-by-Side");
+        assert_eq!(Language::English.tr(TrKey::GraphRails), "Rails");
+        assert_eq!(Language::English.tr(TrKey::GraphCurved), "Curved");
+        assert_eq!(Language::English.tr(TrKey::GraphAngular), "Angular");
+        assert_eq!(Language::English.tr(TrKey::ModeAuto), "Auto");
+        assert_eq!(Language::English.tr(TrKey::ModeLight), "Light");
+        assert_eq!(Language::English.tr(TrKey::ModeDark), "Dark");
+        assert_eq!(Language::English.tr(TrKey::StatusDetached), "DETACHED");
+        assert_eq!(
+            Language::English.tr(TrKey::ConfirmHint),
+            "Enter to confirm | Esc to cancel"
+        );
+        assert_eq!(Language::English.tr(TrKey::CfForcePush), "Force Push");
+        assert_eq!(Language::English.tr(TrKey::RevealBtn), "Reveal");
+        assert_eq!(
+            Language::English.tr(TrKey::EditKeymapBtn),
+            "Edit keymap.json"
+        );
     }
 
     #[test]

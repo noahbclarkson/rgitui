@@ -17,7 +17,7 @@ use gpui::{
 use rgitui_git::{
     BranchInfo, FileChangeKind, FileStatus, RemoteInfo, StashEntry, TagInfo, WorktreeInfo,
 };
-use rgitui_settings::{Compactness, SettingsState};
+use rgitui_settings::{Compactness, SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, ButtonSize, ButtonStyle, CheckState, Checkbox, DiffStat, IconButton, IconName,
@@ -483,6 +483,10 @@ impl EventEmitter<SidebarEvent> for Sidebar {}
 
 impl Sidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         let expanded_sections = vec![
             SidebarSection::LocalBranches,
             SidebarSection::Remotes,
@@ -1974,6 +1978,7 @@ impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let compactness = cx.global::<SettingsState>().settings().compactness;
+        let language = cx.global::<SettingsState>().settings().language;
         let item_h = compactness.spacing(24.0);
         let header_h = compactness.spacing(26.0);
         let list_heights = self.plan_list_heights(item_h, header_h, compactness);
@@ -2134,7 +2139,7 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Branches")
+                    Label::new(language.tr(TrKey::SideBranches))
                         .size(LabelSize::XSmall)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Muted),
@@ -2523,7 +2528,7 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Remotes")
+                    Label::new(language.tr(TrKey::SideRemotes))
                         .size(LabelSize::XSmall)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Muted),
@@ -2783,7 +2788,7 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Remote Branches")
+                    Label::new(language.tr(TrKey::SideRemoteBranches))
                         .size(LabelSize::XSmall)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Muted),
@@ -2983,7 +2988,7 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Tags")
+                    Label::new(language.tr(TrKey::SideTags))
                         .size(LabelSize::XSmall)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Muted),
@@ -3211,7 +3216,7 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Stashes")
+                    Label::new(language.tr(TrKey::SideStashes))
                         .size(LabelSize::XSmall)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Muted),
@@ -3486,7 +3491,7 @@ impl Render for Sidebar {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Worktrees")
+                    Label::new(language.tr(TrKey::SideWorktrees))
                         .size(LabelSize::XSmall)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Muted),
@@ -3498,7 +3503,7 @@ impl Render for Sidebar {
                         .min_w_0()
                         .overflow_hidden()
                         .child(
-                            Button::new("new-worktree", "New Worktree")
+                            Button::new("new-worktree", language.tr(TrKey::SideNewWorktree))
                                 .icon(IconName::Plus)
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Subtle)
@@ -3711,7 +3716,7 @@ impl Render for Sidebar {
                     .color(Color::Muted),
             )
             .child(
-                Label::new("Staged")
+                Label::new(language.tr(TrKey::SideStaged))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Muted),
@@ -3761,7 +3766,7 @@ impl Render for Sidebar {
             .when(has_staged, |el| {
                 el.child(
                     div().id("unstage-all-btn").child(
-                        Button::new("unstage-all", "Unstage All")
+                        Button::new("unstage-all", language.tr(TrKey::SideUnstageAll))
                             .icon(IconName::Minus)
                             .size(ButtonSize::Compact)
                             .style(ButtonStyle::Subtle)
@@ -3815,7 +3820,7 @@ impl Render for Sidebar {
                         .px(px(16.))
                         .items_center()
                         .child(
-                            Label::new("No staged changes")
+                            Label::new(language.tr(TrKey::SideNoStaged))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -4047,7 +4052,7 @@ impl Render for Sidebar {
                     .color(Color::Muted),
             )
             .child(
-                Label::new("Unstaged")
+                Label::new(language.tr(TrKey::SideUnstaged))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Muted),
@@ -4109,7 +4114,7 @@ impl Render for Sidebar {
             .when(has_unstaged, |el| {
                 el.child(
                     div().id("stage-all-btn").child(
-                        Button::new("stage-all", "Stage All")
+                        Button::new("stage-all", language.tr(TrKey::SideStageAll))
                             .icon(IconName::Plus)
                             .size(ButtonSize::Compact)
                             .style(ButtonStyle::Subtle)
@@ -4163,7 +4168,7 @@ impl Render for Sidebar {
                         .px(px(16.))
                         .items_center()
                         .child(
-                            Label::new("Working tree clean")
+                            Label::new(language.tr(TrKey::SideWorkingClean))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),

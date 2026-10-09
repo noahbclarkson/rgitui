@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::SharedString;
 use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
-use rgitui_settings::SettingsState;
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, Icon, IconButton, IconName, IconSize, Indicator, Label, LabelSize, Tooltip,
@@ -203,20 +203,21 @@ impl Toolbar {
     }
 
     fn render_left_group(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let language = cx.global::<SettingsState>().settings().language;
         let fetch_label = if self.is_fetching {
-            "Fetching..."
+            language.tr(TrKey::TbFetching)
         } else {
-            "Fetch"
+            language.tr(TrKey::TbFetch)
         };
         let pull_label = if self.is_pulling {
-            "Pulling..."
+            language.tr(TrKey::TbPulling)
         } else {
-            "Pull"
+            language.tr(TrKey::TbPull)
         };
         let push_label = if self.is_pushing {
-            "Pushing..."
+            language.tr(TrKey::TbPushing)
         } else {
-            "Push"
+            language.tr(TrKey::TbPush)
         };
 
         div()
@@ -309,7 +310,7 @@ impl Toolbar {
             .child(VerticalDivider::new())
             // Branch operations group
             .child(
-                Button::new("tb-branch", "Branch")
+                Button::new("tb-branch", language.tr(TrKey::TbBranch))
                     .icon(IconName::GitBranch)
                     .tooltip_fn(keymap::command_tooltip(
                         "Create new branch",
@@ -327,7 +328,7 @@ impl Toolbar {
                     .items_center()
                     .gap(px(2.))
                     .child(
-                        Button::new("tb-stash", "Stash")
+                        Button::new("tb-stash", language.tr(TrKey::TbStash))
                             .icon(IconName::Stash)
                             .disabled(!self.has_changes)
                             .tooltip_fn(keymap::command_tooltip(
@@ -339,7 +340,7 @@ impl Toolbar {
                             })),
                     )
                     .child(
-                        Button::new("tb-pop", "Pop")
+                        Button::new("tb-pop", language.tr(TrKey::TbPop))
                             .icon(IconName::Undo)
                             .disabled(!self.has_stashes)
                             .tooltip_fn(keymap::command_tooltip(
@@ -354,7 +355,7 @@ impl Toolbar {
             .child(VerticalDivider::new())
             // PR creation group
             .child(
-                Button::new("tb-pr", "Create PR")
+                Button::new("tb-pr", language.tr(TrKey::TbCreatePr))
                     .icon(IconName::GitPullRequest)
                     .disabled(!self.has_github_token)
                     .tooltip_fn(keymap::command_tooltip(

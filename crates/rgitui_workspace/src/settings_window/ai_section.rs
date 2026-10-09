@@ -19,7 +19,7 @@ use rgitui_ai::catalog::{
     ToolSupport,
 };
 use rgitui_ai::CommitStyle;
-use rgitui_settings::{AiProvider, SettingsState};
+use rgitui_settings::{AiProvider, SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, ConnectionState, Disclosure, Icon,
@@ -606,10 +606,15 @@ impl SettingsView {
 
     /// The AI page body.
     pub(super) fn render_ai_section(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = self.language;
         let mut section = div().flex().flex_col().w_full().min_w_0().gap(px(16.));
-        section = section.child(Self::section_label_row("CONNECTION"));
+        section = section.child(Self::section_label_row(
+            language.tr(TrKey::AiSectionConnection),
+        ));
         section = section.child(self.render_provider_accordion(cx));
-        section = section.child(Self::section_label_row("BEHAVIOUR"));
+        section = section.child(Self::section_label_row(
+            language.tr(TrKey::AiSectionBehaviour),
+        ));
         section = section.child(self.render_behaviour_card(cx));
         section
     }

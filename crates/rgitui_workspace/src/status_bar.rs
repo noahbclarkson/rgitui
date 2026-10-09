@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, SharedString, Window};
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 
@@ -96,7 +97,11 @@ impl StatusBar {
         self
     }
 
-    fn render_left_section(&self, colors: &rgitui_theme::ThemeColors) -> gpui::Div {
+    fn render_left_section(
+        &self,
+        colors: &rgitui_theme::ThemeColors,
+        language: rgitui_settings::Language,
+    ) -> gpui::Div {
         let has_branch = !self.branch_name.is_empty();
         let branch_color = if self.head_detached {
             Color::Warning
@@ -124,7 +129,7 @@ impl StatusBar {
                 );
             if self.head_detached {
                 branch_row = branch_row.child(
-                    Label::new("DETACHED")
+                    Label::new(language.tr(TrKey::StatusDetached))
                         .size(LabelSize::XSmall)
                         .color(Color::Warning),
                 );
@@ -250,7 +255,11 @@ impl StatusBar {
         left
     }
 
-    fn render_right_section(&self, colors: &rgitui_theme::ThemeColors) -> gpui::Div {
+    fn render_right_section(
+        &self,
+        colors: &rgitui_theme::ThemeColors,
+        language: rgitui_settings::Language,
+    ) -> gpui::Div {
         let has_branch = !self.branch_name.is_empty();
 
         let mut right = div().h_flex().items_center().gap(px(10.));
@@ -315,7 +324,7 @@ impl StatusBar {
                             .color(Color::Success),
                     )
                     .child(
-                        Label::new("Clean")
+                        Label::new(language.tr(TrKey::StatusClean))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
@@ -352,9 +361,10 @@ impl StatusBar {
 impl RenderOnce for StatusBar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.colors();
+        let language = cx.global::<SettingsState>().settings().language;
 
-        let left = self.render_left_section(colors);
-        let right = self.render_right_section(colors);
+        let left = self.render_left_section(colors, language);
+        let right = self.render_right_section(colors, language);
 
         div()
             .h_flex()
