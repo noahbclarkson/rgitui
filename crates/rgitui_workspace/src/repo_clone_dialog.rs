@@ -11,6 +11,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 #[derive(Debug, Clone)]
 pub enum RepoCloneEvent {
@@ -37,14 +38,22 @@ pub struct RepoCloneDialog {
 
 impl RepoCloneDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let url_editor = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Repository URL (e.g. https://github.com/user/repo.git)");
+            input.set_placeholder(language.tr(TrKey::CloneUrlPh));
             input
         });
         let path_editor = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Destination Path");
+            input.set_placeholder(language.tr(TrKey::ClonePathPh));
             input
         });
 
@@ -224,6 +233,16 @@ impl Render for RepoCloneDialog {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+        self.url_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::CloneUrlPh));
+        });
+        self.path_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::ClonePathPh));
+        });
         let url = self.url_editor.read(cx).text().trim().to_string();
         let path = self.path_editor.read(cx).text().trim().to_string();
         let can_clone = !url.is_empty() && !path.is_empty();
@@ -269,7 +288,7 @@ impl Render for RepoCloneDialog {
                         ),
                 )
                 .child(
-                    Label::new("Clone Repository")
+                    Label::new(language.tr(TrKey::CloneTitle))
                         .size(LabelSize::Large)
                         .weight(FontWeight::BOLD),
                 ),
@@ -280,7 +299,7 @@ impl Render for RepoCloneDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("URL")
+                    Label::new(language.tr(TrKey::CloneUrlLabel))
                         .size(LabelSize::Small)
                         .weight(FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -293,7 +312,7 @@ impl Render for RepoCloneDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("Path")
+                    Label::new(language.tr(TrKey::ClonePathLabel))
                         .size(LabelSize::Small)
                         .weight(FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -305,7 +324,7 @@ impl Render for RepoCloneDialog {
                         .items_center()
                         .child(div().flex_1().child(self.path_editor.clone()))
                         .child(
-                            Button::new("browse-path", "Browse")
+                            Button::new("browse-path", language.tr(TrKey::BrowseBtn))
                                 .style(ButtonStyle::Subtle)
                                 .icon(IconName::Folder)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -317,7 +336,7 @@ impl Render for RepoCloneDialog {
 
         if !can_clone {
             modal = modal.child(
-                Label::new("Enter a repository URL and a destination path to clone.")
+                Label::new(language.tr(TrKey::CloneHint))
                     .size(LabelSize::XSmall)
                     .color(Color::Placeholder),
             );
@@ -340,20 +359,27 @@ impl Render for RepoCloneDialog {
                 .justify_end()
                 .gap(px(8.))
                 .child(
-                    Button::new("cancel", "Cancel")
+                    Button::new("cancel", language.tr(TrKey::CancelBtn))
                         .style(ButtonStyle::Subtle)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.hide(cx);
                         })),
                 )
                 .child(
-                    Button::new("clone", if self.cloning { "Cloning…" } else { "Clone" })
-                        .style(ButtonStyle::Filled)
-                        .color(Color::Accent)
-                        .disabled(!can_clone || self.cloning)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.clone_repo(cx);
-                        })),
+                    Button::new(
+                        "clone",
+                        if self.cloning {
+                            language.tr(TrKey::CloningBtn)
+                        } else {
+                            language.tr(TrKey::CloneBtn)
+                        },
+                    )
+                    .style(ButtonStyle::Filled)
+                    .color(Color::Accent)
+                    .disabled(!can_clone || self.cloning)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.clone_repo(cx);
+                    })),
                 ),
         );
 

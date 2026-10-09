@@ -13,6 +13,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{BranchInfo, GitProject, GitProjectEvent};
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize};
 
@@ -52,6 +53,10 @@ pub struct BranchHealthPanel {
 
 impl BranchHealthPanel {
     pub fn new(cx: &mut Context<Self>, project: WeakEntity<GitProject>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         let branches = project
             .upgrade()
             .map(|proj| proj.read(cx).branches().to_vec())
@@ -134,6 +139,7 @@ impl BranchHealthPanel {
 impl Render for BranchHealthPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let language = cx.global::<SettingsState>().settings().language;
         let panel_bg = colors.panel_background;
 
         let (total, unmerged, stale, diverged) = self.stats;
@@ -160,10 +166,20 @@ impl Render for BranchHealthPanel {
                     .py_2()
                     .gap_2()
                     .flex_wrap()
-                    .child(self.stat_badge("Total", total, Color::Default, cx))
-                    .child(self.stat_badge("Unmerged", unmerged, Color::Warning, cx))
-                    .child(self.stat_badge("Stale", stale, Color::Muted, cx))
-                    .child(self.stat_badge("Diverged", diverged, Color::Accent, cx)),
+                    .child(self.stat_badge(language.tr(TrKey::BhTotal), total, Color::Default, cx))
+                    .child(self.stat_badge(
+                        language.tr(TrKey::BhUnmerged),
+                        unmerged,
+                        Color::Warning,
+                        cx,
+                    ))
+                    .child(self.stat_badge(language.tr(TrKey::BhStale), stale, Color::Muted, cx))
+                    .child(self.stat_badge(
+                        language.tr(TrKey::BhDiverged),
+                        diverged,
+                        Color::Accent,
+                        cx,
+                    )),
             )
             .child(
                 div()
@@ -233,17 +249,25 @@ impl Render for BranchHealthPanel {
                                 // Merged badge
                                 if !is_head {
                                     if is_merged == Some(true) {
-                                        row = row.child(Badge::new("Merged").color(Color::Muted));
+                                        row = row.child(
+                                            Badge::new(language.tr(TrKey::BhMerged))
+                                                .color(Color::Muted),
+                                        );
                                     } else if is_merged == Some(false) {
-                                        row =
-                                            row.child(Badge::new("Unmerged").color(Color::Warning));
+                                        row = row.child(
+                                            Badge::new(language.tr(TrKey::BhUnmerged))
+                                                .color(Color::Warning),
+                                        );
                                     }
                                 }
 
                                 // Stale badge
                                 if let Some(time) = last_time {
                                     if (now - time) > STALE_SECONDS && !is_head {
-                                        row = row.child(Badge::new("Stale").color(Color::Muted));
+                                        row = row.child(
+                                            Badge::new(language.tr(TrKey::BhStale))
+                                                .color(Color::Muted),
+                                        );
                                     }
                                 }
 
@@ -377,6 +401,7 @@ fn compute_branch_stats(branches: &[BranchInfo]) -> (usize, usize, usize, usize)
 
 impl BranchHealthPanel {
     fn render_toolbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let colors = cx.colors();
         let filters = vec![
             BranchHealthFilter::All,
@@ -396,7 +421,14 @@ impl BranchHealthPanel {
             .border_color(colors.border_variant)
             .children(filters.into_iter().map(|f| {
                 let active = self.filter == f;
-                let label: SharedString = f.label().into();
+                let label: SharedString = language
+                    .tr(match f {
+                        BranchHealthFilter::All => TrKey::FilterAll,
+                        BranchHealthFilter::Unmerged => TrKey::BhUnmerged,
+                        BranchHealthFilter::Stale => TrKey::BhStale,
+                        BranchHealthFilter::Diverged => TrKey::BhDiverged,
+                    })
+                    .into();
                 let filter_name = f.label();
                 div()
                     .id(ElementId::Name(format!("bh-filter-{}", filter_name).into()))

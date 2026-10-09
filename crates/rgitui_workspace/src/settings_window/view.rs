@@ -711,7 +711,7 @@ impl SettingsView {
 
         let git_https_token_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Paste a generic HTTPS token only if you need a fallback...");
+            ti.set_placeholder(settings.language.tr(TrKey::SetHttpsTokenPh));
             ti.set_masked(true);
             if !git_https_token_val.is_empty() {
                 ti.set_text(&git_https_token_val, cx);
@@ -730,7 +730,7 @@ impl SettingsView {
 
         let git_gpg_key_id_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("No explicit GPG key configured");
+            ti.set_placeholder(settings.language.tr(TrKey::SetGpgPh));
             if !git_gpg_key_id_val.is_empty() {
                 ti.set_text(&git_gpg_key_id_val, cx);
             }
@@ -759,7 +759,7 @@ impl SettingsView {
 
         let provider_username_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Usually left empty");
+            ti.set_placeholder(settings.language.tr(TrKey::SetUsuallyEmpty));
             if let Some(p) = first_provider {
                 ti.set_text(&p.username, cx);
             }
@@ -768,7 +768,7 @@ impl SettingsView {
 
         let provider_token_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Paste the access token for this account...");
+            ti.set_placeholder(settings.language.tr(TrKey::SetAccountTokenPh));
             ti.set_masked(true);
             if let Some(p) = first_provider {
                 ti.set_text(&p.token, cx);
@@ -778,7 +778,7 @@ impl SettingsView {
 
         let terminal_command_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Custom command override...");
+            ti.set_placeholder(settings.language.tr(TrKey::SetCustomCmdPh));
             if !settings.terminal_command.is_empty() {
                 ti.set_text(&settings.terminal_command, cx);
             }
@@ -787,7 +787,7 @@ impl SettingsView {
 
         let editor_command_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Custom command override...");
+            ti.set_placeholder(settings.language.tr(TrKey::SetCustomCmdPh));
             if !settings.editor_command.is_empty() {
                 ti.set_text(&settings.editor_command, cx);
             }
@@ -4341,6 +4341,29 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Keep input placeholders in the active language: the editors are
+        // created once in `new`, so without this they would freeze in the
+        // language that was active at startup. Example values (URLs, hosts,
+        // key paths) stay as-is.
+        let sync = self.language;
+        self.git_https_token_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetHttpsTokenPh));
+        });
+        self.git_gpg_key_id_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetGpgPh));
+        });
+        self.provider_username_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetUsuallyEmpty));
+        });
+        self.provider_token_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetAccountTokenPh));
+        });
+        self.terminal_command_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetCustomCmdPh));
+        });
+        self.editor_command_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetCustomCmdPh));
+        });
         // Give wrapping text a definite width during GPUI's measurement pass.
         // A percentage width beneath the scroll container is resolved too late
         // by the macOS text system and can cache a one-glyph wrap width.

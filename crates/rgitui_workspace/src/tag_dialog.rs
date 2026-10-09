@@ -10,6 +10,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 /// Events emitted by the tag creation dialog.
 #[derive(Debug, Clone)]
@@ -37,6 +38,10 @@ impl EventEmitter<TagDialogEvent> for TagDialog {}
 
 impl TagDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
             ti.set_placeholder("v1.0.0");
@@ -178,7 +183,12 @@ impl Render for TagDialog {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let tag_name = self.editor.read(cx).text().to_string();
+
         let has_error = self.error_message.is_some();
         let can_create = !tag_name.is_empty() && !has_error;
 
@@ -223,7 +233,7 @@ impl Render for TagDialog {
                         ),
                 )
                 .child(
-                    Label::new("Create Tag")
+                    Label::new(language.tr(TrKey::TagTitle))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -234,7 +244,7 @@ impl Render for TagDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("Tag name")
+                    Label::new(language.tr(TrKey::TagNameLabel))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -259,7 +269,7 @@ impl Render for TagDialog {
                 .gap(px(8.))
                 .items_center()
                 .child(
-                    Label::new("At commit")
+                    Label::new(language.tr(TrKey::TagAtCommit))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -314,7 +324,7 @@ impl Render for TagDialog {
                 .w_full()
                 .gap_2()
                 .child(
-                    Label::new("Enter to create | Esc to cancel")
+                    Label::new(language.tr(TrKey::TagCreateHint))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -326,7 +336,7 @@ impl Render for TagDialog {
                         .justify_end()
                         .w_full()
                         .child(
-                            Button::new("cancel-tag", "Cancel")
+                            Button::new("cancel-tag", language.tr(TrKey::CancelBtn))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -334,7 +344,7 @@ impl Render for TagDialog {
                                 })),
                         )
                         .child(
-                            Button::new("create-tag", "Create Tag")
+                            Button::new("create-tag", language.tr(TrKey::TagTitle))
                                 .icon(IconName::Tag)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)

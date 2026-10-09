@@ -13,6 +13,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 /// Events emitted by the stash save dialog.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +41,10 @@ impl EventEmitter<StashSaveDialogEvent> for StashSaveDialog {}
 
 impl StashSaveDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
             ti.set_placeholder("WIP: ");
@@ -143,6 +148,10 @@ impl Render for StashSaveDialog {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
 
         let accent_color = Color::Accent.color(cx);
         let icon_bg = gpui::Hsla {
@@ -215,7 +224,7 @@ impl Render for StashSaveDialog {
                         ),
                 )
                 .child(
-                    Label::new("Create Stash")
+                    Label::new(language.tr(TrKey::StashTitle))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -228,13 +237,13 @@ impl Render for StashSaveDialog {
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Message (optional)")
+                    Label::new(language.tr(TrKey::StashMsgLabel))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
                 .child(self.editor.clone())
                 .child(
-                    Label::new("Leave empty for default: \"WIP on <branch>\"")
+                    Label::new(language.tr(TrKey::StashMsgHint))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 ),
@@ -260,7 +269,7 @@ impl Render for StashSaveDialog {
                 .w_full()
                 .gap_4()
                 .child(
-                    Label::new("Enter to confirm | Esc to cancel")
+                    Label::new(language.tr(TrKey::ConfirmHint))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -272,7 +281,7 @@ impl Render for StashSaveDialog {
                         .justify_end()
                         .w_full()
                         .child(
-                            Button::new("stash-save-cancel", "Cancel")
+                            Button::new("stash-save-cancel", language.tr(TrKey::CancelBtn))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -280,7 +289,7 @@ impl Render for StashSaveDialog {
                                 })),
                         )
                         .child(
-                            Button::new("stash-save-confirm", "Create Stash")
+                            Button::new("stash-save-confirm", language.tr(TrKey::StashTitle))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Tinted(TintColor::Accent))
                                 .disabled(self.error_message.is_some())

@@ -9,6 +9,7 @@ use rgitui_ui::{Button, ButtonSize, ButtonStyle, Label, LabelSize, TextInput, To
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{Language, SettingsState, TrKey};
 
 /// The action to perform on a commit during interactive rebase.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +23,10 @@ pub enum RebaseAction {
 
 impl RebaseAction {
     /// Short display label for the action.
+    ///
+    /// Rendering uses [`Self::label_tr`] instead; this stays so the unit tests
+    /// keep pinning the exact source literals.
+    #[allow(dead_code)]
     fn label(&self) -> &'static str {
         match self {
             RebaseAction::Pick => "Pick",
@@ -29,6 +34,17 @@ impl RebaseAction {
             RebaseAction::Squash => "Squash",
             RebaseAction::Fixup => "Fixup",
             RebaseAction::Drop => "Drop",
+        }
+    }
+
+    /// Localized display label for the action.
+    fn label_tr(&self, language: Language) -> &'static str {
+        match self {
+            RebaseAction::Pick => language.tr(TrKey::RebasePick),
+            RebaseAction::Reword(_) => language.tr(TrKey::RebaseReword),
+            RebaseAction::Squash => language.tr(TrKey::RebaseSquash),
+            RebaseAction::Fixup => language.tr(TrKey::RebaseFixup),
+            RebaseAction::Drop => language.tr(TrKey::RebaseDrop),
         }
     }
 
@@ -118,6 +134,14 @@ impl EventEmitter<InteractiveRebaseEvent> for InteractiveRebase {}
 
 impl InteractiveRebase {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         Self {
             visible: false,
             pending_focus: false,
@@ -127,7 +151,7 @@ impl InteractiveRebase {
             editing_reword: None,
             reword_editor: cx.new(|cx| {
                 let mut input = TextInput::new(cx);
-                input.set_placeholder("Enter new commit message...");
+                input.set_placeholder(language.tr(TrKey::RebasePh));
                 input
             }),
             focus_handle: cx.focus_handle(),
@@ -468,6 +492,13 @@ impl InteractiveRebase {
 impl Render for InteractiveRebase {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+        self.reword_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::RebasePh));
+        });
 
         if !self.visible {
             return div().id("interactive-rebase").into_any_element();
@@ -479,8 +510,11 @@ impl Render for InteractiveRebase {
         }
 
         let entry_count = self.entries.len();
-        let header_text: SharedString =
-            format!("Rebasing {} commits onto {}", entry_count, self.target_ref).into();
+        let header_text: SharedString = language
+            .tr(TrKey::RebaseHeaderFmt)
+            .replacen("{}", &entry_count.to_string(), 1)
+            .replacen("{}", &self.target_ref, 1)
+            .into();
 
         // Bounds tracker for the entries container
         let bounds_tracker = cx.weak_entity();
@@ -538,7 +572,7 @@ impl Render for InteractiveRebase {
             let oid_short: SharedString =
                 SharedString::from(entry.oid[..7.min(entry.oid.len())].to_string());
 
-            let action_label: SharedString = entry.action.label().into();
+            let action_label: SharedString = entry.action.label_tr(language).into();
             let action_color = entry.action.color();
             let is_dropped = matches!(entry.action, RebaseAction::Drop);
 
@@ -639,7 +673,7 @@ impl Render for InteractiveRebase {
                     .items_center()
                     .justify_center()
                     .cursor_grab()
-                    .tooltip(Tooltip::text("Drag to reorder"))
+                    .tooltip(Tooltip::text(language.tr(TrKey::RebaseDragTip)))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
@@ -751,7 +785,7 @@ impl Render for InteractiveRebase {
             .gap_3()
             // Title
             .child(
-                Label::new("Interactive Rebase")
+                Label::new(language.tr(TrKey::RebaseTitle))
                     .size(LabelSize::Large)
                     .weight(FontWeight::BOLD)
                     .color(Color::Default),
@@ -771,27 +805,27 @@ impl Render for InteractiveRebase {
                     .gap_3()
                     .pt_1()
                     .child(
-                        Label::new("j/k Navigate")
+                        Label::new(language.tr(TrKey::RebaseHintNav))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Ctrl+Up/Down Reorder")
+                        Label::new(language.tr(TrKey::RebaseHintReorder))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("p/r/s/f/d Set action")
+                        Label::new(language.tr(TrKey::RebaseHintAction))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Enter Start")
+                        Label::new(language.tr(TrKey::RebaseHintStart))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Esc Cancel")
+                        Label::new(language.tr(TrKey::RebaseHintCancel))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
@@ -805,7 +839,7 @@ impl Render for InteractiveRebase {
                     .gap_2()
                     .pt_2()
                     .child(
-                        Button::new("rebase-cancel", "Cancel")
+                        Button::new("rebase-cancel", language.tr(TrKey::CancelBtn))
                             .size(ButtonSize::Default)
                             .style(ButtonStyle::Subtle)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -813,7 +847,7 @@ impl Render for InteractiveRebase {
                             })),
                     )
                     .child(
-                        Button::new("rebase-start", "Start Rebase")
+                        Button::new("rebase-start", language.tr(TrKey::RebaseStart))
                             .size(ButtonSize::Default)
                             .style(ButtonStyle::Filled)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

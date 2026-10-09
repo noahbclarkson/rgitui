@@ -178,25 +178,31 @@ impl CommitPanel {
         // the `ThemeState` observer in `DiffViewer::new`.
         cx.observe_global::<SettingsState>(|_, cx| cx.notify())
             .detach();
+        // Interface language for the placeholders below; the editors are
+        // created once, so `render` re-applies them on every language change.
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let summary_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Commit summary...");
+            ti.set_placeholder(language.tr(TrKey::CommitSummaryPh));
             ti
         });
         let description_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx).multiline();
-            ti.set_placeholder("Optional extended description...");
+            ti.set_placeholder(language.tr(TrKey::CommitDescPh));
             ti.set_font_size(px(12.0));
             ti
         });
         let new_author_name = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Co-author name...");
+            ti.set_placeholder(language.tr(TrKey::CoAuthorNamePh));
             ti
         });
         let new_author_email = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Co-author email...");
+            ti.set_placeholder(language.tr(TrKey::CoAuthorEmailPh));
             ti
         });
 
@@ -723,6 +729,21 @@ impl Render for CommitPanel {
             .try_global::<SettingsState>()
             .map(|state| state.settings().language)
             .unwrap_or_default();
+        // Keep the placeholders in the active language: the editors are
+        // created once in `new`, so without this they would freeze in the
+        // language that was active at startup.
+        self.summary_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::CommitSummaryPh));
+        });
+        self.description_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::CommitDescPh));
+        });
+        self.new_author_name.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::CoAuthorNamePh));
+        });
+        self.new_author_email.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::CoAuthorEmailPh));
+        });
         let summary_empty = self.summary_editor.read(cx).is_empty();
         let can_commit = !summary_empty && self.staged_count > 0;
         let summary_len = self.summary_editor.read(cx).text().chars().count();
@@ -734,14 +755,15 @@ impl Render for CommitPanel {
         };
 
         let staged_label: SharedString = if self.staged_count > 0 {
-            format!(
-                "{} file{} staged",
-                self.staged_count,
-                if self.staged_count == 1 { "" } else { "s" }
-            )
+            (if self.staged_count == 1 {
+                language.tr(TrKey::StagedOneFmt)
+            } else {
+                language.tr(TrKey::StagedManyFmt)
+            })
+            .replacen("{}", &self.staged_count.to_string(), 1)
             .into()
         } else {
-            "No files staged".into()
+            language.tr(TrKey::StagedNone).into()
         };
 
         // Conventional commits: 50 chars is the recommended limit, 72 is the hard wrap limit.
@@ -756,14 +778,16 @@ impl Render for CommitPanel {
         };
 
         let desc_count_label: SharedString = if description_len > 0 {
-            format!(
-                "{} char{}, {} line{}",
-                description_len,
-                if description_len == 1 { "" } else { "s" },
-                description_lines,
-                if description_lines == 1 { "" } else { "s" },
-            )
-            .into()
+            let template = match (description_len == 1, description_lines == 1) {
+                (true, true) => language.tr(TrKey::DescCount11),
+                (true, false) => language.tr(TrKey::DescCount1N),
+                (false, true) => language.tr(TrKey::DescCountN1),
+                (false, false) => language.tr(TrKey::DescCountNN),
+            };
+            template
+                .replacen("{}", &description_len.to_string(), 1)
+                .replacen("{}", &description_lines.to_string(), 1)
+                .into()
         } else {
             SharedString::default()
         };
@@ -831,9 +855,9 @@ impl Render for CommitPanel {
                                 .size(ButtonSize::Compact)
                                 .color(Color::Muted)
                                 .tooltip(if self.collapsed {
-                                    "Expand commit panel"
+                                    language.tr(TrKey::TipExpandCommit)
                                 } else {
-                                    "Collapse commit panel"
+                                    language.tr(TrKey::TipCollapseCommit)
                                 })
                                 .on_click(cx.listener(
                                     |this, _: &ClickEvent, _, cx| {

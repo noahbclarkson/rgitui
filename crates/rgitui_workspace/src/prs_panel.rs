@@ -25,6 +25,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 #[derive(Clone, Debug)]
 pub struct PullRequest {
@@ -127,6 +128,9 @@ impl PrFilter {
         }
     }
 
+    /// English filter vocabulary. Rendering uses [`TrKey`] instead; this stays
+    /// so the unit tests keep pinning the exact source literals.
+    #[allow(dead_code)]
     fn label(&self) -> &str {
         match self {
             PrFilter::Open => "Open",
@@ -215,6 +219,14 @@ impl PrsPanel {
         workspace: WeakEntity<Workspace>,
         github_data: Entity<GithubDataService>,
     ) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         Self {
             github_data,
             prs: Vec::new().into(),
@@ -243,7 +255,7 @@ impl PrsPanel {
             review_submitting: false,
             review_comment_input: cx.new(|cx| {
                 let mut ti = TextInput::new(cx).multiline();
-                ti.set_placeholder("Leave a review comment (optional)");
+                ti.set_placeholder(language.tr(TrKey::ReviewCommentPh));
                 ti
             }),
             review_result: None,
@@ -634,6 +646,13 @@ impl PrsPanel {
     }
 
     fn render_review_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = cx.global::<SettingsState>().settings().language;
+        // Keep the review placeholder in the active language: the editor is
+        // created once in `new`, so without this it would freeze in the
+        // language that was active at startup.
+        self.review_comment_input.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::ReviewCommentPh));
+        });
         let mut el = div().v_flex().w_full().gap(px(8.));
 
         // Review comment input
@@ -646,7 +665,7 @@ impl PrsPanel {
         let submitting = self.review_submitting;
 
         buttons = buttons.child(
-            Button::new("pr-review-approve", "Approve")
+            Button::new("pr-review-approve", language.tr(TrKey::ReviewApprove))
                 .style(ButtonStyle::Tinted(TintColor::Success))
                 .size(ButtonSize::Compact)
                 .disabled(submitting)
@@ -656,17 +675,20 @@ impl PrsPanel {
         );
 
         buttons = buttons.child(
-            Button::new("pr-review-request-changes", "Request Changes")
-                .style(ButtonStyle::Tinted(TintColor::Error))
-                .size(ButtonSize::Compact)
-                .disabled(submitting)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.submit_review(ReviewAction::RequestChanges, cx);
-                })),
+            Button::new(
+                "pr-review-request-changes",
+                language.tr(TrKey::ReviewRequest),
+            )
+            .style(ButtonStyle::Tinted(TintColor::Error))
+            .size(ButtonSize::Compact)
+            .disabled(submitting)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.submit_review(ReviewAction::RequestChanges, cx);
+            })),
         );
 
         buttons = buttons.child(
-            Button::new("pr-review-comment", "Comment")
+            Button::new("pr-review-comment", language.tr(TrKey::ReviewCommentBtn))
                 .style(ButtonStyle::Subtle)
                 .size(ButtonSize::Compact)
                 .disabled(submitting)
@@ -687,7 +709,7 @@ impl PrsPanel {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Submitting...")
+                        Label::new(language.tr(TrKey::ReviewSubmitting))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
@@ -728,7 +750,7 @@ impl PrsPanel {
             .border_t_1()
             .border_color(cx.colors().border_variant)
             .child(
-                Label::new("Review Actions")
+                Label::new(language.tr(TrKey::ReviewActions))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Muted),
@@ -781,6 +803,7 @@ impl PrsPanel {
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = cx.global::<SettingsState>().settings().language;
         if self.view_mode == PrsPanelView::Detail {
             return div()
                 .h_flex()
@@ -801,7 +824,7 @@ impl PrsPanel {
                         })),
                 )
                 .child(
-                    Label::new("Pull Request Detail")
+                    Label::new(language.tr(TrKey::PrDetail))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Default),
@@ -831,7 +854,7 @@ impl PrsPanel {
                     .color(Color::Accent),
             )
             .child(
-                Label::new("Pull Requests")
+                Label::new(language.tr(TrKey::PrsTitle))
                     .size(LabelSize::Small)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Default),
@@ -849,7 +872,7 @@ impl PrsPanel {
                     .border_color(cx.colors().border_variant)
                     .overflow_hidden()
                     .child(
-                        Button::new("pr-filter-open", "Open")
+                        Button::new("pr-filter-open", language.tr(TrKey::FilterOpen))
                             .size(ButtonSize::Compact)
                             .style(if is_open {
                                 ButtonStyle::Filled
@@ -861,7 +884,7 @@ impl PrsPanel {
                             })),
                     )
                     .child(
-                        Button::new("pr-filter-closed", "Closed")
+                        Button::new("pr-filter-closed", language.tr(TrKey::FilterClosed))
                             .size(ButtonSize::Compact)
                             .style(if is_closed {
                                 ButtonStyle::Filled
@@ -873,7 +896,7 @@ impl PrsPanel {
                             })),
                     )
                     .child(
-                        Button::new("pr-filter-all", "All")
+                        Button::new("pr-filter-all", language.tr(TrKey::FilterAll))
                             .size(ButtonSize::Compact)
                             .style(if is_all {
                                 ButtonStyle::Filled
@@ -886,7 +909,7 @@ impl PrsPanel {
                     ),
             )
             .child(
-                Button::new("prs-new", "New pull request")
+                Button::new("prs-new", language.tr(TrKey::PrNew))
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Filled)
                     .color(Color::Accent)
@@ -906,6 +929,7 @@ impl PrsPanel {
     }
 
     fn render_detail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let Some(pr) = &self.selected_pr else {
             return div().into_any_element();
         };
@@ -917,9 +941,21 @@ impl PrsPanel {
         let created: SharedString = pr.created_at.clone().into();
 
         let (state_label, state_icon, state_color) = match pr.state {
-            PrState::Open => ("Open", IconName::GitPullRequest, Color::Success),
-            PrState::Closed => ("Closed", IconName::GitPullRequest, Color::Error),
-            PrState::Merged => ("Merged", IconName::GitMerge, Color::Accent),
+            PrState::Open => (
+                language.tr(TrKey::FilterOpen),
+                IconName::GitPullRequest,
+                Color::Success,
+            ),
+            PrState::Closed => (
+                language.tr(TrKey::FilterClosed),
+                IconName::GitPullRequest,
+                Color::Error,
+            ),
+            PrState::Merged => (
+                language.tr(TrKey::PrStateMerged),
+                IconName::GitMerge,
+                Color::Accent,
+            ),
         };
 
         let mut content = div()
@@ -975,7 +1011,8 @@ impl PrsPanel {
         );
 
         if pr.draft {
-            meta_row = meta_row.child(Badge::new("Draft").color(Color::Muted));
+            meta_row =
+                meta_row.child(Badge::new(language.tr(TrKey::DraftBadge)).color(Color::Muted));
         }
 
         meta_row = meta_row
@@ -1078,13 +1115,14 @@ impl PrsPanel {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Loading comments...")
+                        Label::new(language.tr(TrKey::LoadingComments))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     ),
             );
         } else if let Some(err) = &self.comments_error {
-            let err_text: SharedString = format!("Failed to load comments: {err}").into();
+            let err_text: SharedString =
+                format!("{}: {err}", language.tr(TrKey::CommentsFailedPre)).into();
             content = content.child(
                 div()
                     .h_flex()
@@ -1106,12 +1144,14 @@ impl PrsPanel {
             );
         } else if !self.selected_comments.is_empty() {
             let comment_count = self.selected_comments.len();
-            let comments_header: SharedString = format!(
-                "{} comment{}",
-                comment_count,
-                if comment_count == 1 { "" } else { "s" }
-            )
-            .into();
+            let comments_header: SharedString = if comment_count == 1 {
+                language.tr(TrKey::OneComment).into()
+            } else {
+                language
+                    .tr(TrKey::ManyCommentsFmt)
+                    .replacen("{}", &comment_count.to_string(), 1)
+                    .into()
+            };
             content = content.child(
                 div()
                     .h_flex()
@@ -1256,6 +1296,7 @@ impl PrsPanel {
 
 impl Render for PrsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let panel_bg = cx.colors().panel_background;
         let ghost_selected = cx.colors().ghost_element_selected;
         let text_accent = cx.colors().text_accent;
@@ -1283,8 +1324,8 @@ impl Render for PrsPanel {
             return panel
                 .child(self.render_empty_state(
                     IconName::Settings,
-                    "Sign in to view pull requests",
-                    "This repository is private or rate-limited. Add a GitHub token in Settings — for organization repos you may need a fine-grained token approved by an org owner.",
+                    language.tr(TrKey::GhSignInPrs),
+                    language.tr(TrKey::GhAuthDesc),
                     cx,
                 ))
                 .into_any_element();
@@ -1328,7 +1369,7 @@ impl Render for PrsPanel {
                                     ),
                                 )
                                 .child(
-                                    Button::new("retry-prs", "Retry")
+                                    Button::new("retry-prs", language.tr(TrKey::OpRetry))
                                         .icon(IconName::Refresh)
                                         .size(ButtonSize::Default)
                                         .style(ButtonStyle::Filled)
@@ -1343,15 +1384,20 @@ impl Render for PrsPanel {
         }
 
         if self.prs.is_empty() {
-            let empty_msg = format!(
-                "No {} pull requests found",
-                self.filter.label().to_lowercase()
-            );
+            let filter_word = match &self.filter {
+                PrFilter::Open => language.tr(TrKey::FilterOpen),
+                PrFilter::Closed => language.tr(TrKey::FilterClosed),
+                PrFilter::All => language.tr(TrKey::FilterAll),
+            }
+            .to_lowercase();
+            let empty_msg = language
+                .tr(TrKey::PrEmptyFmt)
+                .replacen("{}", &filter_word, 1);
             return panel
                 .child(self.render_empty_state(
                     IconName::CheckCircle,
                     &empty_msg,
-                    "Try a different filter or check back later",
+                    language.tr(TrKey::TryFilterHint),
                     cx,
                 ))
                 .into_any_element();
@@ -1438,7 +1484,9 @@ impl Render for PrsPanel {
                                 );
 
                             if is_draft {
-                                row = row.child(Badge::new("Draft").color(Color::Muted));
+                                row = row.child(
+                                    Badge::new(language.tr(TrKey::DraftBadge)).color(Color::Muted),
+                                );
                             }
 
                             if !labels.is_empty() {

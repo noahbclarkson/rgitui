@@ -8,6 +8,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 /// Events emitted by the worktree creation dialog.
 #[derive(Debug, Clone)]
@@ -39,21 +40,29 @@ impl EventEmitter<WorktreeDialogEvent> for WorktreeDialog {}
 
 impl WorktreeDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let name_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Worktree name (e.g. feature-x)...");
+            ti.set_placeholder(language.tr(TrKey::WtNamePh));
             ti
         });
 
         let path_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Directory path (e.g. /home/user/projects/myrepo-feature-x)...");
+            ti.set_placeholder(language.tr(TrKey::WtPathPh));
             ti
         });
 
         let branch_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Branch (optional, defaults to current branch)...");
+            ti.set_placeholder(language.tr(TrKey::WtBranchPh));
             ti
         });
 
@@ -222,6 +231,19 @@ impl Render for WorktreeDialog {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+        self.name_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::WtNamePh));
+        });
+        self.path_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::WtPathPh));
+        });
+        self.branch_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::WtBranchPh));
+        });
         let name_text = self.name_editor.read(cx).text().to_string();
         let path_text = self.path_editor.read(cx).text().to_string();
         let has_error = self.error_message.is_some();
@@ -270,7 +292,7 @@ impl Render for WorktreeDialog {
                         ),
                 )
                 .child(
-                    Label::new("New Worktree")
+                    Label::new(language.tr(TrKey::SideNewWorktree))
                         .size(LabelSize::Large)
                         .color(Color::Default),
                 ),
@@ -283,7 +305,7 @@ impl Render for WorktreeDialog {
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Name")
+                    Label::new(language.tr(TrKey::NameLabel))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -297,7 +319,7 @@ impl Render for WorktreeDialog {
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Directory Path")
+                    Label::new(language.tr(TrKey::WtPathLabel))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -311,7 +333,7 @@ impl Render for WorktreeDialog {
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Branch (optional)")
+                    Label::new(language.tr(TrKey::WtBranchLabel))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -336,7 +358,7 @@ impl Render for WorktreeDialog {
                 .justify_end()
                 .gap_2()
                 .child(
-                    Button::new("worktree-dialog-cancel", "Cancel")
+                    Button::new("worktree-dialog-cancel", language.tr(TrKey::CancelBtn))
                         .style(ButtonStyle::Subtle)
                         .size(ButtonSize::Compact)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -344,7 +366,7 @@ impl Render for WorktreeDialog {
                         })),
                 )
                 .child(
-                    Button::new("worktree-dialog-create", "Create")
+                    Button::new("worktree-dialog-create", language.tr(TrKey::CreateBtn))
                         .style(if can_create {
                             ButtonStyle::Tinted(TintColor::Accent)
                         } else {

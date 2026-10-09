@@ -13,6 +13,7 @@ use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInput
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 const SEARCH_RESULT_ROW_HEIGHT: f32 = 28.0;
 const SEARCH_RESULTS_PAGE_SIZE: usize = 250;
@@ -102,9 +103,17 @@ impl EventEmitter<GlobalSearchViewEvent> for GlobalSearchView {}
 
 impl GlobalSearchView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let query_input = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Search across all files... (press Enter)");
+            ti.set_placeholder(language.tr(TrKey::SearchPh));
             ti
         });
 
@@ -332,7 +341,11 @@ impl Render for GlobalSearchView {
             return div().id("global-search-view").into_any_element();
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
+        let language = cx.global::<SettingsState>().settings().language;
+        self.query_input.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::SearchPh));
+        });
         let query = self.query.clone();
         let loading = self.loading;
         let error = self.error.clone();
@@ -375,6 +388,7 @@ impl GlobalSearchView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = cx.colors();
+        let language = cx.global::<SettingsState>().settings().language;
 
         div()
             .id("global-search-toolbar")
@@ -405,9 +419,13 @@ impl GlobalSearchView {
                     .child(self.query_input.clone())
             })
             .child(
-                Label::new(format!("{} results", result_count))
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted),
+                Label::new(language.tr(TrKey::SearchResultsFmt).replacen(
+                    "{}",
+                    &result_count.to_string(),
+                    1,
+                ))
+                .size(LabelSize::XSmall)
+                .color(Color::Muted),
             )
     }
 
@@ -418,6 +436,7 @@ impl GlobalSearchView {
         content_state: SearchContentState,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let colors = cx.colors();
 
         if content_state == SearchContentState::Error {
@@ -467,12 +486,12 @@ impl GlobalSearchView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("Type to search across all files")
+                            Label::new(language.tr(TrKey::SearchEmpty))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Press Enter to search | j/k to navigate")
+                            Label::new(language.tr(TrKey::SearchHint))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),

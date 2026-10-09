@@ -15,6 +15,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 /// Events emitted by the PR creation dialog.
 #[derive(Debug, Clone)]
@@ -51,15 +52,23 @@ impl EventEmitter<CreatePrDialogEvent> for CreatePrDialog {}
 
 impl CreatePrDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let title_input = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Pull request title");
+            ti.set_placeholder(language.tr(TrKey::PrTitlePh));
             ti
         });
 
         let body_input = cx.new(|cx| {
             let mut ti = TextInput::new(cx).multiline();
-            ti.set_placeholder("Add a description (optional)");
+            ti.set_placeholder(language.tr(TrKey::PrDescPh));
             ti
         });
 
@@ -261,6 +270,16 @@ impl Render for CreatePrDialog {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+        self.title_input.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::PrTitlePh));
+        });
+        self.body_input.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::PrDescPh));
+        });
         let head_label: SharedString = self.head_branch.clone().into();
         let base_label: SharedString = self.base_branch.clone().into();
 
@@ -329,7 +348,7 @@ impl Render for CreatePrDialog {
                                     ),
                             )
                             .child(
-                                Label::new("New Pull Request")
+                                Label::new(language.tr(TrKey::CreatePrTitle))
                                     .size(LabelSize::Large)
                                     .weight(gpui::FontWeight::BOLD),
                             ),
@@ -355,7 +374,7 @@ impl Render for CreatePrDialog {
                                     .color(Color::Accent),
                             )
                             .child(
-                                Label::new("into")
+                                Label::new(language.tr(TrKey::PrInto))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             )
@@ -368,7 +387,7 @@ impl Render for CreatePrDialog {
                     // Title input
                     .child(
                         div().v_flex().gap_1().child(
-                            Label::new("Title")
+                            Label::new(language.tr(TrKey::PrTitleLabel))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -388,7 +407,7 @@ impl Render for CreatePrDialog {
                     // Body input
                     .child(
                         div().v_flex().gap_1().child(
-                            Label::new("Description")
+                            Label::new(language.tr(TrKey::DescLabel))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -429,7 +448,7 @@ impl Render for CreatePrDialog {
                                 )),
                             )
                             .child(
-                                Label::new("Create as draft pull request")
+                                Label::new(language.tr(TrKey::PrDraftToggle))
                                     .size(LabelSize::Small)
                                     .color(Color::Muted),
                             ),
@@ -470,11 +489,9 @@ impl Render for CreatePrDialog {
                             .w_full()
                             .gap_2()
                             .child(
-                                Label::new(
-                                    "Enter for a new line | Shift+Enter to create | Esc to cancel",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Placeholder),
+                                Label::new(language.tr(TrKey::PrHint))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Placeholder),
                             )
                             .child(
                                 div()
@@ -485,31 +502,37 @@ impl Render for CreatePrDialog {
                                     .w_full()
                                     .pr(px(4.))
                                     .child(
-                                        Button::new("create-pr-cancel", "Cancel")
-                                            .size(ButtonSize::Default)
-                                            .style(ButtonStyle::Subtle)
-                                            .on_click(cx.listener(
-                                                |this, _: &ClickEvent, _, cx| {
-                                                    this.cancel(cx);
-                                                },
-                                            )),
+                                        Button::new(
+                                            "create-pr-cancel",
+                                            language.tr(TrKey::CancelBtn),
+                                        )
+                                        .size(ButtonSize::Default)
+                                        .style(ButtonStyle::Subtle)
+                                        .on_click(
+                                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                                this.cancel(cx);
+                                            }),
+                                        ),
                                     )
                                     .child(
-                                        Button::new("create-pr-submit", "Create pull request")
-                                            .icon(IconName::GitPullRequest)
-                                            .size(ButtonSize::Default)
-                                            .style(if self.is_loading {
-                                                ButtonStyle::Subtle
-                                            } else {
-                                                ButtonStyle::Filled
-                                            })
-                                            .color(Color::Accent)
-                                            .disabled(self.is_loading)
-                                            .on_click(cx.listener(
-                                                |this, _: &ClickEvent, _, cx| {
-                                                    this.submit(cx);
-                                                },
-                                            )),
+                                        Button::new(
+                                            "create-pr-submit",
+                                            language.tr(TrKey::PrSubmit),
+                                        )
+                                        .icon(IconName::GitPullRequest)
+                                        .size(ButtonSize::Default)
+                                        .style(if self.is_loading {
+                                            ButtonStyle::Subtle
+                                        } else {
+                                            ButtonStyle::Filled
+                                        })
+                                        .color(Color::Accent)
+                                        .disabled(self.is_loading)
+                                        .on_click(
+                                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                                this.submit(cx);
+                                            }),
+                                        ),
                                     ),
                             ),
                     )
@@ -546,7 +569,7 @@ impl Render for CreatePrDialog {
                                                 .color(Color::Accent),
                                         )
                                         .child(
-                                            Label::new("Creating pull request...")
+                                            Label::new(language.tr(TrKey::PrCreating))
                                                 .size(LabelSize::Small)
                                                 .color(Color::Default),
                                         ),

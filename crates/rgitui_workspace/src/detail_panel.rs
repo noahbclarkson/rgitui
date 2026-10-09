@@ -13,7 +13,7 @@ use rgitui_git::{
     compact_ref_labels, BranchInfo, CommitDiff, CommitInfo, FileChangeKind, FileDiff, RefLabel,
     Signature,
 };
-use rgitui_settings::{SettingsState, TrKey};
+use rgitui_settings::{Language, SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     AvatarCache, Badge, ButtonSize, ButtonStyle, DiffStat, Icon, IconButton, IconName, IconSize,
@@ -80,10 +80,10 @@ impl FileViewMode {
         }
     }
 
-    fn toggle_tooltip(self) -> &'static str {
+    fn toggle_tooltip(self, language: Language) -> &'static str {
         match self {
-            Self::Flat => "Switch to Tree view (v)",
-            Self::Tree => "Switch to Flat view (v)",
+            Self::Flat => language.tr(TrKey::FlatViewTip),
+            Self::Tree => language.tr(TrKey::TreeViewTip),
         }
     }
 
@@ -107,13 +107,14 @@ fn file_view_toggle_tooltip(
     file_count: usize,
     is_searching: bool,
     file_view_mode: FileViewMode,
+    language: Language,
 ) -> &'static str {
     if file_count == 0 {
-        "No changed files to display"
+        language.tr(TrKey::NoFilesTip)
     } else if is_searching {
-        "Clear file search to switch views"
+        language.tr(TrKey::ClearSearchTip)
     } else {
-        file_view_mode.toggle_tooltip()
+        file_view_mode.toggle_tooltip(language)
     }
 }
 
@@ -481,9 +482,17 @@ impl EventEmitter<DetailPanelEvent> for DetailPanel {}
 
 impl DetailPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let file_search_editor = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Filter files...");
+            input.set_placeholder(language.tr(TrKey::FilterFilesPh));
             input.set_compact(true);
             input
         });
@@ -1414,8 +1423,12 @@ impl Render for DetailPanel {
                     let is_searching =
                         is_file_searching(self.file_search_active, &self.file_search_query);
                     let toggle_disabled = !can_toggle_file_view(file_count, is_searching);
-                    let toggle_tooltip =
-                        file_view_toggle_tooltip(file_count, is_searching, self.file_view_mode);
+                    let toggle_tooltip = file_view_toggle_tooltip(
+                        file_count,
+                        is_searching,
+                        self.file_view_mode,
+                        language,
+                    );
 
                     IconButton::new("view-mode-toggle", self.file_view_mode.toggle_icon())
                         .size(ButtonSize::Compact)
@@ -1509,7 +1522,7 @@ impl Render for DetailPanel {
                 IconButton::new("copy-sha-btn", sha_icon)
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Transparent)
-                    .tooltip("Copy commit SHA")
+                    .tooltip(language.tr(TrKey::TipCopySha))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(
                             sha_copy_clone.to_string(),
@@ -1520,7 +1533,7 @@ impl Render for DetailPanel {
             )
             .when(sha_copied, |el| {
                 el.child(
-                    Label::new("Copied!")
+                    Label::new(language.tr(TrKey::CopiedFb))
                         .size(LabelSize::XSmall)
                         .color(Color::Success),
                 )
@@ -1550,7 +1563,7 @@ impl Render for DetailPanel {
                                 div()
                                     .id("signed-commit")
                                     .flex_shrink_0()
-                                    .tooltip(Tooltip::text("GPG-signed commit"))
+                                    .tooltip(Tooltip::text(language.tr(TrKey::TipGpg)))
                                     .child(
                                         Icon::new(IconName::Lock)
                                             .size(IconSize::XSmall)
@@ -1671,7 +1684,7 @@ impl Render for DetailPanel {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Finding branches…")
+                        Label::new(language.tr(TrKey::FindingBranches))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
@@ -1679,7 +1692,7 @@ impl Render for DetailPanel {
         } else if !contained_filtered.is_empty() {
             let mut contained_row = div().v_flex().gap(px(4.));
             contained_row = contained_row.child(
-                Label::new("CONTAINED IN")
+                Label::new(language.tr(TrKey::ContainedIn))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted)
                     .weight(gpui::FontWeight::SEMIBOLD),
@@ -1750,7 +1763,7 @@ impl Render for DetailPanel {
                         )
                         .when(summary_copied, |el| {
                             el.child(
-                                Label::new("Copied!")
+                                Label::new(language.tr(TrKey::CopiedFb))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Success),
                             )
@@ -1760,7 +1773,7 @@ impl Render for DetailPanel {
                     IconButton::new("cherry-pick-btn", IconName::GitCommit)
                         .size(ButtonSize::Compact)
                         .style(ButtonStyle::Transparent)
-                        .tooltip("Cherry-pick this commit")
+                        .tooltip(language.tr(TrKey::TipCherryPick))
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                             cx.emit(DetailPanelEvent::CherryPick(sha_for_cherry.to_string()));
                         })),
@@ -1800,7 +1813,7 @@ impl Render for DetailPanel {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Description")
+                            Label::new(language.tr(TrKey::DescLabel))
                                 .size(LabelSize::XSmall)
                                 .weight(gpui::FontWeight::SEMIBOLD)
                                 .color(Color::Muted),
@@ -1830,7 +1843,7 @@ impl Render for DetailPanel {
                         .child(render_markdown(&description, window, cx))
                         .when(desc_copied, |el| {
                             el.child(
-                                Label::new("Copied!")
+                                Label::new(language.tr(TrKey::CopiedFb))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Success),
                             )
@@ -1872,61 +1885,63 @@ impl Render for DetailPanel {
             let total_deletions = diff.total_deletions;
 
             // Build the header with optional search input
-            let header_children = |cx: &mut Context<Self>| -> Vec<gpui::AnyElement> {
-                let mut children: Vec<gpui::AnyElement> = vec![
-                    Icon::new(IconName::File)
-                        .size(IconSize::XSmall)
-                        .color(Color::Muted)
-                        .into_any_element(),
-                    Label::new(file_count_text.clone())
-                        .size(LabelSize::XSmall)
-                        .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Muted)
-                        .into_any_element(),
-                ];
+            let header_children =
+                |cx: &mut Context<Self>| -> Vec<gpui::AnyElement> {
+                    let mut children: Vec<gpui::AnyElement> = vec![
+                        Icon::new(IconName::File)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted)
+                            .into_any_element(),
+                        Label::new(file_count_text.clone())
+                            .size(LabelSize::XSmall)
+                            .weight(gpui::FontWeight::SEMIBOLD)
+                            .color(Color::Muted)
+                            .into_any_element(),
+                    ];
 
-                if is_searching {
-                    let search_input: gpui::AnyElement = div()
-                        .flex_1()
-                        .h_flex()
-                        .items_center()
-                        .gap_1()
-                        .child(
-                            Icon::new(IconName::Search)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                        .child(
+                    if is_searching {
+                        let search_input: gpui::AnyElement =
                             div()
                                 .flex_1()
-                                .min_w_0()
-                                .h(px(24.))
-                                .overflow_hidden()
-                                .child(self.file_search_editor.clone()),
-                        )
-                        .child(
-                            IconButton::new("clear-search", IconName::X)
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Transparent)
-                                .tooltip("Clear search (Esc)")
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.clear_file_search(cx);
-                                }))
-                                .into_any_element(),
-                        )
-                        .into_any_element();
-                    children.push(search_input);
-                } else {
-                    children.push(div().flex_1().into_any_element());
-                }
+                                .h_flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    Icon::new(IconName::Search)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .child(div().flex_1().min_w_0().h(px(24.)).overflow_hidden().child(
+                                    {
+                                        self.file_search_editor.update(cx, |ed, _| {
+                                            ed.set_placeholder(language.tr(TrKey::FilterFilesPh));
+                                        });
+                                        self.file_search_editor.clone()
+                                    },
+                                ))
+                                .child(
+                                    IconButton::new("clear-search", IconName::X)
+                                        .size(ButtonSize::Compact)
+                                        .style(ButtonStyle::Transparent)
+                                        .tooltip(language.tr(TrKey::TipClearSearch))
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.clear_file_search(cx);
+                                        }))
+                                        .into_any_element(),
+                                )
+                                .into_any_element();
+                        children.push(search_input);
+                    } else {
+                        children.push(div().flex_1().into_any_element());
+                    }
 
-                // Diff stat
-                let diff_stat: gpui::AnyElement =
-                    DiffStat::new(total_additions, total_deletions).into_any_element();
-                children.push(diff_stat);
+                    // Diff stat
+                    let diff_stat: gpui::AnyElement =
+                        DiffStat::new(total_additions, total_deletions).into_any_element();
+                    children.push(diff_stat);
 
-                children
-            };
+                    children
+                };
 
             let header_children = header_children(cx);
             let mut header = div()
@@ -1958,7 +1973,7 @@ impl Render for DetailPanel {
                         .items_center()
                         .gap_1()
                         .child(
-                            Label::new("/ to search files")
+                            Label::new(language.tr(TrKey::SearchFilesHint))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         )
@@ -2559,11 +2574,11 @@ mod tests {
     #[test]
     fn test_file_view_mode_tooltips_describe_next_action() {
         assert_eq!(
-            FileViewMode::Flat.toggle_tooltip(),
+            FileViewMode::Flat.toggle_tooltip(Language::English),
             "Switch to Tree view (v)"
         );
         assert_eq!(
-            FileViewMode::Tree.toggle_tooltip(),
+            FileViewMode::Tree.toggle_tooltip(Language::English),
             "Switch to Flat view (v)"
         );
     }
@@ -2571,15 +2586,15 @@ mod tests {
     #[test]
     fn test_file_view_toggle_tooltip_describes_disabled_state() {
         assert_eq!(
-            file_view_toggle_tooltip(0, false, FileViewMode::Flat),
+            file_view_toggle_tooltip(0, false, FileViewMode::Flat, Language::English),
             "No changed files to display"
         );
         assert_eq!(
-            file_view_toggle_tooltip(2, true, FileViewMode::Flat),
+            file_view_toggle_tooltip(2, true, FileViewMode::Flat, Language::English),
             "Clear file search to switch views"
         );
         assert_eq!(
-            file_view_toggle_tooltip(2, false, FileViewMode::Flat),
+            file_view_toggle_tooltip(2, false, FileViewMode::Flat, Language::English),
             "Switch to Tree view (v)"
         );
     }

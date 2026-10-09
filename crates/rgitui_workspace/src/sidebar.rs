@@ -181,6 +181,9 @@ impl BranchAgeFilter {
         Self::OneYear,
     ];
 
+    /// English age-filter vocabulary. Rendering uses [`TrKey`] instead; this
+    /// stays as documentation of the exact source literals.
+    #[allow(dead_code)]
     fn label(self) -> &'static str {
         match self {
             Self::Any => "Any time",
@@ -504,15 +507,19 @@ impl Sidebar {
             SidebarItem::SectionHeader(SidebarSection::UnstagedChanges),
         ];
 
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let branch_filter_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Filter branches...");
+            ti.set_placeholder(language.tr(TrKey::FilterBranchesPh));
             ti.set_compact(true);
             ti
         });
         let remote_branch_filter_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Filter remote branches...");
+            ti.set_placeholder(language.tr(TrKey::FilterRemotePh));
             ti.set_compact(true);
             ti
         });
@@ -1780,11 +1787,18 @@ impl Sidebar {
         target: BranchFilterTarget,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let language = cx.global::<SettingsState>().settings().language;
+        self.branch_filter_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::FilterBranchesPh));
+        });
+        self.remote_branch_filter_editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::FilterRemotePh));
+        });
         let selected_bg = cx.colors().ghost_element_selected;
         let hover_bg = cx.colors().ghost_element_hover;
         let (title, editor, active_age, filters_active) = match target {
             BranchFilterTarget::Local => (
-                "Branch filters",
+                language.tr(TrKey::PopBranchFilters),
                 self.branch_filter_editor.clone(),
                 self.local_branch_age_filter,
                 !self.branch_filter.is_empty()
@@ -1792,7 +1806,7 @@ impl Sidebar {
                     || self.local_branch_age_filter != BranchAgeFilter::Any,
             ),
             BranchFilterTarget::Remote => (
-                "Remote branch filters",
+                language.tr(TrKey::PopRemoteFilters),
                 self.remote_branch_filter_editor.clone(),
                 self.remote_branch_age_filter,
                 !self.remote_branch_filter.is_empty()
@@ -1809,13 +1823,13 @@ impl Sidebar {
                     .color(Color::Default),
             )
             .child(
-                Label::new("Name")
+                Label::new(language.tr(TrKey::NameLabel))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             )
             .child(div().w_full().child(editor))
             .child(
-                Label::new("Last used")
+                Label::new(language.tr(TrKey::SortLastUsed))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             );
@@ -1853,13 +1867,19 @@ impl Sidebar {
                         )
                     }))
                     .child(
-                        Label::new(age_filter.label())
-                            .size(LabelSize::XSmall)
-                            .color(if selected {
-                                Color::Accent
-                            } else {
-                                Color::Default
-                            }),
+                        Label::new(match age_filter {
+                            BranchAgeFilter::Any => language.tr(TrKey::AgeAny),
+                            BranchAgeFilter::SevenDays => language.tr(TrKey::AgeSevenDays),
+                            BranchAgeFilter::ThirtyDays => language.tr(TrKey::AgeThirtyDays),
+                            BranchAgeFilter::NinetyDays => language.tr(TrKey::AgeNinetyDays),
+                            BranchAgeFilter::OneYear => language.tr(TrKey::AgeOneYear),
+                        })
+                        .size(LabelSize::XSmall)
+                        .color(if selected {
+                            Color::Accent
+                        } else {
+                            Color::Default
+                        }),
                     ),
             );
         }
@@ -1898,7 +1918,7 @@ impl Sidebar {
                             }),
                     )
                     .child(
-                        Label::new("Only my branches")
+                        Label::new(language.tr(TrKey::OnlyMine))
                             .size(LabelSize::XSmall)
                             .color(Color::Default),
                     ),
@@ -1908,7 +1928,7 @@ impl Sidebar {
         let weak = weak.clone();
         popover = popover.child(
             div().w_full().flex().justify_end().child(
-                Button::new("clear-branch-filters", "Clear")
+                Button::new("clear-branch-filters", language.tr(TrKey::ClearBtn))
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Subtle)
                     .disabled(!filters_active)
@@ -1929,13 +1949,14 @@ impl Sidebar {
         list: ChangeList,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let language = cx.global::<SettingsState>().settings().language;
         let enabled = cx
             .global::<SettingsState>()
             .settings()
             .show_change_line_stats;
         let title = match list {
-            ChangeList::Staged => "Staged files",
-            ChangeList::Unstaged => "Unstaged files",
+            ChangeList::Staged => language.tr(TrKey::PopStagedFiles),
+            ChangeList::Unstaged => language.tr(TrKey::PopUnstagedFiles),
         };
         let weak = cx.weak_entity();
         self.popover_frame("change-list-popover", CHANGE_LIST_POPOVER_WIDTH, cx)
@@ -1954,7 +1975,7 @@ impl Sidebar {
                         CheckState::Unchecked
                     },
                 )
-                .label("Show line counts")
+                .label(language.tr(TrKey::ShowLineCounts))
                 .on_toggle(move |_: &mut Window, cx: &mut App| {
                     weak.update(cx, |_, cx| {
                         cx.emit(SidebarEvent::SetChangeLineStats(!enabled));
@@ -1963,7 +1984,7 @@ impl Sidebar {
                 }),
             )
             .child(
-                Label::new("Applies to staged and unstaged files.")
+                Label::new(language.tr(TrKey::ChangeListHint))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             )
@@ -2077,7 +2098,7 @@ impl Render for Sidebar {
                         IconButton::new("sidebar-open-repo", IconName::Plus)
                             .size(ButtonSize::Compact)
                             .color(Color::Muted)
-                            .tooltip("Open repository")
+                            .tooltip(language.tr(TrKey::TipOpenRepo))
                             .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                                 cx.emit(SidebarEvent::OpenRepo);
                             })),
@@ -2148,7 +2169,7 @@ impl Render for Sidebar {
                 .child(self.render_popover_trigger(
                     SidebarPopover::BranchFilter(BranchFilterTarget::Local),
                     "local-branch-filters",
-                    "Filter branches by name or last used",
+                    language.tr(TrKey::TipFilterLocal),
                     local_filters_active,
                     cx,
                 ))
@@ -2338,7 +2359,7 @@ impl Render for Sidebar {
                                 div()
                                     .id(SharedString::from(format!("merged-branch-{i}")))
                                     .flex_shrink_0()
-                                    .tooltip(Tooltip::text("Merged into current branch"))
+                                    .tooltip(Tooltip::text(language.tr(TrKey::TipMerged)))
                                     .child(
                                         rgitui_ui::Icon::new(IconName::GitMerge)
                                             .size(rgitui_ui::IconSize::XSmall)
@@ -2387,7 +2408,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Muted)
-                                    .tooltip("Copy branch name")
+                                    .tooltip(language.tr(TrKey::TipCopyBranch))
                                     .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                         let _ = w_cp.clone().update(cx, |_this, cx| {
                                             cx.emit(SidebarEvent::BranchCopyName(bn_cp.to_string()));
@@ -2412,7 +2433,7 @@ impl Render for Sidebar {
                                         )
                                         .size(ButtonSize::Compact)
                                         .color(Color::Success)
-                                        .tooltip("Checkout branch")
+                                        .tooltip(language.tr(TrKey::TipCheckoutBranch))
                                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                             let _ = w_co.clone().update(cx, |_this, cx| {
                                                 cx.emit(SidebarEvent::BranchCheckout(bn_co.to_string()));
@@ -2426,7 +2447,7 @@ impl Render for Sidebar {
                                         )
                                         .size(ButtonSize::Compact)
                                         .color(Color::Muted)
-                                        .tooltip("Merge into current branch")
+                                        .tooltip(language.tr(TrKey::TipMergeBranch))
                                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                             let _ = w_mg.clone().update(cx, |_this, cx| {
                                                 cx.emit(SidebarEvent::MergeBranch(bn_mg.to_string()));
@@ -2440,7 +2461,7 @@ impl Render for Sidebar {
                                         )
                                         .size(ButtonSize::Compact)
                                         .color(Color::Muted)
-                                        .tooltip("Rename branch")
+                                        .tooltip(language.tr(TrKey::TipRenameBranch))
                                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                             let _ = w_rn.clone().update(cx, |_this, cx| {
                                                 cx.emit(SidebarEvent::BranchRename(bn_rn.to_string()));
@@ -2454,7 +2475,7 @@ impl Render for Sidebar {
                                         )
                                         .size(ButtonSize::Compact)
                                         .color(Color::Deleted)
-                                        .tooltip("Delete branch")
+                                        .tooltip(language.tr(TrKey::TipDeleteBranch))
                                         .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                             let _ = w_dl.clone().update(cx, |_this, cx| {
                                                 cx.emit(SidebarEvent::BranchDelete(bn_dl.to_string()));
@@ -2562,7 +2583,7 @@ impl Render for Sidebar {
                         .px(px(16.))
                         .items_center()
                         .child(
-                            Label::new("No remotes configured")
+                            Label::new(language.tr(TrKey::NoRemotes))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -2649,7 +2670,7 @@ impl Render for Sidebar {
                                                 )
                                                 .size(ButtonSize::Compact)
                                                 .color(Color::Info)
-                                                .tooltip("Fetch from remote")
+                                                .tooltip(language.tr(TrKey::TipFetchRemote))
                                                 .on_click(
                                                     move |_: &ClickEvent, _, cx: &mut App| {
                                                         let _ =
@@ -2671,7 +2692,7 @@ impl Render for Sidebar {
                                                 )
                                                 .size(ButtonSize::Compact)
                                                 .color(Color::Warning)
-                                                .tooltip("Pull from remote")
+                                                .tooltip(language.tr(TrKey::TipPullRemote))
                                                 .on_click(
                                                     move |_: &ClickEvent, _, cx: &mut App| {
                                                         let _ =
@@ -2693,7 +2714,7 @@ impl Render for Sidebar {
                                                 )
                                                 .size(ButtonSize::Compact)
                                                 .color(Color::Success)
-                                                .tooltip("Push to remote")
+                                                .tooltip(language.tr(TrKey::TipPushRemote))
                                                 .on_click(
                                                     move |_: &ClickEvent, _, cx: &mut App| {
                                                         let _ =
@@ -2715,7 +2736,7 @@ impl Render for Sidebar {
                                                 )
                                                 .size(ButtonSize::Compact)
                                                 .color(Color::Deleted)
-                                                .tooltip("Remove remote")
+                                                .tooltip(language.tr(TrKey::TipRemoveRemote))
                                                 .on_click(
                                                     move |_: &ClickEvent, _, cx: &mut App| {
                                                         let _ =
@@ -2797,7 +2818,7 @@ impl Render for Sidebar {
                 .child(self.render_popover_trigger(
                     SidebarPopover::BranchFilter(BranchFilterTarget::Remote),
                     "remote-branch-filters",
-                    "Filter remote branches by name or last used",
+                    language.tr(TrKey::TipFilterRemote),
                     remote_filters_active,
                     cx,
                 ))
@@ -3022,7 +3043,7 @@ impl Render for Sidebar {
                         .px(px(16.))
                         .items_center()
                         .child(
-                            Label::new("No tags")
+                            Label::new(language.tr(TrKey::NoTags))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -3117,7 +3138,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Muted)
-                                    .tooltip("Checkout tag")
+                                    .tooltip(language.tr(TrKey::TipCheckoutTag))
                                     .on_click(
                                         move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                             let _ =
@@ -3140,7 +3161,7 @@ impl Render for Sidebar {
                                     )
                                     .size(ButtonSize::Compact)
                                     .color(Color::Deleted)
-                                    .tooltip("Delete tag")
+                                    .tooltip(language.tr(TrKey::TipDeleteTag))
                                     .on_click(
                                         move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                             let _ =
@@ -3250,7 +3271,7 @@ impl Render for Sidebar {
                         .px(px(16.))
                         .items_center()
                         .child(
-                            Label::new("No stashes")
+                            Label::new(language.tr(TrKey::StashesEmpty))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -3352,7 +3373,7 @@ impl Render for Sidebar {
                                             )
                                             .size(ButtonSize::Compact)
                                             .color(Color::Success)
-                                            .tooltip("Apply stash")
+                                            .tooltip(language.tr(TrKey::ApplyStashLbl))
                                             .on_click(
                                                 move |_: &ClickEvent, _: &mut Window,
                                                       cx: &mut App| {
@@ -3376,7 +3397,7 @@ impl Render for Sidebar {
                                             )
                                             .size(ButtonSize::Compact)
                                             .color(Color::Info)
-                                            .tooltip("Pop stash")
+                                            .tooltip(language.tr(TrKey::PopStashLbl))
                                             .on_click(
                                                 move |_: &ClickEvent, _: &mut Window,
                                                       cx: &mut App| {
@@ -3399,7 +3420,7 @@ impl Render for Sidebar {
                                                 IconName::GitBranch,
                                             )
                                             .size(ButtonSize::Compact)
-                                            .tooltip("Create branch from stash")
+                                            .tooltip(language.tr(TrKey::TipStashBranch))
                                             .on_click(
                                                 move |_: &ClickEvent, _: &mut Window,
                                                       cx: &mut App| {
@@ -3423,7 +3444,7 @@ impl Render for Sidebar {
                                             )
                                             .size(ButtonSize::Compact)
                                             .color(Color::Deleted)
-                                            .tooltip("Drop stash")
+                                            .tooltip(language.tr(TrKey::TipDropStash))
                                             .on_click(
                                                 move |_: &ClickEvent, _: &mut Window,
                                                       cx: &mut App| {
@@ -3542,7 +3563,7 @@ impl Render for Sidebar {
                         .px(px(16.))
                         .items_center()
                         .child(
-                            Label::new("No worktrees")
+                            Label::new(language.tr(TrKey::NoWorktrees))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -3624,7 +3645,7 @@ impl Render for Sidebar {
                                     ))
                                     .when(worktree.is_current, |el| {
                                         el.child(
-                                            Label::new("(current)")
+                                            Label::new(language.tr(TrKey::CurrentTag))
                                                 .size(LabelSize::XSmall)
                                                 .color(Color::Muted),
                                         )
@@ -3654,7 +3675,7 @@ impl Render for Sidebar {
                                             )
                                             .size(ButtonSize::Compact)
                                             .color(Color::Deleted)
-                                            .tooltip("Remove worktree")
+                                            .tooltip(language.tr(TrKey::TipRemoveWorktree))
                                             .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                                 let _ = w_rm.clone().update(cx, |_: &mut Sidebar, cx| {
                                                     cx.emit(SidebarEvent::WorktreeRemove(
@@ -3780,7 +3801,7 @@ impl Render for Sidebar {
             .child(self.render_popover_trigger(
                 SidebarPopover::ChangeListOptions(ChangeList::Staged),
                 "staged-options",
-                "Staged list options",
+                language.tr(TrKey::TipStagedOpts),
                 show_line_stats,
                 cx,
             ))
@@ -3928,7 +3949,7 @@ impl Render for Sidebar {
                                                         .text_color(Color::Added.color(cx))
                                                         .hover(|s| s.bg(colors.ghost_element_hover))
                                                         .cursor_pointer()
-                                                        .tooltip(Tooltip::text("Unstage file"))
+                                                        .tooltip(Tooltip::text(language.tr(TrKey::TipUnstageFile)))
                                                         .on_click({
                                                             let w_unstg = w.clone();
                                                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -4128,7 +4149,7 @@ impl Render for Sidebar {
             .child(self.render_popover_trigger(
                 SidebarPopover::ChangeListOptions(ChangeList::Unstaged),
                 "unstaged-options",
-                "Unstaged list options",
+                language.tr(TrKey::TipUnstagedOpts),
                 show_line_stats,
                 cx,
             ))
@@ -4272,7 +4293,7 @@ impl Render for Sidebar {
                                             .icon(IconName::FileConflict)
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Tinted(rgitui_ui::TintColor::Warning))
-                                            .tooltip("Open conflict resolver")
+                                            .tooltip(language.tr(TrKey::TipConflictResolver))
                                             .on_click(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                                 w_resolve
                                                     .clone()
@@ -4309,7 +4330,7 @@ impl Render for Sidebar {
                                                         .text_color(Color::Deleted.color(cx))
                                                         .hover(|s| s.bg(colors.ghost_element_hover))
                                                         .cursor_pointer()
-                                                        .tooltip(crate::keymap::command_tooltip("Discard changes", CommandId::DiscardRow))
+                                                        .tooltip(crate::keymap::command_tooltip(language.tr(TrKey::TipDiscardChanges), CommandId::DiscardRow))
                                                         .on_click({
                                                             let w_dis = w.clone();
                                                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -4337,7 +4358,7 @@ impl Render for Sidebar {
                                                         .text_color(Color::Added.color(cx))
                                                         .hover(|s| s.bg(colors.ghost_element_hover))
                                                         .cursor_pointer()
-                                                        .tooltip(Tooltip::text("Stage file"))
+                                                        .tooltip(Tooltip::text(language.tr(TrKey::TipStageFile)))
                                                         .on_click({
                                                             let w_stg = w.clone();
                                                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -4522,7 +4543,7 @@ impl Render for Sidebar {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Apply stash")
+                            Label::new(language.tr(TrKey::ApplyStashLbl))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Default),
                         ),
@@ -4565,7 +4586,7 @@ impl Render for Sidebar {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Pop stash")
+                            Label::new(language.tr(TrKey::PopStashLbl))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Default),
                         ),
@@ -4608,7 +4629,7 @@ impl Render for Sidebar {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Create branch")
+                            Label::new(language.tr(TrKey::StashMenuCreateBranch))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Default),
                         ),
@@ -4651,7 +4672,7 @@ impl Render for Sidebar {
                                 .color(Color::Deleted),
                         )
                         .child(
-                            Label::new("Drop stash")
+                            Label::new(language.tr(TrKey::TipDropStash))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Default),
                         ),

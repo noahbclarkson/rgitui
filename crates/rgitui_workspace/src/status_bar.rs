@@ -265,7 +265,10 @@ impl StatusBar {
         let mut right = div().h_flex().items_center().gap(px(10.));
 
         if self.staged_count > 0 {
-            let staged_text: SharedString = format!("{} staged", self.staged_count).into();
+            let staged_text: SharedString = language
+                .tr(TrKey::StatusStagedFmt)
+                .replacen("{}", &self.staged_count.to_string(), 1)
+                .into();
             right = right.child(
                 div()
                     .h_flex()
@@ -289,7 +292,10 @@ impl StatusBar {
         }
 
         if self.unstaged_count > 0 {
-            let unstaged_text: SharedString = format!("{} changed", self.unstaged_count).into();
+            let unstaged_text: SharedString = language
+                .tr(TrKey::StatusChangedFmt)
+                .replacen("{}", &self.unstaged_count.to_string(), 1)
+                .into();
             right = right.child(
                 div()
                     .h_flex()

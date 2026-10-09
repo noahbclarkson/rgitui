@@ -9,7 +9,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::BlameLine;
-use rgitui_settings::SettingsState;
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
@@ -40,6 +40,10 @@ impl EventEmitter<BlameViewEvent> for BlameView {}
 
 impl BlameView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         Self {
             lines: Arc::new(Vec::new()),
             file_path: None,
@@ -143,6 +147,7 @@ impl BlameView {
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let colors = cx.colors();
 
         div()
@@ -167,7 +172,7 @@ impl BlameView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Blame")
+                        Label::new(language.tr(TrKey::BottomBlame))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -189,12 +194,12 @@ impl BlameView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("Select a file to view blame")
+                            Label::new(language.tr(TrKey::BlameEmpty))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Press 'b' on a file to see line-by-line attribution")
+                            Label::new(language.tr(TrKey::BlameEmptyHint))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -207,6 +212,7 @@ impl BlameView {
 impl Render for BlameView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let language = cx.global::<SettingsState>().settings().language;
 
         if self.lines.is_empty() {
             return self.render_empty_state(cx);
@@ -462,7 +468,7 @@ impl Render for BlameView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("Blame")
+                        Label::new(language.tr(TrKey::BottomBlame))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Default),

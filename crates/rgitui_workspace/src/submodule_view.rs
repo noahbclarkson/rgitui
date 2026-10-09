@@ -13,6 +13,7 @@ use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 const SUBMODULE_ICON: IconName = IconName::GitBranch;
 
@@ -38,6 +39,10 @@ impl EventEmitter<SubmoduleViewEvent> for SubmoduleView {}
 
 impl SubmoduleView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         Self {
             submodules: Arc::new(Vec::new()),
             scroll_handle: UniformListScrollHandle::new(),
@@ -110,6 +115,7 @@ impl SubmoduleView {
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let colors = cx.colors();
 
         div()
@@ -134,7 +140,7 @@ impl SubmoduleView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Submodules")
+                        Label::new(language.tr(TrKey::SubmodulesTitle))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -156,12 +162,12 @@ impl SubmoduleView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("No submodules found")
+                            Label::new(language.tr(TrKey::SubmodulesEmpty))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Add submodules to your repository")
+                            Label::new(language.tr(TrKey::SubmodulesHint))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -174,6 +180,7 @@ impl SubmoduleView {
 impl Render for SubmoduleView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let language = cx.global::<SettingsState>().settings().language;
 
         if self.submodules.is_empty() {
             return self.render_empty_state(cx);
@@ -383,7 +390,7 @@ impl Render for SubmoduleView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("Submodules")
+                        Label::new(language.tr(TrKey::SubmodulesTitle))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Default),

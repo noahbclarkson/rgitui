@@ -953,7 +953,7 @@ impl SettingsView {
                         )
                         .size(ButtonSize::Compact)
                         .color(Color::Muted)
-                        .tooltip("Paste from clipboard")
+                        .tooltip(self.language.tr(TrKey::TipPaste))
                         .tab_index(tab_base + 1)
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {
@@ -973,7 +973,11 @@ impl SettingsView {
                         )
                         .size(ButtonSize::Compact)
                         .color(Color::Muted)
-                        .tooltip(if unmasked { "Hide" } else { "Show" })
+                        .tooltip(if unmasked {
+                            self.language.tr(TrKey::TipHide)
+                        } else {
+                            self.language.tr(TrKey::TipShow)
+                        })
                         .tab_index(tab_base + 2)
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {
