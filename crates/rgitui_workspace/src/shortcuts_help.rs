@@ -24,6 +24,7 @@ use rgitui_ui::{
 
 use crate::keymap::{self, CommandBindings, CommandGroup, KeymapSummary, NoteSeverity};
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 #[derive(Debug, Clone)]
 pub enum ShortcutsHelpEvent {
@@ -258,6 +259,10 @@ impl Render for ShortcutsHelp {
         let keymap_file = keymap::keymap_path().display().to_string();
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let viewport = window.viewport_size();
         let viewport_width = f32::from(viewport.width);
         let viewport_height = f32::from(viewport.height);
@@ -388,7 +393,7 @@ impl Render for ShortcutsHelp {
                                     .min_w_0()
                                     .gap(px(2.))
                                     .child(
-                                        Label::new("Keyboard Shortcuts")
+                                        Label::new(language.tr(TrKey::ShortcutsTitle))
                                             .size(LabelSize::Large)
                                             .weight(FontWeight::SEMIBOLD),
                                     )
@@ -401,7 +406,7 @@ impl Render for ShortcutsHelp {
                             ),
                     )
                     .child(
-                        Button::new("shortcuts-open-keymap", "Edit keymap.json")
+                        Button::new("shortcuts-open-keymap", language.tr(TrKey::EditKeymapBtn))
                             .style(ButtonStyle::Subtle)
                             .size(ButtonSize::Compact)
                             .icon(IconName::Settings)
@@ -473,7 +478,7 @@ impl Render for ShortcutsHelp {
                     .border_color(colors.border_variant)
                     .bg(colors.surface_background)
                     .child(
-                        Label::new("Press Esc or click outside to close")
+                        Label::new(language.tr(TrKey::ShortcutsCloseHint))
                             .size(LabelSize::XSmall)
                             .color(Color::Placeholder),
                     )
@@ -481,9 +486,12 @@ impl Render for ShortcutsHelp {
                         palette_hint.filter(|_| viewport_width >= 520.0),
                         |footer, hint| {
                             footer.child(
-                                Label::new(SharedString::from(format!("More actions: {hint}")))
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
+                                Label::new(SharedString::from(format!(
+                                    "{}: {hint}",
+                                    language.tr(TrKey::MoreActionsPre)
+                                )))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
                             )
                         },
                     ),

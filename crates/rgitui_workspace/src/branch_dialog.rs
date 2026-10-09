@@ -10,6 +10,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 /// Events emitted by the branch creation dialog.
 #[derive(Debug, Clone)]
@@ -35,9 +36,17 @@ impl EventEmitter<BranchDialogEvent> for BranchDialog {}
 
 impl BranchDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Enter branch name...");
+            ti.set_placeholder(language.tr(TrKey::BranchNamePh));
             ti
         });
         cx.subscribe(
@@ -185,6 +194,14 @@ impl Render for BranchDialog {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+        self.editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::BranchNamePh));
+        });
+
         let branch_name = self.editor.read(cx).text().to_string();
         let has_error = self.error_message.is_some();
         let can_create = !branch_name.is_empty() && !has_error;
@@ -232,7 +249,7 @@ impl Render for BranchDialog {
                         ),
                 )
                 .child(
-                    Label::new("Create Branch")
+                    Label::new(language.tr(TrKey::BranchTitle))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -243,7 +260,7 @@ impl Render for BranchDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("Branch name")
+                    Label::new(language.tr(TrKey::BranchNameLabel))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -268,7 +285,7 @@ impl Render for BranchDialog {
                 .gap(px(8.))
                 .items_center()
                 .child(
-                    Label::new("Based on")
+                    Label::new(language.tr(TrKey::BranchBasedOn))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -326,7 +343,7 @@ impl Render for BranchDialog {
                 // dialog-footer component (parameterised by verb/modifier) so all
                 // dialogs share one style; cross-file refactor, deferred.
                 .child(
-                    Label::new("Enter to create | Esc to cancel")
+                    Label::new(language.tr(TrKey::TagCreateHint))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -338,7 +355,7 @@ impl Render for BranchDialog {
                         .justify_end()
                         .w_full()
                         .child(
-                            Button::new("cancel-branch", "Cancel")
+                            Button::new("cancel-branch", language.tr(TrKey::CancelBtn))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -346,7 +363,7 @@ impl Render for BranchDialog {
                                 })),
                         )
                         .child(
-                            Button::new("create-branch", "Create Branch")
+                            Button::new("create-branch", language.tr(TrKey::BranchTitle))
                                 .icon(IconName::GitBranch)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)

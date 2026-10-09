@@ -8,7 +8,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::ReflogEntryInfo;
-use rgitui_settings::SettingsState;
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
@@ -43,6 +43,10 @@ impl EventEmitter<ReflogViewEvent> for ReflogView {}
 
 impl ReflogView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         Self {
             entries: Arc::new(Vec::new()),
             scroll_handle: UniformListScrollHandle::new(),
@@ -119,6 +123,7 @@ impl ReflogView {
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let colors = cx.colors();
 
         div()
@@ -143,7 +148,7 @@ impl ReflogView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Reflog")
+                        Label::new(language.tr(TrKey::ReflogTitle))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -165,12 +170,12 @@ impl ReflogView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("No reflog entries")
+                            Label::new(language.tr(TrKey::ReflogEmpty))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Reflog tracks HEAD changes")
+                            Label::new(language.tr(TrKey::ReflogHint))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -183,6 +188,7 @@ impl ReflogView {
 impl Render for ReflogView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let language = cx.global::<SettingsState>().settings().language;
 
         if self.entries.is_empty() {
             return self.render_empty_state(cx);
@@ -403,7 +409,7 @@ impl Render for ReflogView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("Reflog")
+                        Label::new(language.tr(TrKey::ReflogTitle))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Default),

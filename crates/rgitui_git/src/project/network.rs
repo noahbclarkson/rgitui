@@ -1,12 +1,14 @@
 use anyhow::{Context as _, Result};
 use git2::Repository;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
+use rgitui_settings::TrKey;
 use std::path::Path;
 
 use crate::types::*;
 
 use super::argsafe::{validate_branch_name, validate_remote_name};
 use super::auth::run_git_network_command;
+use super::op_i18n::{op_err_text, op_msg};
 use super::refresh::gather_refresh_data;
 use super::{
     ensure_clean_worktree, head_branch_name, pull_target, push_target, GitProject, GitProjectEvent,
@@ -34,7 +36,7 @@ impl GitProject {
             Err(error) => {
                 return self.fail_to_start_task(
                     GitOperationKind::Fetch,
-                    "Fetch could not start",
+                    op_msg(cx, TrKey::ErrFetchNotStarted, vec![]),
                     error,
                     true,
                     worktree_path,
@@ -57,7 +59,7 @@ impl GitProject {
                 Err(error) => {
                     return self.fail_to_start_task(
                         GitOperationKind::Pull,
-                        "Pull could not start",
+                        op_msg(cx, TrKey::ErrPullNotStarted, vec![]),
                         error,
                         true,
                         worktree_path,
@@ -85,7 +87,7 @@ impl GitProject {
                 Err(error) => {
                     return self.fail_to_start_task(
                         GitOperationKind::Push,
-                        "Push could not start",
+                        op_msg(cx, TrKey::ErrPushNotStarted, vec![]),
                         error,
                         true,
                         worktree_path,
@@ -165,8 +167,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Fetch,
-                                format!("Fetch from '{}' failed", remote_name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrFetchFailedFmt, vec![remote_name.clone()]),
+                                op_err_text(cx, &e),
                                 (Some(remote_name.clone()), this.head_branch.clone(), true),
                                 cx,
                             );
@@ -199,7 +201,7 @@ impl GitProject {
             Err(error) => {
                 return self.fail_to_start_task(
                     GitOperationKind::Pull,
-                    "Pull could not start",
+                    op_msg(cx, TrKey::ErrPullNotStarted, vec![]),
                     error,
                     true,
                     worktree_path,
@@ -307,7 +309,7 @@ impl GitProject {
                                 this.fail_op(
                                     operation_id,
                                     GitOperationKind::Pull,
-                                    format!("Pull from '{}' has conflicts", remote_name),
+                                    op_msg(cx, TrKey::ErrPullConflictFmt, vec![remote_name.clone()]),
                                     user_msg,
                                     (Some(remote_name.clone()), Some(branch_name.clone()), false),
                                     cx,
@@ -330,8 +332,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Pull,
-                                format!("Pull from '{}' failed", remote_name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrPullFailedFmt, vec![remote_name.clone()]),
+                                op_err_text(cx, &e),
                                 (Some(remote_name.clone()), Some(branch_name.clone()), true),
                                 cx,
                             );
@@ -365,7 +367,7 @@ impl GitProject {
             Err(error) => {
                 return self.fail_to_start_task(
                     GitOperationKind::Push,
-                    "Push could not start",
+                    op_msg(cx, TrKey::ErrPushNotStarted, vec![]),
                     error,
                     true,
                     worktree_path,
@@ -490,8 +492,8 @@ impl GitProject {
                             this.fail_op(
                                 operation_id,
                                 GitOperationKind::Push,
-                                format!("Push to '{}' failed", remote_name),
-                                e.to_string(),
+                                op_msg(cx, TrKey::ErrPushFailedFmt, vec![remote_name.clone()]),
+                                op_err_text(cx, &e),
                                 (
                                     Some(remote_name.clone()),
                                     Some(remote_branch_name.clone()),

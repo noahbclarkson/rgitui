@@ -429,6 +429,11 @@ impl Workspace {
         } else {
             rgitui_settings::LayoutSettings::default()
         };
+        // Re-render the whole workspace chrome (toolbar, sidebar, commit
+        // panel, dialogs) immediately when the interface language changes,
+        // mirroring the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<rgitui_settings::SettingsState>(|_, cx| cx.notify())
+            .detach();
         let sidebar_width = layout_settings
             .sidebar_width
             .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
@@ -988,6 +993,16 @@ impl Workspace {
             "Menlo",
             #[cfg(target_os = "linux")]
             "DejaVu Sans Mono",
+            // CJK fallbacks so the Chinese UI does not render as tofu. These
+            // are system fonts on their respective platforms; nothing is
+            // embedded, so installs without them simply fall through.
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "WenQuanYi Micro Hei",
+            #[cfg(target_os = "windows")]
+            "Microsoft YaHei",
+            #[cfg(target_os = "macos")]
+            "PingFang SC",
             "Courier New",
         ];
         let fallbacks: Vec<String> = candidates

@@ -12,6 +12,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::{CommandId, StatusBar, TitleBar, ToastKind};
+use rgitui_settings::TrKey;
 
 use super::{
     BottomPanelMode, CommitInputResize, DetailPanelResize, DiffViewerResize, FocusedPanel,
@@ -240,6 +241,11 @@ impl Render for Workspace {
 
         let colors = cx.colors().clone();
 
+        let language = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+
         let ui_font = {
             let configured = cx
                 .try_global::<rgitui_settings::SettingsState>()
@@ -344,14 +350,22 @@ impl Render for Workspace {
         let inspecting_banner_label: Option<SharedString> =
             active_tab.inspecting_worktree.as_ref().map(|inspecting| {
                 let head = inspected.and_then(|worktree| {
-                    worktree
-                        .branch
-                        .clone()
-                        .or_else(|| worktree.head_detached.then(|| "detached HEAD".to_string()))
+                    worktree.branch.clone().or_else(|| {
+                        worktree
+                            .head_detached
+                            .then(|| language.tr(TrKey::DetachedHeadWord).to_string())
+                    })
                 });
                 match head {
-                    Some(head) => format!("Inspecting worktree: {} ({})", inspecting.name, head),
-                    None => format!("Inspecting worktree: {}", inspecting.name),
+                    Some(head) => {
+                        format!(
+                            "{} {} ({})",
+                            language.tr(TrKey::InspectingPre),
+                            inspecting.name,
+                            head
+                        )
+                    }
+                    None => format!("{} {}", language.tr(TrKey::InspectingPre), inspecting.name),
                 }
                 .into()
             });
@@ -569,7 +583,7 @@ impl Render for Workspace {
                     .when(is_failure && update.retryable, |el| {
                         let retry_update = update.clone();
                         el.child(
-                            Button::new("operation-retry", "Retry")
+                            Button::new("operation-retry", language.tr(TrKey::OpRetry))
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Filled)
                                 .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
@@ -635,14 +649,15 @@ impl Render for Workspace {
                 let has_conflicts = conflict_count > 0;
                 let state_label: SharedString = repo_state.label().into();
                 let detail_msg: SharedString = if has_conflicts {
-                    format!(
-                        "{} file{} with conflicts -- resolve before continuing",
-                        conflict_count,
-                        if conflict_count == 1 { "" } else { "s" }
-                    )
+                    (if conflict_count == 1 {
+                        language.tr(TrKey::ConflictOneFmt)
+                    } else {
+                        language.tr(TrKey::ConflictManyFmt)
+                    })
+                    .replacen("{}", &conflict_count.to_string(), 1)
                     .into()
                 } else {
-                    "All conflicts resolved -- ready to continue".into()
+                    language.tr(TrKey::ConflictResolved).into()
                 };
 
                 el.child(
@@ -701,18 +716,23 @@ impl Render for Workspace {
                         // than one that can only report why it did nothing.
                         .when(repo_state.continue_subcommand().is_some(), |el| {
                             el.child(
-                                Button::new("conflict-continue", "Continue")
-                                    .size(ButtonSize::Compact)
-                                    .style(ButtonStyle::Filled)
-                                    .color(Color::Success)
-                                    .disabled(has_conflicts)
-                                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                Button::new(
+                                    "conflict-continue",
+                                    language.tr(TrKey::ConflictContinue),
+                                )
+                                .size(ButtonSize::Compact)
+                                .style(ButtonStyle::Filled)
+                                .color(Color::Success)
+                                .disabled(has_conflicts)
+                                .on_click(cx.listener(
+                                    |this, _: &gpui::ClickEvent, _, cx| {
                                         this.execute_command(CommandId::ContinueMerge, cx);
-                                    })),
+                                    },
+                                )),
                             )
                         })
                         .child(
-                            Button::new("conflict-abort", "Abort")
+                            Button::new("conflict-abort", language.tr(TrKey::CfAbort))
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Subtle)
                                 .color(Color::Error)
@@ -751,13 +771,18 @@ impl Render for Workspace {
                             // Not "back to main": leaving inspection returns to
                             // whichever checkout rgitui was opened on, which may
                             // be on any branch — or be a linked worktree itself.
-                            Button::new("exit-worktree-inspection", "Exit Worktree")
-                                .size(ButtonSize::Compact)
-                                .style(ButtonStyle::Subtle)
-                                .color(Color::Warning)
-                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                            Button::new(
+                                "exit-worktree-inspection",
+                                language.tr(TrKey::WorktreeExit),
+                            )
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Subtle)
+                            .color(Color::Warning)
+                            .on_click(cx.listener(
+                                |this, _: &gpui::ClickEvent, _, cx| {
                                     super::events::set_inspecting_worktree(this, None, cx);
-                                })),
+                                },
+                            )),
                         ),
                 )
             })
@@ -922,7 +947,7 @@ impl Render for Workspace {
                                             op.label.clone()
                                         }
                                     })
-                                    .unwrap_or_else(|| "Loading...".into());
+                                    .unwrap_or_else(|| language.tr(TrKey::LoadingDots).into());
 
                                 el.child(
                                     div()
@@ -1030,19 +1055,19 @@ impl Render for Workspace {
                                 let history_enabled =
                                     history_availability == ViewAvailability::Available;
                                 let history_tooltip = match history_availability {
-                                    ViewAvailability::Loading => "Preparing file history...",
-                                    ViewAvailability::Available => "Show file history (h)",
+                                    ViewAvailability::Loading => language.tr(TrKey::HistLoading),
+                                    ViewAvailability::Available => language.tr(TrKey::HistShow),
                                     ViewAvailability::Unavailable => {
-                                        "No committed history is available for this file"
+                                        language.tr(TrKey::HistUnavailable)
                                     }
                                 };
                                 let blame_enabled =
                                     blame_availability == ViewAvailability::Available;
                                 let blame_tooltip = match blame_availability {
-                                    ViewAvailability::Loading => "Preparing blame...",
-                                    ViewAvailability::Available => "Show blame (b)",
+                                    ViewAvailability::Loading => language.tr(TrKey::BlameLoading),
+                                    ViewAvailability::Available => language.tr(TrKey::BlameShow),
                                     ViewAvailability::Unavailable => {
-                                        "Blame is unavailable for this file at the selected commit"
+                                        language.tr(TrKey::BlameUnavailable)
                                     }
                                 };
 
@@ -1062,9 +1087,9 @@ impl Render for Workspace {
                                     .color(Color::Muted)
                                     .tooltip_fn(keymap::command_tooltip(
                                         if graph_hidden {
-                                            "Show commit graph"
+                                            language.tr(TrKey::GraphShowTip)
                                         } else {
-                                            "Hide commit graph"
+                                            language.tr(TrKey::GraphHideTip)
                                         },
                                         CommandId::ToggleGraph,
                                     ))
@@ -1093,11 +1118,11 @@ impl Render for Workspace {
                                     .child(
                                         make_tab(
                                             "bottom-tab-diff",
-                                            "Diff",
+                                            language.tr(TrKey::BottomDiff),
                                             BottomPanelMode::Diff,
                                             bottom_panel_mode,
                                             true,
-                                            "Show diff (d)",
+                                            language.tr(TrKey::BottomDiffTip),
                                         )
                                         .on_click(
                                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -1117,7 +1142,7 @@ impl Render for Workspace {
                                     .child(
                                         make_tab(
                                             "bottom-tab-history",
-                                            "History",
+                                            language.tr(TrKey::BottomHistory),
                                             BottomPanelMode::FileHistory,
                                             bottom_panel_mode,
                                             history_enabled,
@@ -1157,7 +1182,7 @@ impl Render for Workspace {
                                     .child(
                                         make_tab(
                                             "bottom-tab-blame",
-                                            "Blame",
+                                            language.tr(TrKey::BottomBlame),
                                             BottomPanelMode::Blame,
                                             bottom_panel_mode,
                                             blame_enabled,
@@ -1321,7 +1346,7 @@ impl Render for Workspace {
                                                     .ok();
                                             })
                                             .child(
-                                                Label::new("Details")
+                                                Label::new(language.tr(TrKey::DetailTitle))
                                                     .size(LabelSize::XSmall)
                                                     .weight(gpui::FontWeight::SEMIBOLD)
                                                     .color(if is_details {
@@ -1365,7 +1390,7 @@ impl Render for Workspace {
                                                     .ok();
                                             })
                                             .child(
-                                                Label::new("Issues")
+                                                Label::new(language.tr(TrKey::IssuesTitle))
                                                     .size(LabelSize::XSmall)
                                                     .weight(gpui::FontWeight::SEMIBOLD)
                                                     .color(if is_issues {
@@ -1409,7 +1434,7 @@ impl Render for Workspace {
                                                     .ok();
                                             })
                                             .child(
-                                                Label::new("PRs")
+                                                Label::new(language.tr(TrKey::PrsTab))
                                                     .size(LabelSize::XSmall)
                                                     .weight(gpui::FontWeight::SEMIBOLD)
                                                     .color(if is_prs {
@@ -1445,7 +1470,7 @@ impl Render for Workspace {
                                                     .ok();
                                             })
                                             .child(
-                                                Label::new("Branch Health")
+                                                Label::new(language.tr(TrKey::BhTab))
                                                     .size(LabelSize::XSmall)
                                                     .weight(gpui::FontWeight::SEMIBOLD)
                                                     .color(if is_bh {
@@ -1608,29 +1633,39 @@ impl Workspace {
         head: DetachedHead,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let title: SharedString = format!("HEAD is detached at {}", head.commit).into();
-        let consequence = "Commits made here belong to no branch";
+        let language = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+        let title: SharedString =
+            format!("{} {}", language.tr(TrKey::DetachedTitlePre), head.commit).into();
+        let consequence = language.tr(TrKey::DetachedConsequence);
         let detail: SharedString = match head.summary {
             Some(summary) => format!("{summary} · {consequence}").into(),
             None => consequence.into(),
         };
         let way_back = match head.previous_branch {
-            Some(branch) => Button::new("detached-head-return", format!("Return to {branch}"))
-                .tooltip(format!(
-                    "Check out '{branch}', the branch HEAD was on before"
-                ))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.switch_to_previous_branch(cx);
-                })),
-            None => Button::new("detached-head-switch", "Switch Branch…").on_click(cx.listener(
-                |this, _: &ClickEvent, window, cx| {
+            Some(branch) => Button::new(
+                "detached-head-return",
+                format!("{} {branch}", language.tr(TrKey::DetachedReturnPre)),
+            )
+            .tooltip(format!(
+                "{}{}{}",
+                language.tr(TrKey::DetachedReturnTipPre),
+                branch,
+                language.tr(TrKey::DetachedReturnTipPost)
+            ))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.switch_to_previous_branch(cx);
+            })),
+            None => Button::new("detached-head-switch", language.tr(TrKey::DetachedSwitch))
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     if let Some(tab) = this.tabs.get(this.active_tab) {
                         tab.sidebar.update(cx, |sidebar, cx| {
                             sidebar.ensure_branches_visible(window, cx)
                         });
                     }
-                },
-            )),
+                })),
         }
         .size(ButtonSize::Compact)
         .style(ButtonStyle::Filled)
@@ -1672,7 +1707,7 @@ impl Workspace {
                     ),
             )
             .child(
-                Button::new("detached-head-show", "Show in Graph")
+                Button::new("detached-head-show", language.tr(TrKey::DetachedShowGraph))
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Subtle)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -1687,15 +1722,19 @@ impl Workspace {
     /// release. Contains a "Download" button that opens the release URL and
     /// an "X" button to dismiss for the remainder of the session.
     pub(super) fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let language = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let update = self.update_notification.as_ref()?.clone();
         let accent = cx.status().info;
         let bg = cx.status().info_background;
         let release_url = SharedString::from(update.release_url.clone());
-        let message: SharedString = format!(
-            "rgitui {} is available (you have {})",
-            update.latest_version, update.current_version
-        )
-        .into();
+        let message: SharedString = language
+            .tr(TrKey::UpdateMsgFmt)
+            .replacen("{}", &update.latest_version, 1)
+            .replacen("{}", &update.current_version, 1)
+            .into();
 
         let url_for_open = update.release_url.clone();
 
@@ -1735,7 +1774,7 @@ impl Workspace {
                         ),
                 )
                 .child(
-                    Button::new("update-download", "Download")
+                    Button::new("update-download", language.tr(TrKey::UpdateDownload))
                         .size(ButtonSize::Compact)
                         .style(ButtonStyle::Filled)
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
@@ -1756,6 +1795,10 @@ impl Workspace {
 
     pub(super) fn render_welcome_interactive(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
+        let language = cx
+            .try_global::<rgitui_settings::SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let recent_workspaces = cx
             .try_global::<rgitui_settings::SettingsState>()
             .map(|settings| settings.recent_workspaces(5))
@@ -1797,7 +1840,7 @@ impl Workspace {
                     .weight(gpui::FontWeight::BOLD),
             )
             .child(
-                Label::new("A workspace-oriented desktop Git client")
+                Label::new(language.tr(TrKey::HomeSlogan))
                     .color(Color::Muted)
                     .size(LabelSize::Small),
             )
@@ -1807,17 +1850,22 @@ impl Workspace {
                     .gap_2()
                     .mt(px(4.))
                     .child(
-                        Button::new("workspace-home-open-repo", "Open Repository")
-                            .style(ButtonStyle::Filled)
-                            .icon(IconName::Folder)
-                            .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                        Button::new(
+                            "workspace-home-open-repo",
+                            language.tr(TrKey::OpenRepoTitle),
+                        )
+                        .style(ButtonStyle::Filled)
+                        .icon(IconName::Folder)
+                        .on_click(cx.listener(
+                            |this, _: &gpui::ClickEvent, _, cx| {
                                 this.overlays.repo_opener.update(cx, |opener, cx| {
                                     opener.toggle_visible(cx);
                                 });
-                            })),
+                            },
+                        )),
                     )
                     .child(
-                        Button::new("workspace-home-new", "New Workspace")
+                        Button::new("workspace-home-new", language.tr(TrKey::HomeNewWorkspace))
                             .style(ButtonStyle::Outlined)
                             .icon(IconName::Plus)
                             .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
@@ -1829,19 +1877,24 @@ impl Workspace {
                     )
                     .when(!recent_workspaces.is_empty(), |buttons| {
                         buttons.child(
-                            Button::new("workspace-home-restore", "Restore Last")
-                                .style(ButtonStyle::Subtle)
-                                .icon(IconName::Clock)
-                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                            Button::new(
+                                "workspace-home-restore",
+                                language.tr(TrKey::HomeRestoreLast),
+                            )
+                            .style(ButtonStyle::Subtle)
+                            .icon(IconName::Clock)
+                            .on_click(cx.listener(
+                                |this, _: &gpui::ClickEvent, _, cx| {
                                     this.restore_last_workspace(cx);
-                                })),
+                                },
+                            )),
                         )
                     }),
             );
 
         if !recent_workspaces.is_empty() {
             let mut workspaces_list = div().v_flex().w_full().mt(px(4.)).gap(px(8.)).child(
-                Label::new("Recent Workspaces")
+                Label::new(language.tr(TrKey::HomeRecentWorkspaces))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Muted),
@@ -1850,15 +1903,19 @@ impl Workspace {
             for (i, workspace) in recent_workspaces.iter().enumerate() {
                 let workspace_id = workspace.id.clone();
                 let workspace_name: SharedString = workspace.name.clone().into();
-                let summary: SharedString = format!(
-                    "{} repositories | updated {}",
-                    workspace.repos.len(),
-                    workspace
-                        .last_opened_at
-                        .with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d %H:%M")
-                )
-                .into();
+                let summary: SharedString = language
+                    .tr(TrKey::WsSummaryFmt)
+                    .replacen("{}", &workspace.repos.len().to_string(), 1)
+                    .replacen(
+                        "{}",
+                        &workspace
+                            .last_opened_at
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M")
+                            .to_string(),
+                        1,
+                    )
+                    .into();
                 let repo_preview: SharedString = workspace
                     .repos
                     .iter()
@@ -1933,7 +1990,7 @@ impl Workspace {
 
         if !recent_repos.is_empty() {
             let mut repos_list = div().v_flex().w_full().mt(px(4.)).gap(px(8.)).child(
-                Label::new("Recent Repositories")
+                Label::new(language.tr(TrKey::HomeRecentRepos))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Muted),

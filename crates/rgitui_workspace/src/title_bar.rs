@@ -7,6 +7,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
@@ -113,6 +114,12 @@ impl TitleBar {
 impl RenderOnce for TitleBar {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.colors().clone();
+        // The title bar can paint before settings finish loading, so fall
+        // back to English rather than requiring the global.
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
 
         let branch_color = if self.head_detached {
             Color::Warning
@@ -123,7 +130,12 @@ impl RenderOnce for TitleBar {
         let hover_bg = colors.ghost_element_active;
         let branch_bg = colors.ghost_element_hover;
         let tooltip: SharedString = if self.head_detached {
-            format!("HEAD is detached at {}", self.branch_name).into()
+            format!(
+                "{} {}",
+                language.tr(TrKey::DetachedTitlePre),
+                self.branch_name
+            )
+            .into()
         } else {
             self.branch_name.clone()
         };
@@ -154,7 +166,7 @@ impl RenderOnce for TitleBar {
             )
             .when(self.head_detached, |el| {
                 el.child(
-                    Label::new("(detached)")
+                    Label::new(language.tr(TrKey::TitleDetachedTag))
                         .size(LabelSize::XSmall)
                         .color(Color::Warning),
                 )

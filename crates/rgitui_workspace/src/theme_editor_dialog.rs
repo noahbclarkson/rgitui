@@ -12,6 +12,7 @@ use rgitui_ui::{Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize,
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -21,25 +22,21 @@ pub enum ThemeEditorEvent {
 }
 
 struct ColorFieldEntry {
-    label: String,
+    label: TrKey,
     getter: fn(&ThemeColors) -> Hsla,
     setter: fn(&mut ThemeColors, Hsla),
 }
 
-type ColorFieldSpec<'a> = (
-    &'a str,
-    fn(&ThemeColors) -> Hsla,
-    fn(&mut ThemeColors, Hsla),
-);
+type ColorFieldSpec = (TrKey, fn(&ThemeColors) -> Hsla, fn(&mut ThemeColors, Hsla));
 
 struct StatusFieldEntry {
-    label: String,
+    label: TrKey,
     getter: fn(&StatusColors) -> Hsla,
     setter: fn(&mut StatusColors, Hsla),
 }
 
-type StatusFieldSpec<'a> = (
-    &'a str,
+type StatusFieldSpec = (
+    TrKey,
     fn(&StatusColors) -> Hsla,
     fn(&mut StatusColors, Hsla),
 );
@@ -85,6 +82,10 @@ impl ThemeEditorDialog {
     }
 
     pub fn new(theme: Arc<Theme>, cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         let (color_fields, color_inputs) = Self::build_color_fields(&theme.colors, cx);
         let (status_fields, status_inputs) = Self::build_status_fields(&theme.status, cx);
         Self {
@@ -116,73 +117,89 @@ impl ThemeEditorDialog {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> (Vec<ColorFieldEntry>, Vec<Entity<TextInput>>) {
-        let field_specs: Vec<ColorFieldSpec<'_>> = vec![
+        let field_specs: Vec<ColorFieldSpec> = vec![
             (
-                "Background",
+                TrKey::ThemeBackground,
                 |c: &ThemeColors| c.background,
                 |c: &mut ThemeColors, v| c.background = v,
             ),
             (
-                "Surface",
+                TrKey::ThemeSurface,
                 |c: &ThemeColors| c.surface_background,
                 |c, v| c.surface_background = v,
             ),
             (
-                "Elevated Surface",
+                TrKey::ThemeElevated,
                 |c: &ThemeColors| c.elevated_surface_background,
                 |c, v| c.elevated_surface_background = v,
             ),
-            ("Border", |c: &ThemeColors| c.border, |c, v| c.border = v),
-            ("Text", |c: &ThemeColors| c.text, |c, v| c.text = v),
             (
-                "Text Muted",
+                TrKey::ThemeBorder,
+                |c: &ThemeColors| c.border,
+                |c, v| c.border = v,
+            ),
+            (
+                TrKey::ThemeText,
+                |c: &ThemeColors| c.text,
+                |c, v| c.text = v,
+            ),
+            (
+                TrKey::ThemeTextMuted,
                 |c: &ThemeColors| c.text_muted,
                 |c, v| c.text_muted = v,
             ),
             (
-                "Text Accent",
+                TrKey::ThemeTextAccent,
                 |c: &ThemeColors| c.text_accent,
                 |c, v| c.text_accent = v,
             ),
             (
-                "Text Placeholder",
+                TrKey::ThemePlaceholder,
                 |c: &ThemeColors| c.text_placeholder,
                 |c, v| c.text_placeholder = v,
             ),
-            ("Icon", |c: &ThemeColors| c.icon, |c, v| c.icon = v),
             (
-                "Focus Ring",
+                TrKey::ThemeIcon,
+                |c: &ThemeColors| c.icon,
+                |c, v| c.icon = v,
+            ),
+            (
+                TrKey::ThemeFocusRing,
                 |c: &ThemeColors| c.border_focused,
                 |c, v| c.border_focused = v,
             ),
             (
-                "Selected Border",
+                TrKey::ThemeSelectedBorder,
                 |c: &ThemeColors| c.border_selected,
                 |c, v| c.border_selected = v,
             ),
-            ("Added", |c: &ThemeColors| c.vc_added, |c, v| c.vc_added = v),
             (
-                "Modified",
+                TrKey::ThemeAdded,
+                |c: &ThemeColors| c.vc_added,
+                |c, v| c.vc_added = v,
+            ),
+            (
+                TrKey::ThemeModified,
                 |c: &ThemeColors| c.vc_modified,
                 |c, v| c.vc_modified = v,
             ),
             (
-                "Deleted",
+                TrKey::ThemeDeleted,
                 |c: &ThemeColors| c.vc_deleted,
                 |c, v| c.vc_deleted = v,
             ),
             (
-                "Untracked",
+                TrKey::ThemeUntracked,
                 |c: &ThemeColors| c.vc_untracked,
                 |c, v| c.vc_untracked = v,
             ),
             (
-                "Conflict",
+                TrKey::ThemeConflict,
                 |c: &ThemeColors| c.vc_conflict,
                 |c, v| c.vc_conflict = v,
             ),
             (
-                "Renamed",
+                TrKey::ThemeRenamed,
                 |c: &ThemeColors| c.vc_renamed,
                 |c, v| c.vc_renamed = v,
             ),
@@ -199,7 +216,7 @@ impl ThemeEditorDialog {
             });
             inputs.push(input);
             entries.push(ColorFieldEntry {
-                label: label.to_string(),
+                label,
                 getter,
                 setter,
             });
@@ -211,23 +228,27 @@ impl ThemeEditorDialog {
         status: &StatusColors,
         cx: &mut Context<Self>,
     ) -> (Vec<StatusFieldEntry>, Vec<Entity<TextInput>>) {
-        let field_specs: Vec<StatusFieldSpec<'_>> = vec![
+        let field_specs: Vec<StatusFieldSpec> = vec![
             (
-                "Error",
+                TrKey::ThemeError,
                 |c: &StatusColors| c.error,
                 |c: &mut StatusColors, v| c.error = v,
             ),
             (
-                "Warning",
+                TrKey::ThemeWarning,
                 |c: &StatusColors| c.warning,
                 |c, v| c.warning = v,
             ),
             (
-                "Success",
+                TrKey::ThemeSuccess,
                 |c: &StatusColors| c.success,
                 |c, v| c.success = v,
             ),
-            ("Info", |c: &StatusColors| c.info, |c, v| c.info = v),
+            (
+                TrKey::ThemeInfo,
+                |c: &StatusColors| c.info,
+                |c, v| c.info = v,
+            ),
         ];
 
         let mut inputs = vec![];
@@ -241,7 +262,7 @@ impl ThemeEditorDialog {
             });
             inputs.push(input);
             entries.push(StatusFieldEntry {
-                label: label.to_string(),
+                label,
                 getter,
                 setter,
             });
@@ -407,6 +428,10 @@ impl Render for ThemeEditorDialog {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let invalid_border = cx.status().error;
         let valid_border = colors.border_transparent;
         let theme = self.editable_theme.clone();
@@ -478,7 +503,7 @@ impl Render for ThemeEditorDialog {
                                 div()
                                     .v_flex()
                                     .child(
-                                        Label::new("Theme Editor")
+                                        Label::new(language.tr(TrKey::ThemeTitle))
                                             .size(LabelSize::Large)
                                             .weight(gpui::FontWeight::BOLD),
                                     )
@@ -487,9 +512,9 @@ impl Render for ThemeEditorDialog {
                                             "{} · {}",
                                             theme_name,
                                             if appearance == Appearance::Dark {
-                                                "dark"
+                                                language.tr(TrKey::ThemeDark)
                                             } else {
-                                                "light"
+                                                language.tr(TrKey::ThemeLight)
                                             }
                                         ))
                                         .size(LabelSize::Small)
@@ -513,7 +538,7 @@ impl Render for ThemeEditorDialog {
                                     .v_flex()
                                     .gap_2()
                                     .child(
-                                        Label::new("Colors")
+                                        Label::new(language.tr(TrKey::ThemeColors))
                                             .size(LabelSize::Small)
                                             .weight(gpui::FontWeight::BOLD)
                                             .color(Color::Muted),
@@ -523,7 +548,7 @@ impl Render for ThemeEditorDialog {
                                             |(i, input_ent)| {
                                                 let hex_val = input_ent.read(cx).text().to_string();
                                                 let field = &self.color_fields[i];
-                                                let label_text = field.label.clone();
+                                                let label_text = field.label;
                                                 let fallback =
                                                     (field.getter)(&self.editable_theme.colors);
                                                 let invalid =
@@ -543,7 +568,7 @@ impl Render for ThemeEditorDialog {
                                                     })
                                                     .child(
                                                         div().w(px(180.)).overflow_hidden().child(
-                                                            Label::new(label_text)
+                                                            Label::new(language.tr(label_text))
                                                                 .size(LabelSize::Small)
                                                                 .truncate(),
                                                         ),
@@ -569,7 +594,7 @@ impl Render for ThemeEditorDialog {
                                     .v_flex()
                                     .gap_2()
                                     .child(
-                                        Label::new("Status Colors")
+                                        Label::new(language.tr(TrKey::ThemeStatusColors))
                                             .size(LabelSize::Small)
                                             .weight(gpui::FontWeight::BOLD)
                                             .color(Color::Muted),
@@ -579,7 +604,7 @@ impl Render for ThemeEditorDialog {
                                             |(i, input_ent)| {
                                                 let hex_val = input_ent.read(cx).text().to_string();
                                                 let field = &self.status_fields[i];
-                                                let label_text = field.label.clone();
+                                                let label_text = field.label;
                                                 let fallback =
                                                     (field.getter)(&self.editable_theme.status);
                                                 let invalid =
@@ -599,7 +624,7 @@ impl Render for ThemeEditorDialog {
                                                     })
                                                     .child(
                                                         div().w(px(180.)).overflow_hidden().child(
-                                                            Label::new(label_text)
+                                                            Label::new(language.tr(label_text))
                                                                 .size(LabelSize::Small)
                                                                 .truncate(),
                                                         ),
@@ -648,7 +673,7 @@ impl Render for ThemeEditorDialog {
                                         (message.clone(), color)
                                     }
                                     None => (
-                                        "Tab to move · Enter to save · Esc to close".to_string(),
+                                        language.tr(TrKey::ThemeHint).to_string(),
                                         Color::Placeholder,
                                     ),
                                 };
@@ -656,12 +681,12 @@ impl Render for ThemeEditorDialog {
                             })
                             .child(
                                 div().h_flex().gap_2().children([
-                                    Button::new("btn-cancel", "Cancel")
+                                    Button::new("btn-cancel", language.tr(TrKey::CancelBtn))
                                         .style(ButtonStyle::Subtle)
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                             this.dismiss(cx);
                                         })),
-                                    Button::new("btn-save", "Save")
+                                    Button::new("btn-save", language.tr(TrKey::SaveBtn))
                                         .style(ButtonStyle::Filled)
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                             this.save(cx);

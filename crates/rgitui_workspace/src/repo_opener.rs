@@ -12,6 +12,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 #[derive(Debug, Clone)]
 pub enum RepoOpenerEvent {
@@ -33,9 +34,17 @@ impl EventEmitter<RepoOpenerEvent> for RepoOpener {}
 
 impl RepoOpener {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Enter repository path...");
+            ti.set_placeholder(language.tr(TrKey::EnterRepoPathPh));
             ti
         });
         cx.subscribe(
@@ -235,6 +244,13 @@ impl Render for RepoOpener {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+        self.editor.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::EnterRepoPathPh));
+        });
 
         let mut modal = div()
             .id("repo-opener-modal")
@@ -276,7 +292,7 @@ impl Render for RepoOpener {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Open Repository")
+                            Label::new(language.tr(TrKey::OpenRepoTitle))
                                 .size(LabelSize::Large)
                                 .weight(FontWeight::SEMIBOLD),
                         ),
@@ -310,7 +326,7 @@ impl Render for RepoOpener {
                 .v_flex()
                 .gap(px(8.))
                 .child(
-                    Label::new("Repository path")
+                    Label::new(language.tr(TrKey::RepoPathLabel))
                         .size(LabelSize::Small)
                         .weight(FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -333,7 +349,7 @@ impl Render for RepoOpener {
                                 .child(div().flex_1().child(self.editor.clone())),
                         )
                         .child(
-                            Button::new("browse-folder", "Browse")
+                            Button::new("browse-folder", language.tr(TrKey::BrowseBtn))
                                 .style(ButtonStyle::Subtle)
                                 .icon(IconName::Folder)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -341,7 +357,7 @@ impl Render for RepoOpener {
                                 })),
                         )
                         .child(
-                            Button::new("clone-repo", "Clone")
+                            Button::new("clone-repo", language.tr(TrKey::CloneBtn))
                                 .style(ButtonStyle::Subtle)
                                 .icon(IconName::Plus)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -366,7 +382,7 @@ impl Render for RepoOpener {
                     .border_color(colors.border_variant)
                     .items_center()
                     .child(
-                        Label::new("Recent Repositories")
+                        Label::new(language.tr(TrKey::HomeRecentRepos))
                             .size(LabelSize::XSmall)
                             .weight(FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -461,7 +477,7 @@ impl Render for RepoOpener {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("No matching repositories")
+                            Label::new(language.tr(TrKey::NoMatchRepos))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
@@ -487,7 +503,7 @@ impl Render for RepoOpener {
                             .color(Color::Placeholder),
                     )
                     .child(
-                        Label::new("No recent repositories")
+                        Label::new(language.tr(TrKey::NoRecentRepos))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     ),
@@ -505,17 +521,19 @@ impl Render for RepoOpener {
                 .border_color(colors.border_variant)
                 .bg(colors.surface_background)
                 .child(
-                    Button::new("cancel-open", "Cancel")
+                    Button::new("cancel-open", language.tr(TrKey::CancelBtn))
                         .style(ButtonStyle::Subtle)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.dismiss(cx);
                         })),
                 )
-                .child(Button::new("open-repo", "Open").on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.try_open(cx);
-                    },
-                ))),
+                .child(
+                    Button::new("open-repo", language.tr(TrKey::OpenBtn)).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            this.try_open(cx);
+                        },
+                    )),
+                ),
         );
 
         div()

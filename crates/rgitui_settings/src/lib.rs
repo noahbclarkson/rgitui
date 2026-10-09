@@ -201,6 +201,3104 @@ impl FromStr for Compactness {
     }
 }
 
+/// Interface language for localizable UI text.
+///
+/// The stable on-disk id is [`Language::id`] (`"en"` / `"zh-CN"`); the
+/// dropdown always shows [`Language::native_name`] so each option is
+/// recognizable regardless of the active language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    #[default]
+    English,
+    SimplifiedChinese,
+}
+
+impl Language {
+    /// Every language, in the order the settings UI lists them.
+    pub const ALL: &'static [Language] = &[Language::English, Language::SimplifiedChinese];
+
+    /// Stable identifier used on disk and as the settings dropdown id.
+    pub fn id(self) -> &'static str {
+        match self {
+            Language::English => "en",
+            Language::SimplifiedChinese => "zh-CN",
+        }
+    }
+
+    /// Native display name. Deliberately not translated: "English" must read
+    /// "English" even while the UI is Chinese, and vice versa.
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Language::English => "English",
+            Language::SimplifiedChinese => "简体中文",
+        }
+    }
+
+    /// Localize `key`. Missing Chinese entries fall back to English by
+    /// construction: every arm pairs `(self, key)` explicitly.
+    pub fn tr(self, key: TrKey) -> &'static str {
+        match (self, key) {
+            (_, TrKey::Preferences) => match self {
+                Language::English => "Preferences",
+                Language::SimplifiedChinese => "偏好设置",
+            },
+            (_, TrKey::SectionAppearance) => match self {
+                Language::English => "Appearance",
+                Language::SimplifiedChinese => "外观",
+            },
+            (_, TrKey::SectionAi) => "AI",
+            (_, TrKey::SectionAuth) => match self {
+                Language::English => "Auth",
+                Language::SimplifiedChinese => "认证",
+            },
+            (_, TrKey::SectionGeneral) => match self {
+                Language::English => "General",
+                Language::SimplifiedChinese => "通用",
+            },
+            (_, TrKey::GeneralTitle) => match self {
+                Language::English => "General",
+                Language::SimplifiedChinese => "通用",
+            },
+            (_, TrKey::GeneralDesc) => match self {
+                Language::English => "Application preferences and behavior.",
+                Language::SimplifiedChinese => "应用偏好与行为。",
+            },
+            (_, TrKey::LanguageTitle) => match self {
+                Language::English => "Language",
+                Language::SimplifiedChinese => "语言",
+            },
+            (_, TrKey::LanguageDesc) => match self {
+                Language::English => "Switch the interface language.",
+                Language::SimplifiedChinese => "切换界面语言。",
+            },
+            (_, TrKey::MaxRecentTitle) => match self {
+                Language::English => "Max Recent Repositories",
+                Language::SimplifiedChinese => "最大最近仓库数",
+            },
+            (_, TrKey::MaxRecentDesc) => match self {
+                Language::English => "Number of repos shown in the recent list.",
+                Language::SimplifiedChinese => "最近列表中显示的仓库数量。",
+            },
+            (_, TrKey::UiDensityTitle) => match self {
+                Language::English => "UI Density",
+                Language::SimplifiedChinese => "界面密度",
+            },
+            (_, TrKey::UiDensityDesc) => match self {
+                Language::English => "Adjust the spacing and sizing of UI elements.",
+                Language::SimplifiedChinese => "调整界面元素的间距与尺寸。",
+            },
+            (_, TrKey::DensityCompact) => match self {
+                Language::English => "Compact",
+                Language::SimplifiedChinese => "紧凑",
+            },
+            (_, TrKey::DensityDefault) => match self {
+                Language::English => "Default",
+                Language::SimplifiedChinese => "默认",
+            },
+            (_, TrKey::DensityComfortable) => match self {
+                Language::English => "Comfortable",
+                Language::SimplifiedChinese => "舒适",
+            },
+            (_, TrKey::FontSizeTitle) => match self {
+                Language::English => "Font Size",
+                Language::SimplifiedChinese => "字号",
+            },
+            (_, TrKey::FontSizeDesc) => match self {
+                Language::English => "Base font size for the user interface (8 - 24).",
+                Language::SimplifiedChinese => "界面基础字号（8 - 24）。",
+            },
+            (_, TrKey::GeneralPageDesc) => match self {
+                Language::English => "General application behavior and workspace defaults.",
+                Language::SimplifiedChinese => "通用应用行为与工作区默认设置。",
+            },
+            (_, TrKey::ThemeSectionDesc) => match self {
+                Language::English => "Customize the look and feel of the application.",
+                Language::SimplifiedChinese => "自定义应用的外观与体验。",
+            },
+            (_, TrKey::ThemePageDesc) => match self {
+                Language::English => "Theme, layout, and visual defaults for the application.",
+                Language::SimplifiedChinese => "应用的主题、布局与视觉默认设置。",
+            },
+            (_, TrKey::AppearanceModeTitle) => match self {
+                Language::English => "Appearance Mode",
+                Language::SimplifiedChinese => "外观模式",
+            },
+            (_, TrKey::AppearanceModeDesc) => match self {
+                Language::English => "Choose whether to show light or dark themes, or auto-detect.",
+                Language::SimplifiedChinese => "选择显示浅色或深色主题，或跟随系统自动切换。",
+            },
+            (_, TrKey::ModeAuto) => match self {
+                Language::English => "Auto",
+                Language::SimplifiedChinese => "自动",
+            },
+            (_, TrKey::ModeLight) => match self {
+                Language::English => "Light",
+                Language::SimplifiedChinese => "浅色",
+            },
+            (_, TrKey::ModeDark) => match self {
+                Language::English => "Dark",
+                Language::SimplifiedChinese => "深色",
+            },
+            (_, TrKey::ColorThemeTitle) => match self {
+                Language::English => "Color Theme",
+                Language::SimplifiedChinese => "配色主题",
+            },
+            (_, TrKey::ColorThemeDesc) => match self {
+                Language::English => "Select a theme to change all interface colors.",
+                Language::SimplifiedChinese => "选择主题以更改全部界面颜色。",
+            },
+            (_, TrKey::ActiveBadge) => match self {
+                Language::English => "Active",
+                Language::SimplifiedChinese => "使用中",
+            },
+            (_, TrKey::CustomThemeTitle) => match self {
+                Language::English => "Custom Theme Editor",
+                Language::SimplifiedChinese => "自定义主题编辑器",
+            },
+            (_, TrKey::CustomThemeDesc) => match self {
+                Language::English => "Edit colors, create custom themes, and export as JSON.",
+                Language::SimplifiedChinese => "编辑颜色、创建自定义主题并导出为 JSON。",
+            },
+            (_, TrKey::EditThemeBtn) => match self {
+                Language::English => "Edit Theme",
+                Language::SimplifiedChinese => "编辑主题",
+            },
+            (_, TrKey::AccountsTitle) => match self {
+                Language::English => "Accounts",
+                Language::SimplifiedChinese => "账户",
+            },
+            (_, TrKey::AccountsDesc) => match self {
+                Language::English => "Account profiles, HTTPS tokens, and SSH configuration.",
+                Language::SimplifiedChinese => "账户档案、HTTPS 令牌与 SSH 配置。",
+            },
+            (_, TrKey::AccountsHeader) => match self {
+                Language::English => "Accounts & Credentials",
+                Language::SimplifiedChinese => "账户与凭证",
+            },
+            (_, TrKey::AccountsSectionDesc) => match self {
+                Language::English => "Use browser sign-in for GitHub or GitLab, manage all account profiles in one place, and keep SSH separate from HTTPS tokens.",
+                Language::SimplifiedChinese => "使用浏览器登录 GitHub 或 GitLab，在一处管理所有账户档案，并将 SSH 与 HTTPS 令牌分开管理。",
+            },
+            (_, TrKey::QuickSetupTitle) => match self {
+                Language::English => "Quick Setup",
+                Language::SimplifiedChinese => "快速设置",
+            },
+            (_, TrKey::QuickSetupDesc) => match self {
+                Language::English => "Start by adding the provider account you want to use. Browser sign-in is the primary path. Manual setup is available for self-hosted or custom HTTPS remotes.",
+                Language::SimplifiedChinese => "先添加要使用的服务商账户。推荐使用浏览器登录；自建或自定义 HTTPS 远程可使用手动设置。",
+            },
+            (_, TrKey::SignInGitHub) => match self {
+                Language::English => "Sign in with GitHub",
+                Language::SimplifiedChinese => "使用 GitHub 登录",
+            },
+            (_, TrKey::AddGitLab) => match self {
+                Language::English => "Add GitLab Account",
+                Language::SimplifiedChinese => "添加 GitLab 账户",
+            },
+            (_, TrKey::ManualCustom) => match self {
+                Language::English => "Manual / Custom Host",
+                Language::SimplifiedChinese => "手动 / 自定义主机",
+            },
+            (_, TrKey::AuthProfilesTitle) => match self {
+                Language::English => "Profiles",
+                Language::SimplifiedChinese => "账户档案",
+            },
+            (_, TrKey::AuthProfilesDesc) => match self {
+                Language::English => "All saved accounts live here. Select one to connect it, paste a token, or adjust host matching.",
+                Language::SimplifiedChinese => "所有已保存的账户都在这里。选择一个进行连接、粘贴令牌或调整主机匹配。",
+            },
+            (_, TrKey::AuthProfilesEmptyTitle) => match self {
+                Language::English => "No provider accounts configured yet.",
+                Language::SimplifiedChinese => "尚未配置服务商账户。",
+            },
+            (_, TrKey::AuthProfilesEmptyDesc) => match self {
+                Language::English => "Add a GitHub account to start with the default flow, or choose Manual / Custom Host for enterprise and other HTTPS remotes.",
+                Language::SimplifiedChinese => "先添加 GitHub 账户以使用默认流程；企业版与其他 HTTPS 远程请选择“手动 / 自定义主机”。",
+            },
+            (_, TrKey::AuthHttpsFallbackTitle) => match self {
+                Language::English => "Fallback HTTPS Token / PAT",
+                Language::SimplifiedChinese => "备用 HTTPS 令牌 / PAT",
+            },
+            (_, TrKey::AuthHttpsFallbackDesc) => match self {
+                Language::English => "Used only when no profile-specific account matches the remote host. Leave this empty unless you truly need a generic fallback.",
+                Language::SimplifiedChinese => "仅在没有账户档案匹配远程主机时使用。除非确实需要通用备用，否则请留空。",
+            },
+            (_, TrKey::AuthSshOverrideTitle) => match self {
+                Language::English => "SSH Key Override",
+                Language::SimplifiedChinese => "SSH 密钥覆盖",
+            },
+            (_, TrKey::AuthSshOverrideDesc) => match self {
+                Language::English => "Optional. If set, this key is tried first for SSH remotes. If SSH fails and you have a GitHub account above, rgitui automatically falls back to HTTPS.",
+                Language::SimplifiedChinese => "可选。如果设置，SSH 远程将优先尝试此密钥。如果 SSH 失败且上方已配置 GitHub 账户，rgitui 会自动回退到 HTTPS。",
+            },
+            (_, TrKey::AuthSignCommitsTitle) => match self {
+                Language::English => "Sign Commits",
+                Language::SimplifiedChinese => "签署提交",
+            },
+            (_, TrKey::AuthSignCommitsDesc) => match self {
+                Language::English => "Sign commits with your configured GPG key.",
+                Language::SimplifiedChinese => "使用你配置的 GPG 密钥签署提交。",
+            },
+            (_, TrKey::AuthGpgKeyTitle) => match self {
+                Language::English => "GPG Key ID",
+                Language::SimplifiedChinese => "GPG 密钥 ID",
+            },
+            (_, TrKey::AuthGpgKeyDesc) => match self {
+                Language::English => "Leave empty to use your existing git config default signing key.",
+                Language::SimplifiedChinese => "留空则使用现有 git 配置中的默认签名密钥。",
+            },
+            (_, TrKey::AuthHowTitle) => match self {
+                Language::English => "How Authentication Works",
+                Language::SimplifiedChinese => "认证工作原理",
+            },
+            (_, TrKey::AuthHowDesc) => match self {
+                Language::English => "rgitui detects the remote URL protocol and authenticates accordingly.",
+                Language::SimplifiedChinese => "rgitui 会检测远程 URL 协议并据此进行认证。",
+            },
+            (_, TrKey::AuthHowHttps) => match self {
+                Language::English => "HTTPS remotes: uses your GitHub account token (above), or falls back to your system git credential helper (e.g. gh auth).",
+                Language::SimplifiedChinese => "HTTPS 远程：使用你的 GitHub 账户令牌（见上方），或回退到系统 git 凭证助手（例如 gh auth）。",
+            },
+            (_, TrKey::AuthHowSshFallback) => match self {
+                Language::English => "SSH remotes: if no SSH key is configured above, and your system has an HTTPS credential helper, rgitui automatically rewrites SSH to HTTPS so your GitHub login works.",
+                Language::SimplifiedChinese => "SSH 远程：如果上方未配置 SSH 密钥，且系统装有 HTTPS 凭证助手，rgitui 会自动将 SSH 改写为 HTTPS，以便 GitHub 登录生效。",
+            },
+            (_, TrKey::AuthHowSshKey) => match self {
+                Language::English => "SSH remotes with a key: uses the SSH key path above (or ssh-agent) directly.",
+                Language::SimplifiedChinese => "带密钥的 SSH 远程：直接使用上方的 SSH 密钥路径（或 ssh-agent）。",
+            },
+            (_, TrKey::AiPageDesc) => match self {
+                Language::English => "Providers, models, and how commit messages get written.",
+                Language::SimplifiedChinese => "服务商、模型，以及提交信息的生成方式。",
+            },
+            (_, TrKey::AiSectionConnection) => match self {
+                Language::English => "CONNECTION",
+                Language::SimplifiedChinese => "连接",
+            },
+            (_, TrKey::AiSectionBehaviour) => match self {
+                Language::English => "BEHAVIOUR",
+                Language::SimplifiedChinese => "行为",
+            },
+            (_, TrKey::AiStatusTitle) => match self {
+                Language::English => "AI Commit Messages",
+                Language::SimplifiedChinese => "AI 提交信息",
+            },
+            (_, TrKey::AiEnabledToggle) => match self {
+                Language::English => "Enabled",
+                Language::SimplifiedChinese => "启用",
+            },
+            (_, TrKey::AiStatusOff) => match self {
+                Language::English => "AI is turned off. Nothing will be sent to any provider.",
+                Language::SimplifiedChinese => "AI 已关闭，不会向任何服务商发送内容。",
+            },
+            (_, TrKey::AiStatusTestingFmt) => match self {
+                Language::English => "Testing {}…",
+                Language::SimplifiedChinese => "正在测试 {}…",
+            },
+            (_, TrKey::AiStatusRejectedFmt) => match self {
+                Language::English => "{} rejected this key.",
+                Language::SimplifiedChinese => "{} 拒绝了此密钥。",
+            },
+            (_, TrKey::AiStatusAddKeyFmt) => match self {
+                Language::English => "Add a {} API key to get started.",
+                Language::SimplifiedChinese => "添加 {} API 密钥以开始使用。",
+            },
+            (_, TrKey::AiConnectTitle) => match self {
+                Language::English => "Connect an AI provider",
+                Language::SimplifiedChinese => "连接 AI 服务商",
+            },
+            (_, TrKey::AiConnectDesc) => match self {
+                Language::English => "rgitui writes commit messages from your staged diff.",
+                Language::SimplifiedChinese => "rgitui 会根据已暂存的 diff 编写提交信息。",
+            },
+            (_, TrKey::AiApiKeyLabel) => match self {
+                Language::English => "API key",
+                Language::SimplifiedChinese => "API 密钥",
+            },
+            (_, TrKey::AiGetKeyBtn) => match self {
+                Language::English => "Get a key",
+                Language::SimplifiedChinese => "获取密钥",
+            },
+            (_, TrKey::AiKeyVerifiedFmt) => match self {
+                Language::English => "Verified {} · stored in {}",
+                Language::SimplifiedChinese => "已验证（{}）·存储于 {}",
+            },
+            (_, TrKey::AiKeyStoredHintFmt) => match self {
+                Language::English => "Key stored in {}. Test it to confirm it works.",
+                Language::SimplifiedChinese => "密钥存储于 {}，点击测试确认其可用。",
+            },
+            (_, TrKey::AiNoKeyHintFmt) => match self {
+                Language::English => "No API key needed — requests go to {}.",
+                Language::SimplifiedChinese => "无需 API 密钥——请求将发送至 {}。",
+            },
+            (_, TrKey::AiKeysStoredNoteFmt) => match self {
+                Language::English => {
+                    "Keys are stored in {}, never in settings.json, and are only read when a request is sent."
+                }
+                Language::SimplifiedChinese => {
+                    "密钥存储于 {}，从不写入 settings.json，仅在发送请求时读取。"
+                }
+            },
+            (_, TrKey::AiModelLabel) => match self {
+                Language::English => "Model",
+                Language::SimplifiedChinese => "模型",
+            },
+            (_, TrKey::AiModelCountFmt) => match self {
+                Language::English => "{} models · {}",
+                Language::SimplifiedChinese => "{} 个模型 · {}",
+            },
+            (_, TrKey::AiRefreshBtn) => match self {
+                Language::English => "Refresh",
+                Language::SimplifiedChinese => "刷新",
+            },
+            (_, TrKey::AiRefreshingBtn) => match self {
+                Language::English => "Refreshing…",
+                Language::SimplifiedChinese => "刷新中…",
+            },
+            (_, TrKey::AiModelMissingFmt) => match self {
+                Language::English => {
+                    "`{}` is not in {}'s current model list. It may have been retired."
+                }
+                Language::SimplifiedChinese => "`{}` 不在 {} 当前的模型列表中，可能已被下线。",
+            },
+            (_, TrKey::AiUseSuggestionFmt) => match self {
+                Language::English => "Use {}",
+                Language::SimplifiedChinese => "使用 {}",
+            },
+            (_, TrKey::AiConnectBtn) => match self {
+                Language::English => "Connect",
+                Language::SimplifiedChinese => "连接",
+            },
+            (_, TrKey::AiUseProviderBtn) => match self {
+                Language::English => "Use this provider",
+                Language::SimplifiedChinese => "使用此服务商",
+            },
+            (_, TrKey::AiTestBtn) => match self {
+                Language::English => "Test",
+                Language::SimplifiedChinese => "测试",
+            },
+            (_, TrKey::AiTestingBtn) => match self {
+                Language::English => "Testing…",
+                Language::SimplifiedChinese => "测试中…",
+            },
+            (_, TrKey::AiRemoveKeyBtn) => match self {
+                Language::English => "Remove key",
+                Language::SimplifiedChinese => "移除密钥",
+            },
+            (_, TrKey::AiAdvancedLabel) => match self {
+                Language::English => "Advanced",
+                Language::SimplifiedChinese => "高级",
+            },
+            (_, TrKey::AiBaseUrlLabel) => "Base URL",
+            (_, TrKey::AiBaseUrlOverriddenFmt) => match self {
+                Language::English => {
+                    "Requests go to {} instead of {}. Your API key is sent to that host."
+                }
+                Language::SimplifiedChinese => {
+                    "请求将发送至 {} 而非 {}，您的 API 密钥也会被发送到该主机。"
+                }
+            },
+            (_, TrKey::AiBaseUrlEmptyFmt) => match self {
+                Language::English => {
+                    "Empty means use {}. Only OpenAI-compatible providers honour an override."
+                }
+                Language::SimplifiedChinese => {
+                    "留空表示使用 {}，仅 OpenAI 兼容服务商支持覆盖此项。"
+                }
+            },
+            (_, TrKey::AiAttributionTitle) => match self {
+                Language::English => "Send attribution headers",
+                Language::SimplifiedChinese => "发送归因请求头",
+            },
+            (_, TrKey::AiAttributionDesc) => match self {
+                Language::English => {
+                    "Adds HTTP-Referer and X-Title so rgitui appears on OpenRouter's public leaderboard. Never functional."
+                }
+                Language::SimplifiedChinese => {
+                    "附加 HTTP-Referer 与 X-Title 请求头，使 rgitui 出现在 OpenRouter 公开排行榜上，不影响任何功能。"
+                }
+            },
+            (_, TrKey::AiCommitStyleTitle) => match self {
+                Language::English => "Commit style",
+                Language::SimplifiedChinese => "提交信息风格",
+            },
+            (_, TrKey::AiCommitStyleDesc) => match self {
+                Language::English => "How the AI should format commit messages.",
+                Language::SimplifiedChinese => "AI 组织提交信息内容的方式。",
+            },
+            (_, TrKey::AiCtxTitle) => match self {
+                Language::English => "Include project context",
+                Language::SimplifiedChinese => "包含项目上下文",
+            },
+            (_, TrKey::AiCtxDesc) => match self {
+                Language::English => {
+                    "Adds README.md, CLAUDE.md and AGENTS.md to the prompt. ~4k extra tokens per request."
+                }
+                Language::SimplifiedChinese => {
+                    "将 README.md、CLAUDE.md 与 AGENTS.md 加入提示词，每次请求约多消耗 4k token。"
+                }
+            },
+            (_, TrKey::AiToolsTitle) => match self {
+                Language::English => "Let the model read files",
+                Language::SimplifiedChinese => "允许模型读取文件",
+            },
+            (_, TrKey::AiToolsDesc) => match self {
+                Language::English => {
+                    "The model may request file contents and commit history. Slower and more expensive; usually a better message."
+                }
+                Language::SimplifiedChinese => {
+                    "模型可按需读取文件内容与提交历史。速度更慢、费用更高，但提交信息通常更好。"
+                }
+            },
+            (_, TrKey::AiKeyPlaceholderFmt) => match self {
+                Language::English => "Paste your {} API key",
+                Language::SimplifiedChinese => "粘贴您的 {} API 密钥",
+            },
+            (_, TrKey::ShowLineNumbersTitle) => match self {
+                Language::English => "Show Line Numbers in Diff",
+                Language::SimplifiedChinese => "在 Diff 中显示行号",
+            },
+            (_, TrKey::ShowLineNumbersDesc) => match self {
+                Language::English => "Display line numbers alongside diff content.",
+                Language::SimplifiedChinese => "在 diff 内容旁显示行号。",
+            },
+            (_, TrKey::WrapLinesTitle) => match self {
+                Language::English => "Wrap Long Lines in Diff",
+                Language::SimplifiedChinese => "在 Diff 中自动换行",
+            },
+            (_, TrKey::WrapLinesDesc) => match self {
+                Language::English => "Wrap overflowing lines instead of scrolling horizontally.",
+                Language::SimplifiedChinese => "超长行自动换行，而非横向滚动。",
+            },
+            (_, TrKey::DiffModeTitle) => match self {
+                Language::English => "Default Diff View Mode",
+                Language::SimplifiedChinese => "默认 Diff 视图",
+            },
+            (_, TrKey::DiffModeDesc) => match self {
+                Language::English => "Choose how diffs are displayed.",
+                Language::SimplifiedChinese => "选择 diff 的显示方式。",
+            },
+            (_, TrKey::DiffUnified) => match self {
+                Language::English => "Unified",
+                Language::SimplifiedChinese => "统一视图",
+            },
+            (_, TrKey::DiffSideBySide) => match self {
+                Language::English => "Side-by-Side",
+                Language::SimplifiedChinese => "并排视图",
+            },
+            (_, TrKey::GraphTitle) => match self {
+                Language::English => "Graph Style",
+                Language::SimplifiedChinese => "提交图样式",
+            },
+            (_, TrKey::GraphDesc) => match self {
+                Language::English => "Visual style for the commit graph rendering.",
+                Language::SimplifiedChinese => "提交图渲染的视觉样式。",
+            },
+            (_, TrKey::GraphRails) => match self {
+                Language::English => "Rails",
+                Language::SimplifiedChinese => "轨道",
+            },
+            (_, TrKey::GraphCurved) => match self {
+                Language::English => "Curved",
+                Language::SimplifiedChinese => "曲线",
+            },
+            (_, TrKey::GraphAngular) => match self {
+                Language::English => "Angular",
+                Language::SimplifiedChinese => "折线",
+            },
+            (_, TrKey::ShowSubjectTitle) => match self {
+                Language::English => "Show Subject Column",
+                Language::SimplifiedChinese => "显示主题列",
+            },
+            (_, TrKey::ShowSubjectDesc) => match self {
+                Language::English => "Display commit subject in the graph.",
+                Language::SimplifiedChinese => "在提交图中显示提交主题。",
+            },
+            (_, TrKey::AutoFetchTitle) => match self {
+                Language::English => "Auto-Fetch Interval",
+                Language::SimplifiedChinese => "自动获取间隔",
+            },
+            (_, TrKey::AutoFetchDesc) => match self {
+                Language::English => "How often to automatically fetch from remotes in the background.",
+                Language::SimplifiedChinese => "后台自动从远程获取的时间间隔。",
+            },
+            (_, TrKey::ConfirmDestructiveTitle) => match self {
+                Language::English => "Confirm Before Destructive Operations",
+                Language::SimplifiedChinese => "危险操作前确认",
+            },
+            (_, TrKey::ConfirmDestructiveDesc) => match self {
+                Language::English => "Show a confirmation dialog before force push, branch delete, discard changes, and similar actions.",
+                Language::SimplifiedChinese => "在强制推送、删除分支、丢弃更改等操作前弹出确认框。",
+            },
+            (_, TrKey::CheckUpdatesTitle) => match self {
+                Language::English => "Check for Updates on Startup",
+                Language::SimplifiedChinese => "启动时检查更新",
+            },
+            (_, TrKey::CheckUpdatesDesc) => match self {
+                Language::English => "Contact api.github.com once per day to see if a newer release is available. Turn off to keep rgitui offline.",
+                Language::SimplifiedChinese => "每天联系一次 api.github.com 检查新版本。关闭可保持 rgitui 离线。",
+            },
+            (_, TrKey::WatchWorktreesTitle) => match self {
+                Language::English => "Watch All Worktrees",
+                Language::SimplifiedChinese => "监视所有工作树",
+            },
+            (_, TrKey::WatchWorktreesDesc) => match self {
+                Language::English => "Refresh the graph whenever files change in any linked worktree, not just the current one. Useful when you have multiple worktrees open and work is happening in them in parallel.",
+                Language::SimplifiedChinese => "任何关联工作树文件变化时都刷新提交图，而不仅是当前工作树。并行使用多个工作树时很有用。",
+            },
+            (_, TrKey::ExternalToolsTitle) => match self {
+                Language::English => "External Tools",
+                Language::SimplifiedChinese => "外部工具",
+            },
+            (_, TrKey::ExternalToolsDesc) => match self {
+                Language::English => "Select a detected application or enter a custom command.",
+                Language::SimplifiedChinese => "选择检测到的应用或输入自定义命令。",
+            },
+            (_, TrKey::TerminalLabel) => match self {
+                Language::English => "Terminal",
+                Language::SimplifiedChinese => "终端",
+            },
+            (_, TrKey::EditorLabel) => match self {
+                Language::English => "Editor",
+                Language::SimplifiedChinese => "编辑器",
+            },
+            (_, TrKey::CustomCommandLabel) => match self {
+                Language::English => "Custom command (overrides selection)",
+                Language::SimplifiedChinese => "自定义命令（覆盖所选项）",
+            },
+            (_, TrKey::ShortcutsTitle) => match self {
+                Language::English => "Keyboard Shortcuts",
+                Language::SimplifiedChinese => "键盘快捷键",
+            },
+            (_, TrKey::ShortcutsDesc) => match self {
+                Language::English => "The bindings in force for a few common actions. Open the full reference from the workspace for all of them.",
+                Language::SimplifiedChinese => "几个常用操作的当前绑定。从工作区可打开完整快捷键参考。",
+            },
+            (_, TrKey::ConfigTitle) => match self {
+                Language::English => "Config File",
+                Language::SimplifiedChinese => "配置文件",
+            },
+            (_, TrKey::ConfigDesc) => match self {
+                Language::English => "Location of the settings file on disk.",
+                Language::SimplifiedChinese => "磁盘上设置文件的位置。",
+            },
+            (_, TrKey::RevealBtn) => match self {
+                Language::English => "Reveal",
+                Language::SimplifiedChinese => "打开所在目录",
+            },
+            (_, TrKey::EditKeymapBtn) => match self {
+                Language::English => "Edit keymap.json",
+                Language::SimplifiedChinese => "编辑 keymap.json",
+            },
+            (_, TrKey::SavedFeedback) => match self {
+                Language::English => "Saved",
+                Language::SimplifiedChinese => "已保存",
+            },
+            (_, TrKey::TbFetch) => match self {
+                Language::English => "Fetch",
+                Language::SimplifiedChinese => "获取",
+            },
+            (_, TrKey::TbFetching) => match self {
+                Language::English => "Fetching...",
+                Language::SimplifiedChinese => "获取中…",
+            },
+            (_, TrKey::TbPull) => match self {
+                Language::English => "Pull",
+                Language::SimplifiedChinese => "拉取",
+            },
+            (_, TrKey::TbPulling) => match self {
+                Language::English => "Pulling...",
+                Language::SimplifiedChinese => "拉取中…",
+            },
+            (_, TrKey::TbPush) => match self {
+                Language::English => "Push",
+                Language::SimplifiedChinese => "推送",
+            },
+            (_, TrKey::TbPushing) => match self {
+                Language::English => "Pushing...",
+                Language::SimplifiedChinese => "推送中…",
+            },
+            (_, TrKey::TbBranch) => match self {
+                Language::English => "Branch",
+                Language::SimplifiedChinese => "分支",
+            },
+            (_, TrKey::TbStash) => match self {
+                Language::English => "Stash",
+                Language::SimplifiedChinese => "储藏",
+            },
+            (_, TrKey::TbPop) => match self {
+                Language::English => "Pop",
+                Language::SimplifiedChinese => "弹出",
+            },
+            (_, TrKey::TbCreatePr) => match self {
+                Language::English => "Create PR",
+                Language::SimplifiedChinese => "创建 PR",
+            },
+            (_, TrKey::StatusClean) => match self {
+                Language::English => "Clean",
+                Language::SimplifiedChinese => "干净",
+            },
+            (_, TrKey::StatusDetached) => match self {
+                Language::English => "DETACHED",
+                Language::SimplifiedChinese => "已分离",
+            },
+            (_, TrKey::SideBranches) => match self {
+                Language::English => "Branches",
+                Language::SimplifiedChinese => "分支",
+            },
+            (_, TrKey::SideRemotes) => match self {
+                Language::English => "Remotes",
+                Language::SimplifiedChinese => "远程",
+            },
+            (_, TrKey::SideRemoteBranches) => match self {
+                Language::English => "Remote Branches",
+                Language::SimplifiedChinese => "远程分支",
+            },
+            (_, TrKey::SideTags) => match self {
+                Language::English => "Tags",
+                Language::SimplifiedChinese => "标签",
+            },
+            (_, TrKey::SideStashes) => match self {
+                Language::English => "Stashes",
+                Language::SimplifiedChinese => "储藏",
+            },
+            (_, TrKey::SideWorktrees) => match self {
+                Language::English => "Worktrees",
+                Language::SimplifiedChinese => "工作树",
+            },
+            (_, TrKey::SideStaged) => match self {
+                Language::English => "Staged",
+                Language::SimplifiedChinese => "已暂存",
+            },
+            (_, TrKey::SideUnstaged) => match self {
+                Language::English => "Unstaged",
+                Language::SimplifiedChinese => "未暂存",
+            },
+            (_, TrKey::SideStageAll) => match self {
+                Language::English => "Stage All",
+                Language::SimplifiedChinese => "全部暂存",
+            },
+            (_, TrKey::SideUnstageAll) => match self {
+                Language::English => "Unstage All",
+                Language::SimplifiedChinese => "全部取消暂存",
+            },
+            (_, TrKey::SideNewWorktree) => match self {
+                Language::English => "New Worktree",
+                Language::SimplifiedChinese => "新建工作树",
+            },
+            (_, TrKey::SideWorkingClean) => match self {
+                Language::English => "Working tree clean",
+                Language::SimplifiedChinese => "工作树干净",
+            },
+            (_, TrKey::SideNoStaged) => match self {
+                Language::English => "No staged changes",
+                Language::SimplifiedChinese => "暂无已暂存的更改",
+            },
+            (_, TrKey::CommitBtn) => match self {
+                Language::English => "Commit",
+                Language::SimplifiedChinese => "提交",
+            },
+            (_, TrKey::CommitNoStaged) => match self {
+                Language::English => "No Staged Changes",
+                Language::SimplifiedChinese => "暂无已暂存的更改",
+            },
+            (_, TrKey::CommitNoMessage) => match self {
+                Language::English => "No Message",
+                Language::SimplifiedChinese => "请输入提交信息",
+            },
+            (_, TrKey::CommitAmendBtn) => match self {
+                Language::English => "Amend Commit",
+                Language::SimplifiedChinese => "修正提交",
+            },
+            (_, TrKey::AmendBtn) => match self {
+                Language::English => "Amend",
+                Language::SimplifiedChinese => "修正",
+            },
+            (_, TrKey::ClearBtn) => match self {
+                Language::English => "Clear",
+                Language::SimplifiedChinese => "清空",
+            },
+            (_, TrKey::SummaryLabel) => match self {
+                Language::English => "Summary",
+                Language::SimplifiedChinese => "摘要",
+            },
+            (_, TrKey::DescLabel) => match self {
+                Language::English => "Description",
+                Language::SimplifiedChinese => "详细描述",
+            },
+            (_, TrKey::CoAuthorsLabel) => match self {
+                Language::English => "Co-Authors",
+                Language::SimplifiedChinese => "共同作者",
+            },
+            (_, TrKey::NoStagedHint) => match self {
+                Language::English => "No staged changes",
+                Language::SimplifiedChinese => "暂无已暂存的更改",
+            },
+            (_, TrKey::CancelBtn) => match self {
+                Language::English => "Cancel",
+                Language::SimplifiedChinese => "取消",
+            },
+            (_, TrKey::ConfirmHint) => match self {
+                Language::English => "Enter to confirm | Esc to cancel",
+                Language::SimplifiedChinese => "回车确认 | Esc 取消",
+            },
+            (_, TrKey::CfConfirm) => match self {
+                Language::English => "Confirm",
+                Language::SimplifiedChinese => "确认",
+            },
+            (_, TrKey::CfDiscard) => match self {
+                Language::English => "Discard",
+                Language::SimplifiedChinese => "丢弃",
+            },
+            (_, TrKey::CfClean) => match self {
+                Language::English => "Clean",
+                Language::SimplifiedChinese => "清理",
+            },
+            (_, TrKey::CfDeleteBranch) => match self {
+                Language::English => "Delete Branch",
+                Language::SimplifiedChinese => "删除分支",
+            },
+            (_, TrKey::CfDeleteTag) => match self {
+                Language::English => "Delete Tag",
+                Language::SimplifiedChinese => "删除标签",
+            },
+            (_, TrKey::CfRemove) => match self {
+                Language::English => "Remove",
+                Language::SimplifiedChinese => "移除",
+            },
+            (_, TrKey::CfDropStash) => match self {
+                Language::English => "Drop Stash",
+                Language::SimplifiedChinese => "丢弃储藏",
+            },
+            (_, TrKey::CfReset) => match self {
+                Language::English => "Reset",
+                Language::SimplifiedChinese => "重置",
+            },
+            (_, TrKey::CfAbort) => match self {
+                Language::English => "Abort",
+                Language::SimplifiedChinese => "中止",
+            },
+            (_, TrKey::CfForcePush) => match self {
+                Language::English => "Force Push",
+                Language::SimplifiedChinese => "强制推送",
+            },
+            (_, TrKey::CfRemoveWorktree) => match self {
+                Language::English => "Remove Worktree",
+                Language::SimplifiedChinese => "移除工作树",
+            },
+            (_, TrKey::DiffFileBtn) => match self {
+                Language::English => "File",
+                Language::SimplifiedChinese => "文件",
+            },
+            (_, TrKey::DiffEmptyTitle) => match self {
+                Language::English => "Select a file to view changes",
+                Language::SimplifiedChinese => "选择文件以查看更改",
+            },
+            (_, TrKey::DiffEmptyDesc) => match self {
+                Language::English => "Click a file in the sidebar or detail panel",
+                Language::SimplifiedChinese => "点击侧边栏或详情面板中的文件",
+            },
+            (_, TrKey::DiffOpenFile) => match self {
+                Language::English => "Open File",
+                Language::SimplifiedChinese => "打开文件",
+            },
+            (_, TrKey::DetailTitle) => match self {
+                Language::English => "Details",
+                Language::SimplifiedChinese => "详情",
+            },
+            (_, TrKey::DetailEmptyTitle) => match self {
+                Language::English => "No commit selected",
+                Language::SimplifiedChinese => "未选择提交",
+            },
+            (_, TrKey::DetailEmptyDesc) => match self {
+                Language::English => "Select a commit from the graph to view details",
+                Language::SimplifiedChinese => "从提交图中选择一个提交以查看详情",
+            },
+            (_, TrKey::HomeSlogan) => match self {
+                Language::English => "A workspace-oriented desktop Git client",
+                Language::SimplifiedChinese => "面向工作区的桌面 Git 客户端",
+            },
+            (_, TrKey::OpenRepoTitle) => match self {
+                Language::English => "Open Repository",
+                Language::SimplifiedChinese => "打开仓库",
+            },
+            (_, TrKey::HomeNewWorkspace) => match self {
+                Language::English => "New Workspace",
+                Language::SimplifiedChinese => "新建工作区",
+            },
+            (_, TrKey::HomeRestoreLast) => match self {
+                Language::English => "Restore Last",
+                Language::SimplifiedChinese => "恢复上次",
+            },
+            (_, TrKey::HomeRecentWorkspaces) => match self {
+                Language::English => "Recent Workspaces",
+                Language::SimplifiedChinese => "最近的工作区",
+            },
+            (_, TrKey::HomeRecentRepos) => match self {
+                Language::English => "Recent Repositories",
+                Language::SimplifiedChinese => "最近的仓库",
+            },
+            (_, TrKey::WsSummaryFmt) => match self {
+                Language::English => "{} repositories | updated {}",
+                Language::SimplifiedChinese => "{} 个仓库 | 更新于 {}",
+            },
+            (_, TrKey::LoadingDots) => match self {
+                Language::English => "Loading...",
+                Language::SimplifiedChinese => "加载中…",
+            },
+            (_, TrKey::OpRetry) => match self {
+                Language::English => "Retry",
+                Language::SimplifiedChinese => "重试",
+            },
+            (_, TrKey::ConflictOneFmt) => match self {
+                Language::English => "{} file with conflicts -- resolve before continuing",
+                Language::SimplifiedChinese => "有 {} 个文件存在冲突——继续前请先解决",
+            },
+            (_, TrKey::ConflictManyFmt) => match self {
+                Language::English => "{} files with conflicts -- resolve before continuing",
+                Language::SimplifiedChinese => "有 {} 个文件存在冲突——继续前请先解决",
+            },
+            (_, TrKey::ConflictResolved) => match self {
+                Language::English => "All conflicts resolved -- ready to continue",
+                Language::SimplifiedChinese => "所有冲突已解决——可以继续",
+            },
+            (_, TrKey::ConflictContinue) => match self {
+                Language::English => "Continue",
+                Language::SimplifiedChinese => "继续",
+            },
+            (_, TrKey::WorktreeExit) => match self {
+                Language::English => "Exit Worktree",
+                Language::SimplifiedChinese => "退出工作树",
+            },
+            (_, TrKey::InspectingPre) => match self {
+                Language::English => "Inspecting worktree:",
+                Language::SimplifiedChinese => "正在查看工作树：",
+            },
+            (_, TrKey::DetachedHeadWord) => match self {
+                Language::English => "detached HEAD",
+                Language::SimplifiedChinese => "已分离的 HEAD",
+            },
+            (_, TrKey::BottomDiff) => match self {
+                Language::English => "Diff",
+                Language::SimplifiedChinese => "差异",
+            },
+            (_, TrKey::BottomDiffTip) => match self {
+                Language::English => "Show diff (d)",
+                Language::SimplifiedChinese => "显示差异 (d)",
+            },
+            (_, TrKey::BottomHistory) => match self {
+                Language::English => "History",
+                Language::SimplifiedChinese => "历史",
+            },
+            (_, TrKey::HistLoading) => match self {
+                Language::English => "Preparing file history...",
+                Language::SimplifiedChinese => "正在准备文件历史…",
+            },
+            (_, TrKey::HistShow) => match self {
+                Language::English => "Show file history (h)",
+                Language::SimplifiedChinese => "显示文件历史 (h)",
+            },
+            (_, TrKey::HistUnavailable) => match self {
+                Language::English => "No committed history is available for this file",
+                Language::SimplifiedChinese => "该文件暂无已提交历史",
+            },
+            (_, TrKey::BottomBlame) => match self {
+                Language::English => "Blame",
+                Language::SimplifiedChinese => "追溯",
+            },
+            (_, TrKey::BlameLoading) => match self {
+                Language::English => "Preparing blame...",
+                Language::SimplifiedChinese => "正在准备追溯…",
+            },
+            (_, TrKey::BlameShow) => match self {
+                Language::English => "Show blame (b)",
+                Language::SimplifiedChinese => "显示追溯 (b)",
+            },
+            (_, TrKey::BlameUnavailable) => match self {
+                Language::English => "Blame is unavailable for this file at the selected commit",
+                Language::SimplifiedChinese => "所选提交中的该文件无法追溯",
+            },
+            (_, TrKey::GraphShowTip) => match self {
+                Language::English => "Show commit graph",
+                Language::SimplifiedChinese => "显示提交图",
+            },
+            (_, TrKey::GraphHideTip) => match self {
+                Language::English => "Hide commit graph",
+                Language::SimplifiedChinese => "隐藏提交图",
+            },
+            (_, TrKey::DetachedTitlePre) => match self {
+                Language::English => "HEAD is detached at",
+                Language::SimplifiedChinese => "HEAD 已分离，位于",
+            },
+            (_, TrKey::DetachedConsequence) => match self {
+                Language::English => "Commits made here belong to no branch",
+                Language::SimplifiedChinese => "此处所做的提交不属于任何分支",
+            },
+            (_, TrKey::DetachedReturnPre) => match self {
+                Language::English => "Return to",
+                Language::SimplifiedChinese => "返回",
+            },
+            (_, TrKey::DetachedReturnTipPre) => match self {
+                Language::English => "Check out '",
+                Language::SimplifiedChinese => "检出 '",
+            },
+            (_, TrKey::DetachedReturnTipPost) => match self {
+                Language::English => "', the branch HEAD was on before",
+                Language::SimplifiedChinese => "'，HEAD 之前所在的分支",
+            },
+            (_, TrKey::DetachedSwitch) => match self {
+                Language::English => "Switch Branch…",
+                Language::SimplifiedChinese => "切换分支…",
+            },
+            (_, TrKey::DetachedShowGraph) => match self {
+                Language::English => "Show in Graph",
+                Language::SimplifiedChinese => "在提交图中显示",
+            },
+            (_, TrKey::UpdateMsgFmt) => match self {
+                Language::English => "rgitui {} is available (you have {})",
+                Language::SimplifiedChinese => "rgitui {} 可用（当前版本 {}）",
+            },
+            (_, TrKey::UpdateDownload) => match self {
+                Language::English => "Download",
+                Language::SimplifiedChinese => "下载",
+            },
+            (_, TrKey::MenuCherryPick) => match self {
+                Language::English => "Cherry-pick commit",
+                Language::SimplifiedChinese => "拣选提交",
+            },
+            (_, TrKey::MenuRevert) => match self {
+                Language::English => "Revert commit",
+                Language::SimplifiedChinese => "还原提交",
+            },
+            (_, TrKey::MenuCheckout) => match self {
+                Language::English => "Checkout commit",
+                Language::SimplifiedChinese => "检出提交",
+            },
+            (_, TrKey::MenuCreateBranch) => match self {
+                Language::English => "Create branch here",
+                Language::SimplifiedChinese => "在此创建分支",
+            },
+            (_, TrKey::MenuCreateTag) => match self {
+                Language::English => "Create tag here",
+                Language::SimplifiedChinese => "在此创建标签",
+            },
+            (_, TrKey::MenuBisectGood) => match self {
+                Language::English => "Mark as good (bisect)",
+                Language::SimplifiedChinese => "标记为正常（bisect）",
+            },
+            (_, TrKey::MenuBisectBad) => match self {
+                Language::English => "Mark as bad (bisect)",
+                Language::SimplifiedChinese => "标记为有问题（bisect）",
+            },
+            (_, TrKey::MenuReset) => match self {
+                Language::English => "Reset to here",
+                Language::SimplifiedChinese => "重置到此处",
+            },
+            (_, TrKey::RebaseTitle) => match self {
+                Language::English => "Interactive Rebase",
+                Language::SimplifiedChinese => "交互式变基",
+            },
+            (_, TrKey::MenuSquash) => match self {
+                Language::English => "Squash selected commits",
+                Language::SimplifiedChinese => "压缩所选提交",
+            },
+            (_, TrKey::MenuCopySha) => match self {
+                Language::English => "Copy SHA",
+                Language::SimplifiedChinese => "复制 SHA",
+            },
+            (_, TrKey::MenuCopyMsg) => match self {
+                Language::English => "Copy commit message",
+                Language::SimplifiedChinese => "复制提交信息",
+            },
+            (_, TrKey::MenuCopyAuthor) => match self {
+                Language::English => "Copy author name",
+                Language::SimplifiedChinese => "复制作者姓名",
+            },
+            (_, TrKey::MenuCopyDate) => match self {
+                Language::English => "Copy date",
+                Language::SimplifiedChinese => "复制日期",
+            },
+            (_, TrKey::MenuViewGithub) => match self {
+                Language::English => "View on GitHub",
+                Language::SimplifiedChinese => "在 GitHub 上查看",
+            },
+            (_, TrKey::GraphPanelTitle) => match self {
+                Language::English => "Graph",
+                Language::SimplifiedChinese => "提交图",
+            },
+            (_, TrKey::GraphEmpty) => match self {
+                Language::English => "No commits to display",
+                Language::SimplifiedChinese => "暂无提交可显示",
+            },
+            (_, TrKey::GraphColHash) => match self {
+                Language::English => "Hash",
+                Language::SimplifiedChinese => "哈希",
+            },
+            (_, TrKey::GraphColMessage) => match self {
+                Language::English => "Message",
+                Language::SimplifiedChinese => "提交信息",
+            },
+            (_, TrKey::GraphColAuthor) => match self {
+                Language::English => "Author",
+                Language::SimplifiedChinese => "作者",
+            },
+            (_, TrKey::GraphColDate) => match self {
+                Language::English => "Date",
+                Language::SimplifiedChinese => "日期",
+            },
+            (_, TrKey::MyCommitsOn) => match self {
+                Language::English => "Showing only your commits. Click to show all commits.",
+                Language::SimplifiedChinese => "仅显示你的提交，点击显示全部提交。",
+            },
+            (_, TrKey::MyCommitsOff) => match self {
+                Language::English => "Show only your commits. Click to filter by current user.",
+                Language::SimplifiedChinese => "仅显示你的提交，点击按当前用户过滤。",
+            },
+            (_, TrKey::GripRebase) => match self {
+                Language::English => "Drag to rebase",
+                Language::SimplifiedChinese => "拖拽以变基",
+            },
+            (_, TrKey::NoMatches) => match self {
+                Language::English => "No matches",
+                Language::SimplifiedChinese => "无匹配项",
+            },
+            (_, TrKey::LoadMore) => match self {
+                Language::English => "Load more commits",
+                Language::SimplifiedChinese => "加载更多提交",
+            },
+            (_, TrKey::ShaShort) => match self {
+                Language::English => "Short (7)",
+                Language::SimplifiedChinese => "短 (7)",
+            },
+            (_, TrKey::ShaFull) => match self {
+                Language::English => "Full (40)",
+                Language::SimplifiedChinese => "完整 (40)",
+            },
+            (_, TrKey::ShaCharsFmt) => match self {
+                Language::English => "{} chars",
+                Language::SimplifiedChinese => "{} 字符",
+            },
+            (_, TrKey::DisplaySettings) => match self {
+                Language::English => "Display Settings",
+                Language::SimplifiedChinese => "显示设置",
+            },
+            (_, TrKey::ShaLengthLabel) => match self {
+                Language::English => "SHA length:",
+                Language::SimplifiedChinese => "SHA 长度：",
+            },
+            (_, TrKey::ShowSubjectCol) => match self {
+                Language::English => "Show subject column",
+                Language::SimplifiedChinese => "显示主题列",
+            },
+            (_, TrKey::ShowAuthorCol) => match self {
+                Language::English => "Show author column",
+                Language::SimplifiedChinese => "显示作者列",
+            },
+            (_, TrKey::ShowAuthorEmail) => match self {
+                Language::English => "Show author email",
+                Language::SimplifiedChinese => "显示作者邮箱",
+            },
+            (_, TrKey::ShowDateCol) => match self {
+                Language::English => "Show date column",
+                Language::SimplifiedChinese => "显示日期列",
+            },
+            (_, TrKey::AbsoluteDates) => match self {
+                Language::English => "Absolute dates",
+                Language::SimplifiedChinese => "绝对时间",
+            },
+            (_, TrKey::ShowAvatars) => match self {
+                Language::English => "Show avatars",
+                Language::SimplifiedChinese => "显示头像",
+            },
+            (_, TrKey::ShowLanes) => match self {
+                Language::English => "Show graph lanes",
+                Language::SimplifiedChinese => "显示提交图轨道",
+            },
+            (_, TrKey::ShowBadges) => match self {
+                Language::English => "Show branch/tag badges",
+                Language::SimplifiedChinese => "显示分支/标签徽章",
+            },
+            (_, TrKey::HeadDetachedBadge) => match self {
+                Language::English => "HEAD (detached)",
+                Language::SimplifiedChinese => "HEAD（已分离）",
+            },
+            (_, TrKey::PendingOnPre) => match self {
+                Language::English => "Pending changes on",
+                Language::SimplifiedChinese => "待提交更改于",
+            },
+            (_, TrKey::PendingChanges) => match self {
+                Language::English => "Pending changes",
+                Language::SimplifiedChinese => "待提交的更改",
+            },
+            (_, TrKey::NoCommitsYet) => match self {
+                Language::English => "No commits yet",
+                Language::SimplifiedChinese => "暂无提交",
+            },
+            (_, TrKey::NoCommitsSuffix) => match self {
+                Language::English => "(no commits)",
+                Language::SimplifiedChinese => "（暂无提交）",
+            },
+            (_, TrKey::NewBranchBadge) => match self {
+                Language::English => "New branch",
+                Language::SimplifiedChinese => "新分支",
+            },
+            (_, TrKey::SearchCommitsPh) => match self {
+                Language::English => "Search commits...",
+                Language::SimplifiedChinese => "搜索提交…",
+            },
+            (_, TrKey::PrsTitle) => match self {
+                Language::English => "Pull Requests",
+                Language::SimplifiedChinese => "拉取请求",
+            },
+            (_, TrKey::PrsTab) => match self {
+                Language::English => "PRs",
+                Language::SimplifiedChinese => "PR",
+            },
+            (_, TrKey::PrDetail) => match self {
+                Language::English => "Pull Request Detail",
+                Language::SimplifiedChinese => "拉取请求详情",
+            },
+            (_, TrKey::IssuesTitle) => match self {
+                Language::English => "Issues",
+                Language::SimplifiedChinese => "议题",
+            },
+            (_, TrKey::IssueDetail) => match self {
+                Language::English => "Issue Detail",
+                Language::SimplifiedChinese => "议题详情",
+            },
+            (_, TrKey::FilterOpen) => match self {
+                Language::English => "Open",
+                Language::SimplifiedChinese => "开启",
+            },
+            (_, TrKey::FilterClosed) => match self {
+                Language::English => "Closed",
+                Language::SimplifiedChinese => "已关闭",
+            },
+            (_, TrKey::FilterAll) => match self {
+                Language::English => "All",
+                Language::SimplifiedChinese => "全部",
+            },
+            (_, TrKey::PrNew) => match self {
+                Language::English => "New pull request",
+                Language::SimplifiedChinese => "新建拉取请求",
+            },
+            (_, TrKey::PrStateMerged) => match self {
+                Language::English => "Merged",
+                Language::SimplifiedChinese => "已合并",
+            },
+            (_, TrKey::DraftBadge) => match self {
+                Language::English => "Draft",
+                Language::SimplifiedChinese => "草稿",
+            },
+            (_, TrKey::LoadingComments) => match self {
+                Language::English => "Loading comments...",
+                Language::SimplifiedChinese => "正在加载评论…",
+            },
+            (_, TrKey::CommentsFailedPre) => match self {
+                Language::English => "Failed to load comments",
+                Language::SimplifiedChinese => "加载评论失败",
+            },
+            (_, TrKey::OneComment) => match self {
+                Language::English => "1 comment",
+                Language::SimplifiedChinese => "1 条评论",
+            },
+            (_, TrKey::ManyCommentsFmt) => match self {
+                Language::English => "{} comments",
+                Language::SimplifiedChinese => "{} 条评论",
+            },
+            (_, TrKey::GhSignInPrs) => match self {
+                Language::English => "Sign in to view pull requests",
+                Language::SimplifiedChinese => "登录后查看拉取请求",
+            },
+            (_, TrKey::GhSignInIssues) => match self {
+                Language::English => "Sign in to view issues",
+                Language::SimplifiedChinese => "登录后查看议题",
+            },
+            (_, TrKey::GhAuthDesc) => match self {
+                Language::English => "This repository is private or rate-limited. Add a GitHub token in Settings — for organization repos you may need a fine-grained token approved by an org owner.",
+                Language::SimplifiedChinese => "该仓库为私有或已触发限流。请在设置中添加 GitHub 令牌——组织仓库可能需要经组织所有者批准的细粒度令牌。",
+            },
+            (_, TrKey::TryFilterHint) => match self {
+                Language::English => "Try a different filter or check back later",
+                Language::SimplifiedChinese => "换个过滤条件或稍后再看",
+            },
+            (_, TrKey::PrEmptyFmt) => match self {
+                Language::English => "No {} pull requests found",
+                Language::SimplifiedChinese => "没有找到{}的拉取请求",
+            },
+            (_, TrKey::IssueEmptyFmt) => match self {
+                Language::English => "No {} issues found",
+                Language::SimplifiedChinese => "没有找到{}的议题",
+            },
+            (_, TrKey::ReviewActions) => match self {
+                Language::English => "Review Actions",
+                Language::SimplifiedChinese => "评审操作",
+            },
+            (_, TrKey::ReviewApprove) => match self {
+                Language::English => "Approve",
+                Language::SimplifiedChinese => "批准",
+            },
+            (_, TrKey::ReviewRequest) => match self {
+                Language::English => "Request Changes",
+                Language::SimplifiedChinese => "请求修改",
+            },
+            (_, TrKey::ReviewCommentBtn) => match self {
+                Language::English => "Comment",
+                Language::SimplifiedChinese => "评论",
+            },
+            (_, TrKey::ReviewSubmitting) => match self {
+                Language::English => "Submitting...",
+                Language::SimplifiedChinese => "提交中…",
+            },
+            (_, TrKey::ReviewCommentPh) => match self {
+                Language::English => "Leave a review comment (optional)",
+                Language::SimplifiedChinese => "留下评审意见（可选）",
+            },
+            (_, TrKey::SearchIssuesTip) => match self {
+                Language::English => "Search issues",
+                Language::SimplifiedChinese => "搜索议题",
+            },
+            (_, TrKey::SearchIssuesPh) => match self {
+                Language::English => "Search issues...",
+                Language::SimplifiedChinese => "搜索议题…",
+            },
+            (_, TrKey::RepoPathLabel) => match self {
+                Language::English => "Repository path",
+                Language::SimplifiedChinese => "仓库路径",
+            },
+            (_, TrKey::BrowseBtn) => match self {
+                Language::English => "Browse",
+                Language::SimplifiedChinese => "浏览",
+            },
+            (_, TrKey::CloneBtn) => match self {
+                Language::English => "Clone",
+                Language::SimplifiedChinese => "克隆",
+            },
+            (_, TrKey::NoMatchRepos) => match self {
+                Language::English => "No matching repositories",
+                Language::SimplifiedChinese => "没有匹配的仓库",
+            },
+            (_, TrKey::NoRecentRepos) => match self {
+                Language::English => "No recent repositories",
+                Language::SimplifiedChinese => "暂无最近仓库",
+            },
+            (_, TrKey::OpenBtn) => match self {
+                Language::English => "Open",
+                Language::SimplifiedChinese => "打开",
+            },
+            (_, TrKey::EnterRepoPathPh) => match self {
+                Language::English => "Enter repository path...",
+                Language::SimplifiedChinese => "输入仓库路径…",
+            },
+            (_, TrKey::CloneTitle) => match self {
+                Language::English => "Clone Repository",
+                Language::SimplifiedChinese => "克隆仓库",
+            },
+            (_, TrKey::CloneUrlLabel) => match self {
+                Language::English => "URL",
+                Language::SimplifiedChinese => "链接",
+            },
+            (_, TrKey::ClonePathLabel) => match self {
+                Language::English => "Path",
+                Language::SimplifiedChinese => "路径",
+            },
+            (_, TrKey::CloneUrlPh) => match self {
+                Language::English => "Repository URL (e.g. https://github.com/user/repo.git)",
+                Language::SimplifiedChinese => "仓库链接（例如 https://github.com/user/repo.git）",
+            },
+            (_, TrKey::ClonePathPh) => match self {
+                Language::English => "Destination Path",
+                Language::SimplifiedChinese => "目标路径",
+            },
+            (_, TrKey::CloneHint) => match self {
+                Language::English => "Enter a repository URL and a destination path to clone.",
+                Language::SimplifiedChinese => "输入仓库链接与目标路径以克隆。",
+            },
+            (_, TrKey::CloningBtn) => match self {
+                Language::English => "Cloning…",
+                Language::SimplifiedChinese => "克隆中…",
+            },
+            (_, TrKey::NameLabel) => match self {
+                Language::English => "Name",
+                Language::SimplifiedChinese => "名称",
+            },
+            (_, TrKey::WtPathLabel) => match self {
+                Language::English => "Directory Path",
+                Language::SimplifiedChinese => "目录路径",
+            },
+            (_, TrKey::WtBranchLabel) => match self {
+                Language::English => "Branch (optional)",
+                Language::SimplifiedChinese => "分支（可选）",
+            },
+            (_, TrKey::CreateBtn) => match self {
+                Language::English => "Create",
+                Language::SimplifiedChinese => "创建",
+            },
+            (_, TrKey::WtNamePh) => match self {
+                Language::English => "Worktree name (e.g. feature-x)...",
+                Language::SimplifiedChinese => "工作树名称（例如 feature-x）…",
+            },
+            (_, TrKey::WtPathPh) => match self {
+                Language::English => "Directory path (e.g. /home/user/projects/myrepo-feature-x)...",
+                Language::SimplifiedChinese => "目录路径（例如 /home/user/projects/myrepo-feature-x）…",
+            },
+            (_, TrKey::WtBranchPh) => match self {
+                Language::English => "Branch (optional, defaults to current branch)...",
+                Language::SimplifiedChinese => "分支（可选，默认为当前分支）…",
+            },
+            (_, TrKey::TagTitle) => match self {
+                Language::English => "Create Tag",
+                Language::SimplifiedChinese => "创建标签",
+            },
+            (_, TrKey::TagNameLabel) => match self {
+                Language::English => "Tag name",
+                Language::SimplifiedChinese => "标签名",
+            },
+            (_, TrKey::TagAtCommit) => match self {
+                Language::English => "At commit",
+                Language::SimplifiedChinese => "位于提交",
+            },
+            (_, TrKey::TagCreateHint) => match self {
+                Language::English => "Enter to create | Esc to cancel",
+                Language::SimplifiedChinese => "回车创建 | Esc 取消",
+            },
+            (_, TrKey::StashTitle) => match self {
+                Language::English => "Create Stash",
+                Language::SimplifiedChinese => "创建储藏",
+            },
+            (_, TrKey::StashMsgLabel) => match self {
+                Language::English => "Message (optional)",
+                Language::SimplifiedChinese => "留言（可选）",
+            },
+            (_, TrKey::StashMsgHint) => match self {
+                Language::English => "Leave empty for default: \"WIP on <branch>\"",
+                Language::SimplifiedChinese => "留空使用默认留言：“WIP on <branch>”",
+            },
+            (_, TrKey::RenameTitle) => match self {
+                Language::English => "Rename Branch",
+                Language::SimplifiedChinese => "重命名分支",
+            },
+            (_, TrKey::RenameCurrent) => match self {
+                Language::English => "Current name",
+                Language::SimplifiedChinese => "当前名称",
+            },
+            (_, TrKey::RenameNew) => match self {
+                Language::English => "New name",
+                Language::SimplifiedChinese => "新名称",
+            },
+            (_, TrKey::RenameHint) => match self {
+                Language::English => "Enter to rename | Esc to cancel",
+                Language::SimplifiedChinese => "回车重命名 | Esc 取消",
+            },
+            (_, TrKey::RenameBtn) => match self {
+                Language::English => "Rename",
+                Language::SimplifiedChinese => "重命名",
+            },
+            (_, TrKey::BranchTitle) => match self {
+                Language::English => "Create Branch",
+                Language::SimplifiedChinese => "创建分支",
+            },
+            (_, TrKey::BranchNameLabel) => match self {
+                Language::English => "Branch name",
+                Language::SimplifiedChinese => "分支名",
+            },
+            (_, TrKey::BranchBasedOn) => match self {
+                Language::English => "Based on",
+                Language::SimplifiedChinese => "基于",
+            },
+            (_, TrKey::BranchNamePh) => match self {
+                Language::English => "Enter branch name...",
+                Language::SimplifiedChinese => "输入分支名…",
+            },
+            (_, TrKey::StashBranchTitle) => match self {
+                Language::English => "Create Branch from Stash",
+                Language::SimplifiedChinese => "从储藏创建分支",
+            },
+            (_, TrKey::StashFrom) => match self {
+                Language::English => "From",
+                Language::SimplifiedChinese => "来自",
+            },
+            (_, TrKey::CreatePrTitle) => match self {
+                Language::English => "New Pull Request",
+                Language::SimplifiedChinese => "新建拉取请求",
+            },
+            (_, TrKey::PrInto) => match self {
+                Language::English => "into",
+                Language::SimplifiedChinese => "到",
+            },
+            (_, TrKey::PrTitleLabel) => match self {
+                Language::English => "Title",
+                Language::SimplifiedChinese => "标题",
+            },
+            (_, TrKey::PrTitlePh) => match self {
+                Language::English => "Pull request title",
+                Language::SimplifiedChinese => "拉取请求标题",
+            },
+            (_, TrKey::PrDescPh) => match self {
+                Language::English => "Add a description (optional)",
+                Language::SimplifiedChinese => "添加描述（可选）",
+            },
+            (_, TrKey::PrDraftToggle) => match self {
+                Language::English => "Create as draft pull request",
+                Language::SimplifiedChinese => "创建为草稿拉取请求",
+            },
+            (_, TrKey::PrHint) => match self {
+                Language::English => "Enter for a new line | Shift+Enter to create | Esc to cancel",
+                Language::SimplifiedChinese => "回车换行 | Shift+回车创建 | Esc 取消",
+            },
+            (_, TrKey::PrSubmit) => match self {
+                Language::English => "Create pull request",
+                Language::SimplifiedChinese => "创建拉取请求",
+            },
+            (_, TrKey::PrCreating) => match self {
+                Language::English => "Creating pull request...",
+                Language::SimplifiedChinese => "正在创建拉取请求…",
+            },
+            (_, TrKey::RebasePick) => match self {
+                Language::English => "Pick",
+                Language::SimplifiedChinese => "拣选",
+            },
+            (_, TrKey::RebaseReword) => match self {
+                Language::English => "Reword",
+                Language::SimplifiedChinese => "改写信息",
+            },
+            (_, TrKey::RebaseSquash) => match self {
+                Language::English => "Squash",
+                Language::SimplifiedChinese => "压缩",
+            },
+            (_, TrKey::RebaseFixup) => match self {
+                Language::English => "Fixup",
+                Language::SimplifiedChinese => "并入",
+            },
+            (_, TrKey::RebaseDrop) => match self {
+                Language::English => "Drop",
+                Language::SimplifiedChinese => "丢弃",
+            },
+            (_, TrKey::RebaseHeaderFmt) => match self {
+                Language::English => "Rebasing {} commits onto {}",
+                Language::SimplifiedChinese => "正在将 {} 个提交变基到 {}",
+            },
+            (_, TrKey::RebasePh) => match self {
+                Language::English => "Enter new commit message...",
+                Language::SimplifiedChinese => "输入新的提交信息…",
+            },
+            (_, TrKey::RebaseDragTip) => match self {
+                Language::English => "Drag to reorder",
+                Language::SimplifiedChinese => "拖拽以排序",
+            },
+            (_, TrKey::RebaseHintNav) => match self {
+                Language::English => "j/k Navigate",
+                Language::SimplifiedChinese => "j/k 导航",
+            },
+            (_, TrKey::RebaseHintReorder) => match self {
+                Language::English => "Ctrl+Up/Down Reorder",
+                Language::SimplifiedChinese => "Ctrl+Up/Down 排序",
+            },
+            (_, TrKey::RebaseHintAction) => match self {
+                Language::English => "p/r/s/f/d Set action",
+                Language::SimplifiedChinese => "p/r/s/f/d 设置动作",
+            },
+            (_, TrKey::RebaseHintStart) => match self {
+                Language::English => "Enter Start",
+                Language::SimplifiedChinese => "回车开始",
+            },
+            (_, TrKey::RebaseHintCancel) => match self {
+                Language::English => "Esc Cancel",
+                Language::SimplifiedChinese => "Esc 取消",
+            },
+            (_, TrKey::RebaseStart) => match self {
+                Language::English => "Start Rebase",
+                Language::SimplifiedChinese => "开始变基",
+            },
+            (_, TrKey::BisectTitle) => match self {
+                Language::English => "Bisect",
+                Language::SimplifiedChinese => "二分查找",
+            },
+            (_, TrKey::BisectStarted) => match self {
+                Language::English => "started",
+                Language::SimplifiedChinese => "已开始",
+            },
+            (_, TrKey::BisectBadFmt) => match self {
+                Language::English => "{} bad",
+                Language::SimplifiedChinese => "不良 {}",
+            },
+            (_, TrKey::BisectGoodFmt) => match self {
+                Language::English => "{} good",
+                Language::SimplifiedChinese => "良好 {}",
+            },
+            (_, TrKey::BisectSkipFmt) => match self {
+                Language::English => "{} skip",
+                Language::SimplifiedChinese => "跳过 {}",
+            },
+            (_, TrKey::BisectLeftFmt) => match self {
+                Language::English => "~{} steps left",
+                Language::SimplifiedChinese => "还剩约 {} 步",
+            },
+            (_, TrKey::BisectEntriesFmt) => match self {
+                Language::English => "{} entries",
+                Language::SimplifiedChinese => "{} 条记录",
+            },
+            (_, TrKey::BisectEmpty) => match self {
+                Language::English => "No bisect in progress",
+                Language::SimplifiedChinese => "暂无进行中的二分查找",
+            },
+            (_, TrKey::BisectEmptyHint) => match self {
+                Language::English => "Use 'Git: Bisect Start' to begin",
+                Language::SimplifiedChinese => "使用 'Git: Bisect Start' 开始",
+            },
+            (_, TrKey::SplashSubtitle) => match self {
+                Language::English => "GPU-accelerated Git",
+                Language::SimplifiedChinese => "GPU 加速的 Git",
+            },
+            (_, TrKey::SplashLoading) => match self {
+                Language::English => "Loading workspace…",
+                Language::SimplifiedChinese => "正在加载工作区…",
+            },
+            (_, TrKey::ShortcutsCloseHint) => match self {
+                Language::English => "Press Esc or click outside to close",
+                Language::SimplifiedChinese => "按 Esc 或点击外部关闭",
+            },
+            (_, TrKey::MoreActionsPre) => match self {
+                Language::English => "More actions",
+                Language::SimplifiedChinese => "更多操作",
+            },
+            (_, TrKey::ThemeTitle) => match self {
+                Language::English => "Theme Editor",
+                Language::SimplifiedChinese => "主题编辑器",
+            },
+            (_, TrKey::ThemeColors) => match self {
+                Language::English => "Colors",
+                Language::SimplifiedChinese => "颜色",
+            },
+            (_, TrKey::ThemeStatusColors) => match self {
+                Language::English => "Status Colors",
+                Language::SimplifiedChinese => "状态颜色",
+            },
+            (_, TrKey::ThemeDark) => match self {
+                Language::English => "dark",
+                Language::SimplifiedChinese => "深色",
+            },
+            (_, TrKey::ThemeLight) => match self {
+                Language::English => "light",
+                Language::SimplifiedChinese => "浅色",
+            },
+            (_, TrKey::ThemeHint) => match self {
+                Language::English => "Tab to move · Enter to save · Esc to close",
+                Language::SimplifiedChinese => "Tab 移动 · 回车保存 · Esc 关闭",
+            },
+            (_, TrKey::SaveBtn) => match self {
+                Language::English => "Save",
+                Language::SimplifiedChinese => "保存",
+            },
+            (_, TrKey::ThemeBackground) => match self {
+                Language::English => "Background",
+                Language::SimplifiedChinese => "背景",
+            },
+            (_, TrKey::ThemeSurface) => match self {
+                Language::English => "Surface",
+                Language::SimplifiedChinese => "表面",
+            },
+            (_, TrKey::ThemeElevated) => match self {
+                Language::English => "Elevated Surface",
+                Language::SimplifiedChinese => "浮层",
+            },
+            (_, TrKey::ThemeBorder) => match self {
+                Language::English => "Border",
+                Language::SimplifiedChinese => "边框",
+            },
+            (_, TrKey::ThemeText) => match self {
+                Language::English => "Text",
+                Language::SimplifiedChinese => "文本",
+            },
+            (_, TrKey::ThemeTextMuted) => match self {
+                Language::English => "Text Muted",
+                Language::SimplifiedChinese => "次要文本",
+            },
+            (_, TrKey::ThemeTextAccent) => match self {
+                Language::English => "Text Accent",
+                Language::SimplifiedChinese => "强调文本",
+            },
+            (_, TrKey::ThemePlaceholder) => match self {
+                Language::English => "Text Placeholder",
+                Language::SimplifiedChinese => "占位文本",
+            },
+            (_, TrKey::ThemeIcon) => match self {
+                Language::English => "Icon",
+                Language::SimplifiedChinese => "图标",
+            },
+            (_, TrKey::ThemeFocusRing) => match self {
+                Language::English => "Focus Ring",
+                Language::SimplifiedChinese => "聚焦环",
+            },
+            (_, TrKey::ThemeSelectedBorder) => match self {
+                Language::English => "Selected Border",
+                Language::SimplifiedChinese => "选中边框",
+            },
+            (_, TrKey::ThemeAdded) => match self {
+                Language::English => "Added",
+                Language::SimplifiedChinese => "新增",
+            },
+            (_, TrKey::ThemeModified) => match self {
+                Language::English => "Modified",
+                Language::SimplifiedChinese => "修改",
+            },
+            (_, TrKey::ThemeDeleted) => match self {
+                Language::English => "Deleted",
+                Language::SimplifiedChinese => "删除",
+            },
+            (_, TrKey::ThemeUntracked) => match self {
+                Language::English => "Untracked",
+                Language::SimplifiedChinese => "未跟踪",
+            },
+            (_, TrKey::ThemeConflict) => match self {
+                Language::English => "Conflict",
+                Language::SimplifiedChinese => "冲突",
+            },
+            (_, TrKey::ThemeRenamed) => match self {
+                Language::English => "Renamed",
+                Language::SimplifiedChinese => "重命名",
+            },
+            (_, TrKey::ThemeError) => match self {
+                Language::English => "Error",
+                Language::SimplifiedChinese => "错误",
+            },
+            (_, TrKey::ThemeWarning) => match self {
+                Language::English => "Warning",
+                Language::SimplifiedChinese => "警告",
+            },
+            (_, TrKey::ThemeSuccess) => match self {
+                Language::English => "Success",
+                Language::SimplifiedChinese => "成功",
+            },
+            (_, TrKey::ThemeInfo) => match self {
+                Language::English => "Info",
+                Language::SimplifiedChinese => "信息",
+            },
+            (_, TrKey::TipOpenRepo) => match self {
+                Language::English => "Open repository",
+                Language::SimplifiedChinese => "打开仓库",
+            },
+            (_, TrKey::TipMerged) => match self {
+                Language::English => "Merged into current branch",
+                Language::SimplifiedChinese => "已合并到当前分支",
+            },
+            (_, TrKey::TipCopyBranch) => match self {
+                Language::English => "Copy branch name",
+                Language::SimplifiedChinese => "复制分支名",
+            },
+            (_, TrKey::TipCheckoutBranch) => match self {
+                Language::English => "Checkout branch",
+                Language::SimplifiedChinese => "检出分支",
+            },
+            (_, TrKey::TipMergeBranch) => match self {
+                Language::English => "Merge into current branch",
+                Language::SimplifiedChinese => "合并到当前分支",
+            },
+            (_, TrKey::TipRenameBranch) => match self {
+                Language::English => "Rename branch",
+                Language::SimplifiedChinese => "重命名分支",
+            },
+            (_, TrKey::TipDeleteBranch) => match self {
+                Language::English => "Delete branch",
+                Language::SimplifiedChinese => "删除分支",
+            },
+            (_, TrKey::TipFetchRemote) => match self {
+                Language::English => "Fetch from remote",
+                Language::SimplifiedChinese => "从远程获取",
+            },
+            (_, TrKey::TipPullRemote) => match self {
+                Language::English => "Pull from remote",
+                Language::SimplifiedChinese => "从远程拉取",
+            },
+            (_, TrKey::TipPushRemote) => match self {
+                Language::English => "Push to remote",
+                Language::SimplifiedChinese => "推送到远程",
+            },
+            (_, TrKey::TipRemoveRemote) => match self {
+                Language::English => "Remove remote",
+                Language::SimplifiedChinese => "移除远程",
+            },
+            (_, TrKey::TipCheckoutTag) => match self {
+                Language::English => "Checkout tag",
+                Language::SimplifiedChinese => "检出标签",
+            },
+            (_, TrKey::TipDeleteTag) => match self {
+                Language::English => "Delete tag",
+                Language::SimplifiedChinese => "删除标签",
+            },
+            (_, TrKey::ApplyStashLbl) => match self {
+                Language::English => "Apply stash",
+                Language::SimplifiedChinese => "应用储藏",
+            },
+            (_, TrKey::PopStashLbl) => match self {
+                Language::English => "Pop stash",
+                Language::SimplifiedChinese => "弹出储藏",
+            },
+            (_, TrKey::TipStashBranch) => match self {
+                Language::English => "Create branch from stash",
+                Language::SimplifiedChinese => "从储藏创建分支",
+            },
+            (_, TrKey::TipDropStash) => match self {
+                Language::English => "Drop stash",
+                Language::SimplifiedChinese => "丢弃储藏",
+            },
+            (_, TrKey::TipRemoveWorktree) => match self {
+                Language::English => "Remove worktree",
+                Language::SimplifiedChinese => "移除工作树",
+            },
+            (_, TrKey::TipUnstageFile) => match self {
+                Language::English => "Unstage file",
+                Language::SimplifiedChinese => "取消暂存文件",
+            },
+            (_, TrKey::TipStageFile) => match self {
+                Language::English => "Stage file",
+                Language::SimplifiedChinese => "暂存文件",
+            },
+            (_, TrKey::TipConflictResolver) => match self {
+                Language::English => "Open conflict resolver",
+                Language::SimplifiedChinese => "打开冲突解决器",
+            },
+            (_, TrKey::TipDiscardChanges) => match self {
+                Language::English => "Discard changes",
+                Language::SimplifiedChinese => "丢弃更改",
+            },
+            (_, TrKey::TipFilterLocal) => match self {
+                Language::English => "Filter branches by name or last used",
+                Language::SimplifiedChinese => "按名称或上次使用过滤分支",
+            },
+            (_, TrKey::TipFilterRemote) => match self {
+                Language::English => "Filter remote branches by name or last used",
+                Language::SimplifiedChinese => "按名称或上次使用过滤远程分支",
+            },
+            (_, TrKey::TipStagedOpts) => match self {
+                Language::English => "Staged list options",
+                Language::SimplifiedChinese => "已暂存列表选项",
+            },
+            (_, TrKey::TipUnstagedOpts) => match self {
+                Language::English => "Unstaged list options",
+                Language::SimplifiedChinese => "未暂存列表选项",
+            },
+            (_, TrKey::TipCopySha) => match self {
+                Language::English => "Copy commit SHA",
+                Language::SimplifiedChinese => "复制提交 SHA",
+            },
+            (_, TrKey::TipGpg) => match self {
+                Language::English => "GPG-signed commit",
+                Language::SimplifiedChinese => "GPG 签名提交",
+            },
+            (_, TrKey::TipCherryPick) => match self {
+                Language::English => "Cherry-pick this commit",
+                Language::SimplifiedChinese => "拣选此提交",
+            },
+            (_, TrKey::TipClearSearch) => match self {
+                Language::English => "Clear search (Esc)",
+                Language::SimplifiedChinese => "清除搜索（Esc）",
+            },
+            (_, TrKey::FlatViewTip) => match self {
+                Language::English => "Switch to Tree view (v)",
+                Language::SimplifiedChinese => "切换到树视图 (v)",
+            },
+            (_, TrKey::TreeViewTip) => match self {
+                Language::English => "Switch to Flat view (v)",
+                Language::SimplifiedChinese => "切换到平铺视图 (v)",
+            },
+            (_, TrKey::NoFilesTip) => match self {
+                Language::English => "No changed files to display",
+                Language::SimplifiedChinese => "暂无更改的文件",
+            },
+            (_, TrKey::ClearSearchTip) => match self {
+                Language::English => "Clear file search to switch views",
+                Language::SimplifiedChinese => "清除文件搜索以切换视图",
+            },
+            (_, TrKey::CommitSummaryPh) => match self {
+                Language::English => "Commit summary...",
+                Language::SimplifiedChinese => "提交摘要…",
+            },
+            (_, TrKey::CommitDescPh) => match self {
+                Language::English => "Optional extended description...",
+                Language::SimplifiedChinese => "可选的详细描述…",
+            },
+            (_, TrKey::CoAuthorNamePh) => match self {
+                Language::English => "Co-author name...",
+                Language::SimplifiedChinese => "共同作者姓名…",
+            },
+            (_, TrKey::CoAuthorEmailPh) => match self {
+                Language::English => "Co-author email...",
+                Language::SimplifiedChinese => "共同作者邮箱…",
+            },
+            (_, TrKey::TipExpandCommit) => match self {
+                Language::English => "Expand commit panel",
+                Language::SimplifiedChinese => "展开提交面板",
+            },
+            (_, TrKey::TipCollapseCommit) => match self {
+                Language::English => "Collapse commit panel",
+                Language::SimplifiedChinese => "折叠提交面板",
+            },
+            (_, TrKey::TipExplorer) => match self {
+                Language::English => "Open in file explorer",
+                Language::SimplifiedChinese => "在文件管理器中打开",
+            },
+            (_, TrKey::TipTerminal) => match self {
+                Language::English => "Open terminal",
+                Language::SimplifiedChinese => "打开终端",
+            },
+            (_, TrKey::TipEditor) => match self {
+                Language::English => "Open in editor",
+                Language::SimplifiedChinese => "在编辑器中打开",
+            },
+            (_, TrKey::TitleDetachedTag) => match self {
+                Language::English => "(detached)",
+                Language::SimplifiedChinese => "（已分离）",
+            },
+            (_, TrKey::TipApplyKeep) => match self {
+                Language::English => "Apply stash (keep)",
+                Language::SimplifiedChinese => "应用储藏（保留）",
+            },
+            (_, TrKey::TipPopRemove) => match self {
+                Language::English => "Pop stash (remove)",
+                Language::SimplifiedChinese => "弹出储藏（移除）",
+            },
+            (_, TrKey::StashesEmpty) => match self {
+                Language::English => "No stashes",
+                Language::SimplifiedChinese => "暂无储藏",
+            },
+            (_, TrKey::StashesEmptyHint) => match self {
+                Language::English => "Use the toolbar to stash changes",
+                Language::SimplifiedChinese => "使用工具栏储藏更改",
+            },
+            (_, TrKey::SearchPh) => match self {
+                Language::English => "Search across all files... (press Enter)",
+                Language::SimplifiedChinese => "搜索全部文件…（回车）",
+            },
+            (_, TrKey::SearchEmpty) => match self {
+                Language::English => "Type to search across all files",
+                Language::SimplifiedChinese => "输入以搜索全部文件",
+            },
+            (_, TrKey::SearchHint) => match self {
+                Language::English => "Press Enter to search | j/k to navigate",
+                Language::SimplifiedChinese => "回车搜索 | j/k 导航",
+            },
+            (_, TrKey::FilterFilesPh) => match self {
+                Language::English => "Filter files...",
+                Language::SimplifiedChinese => "过滤文件…",
+            },
+            (_, TrKey::FilterBranchesPh) => match self {
+                Language::English => "Filter branches...",
+                Language::SimplifiedChinese => "过滤分支…",
+            },
+            (_, TrKey::FilterRemotePh) => match self {
+                Language::English => "Filter remote branches...",
+                Language::SimplifiedChinese => "过滤远程分支…",
+            },
+            (_, TrKey::SetHttpsTokenPh) => match self {
+                Language::English => "Paste a generic HTTPS token only if you need a fallback...",
+                Language::SimplifiedChinese => "仅在需要备用时粘贴通用 HTTPS 令牌…",
+            },
+            (_, TrKey::SetGpgPh) => match self {
+                Language::English => "No explicit GPG key configured",
+                Language::SimplifiedChinese => "未配置 GPG 密钥",
+            },
+            (_, TrKey::SetUsuallyEmpty) => match self {
+                Language::English => "Usually left empty",
+                Language::SimplifiedChinese => "通常留空",
+            },
+            (_, TrKey::SetAccountTokenPh) => match self {
+                Language::English => "Paste the access token for this account...",
+                Language::SimplifiedChinese => "粘贴此账户的访问令牌…",
+            },
+            (_, TrKey::SetCustomCmdPh) => match self {
+                Language::English => "Custom command override...",
+                Language::SimplifiedChinese => "自定义命令覆盖…",
+            },
+            (_, TrKey::TipPaste) => match self {
+                Language::English => "Paste from clipboard",
+                Language::SimplifiedChinese => "从剪贴板粘贴",
+            },
+            (_, TrKey::TipHide) => match self {
+                Language::English => "Hide",
+                Language::SimplifiedChinese => "隐藏",
+            },
+            (_, TrKey::TipShow) => match self {
+                Language::English => "Show",
+                Language::SimplifiedChinese => "显示",
+            },
+            (_, TrKey::CopiedFb) => match self {
+                Language::English => "Copied!",
+                Language::SimplifiedChinese => "已复制！",
+            },
+            (_, TrKey::FindingBranches) => match self {
+                Language::English => "Finding branches…",
+                Language::SimplifiedChinese => "正在查找分支…",
+            },
+            (_, TrKey::ContainedIn) => match self {
+                Language::English => "CONTAINED IN",
+                Language::SimplifiedChinese => "包含于",
+            },
+            (_, TrKey::SearchFilesHint) => match self {
+                Language::English => "/ to search files",
+                Language::SimplifiedChinese => "/ 搜索文件",
+            },
+            (_, TrKey::SortLastUsed) => match self {
+                Language::English => "Last used",
+                Language::SimplifiedChinese => "上次使用",
+            },
+            (_, TrKey::OnlyMine) => match self {
+                Language::English => "Only my branches",
+                Language::SimplifiedChinese => "仅我的分支",
+            },
+            (_, TrKey::PopBranchFilters) => match self {
+                Language::English => "Branch filters",
+                Language::SimplifiedChinese => "分支过滤器",
+            },
+            (_, TrKey::PopRemoteFilters) => match self {
+                Language::English => "Remote branch filters",
+                Language::SimplifiedChinese => "远程分支过滤器",
+            },
+            (_, TrKey::PopStagedFiles) => match self {
+                Language::English => "Staged files",
+                Language::SimplifiedChinese => "已暂存文件",
+            },
+            (_, TrKey::PopUnstagedFiles) => match self {
+                Language::English => "Unstaged files",
+                Language::SimplifiedChinese => "未暂存文件",
+            },
+            (_, TrKey::ShowLineCounts) => match self {
+                Language::English => "Show line counts",
+                Language::SimplifiedChinese => "显示行数统计",
+            },
+            (_, TrKey::ChangeListHint) => match self {
+                Language::English => "Applies to staged and unstaged files.",
+                Language::SimplifiedChinese => "适用于已暂存与未暂存文件。",
+            },
+            (_, TrKey::NoRemotes) => match self {
+                Language::English => "No remotes configured",
+                Language::SimplifiedChinese => "未配置远程",
+            },
+            (_, TrKey::NoTags) => match self {
+                Language::English => "No tags",
+                Language::SimplifiedChinese => "暂无标签",
+            },
+            (_, TrKey::NoWorktrees) => match self {
+                Language::English => "No worktrees",
+                Language::SimplifiedChinese => "暂无工作树",
+            },
+            (_, TrKey::CurrentTag) => match self {
+                Language::English => "(current)",
+                Language::SimplifiedChinese => "（当前）",
+            },
+            (_, TrKey::StashMenuCreateBranch) => match self {
+                Language::English => "Create branch",
+                Language::SimplifiedChinese => "创建分支",
+            },
+            (_, TrKey::BlameEmpty) => match self {
+                Language::English => "Select a file to view blame",
+                Language::SimplifiedChinese => "选择文件以查看追溯",
+            },
+            (_, TrKey::FileHistoryTitle) => match self {
+                Language::English => "File History",
+                Language::SimplifiedChinese => "文件历史",
+            },
+            (_, TrKey::HistoryEmpty) => match self {
+                Language::English => "Select a file to view history",
+                Language::SimplifiedChinese => "选择文件以查看历史",
+            },
+            (_, TrKey::ReflogTitle) => match self {
+                Language::English => "Reflog",
+                Language::SimplifiedChinese => "引用日志",
+            },
+            (_, TrKey::ReflogEmpty) => match self {
+                Language::English => "No reflog entries",
+                Language::SimplifiedChinese => "暂无引用日志",
+            },
+            (_, TrKey::ReflogHint) => match self {
+                Language::English => "Reflog tracks HEAD changes",
+                Language::SimplifiedChinese => "引用日志记录 HEAD 的变化",
+            },
+            (_, TrKey::SubmodulesTitle) => match self {
+                Language::English => "Submodules",
+                Language::SimplifiedChinese => "子模块",
+            },
+            (_, TrKey::SubmodulesEmpty) => match self {
+                Language::English => "No submodules found",
+                Language::SimplifiedChinese => "未找到子模块",
+            },
+            (_, TrKey::SubmodulesHint) => match self {
+                Language::English => "Add submodules to your repository",
+                Language::SimplifiedChinese => "向仓库添加子模块",
+            },
+            (_, TrKey::CommitsCountFmt) => match self {
+                Language::English => "{} commits",
+                Language::SimplifiedChinese => "{} 个提交",
+            },
+            (_, TrKey::BhTab) => match self {
+                Language::English => "Branch Health",
+                Language::SimplifiedChinese => "分支健康",
+            },
+            (_, TrKey::BhUnmerged) => match self {
+                Language::English => "Unmerged",
+                Language::SimplifiedChinese => "未合并",
+            },
+            (_, TrKey::BhStale) => match self {
+                Language::English => "Stale",
+                Language::SimplifiedChinese => "长期未动",
+            },
+            (_, TrKey::BhDiverged) => match self {
+                Language::English => "Diverged",
+                Language::SimplifiedChinese => "已分叉",
+            },
+            (_, TrKey::BhTotal) => match self {
+                Language::English => "Total",
+                Language::SimplifiedChinese => "总数",
+            },
+            (_, TrKey::BhMerged) => match self {
+                Language::English => "Merged",
+                Language::SimplifiedChinese => "已合并",
+            },
+            (_, TrKey::AgeAny) => match self {
+                Language::English => "Any time",
+                Language::SimplifiedChinese => "不限时间",
+            },
+            (_, TrKey::AgeSevenDays) => match self {
+                Language::English => "Last 7 days",
+                Language::SimplifiedChinese => "近 7 天",
+            },
+            (_, TrKey::AgeThirtyDays) => match self {
+                Language::English => "Last 30 days",
+                Language::SimplifiedChinese => "近 30 天",
+            },
+            (_, TrKey::AgeNinetyDays) => match self {
+                Language::English => "Last 90 days",
+                Language::SimplifiedChinese => "近 90 天",
+            },
+            (_, TrKey::AgeOneYear) => match self {
+                Language::English => "Last year",
+                Language::SimplifiedChinese => "近一年",
+            },
+            (_, TrKey::TipCreatePrFull) => match self {
+                Language::English => "Create GitHub pull request",
+                Language::SimplifiedChinese => "创建 GitHub 拉取请求",
+            },
+            (_, TrKey::TipSearchCommits) => match self {
+                Language::English => "Search commits",
+                Language::SimplifiedChinese => "搜索提交",
+            },
+            (_, TrKey::TipRefresh) => match self {
+                Language::English => "Refresh",
+                Language::SimplifiedChinese => "刷新",
+            },
+            (_, TrKey::TipSettings) => match self {
+                Language::English => "Settings",
+                Language::SimplifiedChinese => "设置",
+            },
+            (_, TrKey::BlameEmptyHint) => match self {
+                Language::English => "Press 'b' on a file to see line-by-line attribution",
+                Language::SimplifiedChinese => "在文件上按 'b' 查看逐行归属",
+            },
+            (_, TrKey::HistoryEmptyHint) => match self {
+                Language::English => "Press 'h' on a file to see commits",
+                Language::SimplifiedChinese => "在文件上按 'h' 查看提交",
+            },
+            (_, TrKey::SearchResultsFmt) => match self {
+                Language::English => "{} results",
+                Language::SimplifiedChinese => "{} 个结果",
+            },
+            (_, TrKey::StagedOneFmt) => match self {
+                Language::English => "{} file staged",
+                Language::SimplifiedChinese => "已暂存 {} 个文件",
+            },
+            (_, TrKey::StagedManyFmt) => match self {
+                Language::English => "{} files staged",
+                Language::SimplifiedChinese => "已暂存 {} 个文件",
+            },
+            (_, TrKey::StagedNone) => match self {
+                Language::English => "No files staged",
+                Language::SimplifiedChinese => "没有暂存的文件",
+            },
+            (_, TrKey::DescCount11) => match self {
+                Language::English => "{} char, {} line",
+                Language::SimplifiedChinese => "{} 字符，{} 行",
+            },
+            (_, TrKey::DescCount1N) => match self {
+                Language::English => "{} char, {} lines",
+                Language::SimplifiedChinese => "{} 字符，{} 行",
+            },
+            (_, TrKey::DescCountN1) => match self {
+                Language::English => "{} chars, {} line",
+                Language::SimplifiedChinese => "{} 字符，{} 行",
+            },
+            (_, TrKey::DescCountNN) => match self {
+                Language::English => "{} chars, {} lines",
+                Language::SimplifiedChinese => "{} 字符，{} 行",
+            },
+            (_, TrKey::StatusStagedFmt) => match self {
+                Language::English => "{} staged",
+                Language::SimplifiedChinese => "已暂存 {}",
+            },
+            (_, TrKey::StatusChangedFmt) => match self {
+                Language::English => "{} changed",
+                Language::SimplifiedChinese => "已更改 {}",
+            },
+            (_, TrKey::ErrStageFailed) => match self {
+                Language::English => "Stage failed",
+                Language::SimplifiedChinese => "暂存失败",
+            },
+            (_, TrKey::ErrUnstageFailed) => match self {
+                Language::English => "Unstage failed",
+                Language::SimplifiedChinese => "取消暂存失败",
+            },
+            (_, TrKey::ErrStageAllFailed) => match self {
+                Language::English => "Stage all failed",
+                Language::SimplifiedChinese => "全部暂存失败",
+            },
+            (_, TrKey::ErrUnstageAllFailed) => match self {
+                Language::English => "Unstage all failed",
+                Language::SimplifiedChinese => "全部取消暂存失败",
+            },
+            (_, TrKey::ErrCommitFailed) => match self {
+                Language::English => "Commit failed",
+                Language::SimplifiedChinese => "提交失败",
+            },
+            (_, TrKey::ErrAmendFailed) => match self {
+                Language::English => "Amend failed",
+                Language::SimplifiedChinese => "修正提交失败",
+            },
+            (_, TrKey::ErrCheckoutBranchFailedFmt) => match self {
+                Language::English => "Checkout of '{}' failed",
+                Language::SimplifiedChinese => "检出 '{}' 失败",
+            },
+            (_, TrKey::ErrCheckoutCommitFailedFmt) => match self {
+                Language::English => "Checkout of {} failed",
+                Language::SimplifiedChinese => "检出 {} 失败",
+            },
+            (_, TrKey::ErrCheckoutTagFailedFmt) => match self {
+                Language::English => "Checkout of tag '{}' failed",
+                Language::SimplifiedChinese => "检出标签 '{}' 失败",
+            },
+            (_, TrKey::ErrBranchCreateFailedFmt) => match self {
+                Language::English => "Branch '{}' could not be created",
+                Language::SimplifiedChinese => "无法创建分支 '{}'",
+            },
+            (_, TrKey::ErrBranchDeleteFailedFmt) => match self {
+                Language::English => "Delete branch '{}' failed",
+                Language::SimplifiedChinese => "删除分支 '{}' 失败",
+            },
+            (_, TrKey::ErrBranchRenameFailedFmt) => match self {
+                Language::English => "Rename branch '{}' failed",
+                Language::SimplifiedChinese => "重命名分支 '{}' 失败",
+            },
+            (_, TrKey::ErrTagCreateFailedFmt) => match self {
+                Language::English => "Tag '{}' could not be created",
+                Language::SimplifiedChinese => "无法创建标签 '{}'",
+            },
+            (_, TrKey::ErrTagDeleteFailedFmt) => match self {
+                Language::English => "Delete tag '{}' failed",
+                Language::SimplifiedChinese => "删除标签 '{}' 失败",
+            },
+            (_, TrKey::ErrStashSaveFailed) => match self {
+                Language::English => "Save stash failed",
+                Language::SimplifiedChinese => "保存储藏失败",
+            },
+            (_, TrKey::ErrStashPopFailedFmt) => match self {
+                Language::English => "Pop stash #{} failed",
+                Language::SimplifiedChinese => "弹出储藏 #{} 失败",
+            },
+            (_, TrKey::ErrStashApplyFailedFmt) => match self {
+                Language::English => "Apply stash #{} failed",
+                Language::SimplifiedChinese => "应用储藏 #{} 失败",
+            },
+            (_, TrKey::ErrStashDropFailedFmt) => match self {
+                Language::English => "Drop stash #{} failed",
+                Language::SimplifiedChinese => "丢弃储藏 #{} 失败",
+            },
+            (_, TrKey::ErrStashBranchFailedFmt) => match self {
+                Language::English => "Create branch from stash #{} failed",
+                Language::SimplifiedChinese => "从储藏 #{} 创建分支失败",
+            },
+            (_, TrKey::ErrDiscardFailed) => match self {
+                Language::English => "Discard changes failed",
+                Language::SimplifiedChinese => "丢弃更改失败",
+            },
+            (_, TrKey::ErrCleanFailed) => match self {
+                Language::English => "Clean failed",
+                Language::SimplifiedChinese => "清理失败",
+            },
+            (_, TrKey::ErrResetHeadFailed) => match self {
+                Language::English => "Reset to HEAD failed",
+                Language::SimplifiedChinese => "重置到 HEAD 失败",
+            },
+            (_, TrKey::ErrResetFailedFmt) => match self {
+                Language::English => "Reset to {} failed",
+                Language::SimplifiedChinese => "重置到 {} 失败",
+            },
+            (_, TrKey::ErrResetSoftFailedFmt) => match self {
+                Language::English => "Soft reset to {} failed",
+                Language::SimplifiedChinese => "软重置到 {} 失败",
+            },
+            (_, TrKey::ErrResetMixedFailedFmt) => match self {
+                Language::English => "Mixed reset to {} failed",
+                Language::SimplifiedChinese => "混合重置到 {} 失败",
+            },
+            (_, TrKey::ErrRevertConflictFmt) => match self {
+                Language::English => "Revert of {} needs conflict resolution",
+                Language::SimplifiedChinese => "还原 {} 需要解决冲突",
+            },
+            (_, TrKey::ErrRevertFailedFmt) => match self {
+                Language::English => "Revert of {} failed",
+                Language::SimplifiedChinese => "还原 {} 失败",
+            },
+            (_, TrKey::ErrRevertGuide) => match self {
+                Language::English => "Resolve the conflicts in the working tree, then commit the revert manually.",
+                Language::SimplifiedChinese => "请解决工作树中的冲突，然后手动提交此次还原。",
+            },
+            (_, TrKey::ErrCherryPickConflictFmt) => match self {
+                Language::English => "Cherry-pick of {} needs conflict resolution",
+                Language::SimplifiedChinese => "拣选 {} 需要解决冲突",
+            },
+            (_, TrKey::ErrCherryPickFailedFmt) => match self {
+                Language::English => "Cherry-pick of {} failed",
+                Language::SimplifiedChinese => "拣选 {} 失败",
+            },
+            (_, TrKey::ErrCherryPickGuide) => match self {
+                Language::English => "Resolve the conflicts in the working tree, then commit the cherry-pick manually.",
+                Language::SimplifiedChinese => "请解决工作树中的冲突，然后手动提交此次拣选。",
+            },
+            (_, TrKey::ErrAbortFailedFmt) => match self {
+                Language::English => "Failed to abort {}",
+                Language::SimplifiedChinese => "中止 {} 失败",
+            },
+            (_, TrKey::ErrContinueFailedFmt) => match self {
+                Language::English => "Could not continue {}",
+                Language::SimplifiedChinese => "无法继续 {}",
+            },
+            (_, TrKey::ErrMergeConflictFmt) => match self {
+                Language::English => "Merge conflicts in '{}'",
+                Language::SimplifiedChinese => "合并 '{}' 存在冲突",
+            },
+            (_, TrKey::ErrMergeFailedFmt) => match self {
+                Language::English => "Merge of '{}' failed",
+                Language::SimplifiedChinese => "合并 '{}' 失败",
+            },
+            (_, TrKey::ErrRemoveRemoteFailed) => match self {
+                Language::English => "Removing remote failed",
+                Language::SimplifiedChinese => "移除远程失败",
+            },
+            (_, TrKey::ErrCloneFailed) => match self {
+                Language::English => "Clone failed",
+                Language::SimplifiedChinese => "克隆失败",
+            },
+            (_, TrKey::ErrBisectStartFailed) => match self {
+                Language::English => "Failed to start bisect",
+                Language::SimplifiedChinese => "启动 bisect 失败",
+            },
+            (_, TrKey::ErrBisectGoodFailedFmt) => match self {
+                Language::English => "Failed to mark {} as good",
+                Language::SimplifiedChinese => "无法将 {} 标记为正常",
+            },
+            (_, TrKey::ErrBisectBadFailedFmt) => match self {
+                Language::English => "Failed to mark {} as bad",
+                Language::SimplifiedChinese => "无法将 {} 标记为有问题",
+            },
+            (_, TrKey::ErrBisectExhausted) => match self {
+                Language::English => "Bisect exhausted",
+                Language::SimplifiedChinese => "Bisect 已穷尽候选提交",
+            },
+            (_, TrKey::ErrBisectSkipFailedFmt) => match self {
+                Language::English => "Failed to skip {}",
+                Language::SimplifiedChinese => "无法跳过 {}",
+            },
+            (_, TrKey::ErrBisectResetFailed) => match self {
+                Language::English => "Failed to reset bisect",
+                Language::SimplifiedChinese => "重置 bisect 失败",
+            },
+            (_, TrKey::ErrWorktreeCreateFailedFmt) => match self {
+                Language::English => "Create worktree '{}' failed",
+                Language::SimplifiedChinese => "创建工作树 '{}' 失败",
+            },
+            (_, TrKey::ErrWorktreeRemoveFailedFmt) => match self {
+                Language::English => "Remove worktree '{}' failed",
+                Language::SimplifiedChinese => "移除工作树 '{}' 失败",
+            },
+            (_, TrKey::ErrFetchFailedFmt) => match self {
+                Language::English => "Fetch from '{}' failed",
+                Language::SimplifiedChinese => "从 '{}' 获取失败",
+            },
+            (_, TrKey::ErrPullConflictFmt) => match self {
+                Language::English => "Pull from '{}' has conflicts",
+                Language::SimplifiedChinese => "从 '{}' 拉取存在冲突",
+            },
+            (_, TrKey::ErrPullFailedFmt) => match self {
+                Language::English => "Pull from '{}' failed",
+                Language::SimplifiedChinese => "从 '{}' 拉取失败",
+            },
+            (_, TrKey::ErrPushFailedFmt) => match self {
+                Language::English => "Push to '{}' failed",
+                Language::SimplifiedChinese => "向 '{}' 推送失败",
+            },
+            (_, TrKey::ErrFetchNotStarted) => match self {
+                Language::English => "Fetch could not start",
+                Language::SimplifiedChinese => "获取无法启动",
+            },
+            (_, TrKey::ErrPullNotStarted) => match self {
+                Language::English => "Pull could not start",
+                Language::SimplifiedChinese => "拉取无法启动",
+            },
+            (_, TrKey::ErrPushNotStarted) => match self {
+                Language::English => "Push could not start",
+                Language::SimplifiedChinese => "推送无法启动",
+            },
+            (_, TrKey::ErrRebasePaused) => match self {
+                Language::English => "Rebase paused due to conflicts",
+                Language::SimplifiedChinese => "变基因冲突已暂停",
+            },
+            (_, TrKey::ErrRebaseFailed) => match self {
+                Language::English => "Interactive rebase failed",
+                Language::SimplifiedChinese => "交互式变基失败",
+            },
+            (_, TrKey::ErrStageHunkFailed) => match self {
+                Language::English => "Stage hunk failed",
+                Language::SimplifiedChinese => "暂存代码块失败",
+            },
+            (_, TrKey::ErrUnstageHunkFailed) => match self {
+                Language::English => "Unstage hunk failed",
+                Language::SimplifiedChinese => "取消暂存代码块失败",
+            },
+            (_, TrKey::ErrStageLinesFailed) => match self {
+                Language::English => "Stage lines failed",
+                Language::SimplifiedChinese => "暂存选中行失败",
+            },
+            (_, TrKey::ErrUnstageLinesFailed) => match self {
+                Language::English => "Unstage lines failed",
+                Language::SimplifiedChinese => "取消暂存选中行失败",
+            },
+            (_, TrKey::ErrConflictResolveFailed) => match self {
+                Language::English => "Conflict resolution failed",
+                Language::SimplifiedChinese => "冲突解决失败",
+            },
+            (_, TrKey::ErrAlreadyOnBranchFmt) => match self {
+                Language::English => "Already on branch '{}'.",
+                Language::SimplifiedChinese => "已位于分支 '{}'。",
+            },
+            (_, TrKey::ErrCleanWorktreeFmt) => match self {
+                Language::English => "{} requires a clean working tree. Commit, stash, or discard your changes to tracked files first.",
+                Language::SimplifiedChinese => "{} 需要干净的工作树，请先提交、储藏或丢弃已跟踪文件的更改。",
+            },
+            (_, TrKey::ErrHeadDetached) => match self {
+                Language::English => "HEAD is detached. Switch to a branch before running this operation.",
+                Language::SimplifiedChinese => "HEAD 已分离，请先切换到某个分支再执行此操作。",
+            },
+            (_, TrKey::ErrBranchNameUnknown) => match self {
+                Language::English => "Failed to determine the current branch name",
+                Language::SimplifiedChinese => "无法确定当前分支名",
+            },
+            (_, TrKey::ErrNoRemotes) => match self {
+                Language::English => "No remotes configured. Add one with: git remote add origin <url>",
+                Language::SimplifiedChinese => "尚未配置远程仓库，请先添加：git remote add origin <url>",
+            },
+            (_, TrKey::ErrNoUsableRemotes) => match self {
+                Language::English => "No usable git remotes are configured.",
+                Language::SimplifiedChinese => "没有可用的 git 远程配置。",
+            },
+            (_, TrKey::ErrNoStagedChanges) => match self {
+                Language::English => "There are no staged changes to commit.",
+                Language::SimplifiedChinese => "没有已暂存的更改可提交。",
+            },
+            (_, TrKey::ErrCannotAmendRebase) => match self {
+                Language::English => "Cannot amend during a rebase. Continue or abort the rebase first.",
+                Language::SimplifiedChinese => "变基期间无法修正提交，请先继续或中止变基。",
+            },
+            (_, TrKey::ErrOverwriteLocalFmt) => match self {
+                Language::English => "{} would overwrite local changes. Commit, stash, or discard them first.",
+                Language::SimplifiedChinese => "{} 会覆盖本地更改，请先提交、储藏或丢弃它们。",
+            },
+            (_, TrKey::ErrOverwritePathOneFmt) => match self {
+                Language::English => "{} would overwrite {}. Commit, stash, move, or delete it first.",
+                Language::SimplifiedChinese => "{} 会覆盖 {}，请先提交、储藏、移动或删除该文件。",
+            },
+            (_, TrKey::ErrOverwritePathManyFmt) => match self {
+                Language::English => "{} would overwrite {}. Commit, stash, move, or delete them first.",
+                Language::SimplifiedChinese => "{} 会覆盖 {}，请先提交、储藏、移动或删除这些文件。",
+            },
+            (_, TrKey::ErrStagingConflictFmt) => match self {
+                Language::English => "'{}' has unresolved conflicts. Open the conflict resolver before staging it.",
+                Language::SimplifiedChinese => "'{}' 存在未解决的冲突，请先打开冲突解决器再暂存。",
+            },
+            (_, TrKey::ErrBranchNotFoundFmt) => match self {
+                Language::English => "Branch '{}' not found as a local or remote branch. Try fetching to update remote refs.",
+                Language::SimplifiedChinese => "找不到分支 '{}'（本地和远程均无），请先获取以更新远程引用。",
+            },
+            (_, TrKey::ErrLocalBranchExistsFmt) => match self {
+                Language::English => "A local branch named '{}' already exists. Please delete or rename it first.",
+                Language::SimplifiedChinese => "本地分支 '{}' 已存在，请先删除或重命名它。",
+            },
+            (_, TrKey::ErrInvalidRemoteBranchFmt) => match self {
+                Language::English => "Invalid remote branch name '{}'. Expected 'remote/branch' format.",
+                Language::SimplifiedChinese => "远程分支名 '{}' 无效，应为 'remote/branch' 格式。",
+            },
+            (_, TrKey::ErrNotMergeState) => match self {
+                Language::English => "Repository is not in a merge state (no MERGE_HEAD to continue).",
+                Language::SimplifiedChinese => "仓库当前不在合并状态（缺少 MERGE_HEAD，无法继续）。",
+            },
+            (_, TrKey::ErrUnresolvedConflicts) => match self {
+                Language::English => "There are still unresolved conflicts. Resolve all conflicts before continuing.",
+                Language::SimplifiedChinese => "仍有未解决的冲突，请先解决所有冲突再继续。",
+            },
+            (_, TrKey::ErrNothingToContinueFmt) => match self {
+                Language::English => "There is no {} to continue.",
+                Language::SimplifiedChinese => "当前没有可继续的 {}。",
+            },
+            (_, TrKey::ErrNoRebaseEntries) => match self {
+                Language::English => "No entries provided for interactive rebase",
+                Language::SimplifiedChinese => "未提供交互式变基条目",
+            },
+            (_, TrKey::ErrRebasePlanMismatchFmt) => match self {
+                Language::English => "Interactive rebase plan does not match the current branch's history (the selected commits are not exactly the last {} first-parent commits of HEAD). Refresh and try again.",
+                Language::SimplifiedChinese => "交互式变基计划与当前分支历史不匹配（所选提交并非 HEAD 末尾连续的 {} 个第一父系提交），请刷新后重试。",
+            },
+            (_, TrKey::ErrStashIndexOutOfRangeFmt) => match self {
+                Language::English => "Stash index {} out of range",
+                Language::SimplifiedChinese => "储藏索引 {} 超出范围",
+            },
+            (_, TrKey::ErrBaseNotCommitFmt) => match self {
+                Language::English => "'{}' does not resolve to a commit",
+                Language::SimplifiedChinese => "'{}' 无法解析为提交",
+            },
+            (_, TrKey::SignedBadge) => match self {
+                Language::English => "✓ Signed",
+                Language::SimplifiedChinese => "✓ 已签名",
+            },
+        }
+    }
+}
+
+impl fmt::Display for Language {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.native_name())
+    }
+}
+
+impl FromStr for Language {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().replace('-', "_").as_str() {
+            "en" | "english" => Ok(Language::English),
+            "zh_cn" | "zh" | "chinese" | "simplified_chinese" | "简体中文" => {
+                Ok(Language::SimplifiedChinese)
+            }
+            _ => Err(format!("Unknown language: {}", s)),
+        }
+    }
+}
+
+/// Keys for localizable UI text. One variant per localizable string;
+/// rendering code passes these to [`Language::tr`] instead of hardcoding
+/// English.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrKey {
+    Preferences,
+    SectionAppearance,
+    SectionAi,
+    SectionAuth,
+    SectionGeneral,
+    GeneralTitle,
+    GeneralDesc,
+    LanguageTitle,
+    LanguageDesc,
+    MaxRecentTitle,
+    MaxRecentDesc,
+    UiDensityTitle,
+    UiDensityDesc,
+    DensityCompact,
+    DensityDefault,
+    DensityComfortable,
+    FontSizeTitle,
+    FontSizeDesc,
+    GeneralPageDesc,
+    ThemeSectionDesc,
+    ThemePageDesc,
+    AppearanceModeTitle,
+    AppearanceModeDesc,
+    ModeAuto,
+    ModeLight,
+    ModeDark,
+    ColorThemeTitle,
+    ColorThemeDesc,
+    ActiveBadge,
+    CustomThemeTitle,
+    CustomThemeDesc,
+    EditThemeBtn,
+    AccountsTitle,
+    AccountsDesc,
+    AccountsHeader,
+    AccountsSectionDesc,
+    QuickSetupTitle,
+    QuickSetupDesc,
+    SignInGitHub,
+    AddGitLab,
+    ManualCustom,
+    AuthProfilesTitle,
+    AuthProfilesDesc,
+    AuthProfilesEmptyTitle,
+    AuthProfilesEmptyDesc,
+    AuthHttpsFallbackTitle,
+    AuthHttpsFallbackDesc,
+    AuthSshOverrideTitle,
+    AuthSshOverrideDesc,
+    AuthSignCommitsTitle,
+    AuthSignCommitsDesc,
+    AuthGpgKeyTitle,
+    AuthGpgKeyDesc,
+    AuthHowTitle,
+    AuthHowDesc,
+    AuthHowHttps,
+    AuthHowSshFallback,
+    AuthHowSshKey,
+    AiPageDesc,
+    AiSectionConnection,
+    AiSectionBehaviour,
+    AiStatusTitle,
+    AiEnabledToggle,
+    AiStatusOff,
+    AiStatusTestingFmt,
+    AiStatusRejectedFmt,
+    AiStatusAddKeyFmt,
+    AiConnectTitle,
+    AiConnectDesc,
+    AiApiKeyLabel,
+    AiGetKeyBtn,
+    AiKeyVerifiedFmt,
+    AiKeyStoredHintFmt,
+    AiNoKeyHintFmt,
+    AiKeysStoredNoteFmt,
+    AiModelLabel,
+    AiModelCountFmt,
+    AiRefreshBtn,
+    AiRefreshingBtn,
+    AiModelMissingFmt,
+    AiUseSuggestionFmt,
+    AiConnectBtn,
+    AiUseProviderBtn,
+    AiTestBtn,
+    AiTestingBtn,
+    AiRemoveKeyBtn,
+    AiAdvancedLabel,
+    AiBaseUrlLabel,
+    AiBaseUrlOverriddenFmt,
+    AiBaseUrlEmptyFmt,
+    AiAttributionTitle,
+    AiAttributionDesc,
+    AiCommitStyleTitle,
+    AiCommitStyleDesc,
+    AiCtxTitle,
+    AiCtxDesc,
+    AiToolsTitle,
+    AiToolsDesc,
+    AiKeyPlaceholderFmt,
+    ShowLineNumbersTitle,
+    ShowLineNumbersDesc,
+    WrapLinesTitle,
+    WrapLinesDesc,
+    DiffModeTitle,
+    DiffModeDesc,
+    DiffUnified,
+    DiffSideBySide,
+    GraphTitle,
+    GraphDesc,
+    GraphRails,
+    GraphCurved,
+    GraphAngular,
+    ShowSubjectTitle,
+    ShowSubjectDesc,
+    AutoFetchTitle,
+    AutoFetchDesc,
+    ConfirmDestructiveTitle,
+    ConfirmDestructiveDesc,
+    CheckUpdatesTitle,
+    CheckUpdatesDesc,
+    WatchWorktreesTitle,
+    WatchWorktreesDesc,
+    ExternalToolsTitle,
+    ExternalToolsDesc,
+    TerminalLabel,
+    EditorLabel,
+    CustomCommandLabel,
+    ShortcutsTitle,
+    ShortcutsDesc,
+    ConfigTitle,
+    ConfigDesc,
+    RevealBtn,
+    EditKeymapBtn,
+    SavedFeedback,
+    TbFetch,
+    TbFetching,
+    TbPull,
+    TbPulling,
+    TbPush,
+    TbPushing,
+    TbBranch,
+    TbStash,
+    TbPop,
+    TbCreatePr,
+    StatusClean,
+    StatusDetached,
+    SideBranches,
+    SideRemotes,
+    SideRemoteBranches,
+    SideTags,
+    SideStashes,
+    SideWorktrees,
+    SideStaged,
+    SideUnstaged,
+    SideStageAll,
+    SideUnstageAll,
+    SideNewWorktree,
+    SideWorkingClean,
+    SideNoStaged,
+    CommitBtn,
+    CommitNoStaged,
+    CommitNoMessage,
+    CommitAmendBtn,
+    AmendBtn,
+    ClearBtn,
+    SummaryLabel,
+    DescLabel,
+    CoAuthorsLabel,
+    NoStagedHint,
+    CancelBtn,
+    ConfirmHint,
+    CfConfirm,
+    CfDiscard,
+    CfClean,
+    CfDeleteBranch,
+    CfDeleteTag,
+    CfRemove,
+    CfDropStash,
+    CfReset,
+    CfAbort,
+    CfForcePush,
+    CfRemoveWorktree,
+    DiffFileBtn,
+    DiffEmptyTitle,
+    DiffEmptyDesc,
+    DiffOpenFile,
+    DetailTitle,
+    DetailEmptyTitle,
+    DetailEmptyDesc,
+    HomeSlogan,
+    OpenRepoTitle,
+    HomeNewWorkspace,
+    HomeRestoreLast,
+    HomeRecentWorkspaces,
+    HomeRecentRepos,
+    WsSummaryFmt,
+    LoadingDots,
+    OpRetry,
+    ConflictOneFmt,
+    ConflictManyFmt,
+    ConflictResolved,
+    ConflictContinue,
+    WorktreeExit,
+    InspectingPre,
+    DetachedHeadWord,
+    BottomDiff,
+    BottomDiffTip,
+    BottomHistory,
+    HistLoading,
+    HistShow,
+    HistUnavailable,
+    BottomBlame,
+    BlameLoading,
+    BlameShow,
+    BlameUnavailable,
+    GraphShowTip,
+    GraphHideTip,
+    DetachedTitlePre,
+    DetachedConsequence,
+    DetachedReturnPre,
+    DetachedReturnTipPre,
+    DetachedReturnTipPost,
+    DetachedSwitch,
+    DetachedShowGraph,
+    UpdateMsgFmt,
+    UpdateDownload,
+    MenuCherryPick,
+    MenuRevert,
+    MenuCheckout,
+    MenuCreateBranch,
+    MenuCreateTag,
+    MenuBisectGood,
+    MenuBisectBad,
+    MenuReset,
+    RebaseTitle,
+    MenuSquash,
+    MenuCopySha,
+    MenuCopyMsg,
+    MenuCopyAuthor,
+    MenuCopyDate,
+    MenuViewGithub,
+    GraphPanelTitle,
+    GraphEmpty,
+    GraphColHash,
+    GraphColMessage,
+    GraphColAuthor,
+    GraphColDate,
+    MyCommitsOn,
+    MyCommitsOff,
+    GripRebase,
+    NoMatches,
+    LoadMore,
+    ShaShort,
+    ShaFull,
+    ShaCharsFmt,
+    DisplaySettings,
+    ShaLengthLabel,
+    ShowSubjectCol,
+    ShowAuthorCol,
+    ShowAuthorEmail,
+    ShowDateCol,
+    AbsoluteDates,
+    ShowAvatars,
+    ShowLanes,
+    ShowBadges,
+    HeadDetachedBadge,
+    PendingOnPre,
+    PendingChanges,
+    NoCommitsYet,
+    NoCommitsSuffix,
+    NewBranchBadge,
+    SearchCommitsPh,
+    PrsTitle,
+    PrsTab,
+    PrDetail,
+    IssuesTitle,
+    IssueDetail,
+    FilterOpen,
+    FilterClosed,
+    FilterAll,
+    PrNew,
+    PrStateMerged,
+    DraftBadge,
+    LoadingComments,
+    CommentsFailedPre,
+    OneComment,
+    ManyCommentsFmt,
+    GhSignInPrs,
+    GhSignInIssues,
+    GhAuthDesc,
+    TryFilterHint,
+    PrEmptyFmt,
+    IssueEmptyFmt,
+    ReviewActions,
+    ReviewApprove,
+    ReviewRequest,
+    ReviewCommentBtn,
+    ReviewSubmitting,
+    ReviewCommentPh,
+    SearchIssuesTip,
+    SearchIssuesPh,
+    RepoPathLabel,
+    BrowseBtn,
+    CloneBtn,
+    NoMatchRepos,
+    NoRecentRepos,
+    OpenBtn,
+    EnterRepoPathPh,
+    CloneTitle,
+    CloneUrlLabel,
+    ClonePathLabel,
+    CloneUrlPh,
+    ClonePathPh,
+    CloneHint,
+    CloningBtn,
+    NameLabel,
+    WtPathLabel,
+    WtBranchLabel,
+    CreateBtn,
+    WtNamePh,
+    WtPathPh,
+    WtBranchPh,
+    TagTitle,
+    TagNameLabel,
+    TagAtCommit,
+    TagCreateHint,
+    StashTitle,
+    StashMsgLabel,
+    StashMsgHint,
+    RenameTitle,
+    RenameCurrent,
+    RenameNew,
+    RenameHint,
+    RenameBtn,
+    BranchTitle,
+    BranchNameLabel,
+    BranchBasedOn,
+    BranchNamePh,
+    StashBranchTitle,
+    StashFrom,
+    CreatePrTitle,
+    PrInto,
+    PrTitleLabel,
+    PrTitlePh,
+    PrDescPh,
+    PrDraftToggle,
+    PrHint,
+    PrSubmit,
+    PrCreating,
+    RebasePick,
+    RebaseReword,
+    RebaseSquash,
+    RebaseFixup,
+    RebaseDrop,
+    RebaseHeaderFmt,
+    RebasePh,
+    RebaseDragTip,
+    RebaseHintNav,
+    RebaseHintReorder,
+    RebaseHintAction,
+    RebaseHintStart,
+    RebaseHintCancel,
+    RebaseStart,
+    BisectTitle,
+    BisectStarted,
+    BisectBadFmt,
+    BisectGoodFmt,
+    BisectSkipFmt,
+    BisectLeftFmt,
+    BisectEntriesFmt,
+    BisectEmpty,
+    BisectEmptyHint,
+    SplashSubtitle,
+    SplashLoading,
+    ShortcutsCloseHint,
+    MoreActionsPre,
+    ThemeTitle,
+    ThemeColors,
+    ThemeStatusColors,
+    ThemeDark,
+    ThemeLight,
+    ThemeHint,
+    SaveBtn,
+    ThemeBackground,
+    ThemeSurface,
+    ThemeElevated,
+    ThemeBorder,
+    ThemeText,
+    ThemeTextMuted,
+    ThemeTextAccent,
+    ThemePlaceholder,
+    ThemeIcon,
+    ThemeFocusRing,
+    ThemeSelectedBorder,
+    ThemeAdded,
+    ThemeModified,
+    ThemeDeleted,
+    ThemeUntracked,
+    ThemeConflict,
+    ThemeRenamed,
+    ThemeError,
+    ThemeWarning,
+    ThemeSuccess,
+    ThemeInfo,
+    TipOpenRepo,
+    TipMerged,
+    TipCopyBranch,
+    TipCheckoutBranch,
+    TipMergeBranch,
+    TipRenameBranch,
+    TipDeleteBranch,
+    TipFetchRemote,
+    TipPullRemote,
+    TipPushRemote,
+    TipRemoveRemote,
+    TipCheckoutTag,
+    TipDeleteTag,
+    ApplyStashLbl,
+    PopStashLbl,
+    TipStashBranch,
+    TipDropStash,
+    TipRemoveWorktree,
+    TipUnstageFile,
+    TipStageFile,
+    TipConflictResolver,
+    TipDiscardChanges,
+    TipFilterLocal,
+    TipFilterRemote,
+    TipStagedOpts,
+    TipUnstagedOpts,
+    TipCopySha,
+    TipGpg,
+    TipCherryPick,
+    TipClearSearch,
+    FlatViewTip,
+    TreeViewTip,
+    NoFilesTip,
+    ClearSearchTip,
+    CommitSummaryPh,
+    CommitDescPh,
+    CoAuthorNamePh,
+    CoAuthorEmailPh,
+    TipExpandCommit,
+    TipCollapseCommit,
+    TipExplorer,
+    TipTerminal,
+    TipEditor,
+    TitleDetachedTag,
+    TipApplyKeep,
+    TipPopRemove,
+    StashesEmpty,
+    StashesEmptyHint,
+    SearchPh,
+    SearchEmpty,
+    SearchHint,
+    FilterFilesPh,
+    FilterBranchesPh,
+    FilterRemotePh,
+    SetHttpsTokenPh,
+    SetGpgPh,
+    SetUsuallyEmpty,
+    SetAccountTokenPh,
+    SetCustomCmdPh,
+    TipPaste,
+    TipHide,
+    TipShow,
+    CopiedFb,
+    FindingBranches,
+    ContainedIn,
+    SearchFilesHint,
+    SortLastUsed,
+    OnlyMine,
+    PopBranchFilters,
+    PopRemoteFilters,
+    PopStagedFiles,
+    PopUnstagedFiles,
+    ShowLineCounts,
+    ChangeListHint,
+    NoRemotes,
+    NoTags,
+    NoWorktrees,
+    CurrentTag,
+    StashMenuCreateBranch,
+    BlameEmpty,
+    FileHistoryTitle,
+    HistoryEmpty,
+    ReflogTitle,
+    ReflogEmpty,
+    ReflogHint,
+    SubmodulesTitle,
+    SubmodulesEmpty,
+    SubmodulesHint,
+    CommitsCountFmt,
+    BhTab,
+    BhUnmerged,
+    BhStale,
+    BhDiverged,
+    BhTotal,
+    BhMerged,
+    AgeAny,
+    AgeSevenDays,
+    AgeThirtyDays,
+    AgeNinetyDays,
+    AgeOneYear,
+    TipCreatePrFull,
+    TipSearchCommits,
+    TipRefresh,
+    TipSettings,
+    BlameEmptyHint,
+    HistoryEmptyHint,
+    SearchResultsFmt,
+    StagedOneFmt,
+    StagedManyFmt,
+    StagedNone,
+    DescCount11,
+    DescCount1N,
+    DescCountN1,
+    DescCountNN,
+    StatusStagedFmt,
+    StatusChangedFmt,
+    SignedBadge,
+    ErrStageFailed,
+    ErrUnstageFailed,
+    ErrStageAllFailed,
+    ErrUnstageAllFailed,
+    ErrCommitFailed,
+    ErrAmendFailed,
+    ErrCheckoutBranchFailedFmt,
+    ErrCheckoutCommitFailedFmt,
+    ErrCheckoutTagFailedFmt,
+    ErrBranchCreateFailedFmt,
+    ErrBranchDeleteFailedFmt,
+    ErrBranchRenameFailedFmt,
+    ErrTagCreateFailedFmt,
+    ErrTagDeleteFailedFmt,
+    ErrStashSaveFailed,
+    ErrStashPopFailedFmt,
+    ErrStashApplyFailedFmt,
+    ErrStashDropFailedFmt,
+    ErrStashBranchFailedFmt,
+    ErrDiscardFailed,
+    ErrCleanFailed,
+    ErrResetHeadFailed,
+    ErrResetFailedFmt,
+    ErrResetSoftFailedFmt,
+    ErrResetMixedFailedFmt,
+    ErrRevertConflictFmt,
+    ErrRevertFailedFmt,
+    ErrRevertGuide,
+    ErrCherryPickConflictFmt,
+    ErrCherryPickFailedFmt,
+    ErrCherryPickGuide,
+    ErrAbortFailedFmt,
+    ErrContinueFailedFmt,
+    ErrMergeConflictFmt,
+    ErrMergeFailedFmt,
+    ErrRemoveRemoteFailed,
+    ErrCloneFailed,
+    ErrBisectStartFailed,
+    ErrBisectGoodFailedFmt,
+    ErrBisectBadFailedFmt,
+    ErrBisectExhausted,
+    ErrBisectSkipFailedFmt,
+    ErrBisectResetFailed,
+    ErrWorktreeCreateFailedFmt,
+    ErrWorktreeRemoveFailedFmt,
+    ErrFetchFailedFmt,
+    ErrPullConflictFmt,
+    ErrPullFailedFmt,
+    ErrPushFailedFmt,
+    ErrFetchNotStarted,
+    ErrPullNotStarted,
+    ErrPushNotStarted,
+    ErrRebasePaused,
+    ErrRebaseFailed,
+    ErrStageHunkFailed,
+    ErrUnstageHunkFailed,
+    ErrStageLinesFailed,
+    ErrUnstageLinesFailed,
+    ErrConflictResolveFailed,
+    ErrAlreadyOnBranchFmt,
+    ErrCleanWorktreeFmt,
+    ErrHeadDetached,
+    ErrBranchNameUnknown,
+    ErrNoRemotes,
+    ErrNoUsableRemotes,
+    ErrNoStagedChanges,
+    ErrCannotAmendRebase,
+    ErrOverwriteLocalFmt,
+    ErrOverwritePathOneFmt,
+    ErrOverwritePathManyFmt,
+    ErrStagingConflictFmt,
+    ErrBranchNotFoundFmt,
+    ErrLocalBranchExistsFmt,
+    ErrInvalidRemoteBranchFmt,
+    ErrNotMergeState,
+    ErrUnresolvedConflicts,
+    ErrNothingToContinueFmt,
+    ErrNoRebaseEntries,
+    ErrRebasePlanMismatchFmt,
+    ErrStashIndexOutOfRangeFmt,
+    ErrBaseNotCommitFmt,
+}
+
 /// Application settings persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -232,6 +3330,8 @@ pub struct AppSettings {
     pub compactness: Compactness,
     #[serde(default = "default_appearance_mode")]
     pub appearance_mode: AppearanceMode,
+    #[serde(default)]
+    pub language: Language,
     #[serde(default)]
     pub terminal_command: String,
     #[serde(default)]
@@ -288,7 +3388,7 @@ pub struct SavedWindowBounds {
 }
 
 /// Current settings version. Increment when making breaking changes.
-const CURRENT_SETTINGS_VERSION: u32 = 3;
+const CURRENT_SETTINGS_VERSION: u32 = 4;
 
 fn default_settings_version() -> u32 {
     CURRENT_SETTINGS_VERSION
@@ -768,6 +3868,7 @@ impl Default for AppSettings {
             clean_exit: true, // First run is considered clean
             compactness: Compactness::default(),
             appearance_mode: default_appearance_mode(),
+            language: Language::default(),
             terminal_command: String::new(),
             editor_command: String::new(),
             font_size: default_font_size(),
@@ -1071,6 +4172,15 @@ impl SettingsState {
             self.settings.version = 3;
             migrated = true;
             log::info!("Migrated settings from version 2 to 3");
+        }
+
+        // Migration 3 -> 4: interface language added. Existing installs keep
+        // English; serde defaults already cover the missing field.
+        if self.settings.version == 3 {
+            self.settings.language = Language::default();
+            self.settings.version = 4;
+            migrated = true;
+            log::info!("Migrated settings from version 3 to 4");
         }
 
         // Ensure version is current
@@ -1964,6 +5074,1225 @@ mod tests {
         state.migrate_settings();
 
         assert_eq!(state.settings.ai.model, "gemini-2.5-pro");
+    }
+
+    // ── interface language ──────────────────────────────────────
+
+    #[test]
+    fn language_ids_are_stable_and_unique() {
+        assert_eq!(Language::English.id(), "en");
+        assert_eq!(Language::SimplifiedChinese.id(), "zh-CN");
+        assert_eq!(Language::ALL.len(), 2);
+        assert_eq!("en".parse::<Language>().unwrap(), Language::English);
+        assert_eq!(
+            "zh-CN".parse::<Language>().unwrap(),
+            Language::SimplifiedChinese
+        );
+        assert_eq!(
+            "zh_cn".parse::<Language>().unwrap(),
+            Language::SimplifiedChinese
+        );
+        assert_eq!(
+            "简体中文".parse::<Language>().unwrap(),
+            Language::SimplifiedChinese
+        );
+        assert!("fr".parse::<Language>().is_err());
+    }
+
+    #[test]
+    fn language_dropdown_labels_stay_native() {
+        assert_eq!(Language::English.native_name(), "English");
+        assert_eq!(Language::SimplifiedChinese.native_name(), "简体中文");
+    }
+
+    #[test]
+    fn every_translated_key_is_non_empty_in_both_languages() {
+        let keys = [
+            TrKey::Preferences,
+            TrKey::SectionAppearance,
+            TrKey::SectionAi,
+            TrKey::SectionAuth,
+            TrKey::SectionGeneral,
+            TrKey::GeneralTitle,
+            TrKey::GeneralDesc,
+            TrKey::LanguageTitle,
+            TrKey::LanguageDesc,
+            TrKey::MaxRecentTitle,
+            TrKey::MaxRecentDesc,
+            TrKey::UiDensityTitle,
+            TrKey::UiDensityDesc,
+            TrKey::DensityCompact,
+            TrKey::DensityDefault,
+            TrKey::DensityComfortable,
+            TrKey::FontSizeTitle,
+            TrKey::FontSizeDesc,
+            TrKey::GeneralPageDesc,
+            TrKey::ThemeSectionDesc,
+            TrKey::ThemePageDesc,
+            TrKey::AppearanceModeTitle,
+            TrKey::AppearanceModeDesc,
+            TrKey::ModeAuto,
+            TrKey::ModeLight,
+            TrKey::ModeDark,
+            TrKey::ColorThemeTitle,
+            TrKey::ColorThemeDesc,
+            TrKey::ActiveBadge,
+            TrKey::CustomThemeTitle,
+            TrKey::CustomThemeDesc,
+            TrKey::EditThemeBtn,
+            TrKey::AccountsTitle,
+            TrKey::AccountsDesc,
+            TrKey::AccountsHeader,
+            TrKey::AccountsSectionDesc,
+            TrKey::QuickSetupTitle,
+            TrKey::QuickSetupDesc,
+            TrKey::SignInGitHub,
+            TrKey::AddGitLab,
+            TrKey::ManualCustom,
+            TrKey::AuthProfilesTitle,
+            TrKey::AuthProfilesDesc,
+            TrKey::AuthProfilesEmptyTitle,
+            TrKey::AuthProfilesEmptyDesc,
+            TrKey::AuthHttpsFallbackTitle,
+            TrKey::AuthHttpsFallbackDesc,
+            TrKey::AuthSshOverrideTitle,
+            TrKey::AuthSshOverrideDesc,
+            TrKey::AuthSignCommitsTitle,
+            TrKey::AuthSignCommitsDesc,
+            TrKey::AuthGpgKeyTitle,
+            TrKey::AuthGpgKeyDesc,
+            TrKey::AuthHowTitle,
+            TrKey::AuthHowDesc,
+            TrKey::AuthHowHttps,
+            TrKey::AuthHowSshFallback,
+            TrKey::AuthHowSshKey,
+            TrKey::AiPageDesc,
+            TrKey::AiSectionConnection,
+            TrKey::AiSectionBehaviour,
+            TrKey::AiStatusTitle,
+            TrKey::AiEnabledToggle,
+            TrKey::AiStatusOff,
+            TrKey::AiStatusTestingFmt,
+            TrKey::AiStatusRejectedFmt,
+            TrKey::AiStatusAddKeyFmt,
+            TrKey::AiConnectTitle,
+            TrKey::AiConnectDesc,
+            TrKey::AiApiKeyLabel,
+            TrKey::AiGetKeyBtn,
+            TrKey::AiKeyVerifiedFmt,
+            TrKey::AiKeyStoredHintFmt,
+            TrKey::AiNoKeyHintFmt,
+            TrKey::AiKeysStoredNoteFmt,
+            TrKey::AiModelLabel,
+            TrKey::AiModelCountFmt,
+            TrKey::AiRefreshBtn,
+            TrKey::AiRefreshingBtn,
+            TrKey::AiModelMissingFmt,
+            TrKey::AiUseSuggestionFmt,
+            TrKey::AiConnectBtn,
+            TrKey::AiUseProviderBtn,
+            TrKey::AiTestBtn,
+            TrKey::AiTestingBtn,
+            TrKey::AiRemoveKeyBtn,
+            TrKey::AiAdvancedLabel,
+            TrKey::AiBaseUrlLabel,
+            TrKey::AiBaseUrlOverriddenFmt,
+            TrKey::AiBaseUrlEmptyFmt,
+            TrKey::AiAttributionTitle,
+            TrKey::AiAttributionDesc,
+            TrKey::AiCommitStyleTitle,
+            TrKey::AiCommitStyleDesc,
+            TrKey::AiCtxTitle,
+            TrKey::AiCtxDesc,
+            TrKey::AiToolsTitle,
+            TrKey::AiToolsDesc,
+            TrKey::AiKeyPlaceholderFmt,
+            TrKey::ShowLineNumbersTitle,
+            TrKey::ShowLineNumbersDesc,
+            TrKey::WrapLinesTitle,
+            TrKey::WrapLinesDesc,
+            TrKey::DiffModeTitle,
+            TrKey::DiffModeDesc,
+            TrKey::DiffUnified,
+            TrKey::DiffSideBySide,
+            TrKey::GraphTitle,
+            TrKey::GraphDesc,
+            TrKey::GraphRails,
+            TrKey::GraphCurved,
+            TrKey::GraphAngular,
+            TrKey::ShowSubjectTitle,
+            TrKey::ShowSubjectDesc,
+            TrKey::AutoFetchTitle,
+            TrKey::AutoFetchDesc,
+            TrKey::ConfirmDestructiveTitle,
+            TrKey::ConfirmDestructiveDesc,
+            TrKey::CheckUpdatesTitle,
+            TrKey::CheckUpdatesDesc,
+            TrKey::WatchWorktreesTitle,
+            TrKey::WatchWorktreesDesc,
+            TrKey::ExternalToolsTitle,
+            TrKey::ExternalToolsDesc,
+            TrKey::TerminalLabel,
+            TrKey::EditorLabel,
+            TrKey::CustomCommandLabel,
+            TrKey::ShortcutsTitle,
+            TrKey::ShortcutsDesc,
+            TrKey::ConfigTitle,
+            TrKey::ConfigDesc,
+            TrKey::RevealBtn,
+            TrKey::EditKeymapBtn,
+            TrKey::SavedFeedback,
+            TrKey::TbFetch,
+            TrKey::TbFetching,
+            TrKey::TbPull,
+            TrKey::TbPulling,
+            TrKey::TbPush,
+            TrKey::TbPushing,
+            TrKey::TbBranch,
+            TrKey::TbStash,
+            TrKey::TbPop,
+            TrKey::TbCreatePr,
+            TrKey::StatusClean,
+            TrKey::StatusDetached,
+            TrKey::SideBranches,
+            TrKey::SideRemotes,
+            TrKey::SideRemoteBranches,
+            TrKey::SideTags,
+            TrKey::SideStashes,
+            TrKey::SideWorktrees,
+            TrKey::SideStaged,
+            TrKey::SideUnstaged,
+            TrKey::SideStageAll,
+            TrKey::SideUnstageAll,
+            TrKey::SideNewWorktree,
+            TrKey::SideWorkingClean,
+            TrKey::SideNoStaged,
+            TrKey::CommitBtn,
+            TrKey::CommitNoStaged,
+            TrKey::CommitNoMessage,
+            TrKey::CommitAmendBtn,
+            TrKey::AmendBtn,
+            TrKey::ClearBtn,
+            TrKey::SummaryLabel,
+            TrKey::DescLabel,
+            TrKey::CoAuthorsLabel,
+            TrKey::NoStagedHint,
+            TrKey::CancelBtn,
+            TrKey::ConfirmHint,
+            TrKey::CfConfirm,
+            TrKey::CfDiscard,
+            TrKey::CfClean,
+            TrKey::CfDeleteBranch,
+            TrKey::CfDeleteTag,
+            TrKey::CfRemove,
+            TrKey::CfDropStash,
+            TrKey::CfReset,
+            TrKey::CfAbort,
+            TrKey::CfForcePush,
+            TrKey::CfRemoveWorktree,
+            TrKey::DiffFileBtn,
+            TrKey::DiffEmptyTitle,
+            TrKey::DiffEmptyDesc,
+            TrKey::DiffOpenFile,
+            TrKey::DetailTitle,
+            TrKey::DetailEmptyTitle,
+            TrKey::DetailEmptyDesc,
+            TrKey::HomeSlogan,
+            TrKey::OpenRepoTitle,
+            TrKey::HomeNewWorkspace,
+            TrKey::HomeRestoreLast,
+            TrKey::HomeRecentWorkspaces,
+            TrKey::HomeRecentRepos,
+            TrKey::WsSummaryFmt,
+            TrKey::LoadingDots,
+            TrKey::OpRetry,
+            TrKey::ConflictOneFmt,
+            TrKey::ConflictManyFmt,
+            TrKey::ConflictResolved,
+            TrKey::ConflictContinue,
+            TrKey::WorktreeExit,
+            TrKey::InspectingPre,
+            TrKey::DetachedHeadWord,
+            TrKey::BottomDiff,
+            TrKey::BottomDiffTip,
+            TrKey::BottomHistory,
+            TrKey::HistLoading,
+            TrKey::HistShow,
+            TrKey::HistUnavailable,
+            TrKey::BottomBlame,
+            TrKey::BlameLoading,
+            TrKey::BlameShow,
+            TrKey::BlameUnavailable,
+            TrKey::GraphShowTip,
+            TrKey::GraphHideTip,
+            TrKey::DetachedTitlePre,
+            TrKey::DetachedConsequence,
+            TrKey::DetachedReturnPre,
+            TrKey::DetachedReturnTipPre,
+            TrKey::DetachedReturnTipPost,
+            TrKey::DetachedSwitch,
+            TrKey::DetachedShowGraph,
+            TrKey::UpdateMsgFmt,
+            TrKey::UpdateDownload,
+            TrKey::MenuCherryPick,
+            TrKey::MenuRevert,
+            TrKey::MenuCheckout,
+            TrKey::MenuCreateBranch,
+            TrKey::MenuCreateTag,
+            TrKey::MenuBisectGood,
+            TrKey::MenuBisectBad,
+            TrKey::MenuReset,
+            TrKey::RebaseTitle,
+            TrKey::MenuSquash,
+            TrKey::MenuCopySha,
+            TrKey::MenuCopyMsg,
+            TrKey::MenuCopyAuthor,
+            TrKey::MenuCopyDate,
+            TrKey::MenuViewGithub,
+            TrKey::GraphPanelTitle,
+            TrKey::GraphEmpty,
+            TrKey::GraphColHash,
+            TrKey::GraphColMessage,
+            TrKey::GraphColAuthor,
+            TrKey::GraphColDate,
+            TrKey::MyCommitsOn,
+            TrKey::MyCommitsOff,
+            TrKey::GripRebase,
+            TrKey::NoMatches,
+            TrKey::LoadMore,
+            TrKey::ShaShort,
+            TrKey::ShaFull,
+            TrKey::ShaCharsFmt,
+            TrKey::DisplaySettings,
+            TrKey::ShaLengthLabel,
+            TrKey::ShowSubjectCol,
+            TrKey::ShowAuthorCol,
+            TrKey::ShowAuthorEmail,
+            TrKey::ShowDateCol,
+            TrKey::AbsoluteDates,
+            TrKey::ShowAvatars,
+            TrKey::ShowLanes,
+            TrKey::ShowBadges,
+            TrKey::HeadDetachedBadge,
+            TrKey::PendingOnPre,
+            TrKey::PendingChanges,
+            TrKey::NoCommitsYet,
+            TrKey::NoCommitsSuffix,
+            TrKey::NewBranchBadge,
+            TrKey::SearchCommitsPh,
+            TrKey::PrsTitle,
+            TrKey::PrsTab,
+            TrKey::PrDetail,
+            TrKey::IssuesTitle,
+            TrKey::IssueDetail,
+            TrKey::FilterOpen,
+            TrKey::FilterClosed,
+            TrKey::FilterAll,
+            TrKey::PrNew,
+            TrKey::PrStateMerged,
+            TrKey::DraftBadge,
+            TrKey::LoadingComments,
+            TrKey::CommentsFailedPre,
+            TrKey::OneComment,
+            TrKey::ManyCommentsFmt,
+            TrKey::GhSignInPrs,
+            TrKey::GhSignInIssues,
+            TrKey::GhAuthDesc,
+            TrKey::TryFilterHint,
+            TrKey::PrEmptyFmt,
+            TrKey::IssueEmptyFmt,
+            TrKey::ReviewActions,
+            TrKey::ReviewApprove,
+            TrKey::ReviewRequest,
+            TrKey::ReviewCommentBtn,
+            TrKey::ReviewSubmitting,
+            TrKey::ReviewCommentPh,
+            TrKey::SearchIssuesTip,
+            TrKey::SearchIssuesPh,
+            TrKey::RepoPathLabel,
+            TrKey::BrowseBtn,
+            TrKey::CloneBtn,
+            TrKey::NoMatchRepos,
+            TrKey::NoRecentRepos,
+            TrKey::OpenBtn,
+            TrKey::EnterRepoPathPh,
+            TrKey::CloneTitle,
+            TrKey::CloneUrlLabel,
+            TrKey::ClonePathLabel,
+            TrKey::CloneUrlPh,
+            TrKey::ClonePathPh,
+            TrKey::CloneHint,
+            TrKey::CloningBtn,
+            TrKey::NameLabel,
+            TrKey::WtPathLabel,
+            TrKey::WtBranchLabel,
+            TrKey::CreateBtn,
+            TrKey::WtNamePh,
+            TrKey::WtPathPh,
+            TrKey::WtBranchPh,
+            TrKey::TagTitle,
+            TrKey::TagNameLabel,
+            TrKey::TagAtCommit,
+            TrKey::TagCreateHint,
+            TrKey::StashTitle,
+            TrKey::StashMsgLabel,
+            TrKey::StashMsgHint,
+            TrKey::RenameTitle,
+            TrKey::RenameCurrent,
+            TrKey::RenameNew,
+            TrKey::RenameHint,
+            TrKey::RenameBtn,
+            TrKey::BranchTitle,
+            TrKey::BranchNameLabel,
+            TrKey::BranchBasedOn,
+            TrKey::BranchNamePh,
+            TrKey::StashBranchTitle,
+            TrKey::StashFrom,
+            TrKey::CreatePrTitle,
+            TrKey::PrInto,
+            TrKey::PrTitleLabel,
+            TrKey::PrTitlePh,
+            TrKey::PrDescPh,
+            TrKey::PrDraftToggle,
+            TrKey::PrHint,
+            TrKey::PrSubmit,
+            TrKey::PrCreating,
+            TrKey::RebasePick,
+            TrKey::RebaseReword,
+            TrKey::RebaseSquash,
+            TrKey::RebaseFixup,
+            TrKey::RebaseDrop,
+            TrKey::RebaseHeaderFmt,
+            TrKey::RebasePh,
+            TrKey::RebaseDragTip,
+            TrKey::RebaseHintNav,
+            TrKey::RebaseHintReorder,
+            TrKey::RebaseHintAction,
+            TrKey::RebaseHintStart,
+            TrKey::RebaseHintCancel,
+            TrKey::RebaseStart,
+            TrKey::BisectTitle,
+            TrKey::BisectStarted,
+            TrKey::BisectBadFmt,
+            TrKey::BisectGoodFmt,
+            TrKey::BisectSkipFmt,
+            TrKey::BisectLeftFmt,
+            TrKey::BisectEntriesFmt,
+            TrKey::BisectEmpty,
+            TrKey::BisectEmptyHint,
+            TrKey::SplashSubtitle,
+            TrKey::SplashLoading,
+            TrKey::ShortcutsCloseHint,
+            TrKey::MoreActionsPre,
+            TrKey::ThemeTitle,
+            TrKey::ThemeColors,
+            TrKey::ThemeStatusColors,
+            TrKey::ThemeDark,
+            TrKey::ThemeLight,
+            TrKey::ThemeHint,
+            TrKey::SaveBtn,
+            TrKey::ThemeBackground,
+            TrKey::ThemeSurface,
+            TrKey::ThemeElevated,
+            TrKey::ThemeBorder,
+            TrKey::ThemeText,
+            TrKey::ThemeTextMuted,
+            TrKey::ThemeTextAccent,
+            TrKey::ThemePlaceholder,
+            TrKey::ThemeIcon,
+            TrKey::ThemeFocusRing,
+            TrKey::ThemeSelectedBorder,
+            TrKey::ThemeAdded,
+            TrKey::ThemeModified,
+            TrKey::ThemeDeleted,
+            TrKey::ThemeUntracked,
+            TrKey::ThemeConflict,
+            TrKey::ThemeRenamed,
+            TrKey::ThemeError,
+            TrKey::ThemeWarning,
+            TrKey::ThemeSuccess,
+            TrKey::ThemeInfo,
+            TrKey::TipOpenRepo,
+            TrKey::TipMerged,
+            TrKey::TipCopyBranch,
+            TrKey::TipCheckoutBranch,
+            TrKey::TipMergeBranch,
+            TrKey::TipRenameBranch,
+            TrKey::TipDeleteBranch,
+            TrKey::TipFetchRemote,
+            TrKey::TipPullRemote,
+            TrKey::TipPushRemote,
+            TrKey::TipRemoveRemote,
+            TrKey::TipCheckoutTag,
+            TrKey::TipDeleteTag,
+            TrKey::ApplyStashLbl,
+            TrKey::PopStashLbl,
+            TrKey::TipStashBranch,
+            TrKey::TipDropStash,
+            TrKey::TipRemoveWorktree,
+            TrKey::TipUnstageFile,
+            TrKey::TipStageFile,
+            TrKey::TipConflictResolver,
+            TrKey::TipDiscardChanges,
+            TrKey::TipFilterLocal,
+            TrKey::TipFilterRemote,
+            TrKey::TipStagedOpts,
+            TrKey::TipUnstagedOpts,
+            TrKey::TipCopySha,
+            TrKey::TipGpg,
+            TrKey::TipCherryPick,
+            TrKey::TipClearSearch,
+            TrKey::FlatViewTip,
+            TrKey::TreeViewTip,
+            TrKey::NoFilesTip,
+            TrKey::ClearSearchTip,
+            TrKey::CommitSummaryPh,
+            TrKey::CommitDescPh,
+            TrKey::CoAuthorNamePh,
+            TrKey::CoAuthorEmailPh,
+            TrKey::TipExpandCommit,
+            TrKey::TipCollapseCommit,
+            TrKey::TipExplorer,
+            TrKey::TipTerminal,
+            TrKey::TipEditor,
+            TrKey::TitleDetachedTag,
+            TrKey::TipApplyKeep,
+            TrKey::TipPopRemove,
+            TrKey::StashesEmpty,
+            TrKey::StashesEmptyHint,
+            TrKey::SearchPh,
+            TrKey::SearchEmpty,
+            TrKey::SearchHint,
+            TrKey::FilterFilesPh,
+            TrKey::FilterBranchesPh,
+            TrKey::FilterRemotePh,
+            TrKey::SetHttpsTokenPh,
+            TrKey::SetGpgPh,
+            TrKey::SetUsuallyEmpty,
+            TrKey::SetAccountTokenPh,
+            TrKey::SetCustomCmdPh,
+            TrKey::TipPaste,
+            TrKey::TipHide,
+            TrKey::TipShow,
+            TrKey::CopiedFb,
+            TrKey::FindingBranches,
+            TrKey::ContainedIn,
+            TrKey::SearchFilesHint,
+            TrKey::SortLastUsed,
+            TrKey::OnlyMine,
+            TrKey::PopBranchFilters,
+            TrKey::PopRemoteFilters,
+            TrKey::PopStagedFiles,
+            TrKey::PopUnstagedFiles,
+            TrKey::ShowLineCounts,
+            TrKey::ChangeListHint,
+            TrKey::NoRemotes,
+            TrKey::NoTags,
+            TrKey::NoWorktrees,
+            TrKey::CurrentTag,
+            TrKey::StashMenuCreateBranch,
+            TrKey::BlameEmpty,
+            TrKey::FileHistoryTitle,
+            TrKey::HistoryEmpty,
+            TrKey::ReflogTitle,
+            TrKey::ReflogEmpty,
+            TrKey::ReflogHint,
+            TrKey::SubmodulesTitle,
+            TrKey::SubmodulesEmpty,
+            TrKey::SubmodulesHint,
+            TrKey::CommitsCountFmt,
+            TrKey::BhTab,
+            TrKey::BhUnmerged,
+            TrKey::BhStale,
+            TrKey::BhDiverged,
+            TrKey::BhTotal,
+            TrKey::BhMerged,
+            TrKey::AgeAny,
+            TrKey::AgeSevenDays,
+            TrKey::AgeThirtyDays,
+            TrKey::AgeNinetyDays,
+            TrKey::AgeOneYear,
+            TrKey::TipCreatePrFull,
+            TrKey::TipSearchCommits,
+            TrKey::TipRefresh,
+            TrKey::TipSettings,
+            TrKey::BlameEmptyHint,
+            TrKey::HistoryEmptyHint,
+            TrKey::SearchResultsFmt,
+            TrKey::StagedOneFmt,
+            TrKey::StagedManyFmt,
+            TrKey::StagedNone,
+            TrKey::DescCount11,
+            TrKey::DescCount1N,
+            TrKey::DescCountN1,
+            TrKey::DescCountNN,
+            TrKey::StatusStagedFmt,
+            TrKey::StatusChangedFmt,
+            TrKey::SignedBadge,
+            TrKey::ErrStageFailed,
+            TrKey::ErrUnstageFailed,
+            TrKey::ErrStageAllFailed,
+            TrKey::ErrUnstageAllFailed,
+            TrKey::ErrCommitFailed,
+            TrKey::ErrAmendFailed,
+            TrKey::ErrCheckoutBranchFailedFmt,
+            TrKey::ErrCheckoutCommitFailedFmt,
+            TrKey::ErrCheckoutTagFailedFmt,
+            TrKey::ErrBranchCreateFailedFmt,
+            TrKey::ErrBranchDeleteFailedFmt,
+            TrKey::ErrBranchRenameFailedFmt,
+            TrKey::ErrTagCreateFailedFmt,
+            TrKey::ErrTagDeleteFailedFmt,
+            TrKey::ErrStashSaveFailed,
+            TrKey::ErrStashPopFailedFmt,
+            TrKey::ErrStashApplyFailedFmt,
+            TrKey::ErrStashDropFailedFmt,
+            TrKey::ErrStashBranchFailedFmt,
+            TrKey::ErrDiscardFailed,
+            TrKey::ErrCleanFailed,
+            TrKey::ErrResetHeadFailed,
+            TrKey::ErrResetFailedFmt,
+            TrKey::ErrResetSoftFailedFmt,
+            TrKey::ErrResetMixedFailedFmt,
+            TrKey::ErrRevertConflictFmt,
+            TrKey::ErrRevertFailedFmt,
+            TrKey::ErrRevertGuide,
+            TrKey::ErrCherryPickConflictFmt,
+            TrKey::ErrCherryPickFailedFmt,
+            TrKey::ErrCherryPickGuide,
+            TrKey::ErrAbortFailedFmt,
+            TrKey::ErrContinueFailedFmt,
+            TrKey::ErrMergeConflictFmt,
+            TrKey::ErrMergeFailedFmt,
+            TrKey::ErrRemoveRemoteFailed,
+            TrKey::ErrCloneFailed,
+            TrKey::ErrBisectStartFailed,
+            TrKey::ErrBisectGoodFailedFmt,
+            TrKey::ErrBisectBadFailedFmt,
+            TrKey::ErrBisectExhausted,
+            TrKey::ErrBisectSkipFailedFmt,
+            TrKey::ErrBisectResetFailed,
+            TrKey::ErrWorktreeCreateFailedFmt,
+            TrKey::ErrWorktreeRemoveFailedFmt,
+            TrKey::ErrFetchFailedFmt,
+            TrKey::ErrPullConflictFmt,
+            TrKey::ErrPullFailedFmt,
+            TrKey::ErrPushFailedFmt,
+            TrKey::ErrFetchNotStarted,
+            TrKey::ErrPullNotStarted,
+            TrKey::ErrPushNotStarted,
+            TrKey::ErrRebasePaused,
+            TrKey::ErrRebaseFailed,
+            TrKey::ErrStageHunkFailed,
+            TrKey::ErrUnstageHunkFailed,
+            TrKey::ErrStageLinesFailed,
+            TrKey::ErrUnstageLinesFailed,
+            TrKey::ErrConflictResolveFailed,
+            TrKey::ErrAlreadyOnBranchFmt,
+            TrKey::ErrCleanWorktreeFmt,
+            TrKey::ErrHeadDetached,
+            TrKey::ErrBranchNameUnknown,
+            TrKey::ErrNoRemotes,
+            TrKey::ErrNoUsableRemotes,
+            TrKey::ErrNoStagedChanges,
+            TrKey::ErrCannotAmendRebase,
+            TrKey::ErrOverwriteLocalFmt,
+            TrKey::ErrOverwritePathOneFmt,
+            TrKey::ErrOverwritePathManyFmt,
+            TrKey::ErrStagingConflictFmt,
+            TrKey::ErrBranchNotFoundFmt,
+            TrKey::ErrLocalBranchExistsFmt,
+            TrKey::ErrInvalidRemoteBranchFmt,
+            TrKey::ErrNotMergeState,
+            TrKey::ErrUnresolvedConflicts,
+            TrKey::ErrNothingToContinueFmt,
+            TrKey::ErrNoRebaseEntries,
+            TrKey::ErrRebasePlanMismatchFmt,
+            TrKey::ErrStashIndexOutOfRangeFmt,
+            TrKey::ErrBaseNotCommitFmt,
+        ];
+        for key in keys {
+            assert!(!Language::English.tr(key).is_empty());
+            assert!(!Language::SimplifiedChinese.tr(key).is_empty());
+        }
+        assert_eq!(Language::SimplifiedChinese.tr(TrKey::SectionAi), "AI");
+    }
+
+    #[test]
+    fn english_branches_keep_the_exact_source_literals() {
+        // Rendering code previously hardcoded these strings; the English
+        // branch must preserve them byte for byte.
+        assert_eq!(Language::English.tr(TrKey::DiffUnified), "Unified");
+        assert_eq!(Language::English.tr(TrKey::DiffSideBySide), "Side-by-Side");
+        assert_eq!(Language::English.tr(TrKey::GraphRails), "Rails");
+        assert_eq!(Language::English.tr(TrKey::GraphCurved), "Curved");
+        assert_eq!(Language::English.tr(TrKey::GraphAngular), "Angular");
+        assert_eq!(Language::English.tr(TrKey::ModeAuto), "Auto");
+        assert_eq!(Language::English.tr(TrKey::ModeLight), "Light");
+        assert_eq!(Language::English.tr(TrKey::ModeDark), "Dark");
+        assert_eq!(Language::English.tr(TrKey::StatusDetached), "DETACHED");
+        assert_eq!(
+            Language::English.tr(TrKey::ConfirmHint),
+            "Enter to confirm | Esc to cancel"
+        );
+        assert_eq!(Language::English.tr(TrKey::CfForcePush), "Force Push");
+        assert_eq!(Language::English.tr(TrKey::RevealBtn), "Reveal");
+        assert_eq!(
+            Language::English.tr(TrKey::EditKeymapBtn),
+            "Edit keymap.json"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::HomeSlogan),
+            "A workspace-oriented desktop Git client"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ConflictResolved),
+            "All conflicts resolved -- ready to continue"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::DetachedConsequence),
+            "Commits made here belong to no branch"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::MenuCherryPick),
+            "Cherry-pick commit"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::MyCommitsOff),
+            "Show only your commits. Click to filter by current user."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::DisplaySettings),
+            "Display Settings"
+        );
+        assert_eq!(Language::English.tr(TrKey::LoadMore), "Load more commits");
+        assert_eq!(Language::English.tr(TrKey::PrDetail), "Pull Request Detail");
+        assert_eq!(Language::English.tr(TrKey::GhAuthDesc), "This repository is private or rate-limited. Add a GitHub token in Settings — for organization repos you may need a fine-grained token approved by an org owner.");
+        assert_eq!(
+            Language::English.tr(TrKey::ReviewRequest),
+            "Request Changes"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::TagCreateHint),
+            "Enter to create | Esc to cancel"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::PrHint),
+            "Enter for a new line | Shift+Enter to create | Esc to cancel"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::RebaseHintReorder),
+            "Ctrl+Up/Down Reorder"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::BisectEmptyHint),
+            "Use 'Git: Bisect Start' to begin"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ThemeHint),
+            "Tab to move · Enter to save · Esc to close"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::SearchHint),
+            "Press Enter to search | j/k to navigate"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::CloneUrlPh),
+            "Repository URL (e.g. https://github.com/user/repo.git)"
+        );
+        assert_eq!(Language::English.tr(TrKey::AuthProfilesTitle), "Profiles");
+        assert_eq!(
+            Language::English.tr(TrKey::AuthProfilesDesc),
+            "All saved accounts live here. Select one to connect it, paste a token, or adjust host matching."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthProfilesEmptyTitle),
+            "No provider accounts configured yet."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthProfilesEmptyDesc),
+            "Add a GitHub account to start with the default flow, or choose Manual / Custom Host for enterprise and other HTTPS remotes."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHttpsFallbackTitle),
+            "Fallback HTTPS Token / PAT"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHttpsFallbackDesc),
+            "Used only when no profile-specific account matches the remote host. Leave this empty unless you truly need a generic fallback."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthSshOverrideTitle),
+            "SSH Key Override"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthSshOverrideDesc),
+            "Optional. If set, this key is tried first for SSH remotes. If SSH fails and you have a GitHub account above, rgitui automatically falls back to HTTPS."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthSignCommitsTitle),
+            "Sign Commits"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthSignCommitsDesc),
+            "Sign commits with your configured GPG key."
+        );
+        assert_eq!(Language::English.tr(TrKey::AuthGpgKeyTitle), "GPG Key ID");
+        assert_eq!(
+            Language::English.tr(TrKey::AuthGpgKeyDesc),
+            "Leave empty to use your existing git config default signing key."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowTitle),
+            "How Authentication Works"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowDesc),
+            "rgitui detects the remote URL protocol and authenticates accordingly."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowHttps),
+            "HTTPS remotes: uses your GitHub account token (above), or falls back to your system git credential helper (e.g. gh auth)."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowSshFallback),
+            "SSH remotes: if no SSH key is configured above, and your system has an HTTPS credential helper, rgitui automatically rewrites SSH to HTTPS so your GitHub login works."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AuthHowSshKey),
+            "SSH remotes with a key: uses the SSH key path above (or ssh-agent) directly."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusTitle),
+            "AI Commit Messages"
+        );
+        assert_eq!(Language::English.tr(TrKey::AiEnabledToggle), "Enabled");
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusOff),
+            "AI is turned off. Nothing will be sent to any provider."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusTestingFmt),
+            "Testing {}…"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusRejectedFmt),
+            "{} rejected this key."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiStatusAddKeyFmt),
+            "Add a {} API key to get started."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiConnectTitle),
+            "Connect an AI provider"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiConnectDesc),
+            "rgitui writes commit messages from your staged diff."
+        );
+        assert_eq!(Language::English.tr(TrKey::AiApiKeyLabel), "API key");
+        assert_eq!(Language::English.tr(TrKey::AiGetKeyBtn), "Get a key");
+        assert_eq!(
+            Language::English.tr(TrKey::AiKeyVerifiedFmt),
+            "Verified {} · stored in {}"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiKeyStoredHintFmt),
+            "Key stored in {}. Test it to confirm it works."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiNoKeyHintFmt),
+            "No API key needed — requests go to {}."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiKeysStoredNoteFmt),
+            "Keys are stored in {}, never in settings.json, and are only read when a request is sent."
+        );
+        assert_eq!(Language::English.tr(TrKey::AiModelLabel), "Model");
+        assert_eq!(
+            Language::English.tr(TrKey::AiModelCountFmt),
+            "{} models · {}"
+        );
+        assert_eq!(Language::English.tr(TrKey::AiRefreshBtn), "Refresh");
+        assert_eq!(Language::English.tr(TrKey::AiRefreshingBtn), "Refreshing…");
+        assert_eq!(
+            Language::English.tr(TrKey::AiModelMissingFmt),
+            "`{}` is not in {}'s current model list. It may have been retired."
+        );
+        assert_eq!(Language::English.tr(TrKey::AiUseSuggestionFmt), "Use {}");
+        assert_eq!(Language::English.tr(TrKey::AiConnectBtn), "Connect");
+        assert_eq!(
+            Language::English.tr(TrKey::AiUseProviderBtn),
+            "Use this provider"
+        );
+        assert_eq!(Language::English.tr(TrKey::AiTestBtn), "Test");
+        assert_eq!(Language::English.tr(TrKey::AiTestingBtn), "Testing…");
+        assert_eq!(Language::English.tr(TrKey::AiRemoveKeyBtn), "Remove key");
+        assert_eq!(Language::English.tr(TrKey::AiAdvancedLabel), "Advanced");
+        assert_eq!(Language::English.tr(TrKey::AiBaseUrlLabel), "Base URL");
+        assert_eq!(
+            Language::English.tr(TrKey::AiBaseUrlOverriddenFmt),
+            "Requests go to {} instead of {}. Your API key is sent to that host."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiBaseUrlEmptyFmt),
+            "Empty means use {}. Only OpenAI-compatible providers honour an override."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiAttributionTitle),
+            "Send attribution headers"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiAttributionDesc),
+            "Adds HTTP-Referer and X-Title so rgitui appears on OpenRouter's public leaderboard. Never functional."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiCommitStyleTitle),
+            "Commit style"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiCommitStyleDesc),
+            "How the AI should format commit messages."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiCtxTitle),
+            "Include project context"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiCtxDesc),
+            "Adds README.md, CLAUDE.md and AGENTS.md to the prompt. ~4k extra tokens per request."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiToolsTitle),
+            "Let the model read files"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiToolsDesc),
+            "The model may request file contents and commit history. Slower and more expensive; usually a better message."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::AiKeyPlaceholderFmt),
+            "Paste your {} API key"
+        );
+        // Git operation errors: English must stay byte-identical to the
+        // legacy `format!` strings they replace.
+        assert_eq!(Language::English.tr(TrKey::ErrStageFailed), "Stage failed");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnstageFailed),
+            "Unstage failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStageAllFailed),
+            "Stage all failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnstageAllFailed),
+            "Unstage all failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCommitFailed),
+            "Commit failed"
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrAmendFailed), "Amend failed");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCheckoutBranchFailedFmt),
+            "Checkout of '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCheckoutCommitFailedFmt),
+            "Checkout of {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCheckoutTagFailedFmt),
+            "Checkout of tag '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBranchCreateFailedFmt),
+            "Branch '{}' could not be created"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBranchDeleteFailedFmt),
+            "Delete branch '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBranchRenameFailedFmt),
+            "Rename branch '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrTagCreateFailedFmt),
+            "Tag '{}' could not be created"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrTagDeleteFailedFmt),
+            "Delete tag '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashSaveFailed),
+            "Save stash failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashPopFailedFmt),
+            "Pop stash #{} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashApplyFailedFmt),
+            "Apply stash #{} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashDropFailedFmt),
+            "Drop stash #{} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashBranchFailedFmt),
+            "Create branch from stash #{} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrDiscardFailed),
+            "Discard changes failed"
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrCleanFailed), "Clean failed");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrResetHeadFailed),
+            "Reset to HEAD failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrResetFailedFmt),
+            "Reset to {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrResetSoftFailedFmt),
+            "Soft reset to {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrResetMixedFailedFmt),
+            "Mixed reset to {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRevertConflictFmt),
+            "Revert of {} needs conflict resolution"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRevertFailedFmt),
+            "Revert of {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRevertGuide),
+            "Resolve the conflicts in the working tree, then commit the revert manually."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCherryPickConflictFmt),
+            "Cherry-pick of {} needs conflict resolution"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCherryPickFailedFmt),
+            "Cherry-pick of {} failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCherryPickGuide),
+            "Resolve the conflicts in the working tree, then commit the cherry-pick manually."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrAbortFailedFmt),
+            "Failed to abort {}"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrContinueFailedFmt),
+            "Could not continue {}"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrMergeConflictFmt),
+            "Merge conflicts in '{}'"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrMergeFailedFmt),
+            "Merge of '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRemoveRemoteFailed),
+            "Removing remote failed"
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrCloneFailed), "Clone failed");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectStartFailed),
+            "Failed to start bisect"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectGoodFailedFmt),
+            "Failed to mark {} as good"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectBadFailedFmt),
+            "Failed to mark {} as bad"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectExhausted),
+            "Bisect exhausted"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectSkipFailedFmt),
+            "Failed to skip {}"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBisectResetFailed),
+            "Failed to reset bisect"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrWorktreeCreateFailedFmt),
+            "Create worktree '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrWorktreeRemoveFailedFmt),
+            "Remove worktree '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrFetchFailedFmt),
+            "Fetch from '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPullConflictFmt),
+            "Pull from '{}' has conflicts"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPullFailedFmt),
+            "Pull from '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPushFailedFmt),
+            "Push to '{}' failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrFetchNotStarted),
+            "Fetch could not start"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPullNotStarted),
+            "Pull could not start"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrPushNotStarted),
+            "Push could not start"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRebasePaused),
+            "Rebase paused due to conflicts"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrRebaseFailed),
+            "Interactive rebase failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStageHunkFailed),
+            "Stage hunk failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnstageHunkFailed),
+            "Unstage hunk failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStageLinesFailed),
+            "Stage lines failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnstageLinesFailed),
+            "Unstage lines failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrConflictResolveFailed),
+            "Conflict resolution failed"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrAlreadyOnBranchFmt),
+            "Already on branch '{}'."
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrCleanWorktreeFmt), "{} requires a clean working tree. Commit, stash, or discard your changes to tracked files first.");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrHeadDetached),
+            "HEAD is detached. Switch to a branch before running this operation."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBranchNameUnknown),
+            "Failed to determine the current branch name"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNoRemotes),
+            "No remotes configured. Add one with: git remote add origin <url>"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNoUsableRemotes),
+            "No usable git remotes are configured."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNoStagedChanges),
+            "There are no staged changes to commit."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrCannotAmendRebase),
+            "Cannot amend during a rebase. Continue or abort the rebase first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrOverwriteLocalFmt),
+            "{} would overwrite local changes. Commit, stash, or discard them first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrOverwritePathOneFmt),
+            "{} would overwrite {}. Commit, stash, move, or delete it first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrOverwritePathManyFmt),
+            "{} would overwrite {}. Commit, stash, move, or delete them first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStagingConflictFmt),
+            "'{}' has unresolved conflicts. Open the conflict resolver before staging it."
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrBranchNotFoundFmt), "Branch '{}' not found as a local or remote branch. Try fetching to update remote refs.");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrLocalBranchExistsFmt),
+            "A local branch named '{}' already exists. Please delete or rename it first."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrInvalidRemoteBranchFmt),
+            "Invalid remote branch name '{}'. Expected 'remote/branch' format."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNotMergeState),
+            "Repository is not in a merge state (no MERGE_HEAD to continue)."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrUnresolvedConflicts),
+            "There are still unresolved conflicts. Resolve all conflicts before continuing."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNothingToContinueFmt),
+            "There is no {} to continue."
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrNoRebaseEntries),
+            "No entries provided for interactive rebase"
+        );
+        assert_eq!(Language::English.tr(TrKey::ErrRebasePlanMismatchFmt), "Interactive rebase plan does not match the current branch's history (the selected commits are not exactly the last {} first-parent commits of HEAD). Refresh and try again.");
+        assert_eq!(
+            Language::English.tr(TrKey::ErrStashIndexOutOfRangeFmt),
+            "Stash index {} out of range"
+        );
+        assert_eq!(
+            Language::English.tr(TrKey::ErrBaseNotCommitFmt),
+            "'{}' does not resolve to a commit"
+        );
+    }
+
+    #[test]
+    fn v3_settings_default_to_english_and_migrate_to_v4() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{ "version": 3 }"#).expect("v3 file parses");
+        assert_eq!(settings.language, Language::English);
+
+        let mut state = test_settings_state();
+        state.settings.version = 3;
+        assert!(state.migrate_settings());
+        assert_eq!(state.settings.version, CURRENT_SETTINGS_VERSION);
+        assert_eq!(state.settings.language, Language::English);
     }
 
     #[test]

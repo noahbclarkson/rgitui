@@ -21,6 +21,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 #[derive(Clone, Debug)]
 pub struct Issue {
@@ -76,6 +77,9 @@ impl IssueFilter {
         }
     }
 
+    /// English filter vocabulary. Rendering uses [`TrKey`] instead; this stays
+    /// so the unit tests keep pinning the exact source literals.
+    #[allow(dead_code)]
     fn label(&self) -> &str {
         match self {
             IssueFilter::Open => "Open",
@@ -173,6 +177,14 @@ pub struct IssuesPanel {
 
 impl IssuesPanel {
     pub(crate) fn new(cx: &mut Context<Self>, github_data: Entity<GithubDataService>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
         Self {
             github_data,
             issues: Vec::new().into(),
@@ -202,7 +214,7 @@ impl IssuesPanel {
             query_input: {
                 let query_input = cx.new(|cx| {
                     let mut ti = TextInput::new(cx);
-                    ti.set_placeholder("Search issues...");
+                    ti.set_placeholder(language.tr(TrKey::SearchIssuesPh));
                     ti
                 });
                 let input = query_input.clone();
@@ -717,6 +729,10 @@ impl IssuesPanel {
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = cx.global::<SettingsState>().settings().language;
+        self.query_input.update(cx, |ed, _| {
+            ed.set_placeholder(language.tr(TrKey::SearchIssuesPh));
+        });
         let colors = cx.colors();
 
         if self.view_mode == IssuesPanelView::Detail {
@@ -739,7 +755,7 @@ impl IssuesPanel {
                         })),
                 )
                 .child(
-                    Label::new("Issue Detail")
+                    Label::new(language.tr(TrKey::IssueDetail))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Default),
@@ -770,7 +786,7 @@ impl IssuesPanel {
                     .color(Color::Accent),
             )
             .child(
-                Label::new("Issues")
+                Label::new(language.tr(TrKey::IssuesTitle))
                     .size(LabelSize::Small)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Default),
@@ -796,7 +812,7 @@ impl IssuesPanel {
                         .border_color(colors.border_variant)
                         .overflow_hidden()
                         .child(
-                            Button::new("filter-open", "Open")
+                            Button::new("filter-open", language.tr(TrKey::FilterOpen))
                                 .size(ButtonSize::Compact)
                                 .style(if is_open {
                                     ButtonStyle::Filled
@@ -808,7 +824,7 @@ impl IssuesPanel {
                                 })),
                         )
                         .child(
-                            Button::new("filter-closed", "Closed")
+                            Button::new("filter-closed", language.tr(TrKey::FilterClosed))
                                 .size(ButtonSize::Compact)
                                 .style(if is_closed {
                                     ButtonStyle::Filled
@@ -820,7 +836,7 @@ impl IssuesPanel {
                                 })),
                         )
                         .child(
-                            Button::new("filter-all", "All")
+                            Button::new("filter-all", language.tr(TrKey::FilterAll))
                                 .size(ButtonSize::Compact)
                                 .style(if is_all {
                                     ButtonStyle::Filled
@@ -847,7 +863,7 @@ impl IssuesPanel {
                 IconButton::new("issues-search", IconName::Search)
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Subtle)
-                    .tooltip("Search issues")
+                    .tooltip(language.tr(TrKey::SearchIssuesTip))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.toggle_search(cx);
                     })),
@@ -869,6 +885,7 @@ impl IssuesPanel {
     }
 
     fn render_detail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let colors = cx.colors();
         let Some(issue) = &self.selected_issue else {
             return div().into_any_element();
@@ -880,8 +897,16 @@ impl IssuesPanel {
         let created: SharedString = issue.created_at.clone().into();
 
         let (state_label, state_icon, state_color) = match issue.state {
-            IssueState::Open => ("Open", IconName::DotOutline, Color::Success),
-            IssueState::Closed => ("Closed", IconName::CheckCircle, Color::Accent),
+            IssueState::Open => (
+                language.tr(TrKey::FilterOpen),
+                IconName::DotOutline,
+                Color::Success,
+            ),
+            IssueState::Closed => (
+                language.tr(TrKey::FilterClosed),
+                IconName::CheckCircle,
+                Color::Accent,
+            ),
         };
 
         let mut content = div()
@@ -1013,13 +1038,14 @@ impl IssuesPanel {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Loading comments...")
+                        Label::new(language.tr(TrKey::LoadingComments))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     ),
             );
         } else if let Some(err) = &self.comments_error {
-            let err_text: SharedString = format!("Failed to load comments: {err}").into();
+            let err_text: SharedString =
+                format!("{}: {err}", language.tr(TrKey::CommentsFailedPre)).into();
             content = content.child(
                 div()
                     .h_flex()
@@ -1041,12 +1067,14 @@ impl IssuesPanel {
             );
         } else if !self.selected_comments.is_empty() {
             let comment_count = self.selected_comments.len();
-            let comments_header: SharedString = format!(
-                "{} comment{}",
-                comment_count,
-                if comment_count == 1 { "" } else { "s" }
-            )
-            .into();
+            let comments_header: SharedString = if comment_count == 1 {
+                language.tr(TrKey::OneComment).into()
+            } else {
+                language
+                    .tr(TrKey::ManyCommentsFmt)
+                    .replacen("{}", &comment_count.to_string(), 1)
+                    .into()
+            };
             content = content.child(
                 div()
                     .h_flex()
@@ -1193,6 +1221,7 @@ impl IssuesPanel {
 
 impl Render for IssuesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let panel_bg = cx.colors().panel_background;
         let ghost_selected = cx.colors().ghost_element_selected;
         let text_accent = cx.colors().text_accent;
@@ -1226,8 +1255,8 @@ impl Render for IssuesPanel {
             return panel
                 .child(self.render_empty_state(
                     IconName::Settings,
-                    "Sign in to view issues",
-                    "This repository is private or rate-limited. Add a GitHub token in Settings — for organization repos you may need a fine-grained token approved by an org owner.",
+                    language.tr(TrKey::GhSignInIssues),
+                    language.tr(TrKey::GhAuthDesc),
                     cx,
                 ))
                 .into_any_element();
@@ -1271,7 +1300,7 @@ impl Render for IssuesPanel {
                                     ),
                                 )
                                 .child(
-                                    Button::new("retry-issues", "Retry")
+                                    Button::new("retry-issues", language.tr(TrKey::OpRetry))
                                         .icon(IconName::Refresh)
                                         .size(ButtonSize::Default)
                                         .style(ButtonStyle::Filled)
@@ -1286,12 +1315,20 @@ impl Render for IssuesPanel {
         }
 
         if self.issues.is_empty() {
-            let empty_msg = format!("No {} issues found", self.filter.label().to_lowercase());
+            let filter_word = match &self.filter {
+                IssueFilter::Open => language.tr(TrKey::FilterOpen),
+                IssueFilter::Closed => language.tr(TrKey::FilterClosed),
+                IssueFilter::All => language.tr(TrKey::FilterAll),
+            }
+            .to_lowercase();
+            let empty_msg = language
+                .tr(TrKey::IssueEmptyFmt)
+                .replacen("{}", &filter_word, 1);
             return panel
                 .child(self.render_empty_state(
                     IconName::CheckCircle,
                     &empty_msg,
-                    "Try a different filter or check back later",
+                    language.tr(TrKey::TryFilterHint),
                     cx,
                 ))
                 .into_any_element();

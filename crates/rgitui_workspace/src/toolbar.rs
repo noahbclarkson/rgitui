@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::SharedString;
 use gpui::{div, px, ClickEvent, Context, EventEmitter, Render, Window};
-use rgitui_settings::SettingsState;
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Badge, Button, Icon, IconButton, IconName, IconSize, Indicator, Label, LabelSize, Tooltip,
@@ -16,7 +16,7 @@ type TooltipFactory = Box<dyn Fn(&mut gpui::Window, &mut gpui::App) -> gpui::Any
 struct ToolbarButtonState {
     disabled: bool,
     loading: bool,
-    tooltip_text: &'static str,
+    tooltip_text: TrKey,
     /// The command the button runs, if it is one a keystroke can reach. The
     /// tooltip shows that command's current binding rather than a literal.
     command: Option<CommandId>,
@@ -180,7 +180,8 @@ impl Toolbar {
             Color::Default
         };
 
-        let tooltip_fn = Self::build_tooltip(state.tooltip_text, state.command);
+        let language = cx.global::<SettingsState>().settings().language;
+        let tooltip_fn = Self::build_tooltip(language.tr(state.tooltip_text), state.command);
 
         div()
             .id(id)
@@ -203,20 +204,21 @@ impl Toolbar {
     }
 
     fn render_left_group(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let language = cx.global::<SettingsState>().settings().language;
         let fetch_label = if self.is_fetching {
-            "Fetching..."
+            language.tr(TrKey::TbFetching)
         } else {
-            "Fetch"
+            language.tr(TrKey::TbFetch)
         };
         let pull_label = if self.is_pulling {
-            "Pulling..."
+            language.tr(TrKey::TbPulling)
         } else {
-            "Pull"
+            language.tr(TrKey::TbPull)
         };
         let push_label = if self.is_pushing {
-            "Pushing..."
+            language.tr(TrKey::TbPushing)
         } else {
-            "Push"
+            language.tr(TrKey::TbPush)
         };
 
         div()
@@ -237,7 +239,7 @@ impl Toolbar {
                             ToolbarButtonState {
                                 disabled: self.is_fetching,
                                 loading: self.is_fetching,
-                                tooltip_text: "Fetch from remote",
+                                tooltip_text: TrKey::TipFetchRemote,
                                 command: Some(CommandId::Fetch),
                             },
                             cx,
@@ -255,7 +257,7 @@ impl Toolbar {
                                 ToolbarButtonState {
                                     disabled: !self.can_pull,
                                     loading: self.is_pulling,
-                                    tooltip_text: "Pull from remote",
+                                    tooltip_text: TrKey::TipPullRemote,
                                     command: Some(CommandId::Pull),
                                 },
                                 cx,
@@ -280,7 +282,7 @@ impl Toolbar {
                                 ToolbarButtonState {
                                     disabled: !self.can_push,
                                     loading: self.is_pushing,
-                                    tooltip_text: "Push to remote",
+                                    tooltip_text: TrKey::TipPushRemote,
                                     command: Some(CommandId::Push),
                                 },
                                 cx,
@@ -309,7 +311,7 @@ impl Toolbar {
             .child(VerticalDivider::new())
             // Branch operations group
             .child(
-                Button::new("tb-branch", "Branch")
+                Button::new("tb-branch", language.tr(TrKey::TbBranch))
                     .icon(IconName::GitBranch)
                     .tooltip_fn(keymap::command_tooltip(
                         "Create new branch",
@@ -327,7 +329,7 @@ impl Toolbar {
                     .items_center()
                     .gap(px(2.))
                     .child(
-                        Button::new("tb-stash", "Stash")
+                        Button::new("tb-stash", language.tr(TrKey::TbStash))
                             .icon(IconName::Stash)
                             .disabled(!self.has_changes)
                             .tooltip_fn(keymap::command_tooltip(
@@ -339,7 +341,7 @@ impl Toolbar {
                             })),
                     )
                     .child(
-                        Button::new("tb-pop", "Pop")
+                        Button::new("tb-pop", language.tr(TrKey::TbPop))
                             .icon(IconName::Undo)
                             .disabled(!self.has_stashes)
                             .tooltip_fn(keymap::command_tooltip(
@@ -354,11 +356,11 @@ impl Toolbar {
             .child(VerticalDivider::new())
             // PR creation group
             .child(
-                Button::new("tb-pr", "Create PR")
+                Button::new("tb-pr", language.tr(TrKey::TbCreatePr))
                     .icon(IconName::GitPullRequest)
                     .disabled(!self.has_github_token)
                     .tooltip_fn(keymap::command_tooltip(
-                        "Create GitHub pull request",
+                        language.tr(TrKey::TipCreatePrFull),
                         CommandId::CreatePr,
                     ))
                     .on_click(
@@ -368,6 +370,7 @@ impl Toolbar {
     }
 
     fn render_right_group(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let language = cx.global::<SettingsState>().settings().language;
         div()
             .h_flex()
             .items_center()
@@ -381,7 +384,7 @@ impl Toolbar {
                     .child(
                         IconButton::new("tb-explorer", IconName::Folder)
                             .color(Color::Muted)
-                            .tooltip("Open in file explorer")
+                            .tooltip(language.tr(TrKey::TipExplorer))
                             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                                 cx.emit(ToolbarEvent::OpenFileExplorer)
                             })),
@@ -389,7 +392,7 @@ impl Toolbar {
                     .child(
                         IconButton::new("tb-terminal", IconName::Terminal)
                             .color(Color::Muted)
-                            .tooltip("Open terminal")
+                            .tooltip(language.tr(TrKey::TipTerminal))
                             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                                 cx.emit(ToolbarEvent::OpenTerminal)
                             })),
@@ -397,7 +400,7 @@ impl Toolbar {
                     .child(
                         IconButton::new("tb-editor", IconName::ExternalLink)
                             .color(Color::Muted)
-                            .tooltip("Open in editor")
+                            .tooltip(language.tr(TrKey::TipEditor))
                             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                                 cx.emit(ToolbarEvent::OpenEditor)
                             })),
@@ -414,7 +417,7 @@ impl Toolbar {
                         IconButton::new("tb-search", IconName::Search)
                             .color(Color::Muted)
                             .tooltip_fn(keymap::command_tooltip(
-                                "Search commits",
+                                language.tr(TrKey::TipSearchCommits),
                                 CommandId::Search,
                             ))
                             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
@@ -424,7 +427,10 @@ impl Toolbar {
                     .child(
                         IconButton::new("tb-refresh", IconName::Refresh)
                             .color(Color::Muted)
-                            .tooltip_fn(keymap::command_tooltip("Refresh", CommandId::Refresh))
+                            .tooltip_fn(keymap::command_tooltip(
+                                language.tr(TrKey::TipRefresh),
+                                CommandId::Refresh,
+                            ))
                             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                                 cx.emit(ToolbarEvent::Refresh)
                             })),
@@ -432,7 +438,10 @@ impl Toolbar {
                     .child(
                         IconButton::new("tb-settings", IconName::Settings)
                             .color(Color::Muted)
-                            .tooltip_fn(keymap::command_tooltip("Settings", CommandId::Settings))
+                            .tooltip_fn(keymap::command_tooltip(
+                                language.tr(TrKey::TipSettings),
+                                CommandId::Settings,
+                            ))
                             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                                 cx.emit(ToolbarEvent::Settings)
                             })),

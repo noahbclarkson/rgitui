@@ -9,6 +9,7 @@ mod file_history;
 mod history_cache;
 mod local_ops;
 mod network;
+mod op_i18n;
 mod rebase;
 mod reflog;
 mod refresh;
@@ -29,6 +30,8 @@ use std::sync::{Arc, Mutex};
 use crate::types::*;
 
 use argsafe::{validate_branch_name, validate_remote_name};
+use op_i18n::{op_err_text, op_error};
+use rgitui_settings::TrKey;
 
 /// Normalize UNC paths (`\\server\share\…` → `//server/share/…`) for libgit2
 /// on Windows. No-op on other platforms.
@@ -103,11 +106,11 @@ fn parse_remote_tracking_ref(name: &str) -> Option<(String, String)> {
 fn head_branch_name(repo: &Repository) -> Result<String> {
     let head = repo.head()?;
     if !head.is_branch() {
-        anyhow::bail!("HEAD is detached. Switch to a branch before running this operation.");
+        return Err(op_error(TrKey::ErrHeadDetached, vec![]));
     }
     head.shorthand()
         .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("Failed to determine the current branch name"))
+        .ok_or_else(|| op_error(TrKey::ErrBranchNameUnknown, vec![]))
 }
 
 /// Whether the working tree or index carries changes to **tracked** files.
@@ -134,11 +137,10 @@ fn repo_has_worktree_changes(repo: &Repository) -> Result<bool> {
 
 fn ensure_clean_worktree(repo: &Repository, operation: &str) -> Result<()> {
     if repo_has_worktree_changes(repo)? {
-        anyhow::bail!(
-            "{} requires a clean working tree. Commit, stash, or discard your changes to \
-             tracked files first.",
-            operation
-        );
+        return Err(op_error(
+            TrKey::ErrCleanWorktreeFmt,
+            vec![operation.to_string()],
+        ));
     }
     Ok(())
 }
@@ -157,7 +159,7 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
 
     let remote_names = repo.remotes()?;
     if remote_names.is_empty() {
-        anyhow::bail!("No remotes configured. Add one with: git remote add origin <url>")
+        return Err(op_error(TrKey::ErrNoRemotes, vec![]));
     }
 
     if remote_names.iter().flatten().any(|name| name == "origin") {
@@ -169,7 +171,7 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
         .flatten()
         .next()
         .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("No usable git remotes are configured."))?;
+        .ok_or_else(|| op_error(TrKey::ErrNoUsableRemotes, vec![]))?;
     // Read straight out of .git/config, which git does not validate.
     validate_remote_name(&name)?;
     Ok(name)
@@ -550,11 +552,12 @@ impl GitProject {
         let operation_id =
             self.begin_operation(kind, summary.clone(), None, branch_name.clone(), cx);
         self.note_operation_worktree(operation_id, worktree_path);
+        let details = op_err_text(cx, &error);
         self.fail_op(
             operation_id,
             kind,
             summary,
-            error.to_string(),
+            details,
             (None, branch_name, retryable),
             cx,
         );

@@ -8,7 +8,7 @@ use gpui::{
     ScrollStrategy, SharedString, Styled, UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{BisectDecision, BisectLogEntry};
-use rgitui_settings::SettingsState;
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
@@ -46,6 +46,10 @@ impl EventEmitter<BisectViewEvent> for BisectView {}
 
 impl BisectView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         Self {
             entries: Arc::new(Vec::new()),
             scroll_handle: UniformListScrollHandle::new(),
@@ -136,6 +140,7 @@ impl BisectView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>, count: usize) -> gpui::Div {
+        let language = cx.global::<SettingsState>().settings().language;
         let colors = cx.colors();
         let (good, bad, skip, start) = self.decision_counts();
 
@@ -164,14 +169,14 @@ impl BisectView {
                     .color(Color::Accent),
             )
             .child(
-                Label::new("Bisect")
+                Label::new(language.tr(TrKey::BisectTitle))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Default),
             )
             .when(start > 0, |el| {
                 el.child(
-                    Label::new("started")
+                    Label::new(language.tr(TrKey::BisectStarted))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -179,45 +184,66 @@ impl BisectView {
             .child(div().flex_1())
             // Bad count
             .child(
-                Label::new(format!("{} bad", bad))
-                    .size(LabelSize::XSmall)
-                    .color(if bad > 0 { Color::Error } else { Color::Muted }),
+                Label::new(
+                    language
+                        .tr(TrKey::BisectBadFmt)
+                        .replacen("{}", &bad.to_string(), 1),
+                )
+                .size(LabelSize::XSmall)
+                .color(if bad > 0 { Color::Error } else { Color::Muted }),
             )
             // Good count
             .child(
-                Label::new(format!("{} good", good))
-                    .size(LabelSize::XSmall)
-                    .color(if good > 0 {
-                        Color::Success
-                    } else {
-                        Color::Muted
-                    }),
+                Label::new(
+                    language
+                        .tr(TrKey::BisectGoodFmt)
+                        .replacen("{}", &good.to_string(), 1),
+                )
+                .size(LabelSize::XSmall)
+                .color(if good > 0 {
+                    Color::Success
+                } else {
+                    Color::Muted
+                }),
             )
             // Skip count
             .when(skip > 0, |el| {
                 el.child(
-                    Label::new(format!("{} skip", skip))
-                        .size(LabelSize::XSmall)
-                        .color(Color::Warning),
+                    Label::new(language.tr(TrKey::BisectSkipFmt).replacen(
+                        "{}",
+                        &skip.to_string(),
+                        1,
+                    ))
+                    .size(LabelSize::XSmall)
+                    .color(Color::Warning),
                 )
             })
             // Remaining steps
             .when(remaining > 0, |el| {
                 el.child(
-                    Label::new(format!("~{} steps left", remaining))
-                        .size(LabelSize::XSmall)
-                        .color(Color::Accent),
+                    Label::new(language.tr(TrKey::BisectLeftFmt).replacen(
+                        "{}",
+                        &remaining.to_string(),
+                        1,
+                    ))
+                    .size(LabelSize::XSmall)
+                    .color(Color::Accent),
                 )
             })
             // Entry count
             .child(
-                Label::new(format!("{} entries", count))
-                    .size(LabelSize::XSmall)
-                    .color(Color::Placeholder),
+                Label::new(language.tr(TrKey::BisectEntriesFmt).replacen(
+                    "{}",
+                    &count.to_string(),
+                    1,
+                ))
+                .size(LabelSize::XSmall)
+                .color(Color::Placeholder),
             )
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let editor_bg = cx.colors().editor_background;
         let ghost_bg = cx.colors().ghost_element_background;
         div()
@@ -242,12 +268,12 @@ impl BisectView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("No bisect in progress")
+                            Label::new(language.tr(TrKey::BisectEmpty))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Use 'Git: Bisect Start' to begin")
+                            Label::new(language.tr(TrKey::BisectEmptyHint))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),

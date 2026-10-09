@@ -10,6 +10,7 @@ use rgitui_ui::{
 
 use crate::keymap;
 use crate::CommandId;
+use rgitui_settings::{SettingsState, TrKey};
 
 /// Events emitted by the rename dialog.
 #[derive(Debug, Clone)]
@@ -35,6 +36,10 @@ impl EventEmitter<RenameDialogEvent> for RenameDialog {}
 
 impl RenameDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
             ti.set_placeholder("new-branch-name");
@@ -178,6 +183,11 @@ impl Render for RenameDialog {
         }
 
         let colors = cx.colors().clone();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|s| s.settings().language)
+            .unwrap_or_default();
+
         let new_name = self.editor.read(cx).text().to_string();
         let is_empty = new_name.is_empty();
         let has_error = self.error_message.is_some();
@@ -227,7 +237,7 @@ impl Render for RenameDialog {
                         ),
                 )
                 .child(
-                    Label::new("Rename Branch")
+                    Label::new(language.tr(TrKey::RenameTitle))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -239,7 +249,7 @@ impl Render for RenameDialog {
                 .gap(px(8.))
                 .items_center()
                 .child(
-                    Label::new("Current name")
+                    Label::new(language.tr(TrKey::RenameCurrent))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -271,7 +281,7 @@ impl Render for RenameDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("New name")
+                    Label::new(language.tr(TrKey::RenameNew))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -318,7 +328,7 @@ impl Render for RenameDialog {
                 .justify_between()
                 .items_center()
                 .child(
-                    Label::new("Enter to rename | Esc to cancel")
+                    Label::new(language.tr(TrKey::RenameHint))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -327,7 +337,7 @@ impl Render for RenameDialog {
                         .h_flex()
                         .gap_2()
                         .child(
-                            Button::new("cancel-rename", "Cancel")
+                            Button::new("cancel-rename", language.tr(TrKey::CancelBtn))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -335,7 +345,7 @@ impl Render for RenameDialog {
                                 })),
                         )
                         .child(
-                            Button::new("do-rename", "Rename")
+                            Button::new("do-rename", language.tr(TrKey::RenameBtn))
                                 .icon(IconName::Edit)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)

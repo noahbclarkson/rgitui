@@ -8,7 +8,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::CommitInfo;
-use rgitui_settings::SettingsState;
+use rgitui_settings::{SettingsState, TrKey};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize};
 
@@ -38,6 +38,10 @@ impl EventEmitter<FileHistoryViewEvent> for FileHistoryView {}
 
 impl FileHistoryView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Re-render immediately when the interface language changes, mirroring
+        // the `ThemeState` observer in `DiffViewer::new`.
+        cx.observe_global::<SettingsState>(|_, cx| cx.notify())
+            .detach();
         Self {
             commits: Arc::new(Vec::new()),
             file_path: None,
@@ -130,6 +134,7 @@ impl FileHistoryView {
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let language = cx.global::<SettingsState>().settings().language;
         let colors = cx.colors();
 
         div()
@@ -154,7 +159,7 @@ impl FileHistoryView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("File History")
+                        Label::new(language.tr(TrKey::FileHistoryTitle))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -176,12 +181,12 @@ impl FileHistoryView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("Select a file to view history")
+                            Label::new(language.tr(TrKey::HistoryEmpty))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Press 'h' on a file to see commits")
+                            Label::new(language.tr(TrKey::HistoryEmptyHint))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -194,6 +199,7 @@ impl FileHistoryView {
 impl Render for FileHistoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let language = cx.global::<SettingsState>().settings().language;
 
         if self.commits.is_empty() {
             return self.render_empty_state(cx);
@@ -400,7 +406,7 @@ impl Render for FileHistoryView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("File History")
+                        Label::new(language.tr(TrKey::FileHistoryTitle))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Default),
@@ -412,9 +418,13 @@ impl Render for FileHistoryView {
                     )
                     .child(div().flex_1())
                     .child(
-                        Label::new(SharedString::from(format!("{} commits", count)))
-                            .size(LabelSize::XSmall)
-                            .color(Color::Placeholder),
+                        Label::new(language.tr(TrKey::CommitsCountFmt).replacen(
+                            "{}",
+                            &count.to_string(),
+                            1,
+                        ))
+                        .size(LabelSize::XSmall)
+                        .color(Color::Placeholder),
                     ),
             )
             .child(list)

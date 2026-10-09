@@ -21,7 +21,7 @@ use gpui::{
 use rgitui_ai::catalog::{CatalogSource, ModelInfo};
 use rgitui_settings::{
     config_dir, AiProvider, AppearanceMode, AutoFetchInterval, Compactness, DiffViewMode,
-    GitProviderSettings, GraphStyle, SettingsState,
+    GitProviderSettings, GraphStyle, Language, SettingsState, TrKey,
 };
 use rgitui_theme::{ActiveTheme, Color, StyledExt, ThemeState};
 use rgitui_ui::{
@@ -435,6 +435,10 @@ pub struct SettingsView {
     // General state
     /// Auto-fetch interval, chosen from a dropdown rather than a pill row.
     auto_fetch_select: Entity<rgitui_ui::Select>,
+    /// Interface language dropdown. Options show native names so each choice
+    /// is recognizable regardless of the active language.
+    language_select: Entity<rgitui_ui::Select>,
+    pub(super) language: Language,
     max_recent_repos: usize,
     compactness: Compactness,
     font_size: u32,
@@ -560,7 +564,11 @@ impl SettingsView {
                 .global::<SettingsState>()
                 .ai_api_key_for(*provider)
                 .unwrap_or_default();
-            let placeholder = format!("Paste your {} API key", provider.display_name());
+            let placeholder = settings.language.tr(TrKey::AiKeyPlaceholderFmt).replacen(
+                "{}",
+                provider.display_name(),
+                1,
+            );
             let editor = cx.new(|cx| {
                 let mut input = TextInput::new(cx);
                 input.set_placeholder(placeholder);
@@ -648,6 +656,34 @@ impl SettingsView {
         )
         .detach();
 
+        let language_select = cx.new(|cx| {
+            let mut select = rgitui_ui::Select::new("language-select", cx);
+            select.set_options(
+                Language::ALL
+                    .iter()
+                    .map(|language| {
+                        rgitui_ui::SelectOption::new(language.id(), language.native_name())
+                    })
+                    .collect(),
+                cx,
+            );
+            select.set_selected(Some(settings.language.id().into()), cx);
+            select
+        });
+        cx.subscribe(
+            &language_select,
+            |this: &mut Self, _, event: &rgitui_ui::SelectEvent, cx| {
+                if let rgitui_ui::SelectEvent::Changed(id) = event {
+                    // Same drift guard as the auto-fetch dropdown above.
+                    if let Ok(language) = id.parse::<Language>() {
+                        this.language = language;
+                        this.save_settings(cx);
+                    }
+                }
+            },
+        )
+        .detach();
+
         let ai_model_picker = cx.new(|cx| {
             let mut picker = Picker::new(cx);
             // A model newer than the catalogue, or one only a gateway serves,
@@ -679,7 +715,7 @@ impl SettingsView {
 
         let git_https_token_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Paste a generic HTTPS token only if you need a fallback...");
+            ti.set_placeholder(settings.language.tr(TrKey::SetHttpsTokenPh));
             ti.set_masked(true);
             if !git_https_token_val.is_empty() {
                 ti.set_text(&git_https_token_val, cx);
@@ -698,7 +734,7 @@ impl SettingsView {
 
         let git_gpg_key_id_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("No explicit GPG key configured");
+            ti.set_placeholder(settings.language.tr(TrKey::SetGpgPh));
             if !git_gpg_key_id_val.is_empty() {
                 ti.set_text(&git_gpg_key_id_val, cx);
             }
@@ -727,7 +763,7 @@ impl SettingsView {
 
         let provider_username_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Usually left empty");
+            ti.set_placeholder(settings.language.tr(TrKey::SetUsuallyEmpty));
             if let Some(p) = first_provider {
                 ti.set_text(&p.username, cx);
             }
@@ -736,7 +772,7 @@ impl SettingsView {
 
         let provider_token_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Paste the access token for this account...");
+            ti.set_placeholder(settings.language.tr(TrKey::SetAccountTokenPh));
             ti.set_masked(true);
             if let Some(p) = first_provider {
                 ti.set_text(&p.token, cx);
@@ -746,7 +782,7 @@ impl SettingsView {
 
         let terminal_command_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Custom command override...");
+            ti.set_placeholder(settings.language.tr(TrKey::SetCustomCmdPh));
             if !settings.terminal_command.is_empty() {
                 ti.set_text(&settings.terminal_command, cx);
             }
@@ -755,7 +791,7 @@ impl SettingsView {
 
         let editor_command_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Custom command override...");
+            ti.set_placeholder(settings.language.tr(TrKey::SetCustomCmdPh));
             if !settings.editor_command.is_empty() {
                 ti.set_text(&settings.editor_command, cx);
             }
@@ -1011,6 +1047,8 @@ impl SettingsView {
             show_subject_column: settings.show_subject_column,
             auto_fetch_interval: settings.auto_fetch_interval,
             auto_fetch_select,
+            language: settings.language,
+            language_select,
             confirm_destructive_operations: settings.confirm_destructive_operations,
             auto_check_updates: settings.auto_check_updates,
             watch_all_worktrees: settings.watch_all_worktrees,
@@ -1091,6 +1129,7 @@ impl SettingsView {
                 self.graph_style = s.graph_style;
                 self.show_subject_column = s.show_subject_column;
                 self.auto_fetch_interval = s.auto_fetch_interval;
+                self.language = s.language;
                 self.confirm_destructive_operations = s.confirm_destructive_operations;
                 self.auto_check_updates = s.auto_check_updates;
                 self.watch_all_worktrees = s.watch_all_worktrees;
@@ -1128,6 +1167,10 @@ impl SettingsView {
         let interval = self.auto_fetch_interval.to_string();
         self.auto_fetch_select.update(cx, |select, cx| {
             select.set_selected(Some(interval.into()), cx)
+        });
+        let language_id = self.language.id();
+        self.language_select.update(cx, |select, cx| {
+            select.set_selected(Some(language_id.into()), cx)
         });
         self.git_https_token_editor
             .update(cx, |e, cx| e.set_text(git_https_token_val, cx));
@@ -1251,12 +1294,17 @@ impl SettingsView {
         if self.dismiss_model_picker(cx) {
             return true;
         }
-        let select_open = self.auto_fetch_select.read(cx).is_open();
-        if select_open {
+        let auto_fetch_open = self.auto_fetch_select.read(cx).is_open();
+        if auto_fetch_open {
             self.auto_fetch_select
                 .update(cx, |select, cx| select.close(cx));
         }
-        select_open
+        let language_open = self.language_select.read(cx).is_open();
+        if language_open {
+            self.language_select
+                .update(cx, |select, cx| select.close(cx));
+        }
+        auto_fetch_open || language_open
     }
 
     /// Commit any text fields that have not yet been submitted via Enter and
@@ -1340,6 +1388,7 @@ impl SettingsView {
             state.settings_mut().graph_style = self.graph_style;
             state.settings_mut().show_subject_column = self.show_subject_column;
             state.settings_mut().auto_fetch_interval = self.auto_fetch_interval;
+            state.settings_mut().language = self.language;
             state.settings_mut().confirm_destructive_operations =
                 self.confirm_destructive_operations;
             state.settings_mut().auto_check_updates = self.auto_check_updates;
@@ -2157,12 +2206,25 @@ impl SettingsView {
     // ── Sidebar navigation ──────────────────────────────────────────────
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
+        let language = self.language;
 
-        let sections: [(SettingsSection, IconName, &str); 4] = [
-            (SettingsSection::Theme, IconName::Eye, "Appearance"),
-            (SettingsSection::Ai, IconName::Sparkle, "AI"),
-            (SettingsSection::Auth, IconName::GitBranch, "Auth"),
-            (SettingsSection::General, IconName::Settings, "General"),
+        let sections: [(SettingsSection, IconName, TrKey); 4] = [
+            (
+                SettingsSection::Theme,
+                IconName::Eye,
+                TrKey::SectionAppearance,
+            ),
+            (SettingsSection::Ai, IconName::Sparkle, TrKey::SectionAi),
+            (
+                SettingsSection::Auth,
+                IconName::GitBranch,
+                TrKey::SectionAuth,
+            ),
+            (
+                SettingsSection::General,
+                IconName::Settings,
+                TrKey::SectionGeneral,
+            ),
         ];
 
         let mut sidebar = div()
@@ -2192,15 +2254,16 @@ impl SettingsView {
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new("Preferences")
+                    Label::new(language.tr(TrKey::Preferences))
                         .size(LabelSize::Small)
                         .weight(FontWeight::BOLD)
                         .color(Color::Muted),
                 ),
         );
 
-        for (index, (section, icon, label)) in sections.into_iter().enumerate() {
+        for (index, (section, icon, key)) in sections.into_iter().enumerate() {
             let is_active = section == self.active_section;
+            let label = language.tr(key);
             let label_str: SharedString = label.into();
 
             sidebar = sidebar.child(
@@ -2269,30 +2332,32 @@ impl SettingsView {
     // ── Theme section ───────────────────────────────────────────────────
     fn render_theme_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
+        let language = self.language;
 
         let mut section = div().v_flex().w_full().gap(px(16.));
 
         section = section.child(Self::section_header(
             IconName::Eye,
-            "Appearance",
-            "Customize the look and feel of the application.",
+            language.tr(TrKey::SectionAppearance),
+            language.tr(TrKey::ThemeSectionDesc),
         ));
 
         // Appearance Mode (Auto/Light/Dark)
         let mut app_card = Self::setting_card(cx);
         app_card = app_card.child(Self::setting_label(
-            "Appearance Mode",
-            "Choose whether to show light or dark themes, or auto-detect.",
+            language.tr(TrKey::AppearanceModeTitle),
+            language.tr(TrKey::AppearanceModeDesc),
         ));
 
         let appearance_mode = cx.global::<SettingsState>().settings().appearance_mode;
         let mut app_options = div().h_flex().w_full().gap(px(8.));
 
-        for (mode, label) in [
-            (AppearanceMode::Auto, "Auto"),
-            (AppearanceMode::Light, "Light"),
-            (AppearanceMode::Dark, "Dark"),
+        for (mode, key) in [
+            (AppearanceMode::Auto, TrKey::ModeAuto),
+            (AppearanceMode::Light, TrKey::ModeLight),
+            (AppearanceMode::Dark, TrKey::ModeDark),
         ] {
+            let label = language.tr(key);
             let is_selected = mode == appearance_mode;
             let colors_clone = colors.clone();
 
@@ -2328,8 +2393,8 @@ impl SettingsView {
         // Theme grid
         let mut card = Self::setting_card(cx);
         card = card.child(Self::setting_label(
-            "Color Theme",
-            "Select a theme to change all interface colors.",
+            language.tr(TrKey::ColorThemeTitle),
+            language.tr(TrKey::ColorThemeDesc),
         ));
 
         let mut theme_grid = div().v_flex().w_full().gap(px(6.));
@@ -2403,7 +2468,7 @@ impl SettingsView {
                                 .bg(colors.hint_background)
                                 .items_center()
                                 .child(
-                                    Label::new("Active")
+                                    Label::new(language.tr(TrKey::ActiveBadge))
                                         .size(LabelSize::XSmall)
                                         .color(Color::Accent)
                                         .weight(FontWeight::SEMIBOLD),
@@ -2430,20 +2495,18 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Custom Theme Editor")
+                                Label::new(language.tr(TrKey::CustomThemeTitle))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new(
-                                    "Edit colors, create custom themes, and export as JSON.",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                                Label::new(language.tr(TrKey::CustomThemeDesc))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
                             ),
                     )
                     .child(
-                        Button::new("open-theme-editor", "Edit Theme")
+                        Button::new("open-theme-editor", language.tr(TrKey::EditThemeBtn))
                             .size(ButtonSize::Compact)
                             .style(ButtonStyle::Subtle)
                             .icon(IconName::Edit)
@@ -2464,18 +2527,19 @@ impl SettingsView {
     // ── Git section ──────────────────────────────────────────────────────
     fn render_git_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        let language = self.language;
         let mut section = div().v_flex().w_full().min_w_0().gap(px(16.));
         section = section.child(Self::section_header(
             IconName::GitBranch,
-            "Accounts & Credentials",
-            "Use browser sign-in for GitHub or GitLab, manage all account profiles in one place, and keep SSH separate from HTTPS tokens.",
+            language.tr(TrKey::AccountsHeader),
+            language.tr(TrKey::AccountsSectionDesc),
         ));
 
         let mut quick_setup = Self::setting_card(cx);
         quick_setup = quick_setup
             .child(Self::setting_label(
-                "Quick Setup",
-                "Start by adding the provider account you want to use. Browser sign-in is the primary path. Manual setup is available for self-hosted or custom HTTPS remotes.",
+                language.tr(TrKey::QuickSetupTitle),
+                language.tr(TrKey::QuickSetupDesc),
             ))
             .child(
                 div()
@@ -2483,7 +2547,7 @@ impl SettingsView {
                     .flex_wrap()
                     .gap(px(8.))
                     .child(
-                        Button::new("add-github-account", "Sign in with GitHub")
+                        Button::new("add-github-account", language.tr(TrKey::SignInGitHub))
                             .style(ButtonStyle::Filled)
                             .size(ButtonSize::Compact)
                             .icon(IconName::Plus)
@@ -2492,7 +2556,7 @@ impl SettingsView {
                             })),
                     )
                     .child(
-                        Button::new("add-gitlab-account", "Add GitLab Account")
+                        Button::new("add-gitlab-account", language.tr(TrKey::AddGitLab))
                             .style(ButtonStyle::Outlined)
                             .size(ButtonSize::Compact)
                             .icon(IconName::Plus)
@@ -2501,7 +2565,7 @@ impl SettingsView {
                             })),
                     )
                     .child(
-                        Button::new("add-custom-account", "Manual / Custom Host")
+                        Button::new("add-custom-account", language.tr(TrKey::ManualCustom))
                             .style(ButtonStyle::Outlined)
                             .size(ButtonSize::Compact)
                             .icon(IconName::ExternalLink)
@@ -2668,8 +2732,8 @@ impl SettingsView {
 
         let mut profiles_card = Self::setting_card(cx);
         profiles_card = profiles_card.child(Self::setting_label(
-            "Profiles",
-            "All saved accounts live here. Select one to connect it, paste a token, or adjust host matching.",
+            language.tr(TrKey::AuthProfilesTitle),
+            language.tr(TrKey::AuthProfilesDesc),
         ));
 
         if self.git_providers.is_empty() {
@@ -2684,16 +2748,14 @@ impl SettingsView {
                     .border_1()
                     .border_color(colors.border_variant)
                     .child(
-                        Label::new("No provider accounts configured yet.")
+                        Label::new(language.tr(TrKey::AuthProfilesEmptyTitle))
                             .size(LabelSize::Small)
                             .weight(FontWeight::SEMIBOLD),
                     )
                     .child(
-                        Label::new(
-                            "Add a GitHub account to start with the default flow, or choose Manual / Custom Host for enterprise and other HTTPS remotes.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(language.tr(TrKey::AuthProfilesEmptyDesc))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             );
         } else {
@@ -3079,8 +3141,8 @@ impl SettingsView {
         let mut https_card = Self::setting_card(cx);
         https_card = https_card
             .child(Self::setting_label(
-                "Fallback HTTPS Token / PAT",
-                "Used only when no profile-specific account matches the remote host. Leave this empty unless you truly need a generic fallback.",
+                language.tr(TrKey::AuthHttpsFallbackTitle),
+                language.tr(TrKey::AuthHttpsFallbackDesc),
             ))
             .child(self.masked_editor_row(
                 "git-https-token-input",
@@ -3098,8 +3160,8 @@ impl SettingsView {
         let mut ssh_card = Self::setting_card(cx);
         ssh_card = ssh_card
             .child(Self::setting_label(
-                "SSH Key Override",
-                "Optional. If set, this key is tried first for SSH remotes. If SSH fails and you have a GitHub account above, rgitui automatically falls back to HTTPS.",
+                language.tr(TrKey::AuthSshOverrideTitle),
+                language.tr(TrKey::AuthSshOverrideDesc),
             ))
             .child(
                 div()
@@ -3107,13 +3169,9 @@ impl SettingsView {
                     .w_full()
                     .gap(px(6.))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.icon_editor_row(
-                                &self.git_ssh_key_path_editor,
-                                IconName::File,
-                            )),
+                        div().flex_1().min_w_0().child(
+                            self.icon_editor_row(&self.git_ssh_key_path_editor, IconName::File),
+                        ),
                     )
                     .when(has_ssh_key, |el| {
                         el.child(
@@ -3145,17 +3203,12 @@ impl SettingsView {
                         .border_1()
                         .border_color(colors.border_variant)
                         .child(
-                            div()
-                                .v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap(px(2.))
-                                .child(
-                                    Label::new(format!("Detected: {}", key_path.clone()))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted)
-                                        .truncate(),
-                                ),
+                            div().v_flex().flex_1().min_w_0().gap(px(2.)).child(
+                                Label::new(format!("Detected: {}", key_path.clone()))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted)
+                                    .truncate(),
+                            ),
                         )
                         .when(!already_selected, |el| {
                             el.child(
@@ -3188,12 +3241,12 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Sign Commits")
+                                Label::new(language.tr(TrKey::AuthSignCommitsTitle))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new("Sign commits with your configured GPG key.")
+                                Label::new(language.tr(TrKey::AuthSignCommitsDesc))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             ),
@@ -3217,8 +3270,8 @@ impl SettingsView {
                     ),
             )
             .child(Self::setting_label(
-                "GPG Key ID",
-                "Leave empty to use your existing git config default signing key.",
+                language.tr(TrKey::AuthGpgKeyTitle),
+                language.tr(TrKey::AuthGpgKeyDesc),
             ))
             .child(self.icon_editor_row(&self.git_gpg_key_id_editor, IconName::Eye));
         section = section.child(gpg_card);
@@ -3229,29 +3282,23 @@ impl SettingsView {
                     .v_flex()
                     .gap(px(6.))
                     .child(Self::setting_label(
-                        "How Authentication Works",
-                        "rgitui detects the remote URL protocol and authenticates accordingly.",
+                        language.tr(TrKey::AuthHowTitle),
+                        language.tr(TrKey::AuthHowDesc),
                     ))
                     .child(
-                        Label::new(
-                            "HTTPS remotes: uses your GitHub account token (above), or falls back to your system git credential helper (e.g. gh auth).",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(language.tr(TrKey::AuthHowHttps))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     )
                     .child(
-                        Label::new(
-                            "SSH remotes: if no SSH key is configured above, and your system has an HTTPS credential helper, rgitui automatically rewrites SSH to HTTPS so your GitHub login works.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(language.tr(TrKey::AuthHowSshFallback))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     )
                     .child(
-                        Label::new(
-                            "SSH remotes with a key: uses the SSH key path above (or ssh-agent) directly.",
-                        )
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        Label::new(language.tr(TrKey::AuthHowSshKey))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
                     ),
             ),
         );
@@ -3263,14 +3310,43 @@ impl SettingsView {
     fn render_general_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let current_max = self.max_recent_repos;
+        let language = self.language;
+        let language_select = self.language_select.clone();
 
         let mut section = div().v_flex().w_full().gap(px(16.));
 
         section = section.child(Self::section_header(
             IconName::Settings,
-            "General",
-            "Application preferences and behavior.",
+            language.tr(TrKey::GeneralTitle),
+            language.tr(TrKey::GeneralDesc),
         ));
+
+        // Language card
+        let mut language_card = Self::setting_card(cx);
+        language_card = language_card.child(
+            div()
+                .h_flex()
+                .w_full()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(
+                            Label::new(language.tr(TrKey::LanguageTitle))
+                                .size(LabelSize::Small)
+                                .weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            Label::new(language.tr(TrKey::LanguageDesc))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
+                )
+                .child(language_select),
+        );
+        section = section.child(language_card);
 
         // Recent repos card
         let mut repos_card = Self::setting_card(cx);
@@ -3285,12 +3361,12 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Max Recent Repositories")
+                            Label::new(language.tr(TrKey::MaxRecentTitle))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new("Number of repos shown in the recent list.")
+                            Label::new(language.tr(TrKey::MaxRecentDesc))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -3353,14 +3429,18 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "UI Density",
-                    "Adjust the spacing and sizing of UI elements.",
+                    language.tr(TrKey::UiDensityTitle),
+                    language.tr(TrKey::UiDensityDesc),
                 ))
                 .child({
-                    let options: [(&str, &str, Compactness); 3] = [
-                        ("compact", "Compact", Compactness::Compact),
-                        ("default", "Default", Compactness::Default),
-                        ("comfortable", "Comfortable", Compactness::Comfortable),
+                    let options: [(&str, TrKey, Compactness); 3] = [
+                        ("compact", TrKey::DensityCompact, Compactness::Compact),
+                        ("default", TrKey::DensityDefault, Compactness::Default),
+                        (
+                            "comfortable",
+                            TrKey::DensityComfortable,
+                            Compactness::Comfortable,
+                        ),
                     ];
                     let mut row = div()
                         .h_flex()
@@ -3368,7 +3448,8 @@ impl SettingsView {
                         .p(px(3.))
                         .rounded(px(8.))
                         .bg(colors.element_background);
-                    for (id, label, variant) in options {
+                    for (id, key, variant) in options {
+                        let label = language.tr(key);
                         let is_selected = current_compactness == variant;
                         let hover_bg = colors.ghost_element_hover;
                         let mut btn = div()
@@ -3422,12 +3503,12 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Font Size")
+                            Label::new(language.tr(TrKey::FontSizeTitle))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new("Base font size for the user interface (8 - 24).")
+                            Label::new(language.tr(TrKey::FontSizeDesc))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -3499,12 +3580,12 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Show Line Numbers in Diff")
+                                Label::new(language.tr(TrKey::ShowLineNumbersTitle))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new("Display line numbers alongside diff content.")
+                                Label::new(language.tr(TrKey::ShowLineNumbersDesc))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             ),
@@ -3538,16 +3619,14 @@ impl SettingsView {
                             .flex_1()
                             .gap(px(2.))
                             .child(
-                                Label::new("Wrap Long Lines in Diff")
+                                Label::new(language.tr(TrKey::WrapLinesTitle))
                                     .size(LabelSize::Small)
                                     .weight(FontWeight::SEMIBOLD),
                             )
                             .child(
-                                Label::new(
-                                    "Wrap overflowing lines instead of scrolling horizontally.",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                                Label::new(language.tr(TrKey::WrapLinesDesc))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
                             ),
                     )
                     .child(
@@ -3573,23 +3652,37 @@ impl SettingsView {
                     .v_flex()
                     .gap(px(8.))
                     .child(Self::setting_label(
-                        "Default Diff View Mode",
-                        "Choose how diffs are displayed.",
+                        language.tr(TrKey::DiffModeTitle),
+                        language.tr(TrKey::DiffModeDesc),
                     ))
-                    .child(self.pill_group(
-                        "diff-view-mode",
-                        &["Unified", "Side-by-Side"],
-                        &self.diff_view_mode.to_string(),
-                        |this, value, cx| {
-                            this.diff_view_mode = match value.as_str() {
-                                "Unified" => DiffViewMode::Unified,
-                                "Side-by-Side" => DiffViewMode::SideBySide,
-                                _ => DiffViewMode::Unified,
-                            };
-                            this.save_settings(cx);
-                        },
-                        cx,
-                    )),
+                    .child({
+                        let selected = match self.diff_view_mode {
+                            DiffViewMode::Unified => language.tr(TrKey::DiffUnified),
+                            DiffViewMode::SideBySide => language.tr(TrKey::DiffSideBySide),
+                        };
+                        self.pill_group(
+                            "diff-view-mode",
+                            &[
+                                language.tr(TrKey::DiffUnified),
+                                language.tr(TrKey::DiffSideBySide),
+                            ],
+                            selected,
+                            |this, value, cx| {
+                                // The pill hands back the visible (translated)
+                                // label, so accept either language.
+                                this.diff_view_mode = if value
+                                    == Language::SimplifiedChinese.tr(TrKey::DiffSideBySide)
+                                    || value == Language::English.tr(TrKey::DiffSideBySide)
+                                {
+                                    DiffViewMode::SideBySide
+                                } else {
+                                    DiffViewMode::Unified
+                                };
+                                this.save_settings(cx);
+                            },
+                            cx,
+                        )
+                    }),
             );
         section = section.child(diff_card);
 
@@ -3600,24 +3693,44 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "Graph Style",
-                    "Visual style for the commit graph rendering.",
+                    language.tr(TrKey::GraphTitle),
+                    language.tr(TrKey::GraphDesc),
                 ))
-                .child(self.pill_group(
-                    "graph-style",
-                    &["Rails", "Curved", "Angular"],
-                    &self.graph_style.to_string(),
-                    |this, value, cx| {
-                        this.graph_style = match value.as_str() {
-                            "Rails" => GraphStyle::Rails,
-                            "Curved" => GraphStyle::Curved,
-                            "Angular" => GraphStyle::Angular,
-                            _ => GraphStyle::Rails,
-                        };
-                        this.save_settings(cx);
-                    },
-                    cx,
-                ))
+                .child({
+                    let selected = match self.graph_style {
+                        GraphStyle::Rails => language.tr(TrKey::GraphRails),
+                        GraphStyle::Curved => language.tr(TrKey::GraphCurved),
+                        GraphStyle::Angular => language.tr(TrKey::GraphAngular),
+                    };
+                    self.pill_group(
+                        "graph-style",
+                        &[
+                            language.tr(TrKey::GraphRails),
+                            language.tr(TrKey::GraphCurved),
+                            language.tr(TrKey::GraphAngular),
+                        ],
+                        selected,
+                        |this, value, cx| {
+                            // The pill hands back the visible (translated)
+                            // label, so accept either language.
+                            let zh = Language::SimplifiedChinese;
+                            let en = Language::English;
+                            this.graph_style = if value == zh.tr(TrKey::GraphCurved)
+                                || value == en.tr(TrKey::GraphCurved)
+                            {
+                                GraphStyle::Curved
+                            } else if value == zh.tr(TrKey::GraphAngular)
+                                || value == en.tr(TrKey::GraphAngular)
+                            {
+                                GraphStyle::Angular
+                            } else {
+                                GraphStyle::Rails
+                            };
+                            this.save_settings(cx);
+                        },
+                        cx,
+                    )
+                })
                 .child({
                     let show_subject = self.show_subject_column;
                     div()
@@ -3631,12 +3744,12 @@ impl SettingsView {
                                 .flex_1()
                                 .gap(px(2.))
                                 .child(
-                                    Label::new("Show Subject Column")
+                                    Label::new(language.tr(TrKey::ShowSubjectTitle))
                                         .size(LabelSize::Small)
                                         .weight(FontWeight::SEMIBOLD),
                                 )
                                 .child(
-                                    Label::new("Display commit subject in the graph.")
+                                    Label::new(language.tr(TrKey::ShowSubjectDesc))
                                         .size(LabelSize::XSmall)
                                         .color(Color::Muted),
                                 ),
@@ -3669,8 +3782,8 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "Auto-Fetch Interval",
-                    "How often to automatically fetch from remotes in the background.",
+                    language.tr(TrKey::AutoFetchTitle),
+                    language.tr(TrKey::AutoFetchDesc),
                 ))
                 // A `Select`, not a pill row: five fixed-width pills is the
                 // widest closed choice on the page, and unlike commit style
@@ -3693,16 +3806,14 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Confirm Before Destructive Operations")
+                            Label::new(language.tr(TrKey::ConfirmDestructiveTitle))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new(
-                                "Show a confirmation dialog before force push, branch delete, discard changes, and similar actions.",
-                            )
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                            Label::new(language.tr(TrKey::ConfirmDestructiveDesc))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
                         ),
                 )
                 .child(
@@ -3740,16 +3851,14 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Check for Updates on Startup")
+                            Label::new(language.tr(TrKey::CheckUpdatesTitle))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new(
-                                "Contact api.github.com once per day to see if a newer release is available. Turn off to keep rgitui offline.",
-                            )
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                            Label::new(language.tr(TrKey::CheckUpdatesDesc))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
                         ),
                 )
                 .child(
@@ -3786,16 +3895,14 @@ impl SettingsView {
                         .flex_1()
                         .gap(px(2.))
                         .child(
-                            Label::new("Watch All Worktrees")
+                            Label::new(language.tr(TrKey::WatchWorktreesTitle))
                                 .size(LabelSize::Small)
                                 .weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            Label::new(
-                                "Refresh the graph whenever files change in any linked worktree, not just the current one. Useful when you have multiple worktrees open and work is happening in them in parallel.",
-                            )
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                            Label::new(language.tr(TrKey::WatchWorktreesDesc))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
                         ),
                 )
                 .child(
@@ -3835,7 +3942,7 @@ impl SettingsView {
                 .any(|app| app.command == editor_custom_text);
 
         let mut terminal_section = div().v_flex().gap(px(6.)).child(
-            Label::new("Terminal")
+            Label::new(language.tr(TrKey::TerminalLabel))
                 .size(LabelSize::XSmall)
                 .weight(FontWeight::SEMIBOLD),
         );
@@ -3924,7 +4031,7 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(2.))
                 .child(
-                    Label::new("Custom command (overrides selection)")
+                    Label::new(language.tr(TrKey::CustomCommandLabel))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -3932,7 +4039,7 @@ impl SettingsView {
         );
 
         let mut editor_section = div().v_flex().gap(px(6.)).child(
-            Label::new("Editor")
+            Label::new(language.tr(TrKey::EditorLabel))
                 .size(LabelSize::XSmall)
                 .weight(FontWeight::SEMIBOLD),
         );
@@ -4018,7 +4125,7 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(2.))
                 .child(
-                    Label::new("Custom command (overrides selection)")
+                    Label::new(language.tr(TrKey::CustomCommandLabel))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -4030,8 +4137,8 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(16.))
                 .child(Self::setting_label(
-                    "External Tools",
-                    "Select a detected application or enter a custom command.",
+                    language.tr(TrKey::ExternalToolsTitle),
+                    language.tr(TrKey::ExternalToolsDesc),
                 ))
                 .child(terminal_section)
                 .child(editor_section),
@@ -4043,9 +4150,8 @@ impl SettingsView {
         // it follows the user's keymap.json instead of quoting a default.
         let mut shortcuts_card = Self::setting_card(cx);
         let mut shortcuts_list = div().v_flex().gap(px(8.)).child(Self::setting_label(
-            "Keyboard Shortcuts",
-            "The bindings in force for a few common actions. Open the full \
-             reference from the workspace for all of them.",
+            language.tr(TrKey::ShortcutsTitle),
+            language.tr(TrKey::ShortcutsDesc),
         ));
         for id in QUICK_REFERENCE_COMMANDS {
             shortcuts_list = shortcuts_list.child(self.render_shortcut_row(*id, cx));
@@ -4064,8 +4170,8 @@ impl SettingsView {
                 .v_flex()
                 .gap(px(8.))
                 .child(Self::setting_label(
-                    "Config File",
-                    "Location of the settings file on disk.",
+                    language.tr(TrKey::ConfigTitle),
+                    language.tr(TrKey::ConfigDesc),
                 ))
                 .child(
                     div()
@@ -4081,7 +4187,7 @@ impl SettingsView {
                             ),
                         )
                         .child(
-                            Button::new("reveal-config-dir", "Reveal")
+                            Button::new("reveal-config-dir", language.tr(TrKey::RevealBtn))
                                 .style(ButtonStyle::Subtle)
                                 .size(ButtonSize::Compact)
                                 .icon(IconName::Folder)
@@ -4117,7 +4223,8 @@ impl SettingsView {
     /// keymap currently binds it to.
     ///
     /// A binding the user defined is tinted and labelled, matching the badge in
-    /// the full shortcut reference.
+    /// the full shortcut reference. The description is localized; the keystroke
+    /// comes from the keymap in force and is never translated.
     fn render_shortcut_row(&self, id: CommandId, cx: &Context<Self>) -> impl IntoElement {
         let colors = cx.colors();
         let summary = crate::keymap::summary(cx);
@@ -4138,7 +4245,7 @@ impl SettingsView {
             .gap(px(6.))
             .py(px(4.))
             .child(
-                Label::new(SharedString::from(id.description()))
+                Label::new(SharedString::from(id.description_tr(self.language)))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             )
@@ -4172,6 +4279,10 @@ impl SettingsView {
     fn keymap_file_row(cx: &Context<Self>) -> impl IntoElement {
         let path = crate::keymap::keymap_path();
         let path_display = path.display().to_string();
+        let language = cx
+            .try_global::<SettingsState>()
+            .map(|state| state.settings().language)
+            .unwrap_or_default();
         let editor_command = cx
             .try_global::<SettingsState>()
             .map(|state| state.settings().editor_command.clone())
@@ -4191,7 +4302,7 @@ impl SettingsView {
                 ),
             )
             .child(
-                Button::new("open-keymap-file", "Edit keymap.json")
+                Button::new("open-keymap-file", language.tr(TrKey::EditKeymapBtn))
                     .style(ButtonStyle::Subtle)
                     .size(ButtonSize::Compact)
                     .icon(IconName::Settings)
@@ -4218,6 +4329,39 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Keep input placeholders in the active language: the editors are
+        // created once in `new`, so without this they would freeze in the
+        // language that was active at startup. Example values (URLs, hosts,
+        // key paths) stay as-is.
+        let sync = self.language;
+        self.git_https_token_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetHttpsTokenPh));
+        });
+        self.git_gpg_key_id_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetGpgPh));
+        });
+        self.provider_username_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetUsuallyEmpty));
+        });
+        self.provider_token_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetAccountTokenPh));
+        });
+        self.terminal_command_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetCustomCmdPh));
+        });
+        self.editor_command_editor.update(cx, |ed, _| {
+            ed.set_placeholder(sync.tr(TrKey::SetCustomCmdPh));
+        });
+        for provider in AiProvider::ALL {
+            if let Some(editor) = self.ai_key_editors.get(provider) {
+                let placeholder =
+                    sync.tr(TrKey::AiKeyPlaceholderFmt)
+                        .replacen("{}", provider.display_name(), 1);
+                editor.update(cx, |ed, _| {
+                    ed.set_placeholder(placeholder);
+                });
+            }
+        }
         // Give wrapping text a definite width during GPUI's measurement pass.
         // A percentage width beneath the scroll container is resolved too late
         // by the macOS text system and can cache a one-glyph wrap width.
@@ -4238,22 +4382,23 @@ impl SettingsView {
         // The title names the page. Every section previously rendered the
         // literal string "Preferences", so the most prominent text on screen
         // carried no information at all.
+        let language = self.language;
         let (page_title, page_subtitle) = match self.active_section {
             SettingsSection::Theme => (
-                "Appearance",
-                "Theme, layout, and visual defaults for the application.",
+                language.tr(TrKey::SectionAppearance),
+                language.tr(TrKey::ThemePageDesc),
             ),
             SettingsSection::Ai => (
-                "AI",
-                "Providers, models, and how commit messages get written.",
+                language.tr(TrKey::SectionAi),
+                language.tr(TrKey::AiPageDesc),
             ),
             SettingsSection::Auth => (
-                "Accounts",
-                "Account profiles, HTTPS tokens, and SSH configuration.",
+                language.tr(TrKey::AccountsTitle),
+                language.tr(TrKey::AccountsDesc),
             ),
             SettingsSection::General => (
-                "General",
-                "General application behavior and workspace defaults.",
+                language.tr(TrKey::GeneralTitle),
+                language.tr(TrKey::GeneralPageDesc),
             ),
         };
 
@@ -4304,7 +4449,7 @@ impl SettingsView {
                             Label::new(if is_error {
                                 message
                             } else {
-                                "Saved".to_string()
+                                self.language.tr(TrKey::SavedFeedback).to_string()
                             })
                             .size(LabelSize::XSmall)
                             .color(if is_error { Color::Error } else { Color::Muted })
