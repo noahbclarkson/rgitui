@@ -5590,6 +5590,7 @@ dependencies = [
  "log",
  "notify",
  "parking_lot",
+ "rgitui_i18n",
  "rgitui_perf",
  "rgitui_settings",
  "rgitui_test_support",

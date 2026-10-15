@@ -11,7 +11,9 @@
 //! ```
 //!
 //! [`t!`] returns a [`SharedString`], which every `rgitui_ui` component already
-//! accepts, so translating a call site is a one-line change. Keys are checked
+//! accepts, so translating a call site is a one-line change. Text produced away
+//! from the UI — a git error built on a background thread — is a [`Message`]
+//! from [`msg!`], translated where it is finally shown. Keys are checked
 //! at compile time: a key missing from `en.rs`, or named arguments that do not
 //! match the English message's placeholders, fail the build. [`key!`] applies
 //! the same check to a key stored as data and translated later with
@@ -33,6 +35,7 @@ mod catalog;
 mod en;
 mod keys;
 mod loader;
+mod message;
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -45,6 +48,7 @@ pub use en::{ENGLISH_ID, ENGLISH_MESSAGES, ENGLISH_NAME};
 #[doc(hidden)]
 pub use keys::{args_match, is_known_key, is_known_plural, plural_args_match};
 pub use loader::user_locales_dir;
+pub use message::{IntoMessageArg, Message, MessageArg, MessageError};
 
 use catalog::{interpolate, plural_category_of};
 use loader::{add_user_locale, load_embedded_locales, read_user_locales, upsert_locale};
@@ -356,7 +360,13 @@ pub fn translate(key: &str) -> SharedString {
 
 /// Look up `key` and substitute its `{name}` placeholders.
 pub fn translate_args(key: &str, args: &[(&str, String)]) -> SharedString {
-    SharedString::from(interpolate(translate(key).as_ref(), args))
+    let message = translate(key);
+    if args.is_empty() {
+        // The common case, every `t!` without arguments: the catalogue's own
+        // string, which for English is a `&'static str` and costs no copy.
+        return message;
+    }
+    SharedString::from(interpolate(message.as_ref(), args))
 }
 
 /// Look up the plural form of `key` for `count` under the active locale's
@@ -410,6 +420,41 @@ macro_rules! impl_into_count {
 
 impl_into_count!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
 
+/// Compile-time checks shared by the translation macros. Each arm expands to a
+/// `const` assertion evaluated where the macro is used.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __i18n_check {
+    (key $key:literal) => {
+        const _: () = ::core::assert!(
+            $crate::is_known_key($key),
+            ::core::concat!("unknown translation key \"", $key, "\": add it to crates/rgitui_i18n/src/en.rs"),
+        );
+    };
+    (args $key:literal; $($name:ident),*) => {
+        const _: () = ::core::assert!(
+            $crate::args_match($key, &[$(::core::stringify!($name)),*]),
+            ::core::concat!("the arguments for \"", $key, "\" do not match the placeholders in its English message"),
+        );
+    };
+    (plural $key:literal) => {
+        const _: () = ::core::assert!(
+            $crate::is_known_plural(::core::concat!($key, ".one"), ::core::concat!($key, ".other")),
+            ::core::concat!("unknown plural translation key \"", $key, "\": add \"", $key, ".one\" and \"", $key, ".other\" to crates/rgitui_i18n/src/en.rs"),
+        );
+    };
+    (plural_args $key:literal; $($name:ident),*) => {
+        const _: () = ::core::assert!(
+            $crate::plural_args_match(
+                ::core::concat!($key, ".one"),
+                ::core::concat!($key, ".other"),
+                &[$(::core::stringify!($name)),*],
+            ),
+            ::core::concat!("the arguments for \"", $key, "\" do not match the placeholders in its English messages"),
+        );
+    };
+}
+
 /// Translate a message key. The key and the argument names are checked
 /// against `en.rs` at compile time.
 ///
@@ -419,29 +464,12 @@ impl_into_count!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
 /// ```
 #[macro_export]
 macro_rules! t {
-    ($key:literal) => {{
-        const _: () = ::core::assert!(
-            $crate::is_known_key($key),
-            ::core::concat!("unknown translation key \"", $key, "\": add it to crates/rgitui_i18n/src/en.rs"),
-        );
-        const _: () = ::core::assert!(
-            $crate::args_match($key, &[]),
-            ::core::concat!("t!(\"", $key, "\") needs arguments for the placeholders in its English message"),
-        );
-        $crate::translate($key)
-    }};
-    ($key:literal, $($name:ident = $value:expr),+ $(,)?) => {{
-        const _: () = ::core::assert!(
-            $crate::is_known_key($key),
-            ::core::concat!("unknown translation key \"", $key, "\": add it to crates/rgitui_i18n/src/en.rs"),
-        );
-        const _: () = ::core::assert!(
-            $crate::args_match($key, &[$(::core::stringify!($name)),+]),
-            ::core::concat!("the arguments to t!(\"", $key, "\") do not match the placeholders in its English message"),
-        );
+    ($key:literal $(, $name:ident = $value:expr)* $(,)?) => {{
+        $crate::__i18n_check!(key $key);
+        $crate::__i18n_check!(args $key; $($name),*);
         $crate::translate_args(
             $key,
-            &[$((::core::stringify!($name), ::std::string::ToString::to_string(&$value))),+],
+            &[$((::core::stringify!($name), ::std::string::ToString::to_string(&$value))),*],
         )
     }};
 }
@@ -455,34 +483,49 @@ macro_rules! t {
 /// ```
 #[macro_export]
 macro_rules! tp {
-    ($key:literal, $count:expr) => {{
-        const _: () = ::core::assert!(
-            $crate::is_known_plural(::core::concat!($key, ".one"), ::core::concat!($key, ".other")),
-            ::core::concat!("unknown plural translation key \"", $key, "\": add \"", $key, ".one\" and \"", $key, ".other\" to crates/rgitui_i18n/src/en.rs"),
-        );
-        const _: () = ::core::assert!(
-            $crate::plural_args_match(::core::concat!($key, ".one"), ::core::concat!($key, ".other"), &[]),
-            ::core::concat!("tp!(\"", $key, "\") needs arguments for the placeholders in its English messages"),
-        );
-        $crate::translate_plural($key, $crate::IntoCount::into_count($count), &[])
-    }};
-    ($key:literal, $count:expr, $($name:ident = $value:expr),+ $(,)?) => {{
-        const _: () = ::core::assert!(
-            $crate::is_known_plural(::core::concat!($key, ".one"), ::core::concat!($key, ".other")),
-            ::core::concat!("unknown plural translation key \"", $key, "\": add \"", $key, ".one\" and \"", $key, ".other\" to crates/rgitui_i18n/src/en.rs"),
-        );
-        const _: () = ::core::assert!(
-            $crate::plural_args_match(
-                ::core::concat!($key, ".one"),
-                ::core::concat!($key, ".other"),
-                &[$(::core::stringify!($name)),+],
-            ),
-            ::core::concat!("the arguments to tp!(\"", $key, "\") do not match the placeholders in its English messages"),
-        );
+    ($key:literal, $count:expr $(, $name:ident = $value:expr)* $(,)?) => {{
+        $crate::__i18n_check!(plural $key);
+        $crate::__i18n_check!(plural_args $key; $($name),*);
         $crate::translate_plural(
             $key,
             $crate::IntoCount::into_count($count),
-            &[$((::core::stringify!($name), ::std::string::ToString::to_string(&$value))),+],
+            &[$((::core::stringify!($name), ::std::string::ToString::to_string(&$value))),*],
+        )
+    }};
+}
+
+/// A [`Message`] to translate later, where it is shown. Checked like [`t!`];
+/// a value may itself be a [`Message`], which is translated along with it.
+///
+/// ```ignore
+/// msg!("git.push.failed", remote = remote_name)
+/// ```
+#[macro_export]
+macro_rules! msg {
+    ($key:literal $(, $name:ident = $value:expr)* $(,)?) => {{
+        $crate::__i18n_check!(key $key);
+        $crate::__i18n_check!(args $key; $($name),*);
+        $crate::Message::keyed(
+            $key,
+            ::std::vec![$((::core::stringify!($name), $crate::IntoMessageArg::into_message_arg($value))),*],
+        )
+    }};
+}
+
+/// The plural counterpart of [`msg!`], checked like [`tp!`].
+///
+/// ```ignore
+/// msgp!("git.stage.files.done", paths.len())
+/// ```
+#[macro_export]
+macro_rules! msgp {
+    ($key:literal, $count:expr $(, $name:ident = $value:expr)* $(,)?) => {{
+        $crate::__i18n_check!(plural $key);
+        $crate::__i18n_check!(plural_args $key; $($name),*);
+        $crate::Message::plural(
+            $key,
+            $crate::IntoCount::into_count($count),
+            ::std::vec![$((::core::stringify!($name), $crate::IntoMessageArg::into_message_arg($value))),*],
         )
     }};
 }
@@ -496,14 +539,7 @@ macro_rules! tp {
 #[macro_export]
 macro_rules! key {
     ($key:literal) => {{
-        const _: () = ::core::assert!(
-            $crate::is_known_key($key),
-            ::core::concat!(
-                "unknown translation key \"",
-                $key,
-                "\": add it to crates/rgitui_i18n/src/en.rs"
-            ),
-        );
+        $crate::__i18n_check!(key $key);
         $key
     }};
 }

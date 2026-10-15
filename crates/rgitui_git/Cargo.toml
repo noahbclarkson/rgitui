@@ -25,6 +25,7 @@ same-file.workspace = true
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 rgitui_perf = { workspace = true, optional = true }
+rgitui_i18n.workspace = true
 
 [dev-dependencies]
 rgitui_test_support.workspace = true

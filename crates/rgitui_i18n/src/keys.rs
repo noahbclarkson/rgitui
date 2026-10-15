@@ -61,6 +61,11 @@ const fn find(key: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// The English message for `key`.
+pub(crate) fn find_english(key: &str) -> Option<&'static str> {
+    find(key.as_bytes())
+}
+
 /// Whether `key` is defined in [`ENGLISH_MESSAGES`].
 pub const fn is_known_key(key: &str) -> bool {
     find(key.as_bytes()).is_some()

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use futures::StreamExt;
-use gpui::{AppContext, Context, Entity, SharedString};
+use gpui::{AppContext, Context, Entity};
 use rgitui_ai::{AiEvent, AiGenerator, GenerationId};
 use rgitui_diff::{ConflictResolution, DiffOperation, DiffSource, DiffViewer, DiffViewerEvent};
 use rgitui_git::{
@@ -13,6 +13,7 @@ use rgitui_git::{
     RebaseEntryAction, RebasePlanEntry, Signature,
 };
 use rgitui_graph::{GraphView, GraphViewEvent, WorktreeGraphInfo};
+use rgitui_i18n::t;
 
 use crate::{
     cache::LruCache, BisectView, BisectViewEvent, BlameView, BlameViewEvent, BranchDialog,
@@ -1317,24 +1318,28 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
             GitProjectEvent::OperationUpdated(update) => {
                 let is_running = update.state == GitOperationState::Running;
                 let operation_id = update.id;
-                let failure_message = if let Some(details) = &update.details {
-                    format!("{}: {}", update.summary, details)
-                } else {
-                    update.summary.clone()
+                let summary = update.summary.translated();
+                let failure_message = match &update.details {
+                    Some(details) => t!(
+                        "workspace.operation.failure",
+                        summary = summary,
+                        details = details.translated()
+                    ),
+                    None => summary.clone(),
                 };
 
                 match update.state {
                     GitOperationState::Running => {
                         this.operations.is_loading = true;
-                        this.operations.loading_message = Some(update.summary.clone());
-                        this.set_status_message(update.summary.clone(), cx);
+                        this.operations.loading_message = Some(summary.to_string());
+                        this.set_status_message(summary.to_string(), cx);
                         this.operations.active_git_operation = Some(update.clone());
                         this.operations.active_operations.push(ActiveOperation {
                             id: operation_id,
-                            label: update.summary.clone().into(),
+                            label: summary.clone(),
                             started_at: Instant::now(),
                         });
-                        this.show_toast(update.summary.clone(), ToastKind::Info, cx);
+                        this.show_toast(summary, ToastKind::Info, cx);
                     }
                     GitOperationState::Succeeded => {
                         this.operations
@@ -1346,7 +1351,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                             .active_operations
                             .last()
                             .map(|op| op.label.to_string());
-                        this.set_status_message(update.summary.clone(), cx);
+                        this.set_status_message(summary.to_string(), cx);
                         if this
                             .operations
                             .active_git_operation
@@ -1363,13 +1368,15 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                         {
                             this.operations.last_failed_git_operation = None;
                         }
-                        let output_text = update.details.clone().unwrap_or_default();
+                        let output_text = update
+                            .details
+                            .as_ref()
+                            .map(|details| details.translated().to_string())
+                            .unwrap_or_default();
                         if !output_text.is_empty() {
                             let now = Instant::now();
                             this.operations.last_operation_output = Some(OperationOutput {
-                                operation: SharedString::from(
-                                    update.kind.display_name().to_string(),
-                                ),
+                                operation: update.kind.name().translated(),
                                 output: output_text,
                                 is_error: false,
                                 timestamp: now,
@@ -1377,7 +1384,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                             });
                             this.schedule_operation_output_auto_hide(now, cx);
                         }
-                        this.show_toast(update.summary.clone(), ToastKind::Success, cx);
+                        this.show_toast(summary, ToastKind::Success, cx);
                     }
                     GitOperationState::Failed => {
                         this.operations
@@ -1398,13 +1405,14 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                             this.operations.active_git_operation = None;
                         }
                         this.operations.last_failed_git_operation = Some(update.clone());
-                        this.set_status_message(failure_message.clone(), cx);
+                        this.set_status_message(failure_message.to_string(), cx);
                         let error_output = update
                             .details
-                            .clone()
-                            .unwrap_or_else(|| failure_message.clone());
+                            .as_ref()
+                            .map(|details| details.translated().to_string())
+                            .unwrap_or_else(|| failure_message.to_string());
                         this.operations.last_operation_output = Some(OperationOutput {
-                            operation: SharedString::from(update.kind.display_name().to_string()),
+                            operation: update.kind.name().translated(),
                             output: error_output,
                             is_error: true,
                             timestamp: Instant::now(),
@@ -1417,7 +1425,7 @@ pub(super) fn subscribe_project(cx: &mut Context<Workspace>, subs: ProjectSubscr
                 toolbar.update(cx, |tb, cx| {
                     tb.set_fetching(is_running && update.kind == GitOperationKind::Fetch, cx);
                     tb.set_pulling(is_running && update.kind == GitOperationKind::Pull, cx);
-                    tb.set_pushing(is_running && update.kind == GitOperationKind::Push, cx);
+                    tb.set_pushing(is_running && update.kind.is_push(), cx);
                 });
             }
         }

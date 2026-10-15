@@ -8,6 +8,7 @@ mod diff;
 mod file_history;
 mod history_cache;
 mod local_ops;
+mod messages;
 mod network;
 mod rebase;
 mod reflog;
@@ -20,7 +21,10 @@ mod worktree_patch;
 use anyhow::{Context as _, Result};
 use git2::{Repository, StatusOptions};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
+use messages::{error, error_message};
+use rgitui_i18n::{msg, Message};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,18 +56,66 @@ pub fn normalize_repo_path(path: PathBuf) -> PathBuf {
 
 /// Create a `git` [`Command`] with `CREATE_NO_WINDOW` set on Windows so that
 /// spawning it from a GUI application never flashes a visible console window.
+///
+/// git's messages are forced to English (see [`english_messages_env`]) because
+/// callers recognise outcomes by matching its output.
 pub fn git_command() -> Command {
     #[cfg(target_os = "windows")]
-    {
+    let mut cmd = {
         use std::os::windows::process::CommandExt;
         let mut cmd = Command::new("git");
         cmd.creation_flags(0x08000000);
         cmd
-    }
+    };
     #[cfg(not(target_os = "windows"))]
-    {
-        Command::new("git")
+    let mut cmd = Command::new("git");
+
+    for change in english_messages_env(std::env::vars_os()) {
+        match change {
+            EnvChange::Set(key, value) => cmd.env(key, value),
+            EnvChange::Remove(key) => cmd.env_remove(key),
+        };
     }
+    cmd
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EnvChange {
+    Set(OsString, OsString),
+    Remove(OsString),
+}
+
+/// The environment changes that make git print its messages in English while
+/// leaving every other locale category as the user has it.
+///
+/// Outcomes are recognised by matching git's output — `CONFLICT`,
+/// `Already up to date.`, `Permission denied (publickey)`, the
+/// `[ahead N, behind M]` of `%(upstream:track)` — and a localized git
+/// translates all of those. Setting `LC_MESSAGES` is not enough on its own when
+/// `LC_ALL` is set, since `LC_ALL` overrides every category. In that case its
+/// value moves to `LANG` and the per-category variables it was overriding are
+/// removed, which leaves every other category resolving exactly as before.
+fn english_messages_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<EnvChange> {
+    let mut lc_all = None;
+    let mut categories = Vec::new();
+    for (key, value) in vars {
+        if key == "LC_ALL" {
+            if !value.is_empty() {
+                lc_all = Some(value);
+            }
+        } else if key.to_str().is_some_and(|k| k.starts_with("LC_")) {
+            categories.push(key);
+        }
+    }
+
+    let mut changes = Vec::new();
+    if let Some(lc_all) = lc_all {
+        changes.push(EnvChange::Remove("LC_ALL".into()));
+        changes.extend(categories.into_iter().map(EnvChange::Remove));
+        changes.push(EnvChange::Set("LANG".into(), lc_all));
+    }
+    changes.push(EnvChange::Set("LC_MESSAGES".into(), "C".into()));
+    changes
 }
 
 pub use bisect::{compute_bisect_log, is_bisect_in_progress, BisectDecision, BisectLogEntry};
@@ -103,11 +155,11 @@ fn parse_remote_tracking_ref(name: &str) -> Option<(String, String)> {
 fn head_branch_name(repo: &Repository) -> Result<String> {
     let head = repo.head()?;
     if !head.is_branch() {
-        anyhow::bail!("HEAD is detached. Switch to a branch before running this operation.");
+        return Err(error(msg!("git.error.head_detached")));
     }
     head.shorthand()
         .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("Failed to determine the current branch name"))
+        .ok_or_else(|| error(msg!("git.error.branch_name_unknown")))
 }
 
 /// Whether the working tree or index carries changes to **tracked** files.
@@ -132,13 +184,12 @@ fn repo_has_worktree_changes(repo: &Repository) -> Result<bool> {
     Ok(!repo.statuses(Some(&mut opts))?.is_empty())
 }
 
-fn ensure_clean_worktree(repo: &Repository, operation: &str) -> Result<()> {
+fn ensure_clean_worktree(repo: &Repository, operation: Message) -> Result<()> {
     if repo_has_worktree_changes(repo)? {
-        anyhow::bail!(
-            "{} requires a clean working tree. Commit, stash, or discard your changes to \
-             tracked files first.",
-            operation
-        );
+        return Err(error(msg!(
+            "git.error.clean_worktree_required",
+            operation = &operation
+        )));
     }
     Ok(())
 }
@@ -157,7 +208,7 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
 
     let remote_names = repo.remotes()?;
     if remote_names.is_empty() {
-        anyhow::bail!("No remotes configured. Add one with: git remote add origin <url>")
+        return Err(error(msg!("git.error.no_remotes")));
     }
 
     if remote_names.iter().flatten().any(|name| name == "origin") {
@@ -169,7 +220,7 @@ fn default_remote_name(repo: &Repository) -> Result<String> {
         .flatten()
         .next()
         .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("No usable git remotes are configured."))?;
+        .ok_or_else(|| error(msg!("git.error.no_usable_remotes")))?;
     // Read straight out of .git/config, which git does not validate.
     validate_remote_name(&name)?;
     Ok(name)
@@ -447,7 +498,7 @@ impl GitProject {
     pub(crate) fn begin_operation(
         &mut self,
         kind: GitOperationKind,
-        summary: impl Into<String>,
+        summary: Message,
         remote_name: Option<String>,
         branch_name: Option<String>,
         cx: &mut Context<Self>,
@@ -458,7 +509,7 @@ impl GitProject {
             id,
             kind,
             state: GitOperationState::Running,
-            summary: summary.into(),
+            summary,
             details: None,
             remote_name,
             branch_name,
@@ -493,15 +544,15 @@ impl GitProject {
         &self,
         id: u64,
         kind: GitOperationKind,
-        summary: impl Into<String>,
-        names: (Option<String>, Option<String>, Option<String>),
+        summary: Message,
+        names: (Option<Message>, Option<String>, Option<String>),
         cx: &mut Context<Self>,
     ) {
         cx.emit(GitProjectEvent::OperationUpdated(GitOperationUpdate {
             id,
             kind,
             state: GitOperationState::Succeeded,
-            summary: summary.into(),
+            summary,
             details: names.0,
             remote_name: names.1,
             branch_name: names.2,
@@ -514,8 +565,8 @@ impl GitProject {
         &self,
         id: u64,
         kind: GitOperationKind,
-        summary: impl Into<String>,
-        error: impl Into<String>,
+        summary: Message,
+        error: Message,
         names: (Option<String>, Option<String>, bool),
         cx: &mut Context<Self>,
     ) {
@@ -523,8 +574,8 @@ impl GitProject {
             id,
             kind,
             state: GitOperationState::Failed,
-            summary: summary.into(),
-            details: Some(error.into()),
+            summary,
+            details: Some(error),
             remote_name: names.0,
             branch_name: names.1,
             worktree_path: self.operation_worktree(id),
@@ -539,22 +590,22 @@ impl GitProject {
     pub(crate) fn fail_to_start_task(
         &mut self,
         kind: GitOperationKind,
-        summary: impl Into<String>,
+        summary: Message,
         error: anyhow::Error,
         retryable: bool,
         worktree_path: &Path,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        let summary = summary.into();
         let branch_name = self.head_branch_at(worktree_path);
         let operation_id =
             self.begin_operation(kind, summary.clone(), None, branch_name.clone(), cx);
         self.note_operation_worktree(operation_id, worktree_path);
+        let details = error_message(&error);
         self.fail_op(
             operation_id,
             kind,
             summary,
-            error.to_string(),
+            details,
             (None, branch_name, retryable),
             cx,
         );
@@ -1635,6 +1686,62 @@ mod carry_forward_tests {
 }
 
 #[cfg(test)]
+mod english_messages_env_tests {
+    use super::{english_messages_env, EnvChange};
+    use std::ffi::OsString;
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Iterator<Item = (OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    fn set(key: &str, value: &str) -> EnvChange {
+        EnvChange::Set(key.into(), value.into())
+    }
+
+    fn remove(key: &str) -> EnvChange {
+        EnvChange::Remove(key.into())
+    }
+
+    #[test]
+    fn without_lc_all_only_messages_change() {
+        assert_eq!(
+            english_messages_env(vars(&[("LANG", "zh_CN.UTF-8"), ("LC_TIME", "de_DE")])),
+            vec![set("LC_MESSAGES", "C")]
+        );
+    }
+
+    #[test]
+    fn lc_all_moves_to_lang_so_only_messages_change() {
+        assert_eq!(
+            english_messages_env(vars(&[
+                ("LANG", "en_US.UTF-8"),
+                ("LC_ALL", "zh_CN.UTF-8"),
+                ("LC_TIME", "de_DE"),
+                ("PATH", "/usr/bin"),
+            ])),
+            vec![
+                remove("LC_ALL"),
+                remove("LC_TIME"),
+                set("LANG", "zh_CN.UTF-8"),
+                set("LC_MESSAGES", "C"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_lc_all_counts_as_unset() {
+        assert_eq!(
+            english_messages_env(vars(&[("LC_ALL", ""), ("LC_TIME", "de_DE")])),
+            vec![set("LC_MESSAGES", "C")]
+        );
+    }
+}
+
+#[cfg(test)]
 mod ahead_behind_tests {
     use super::{local_branch_name, parse_upstream_track};
 
@@ -1776,7 +1883,11 @@ mod tests {
             !super::repo_has_worktree_changes(repo).unwrap(),
             "untracked files must not count as worktree changes"
         );
-        assert!(super::ensure_clean_worktree(repo, "Checkout").is_ok());
+        assert!(super::ensure_clean_worktree(
+            repo,
+            crate::types::GitOperationKind::Checkout.name()
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1785,7 +1896,11 @@ mod tests {
         fixture.write_file("tracked.txt", "edited\n");
 
         assert!(super::repo_has_worktree_changes(fixture.repo()).unwrap());
-        let err = super::ensure_clean_worktree(fixture.repo(), "Checkout").unwrap_err();
+        let err = super::ensure_clean_worktree(
+            fixture.repo(),
+            crate::types::GitOperationKind::Checkout.name(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("Checkout"));
     }
 
