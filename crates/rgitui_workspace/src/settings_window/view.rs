@@ -347,11 +347,6 @@ pub struct SettingsView {
     selected_theme: String,
     available_themes: Vec<String>,
 
-    /// Stored language preference: `rgitui_i18n::SYSTEM_LANGUAGE` or a locale
-    /// id. Held separately from the resolved locale so "Match system language"
-    /// stays selected in the picker rather than the language it resolved to.
-    selected_language: String,
-
     // AI state
     pub(super) ai_provider: AiProvider,
     pub(super) ai_model: String,
@@ -963,7 +958,6 @@ impl SettingsView {
             active_section: SettingsSection::Theme,
             selected_theme: settings.theme.clone(),
             available_themes,
-            selected_language: settings.language.clone(),
             ai_provider: settings.ai.provider,
             ai_model: settings.ai.model.clone(),
             ai_commit_style: settings.ai.commit_style.clone(),
@@ -1044,7 +1038,6 @@ impl SettingsView {
             .read_global::<SettingsState, _>(|state, _cx| {
                 let s = state.settings();
                 self.selected_theme = s.theme.clone();
-                self.selected_language = s.language.clone();
                 self.ai_provider = s.ai.provider;
                 self.ai_model = s.ai.model.clone();
                 self.ai_commit_style = s.ai.commit_style.clone();
@@ -1210,25 +1203,16 @@ impl SettingsView {
     }
 
     /// Switch the UI language. `selection` is `rgitui_i18n::SYSTEM_LANGUAGE` or
-    /// a locale id.
-    ///
-    /// The message catalogue is process-wide rather than a GPUI global, so
-    /// nothing invalidates the already-rendered frames on its own: every open
-    /// window is refreshed explicitly. That covers the workspace window too,
-    /// which is why this needs no cross-window action.
+    /// a locale id. `set_language` refreshes every window, the workspace's
+    /// included, so this only has to persist the choice.
     fn apply_language(&mut self, selection: String, cx: &mut Context<Self>) {
-        rgitui_i18n::set_language(&selection);
-
-        self.selected_language = selection.clone();
+        rgitui_i18n::set_language(cx, &selection);
         cx.update_global::<SettingsState, _>(|state, _cx| {
             state.settings_mut().language = selection;
             if let Err(e) = state.save() {
                 log::error!("Failed to save settings: {}", e);
             }
         });
-
-        cx.refresh_windows();
-        cx.notify();
     }
 
     /// Show a feedback message in the header banner. Informational and success
@@ -2535,15 +2519,26 @@ impl SettingsView {
             t!("settings.language.description"),
         ));
 
-        let system_detail = match rgitui_i18n::system_locale_id() {
-            Some(id) => t!("settings.language.system_detail", language = id),
-            None => t!("settings.language.system_unknown"),
+        let system_detail = match (
+            rgitui_i18n::system_locale_match(),
+            rgitui_i18n::system_locale_id(),
+        ) {
+            (Some(locale), _) => {
+                t!(
+                    "settings.language.system_detail",
+                    language = locale.native_name
+                )
+            }
+            (None, Some(id)) => t!("settings.language.system_untranslated", language = id),
+            (None, None) => t!("settings.language.system_unknown"),
         };
+        let selected = rgitui_i18n::language_selection();
 
         let mut options = div().v_flex().w_full().gap(px(6.));
         options = options.child(self.language_option(
             0,
             rgitui_i18n::SYSTEM_LANGUAGE,
+            &selected,
             t!("settings.language.system"),
             system_detail,
             cx,
@@ -2554,12 +2549,13 @@ impl SettingsView {
             let detail = if missing == 0 {
                 t!("settings.language.complete")
             } else {
-                tp!("settings.language.missing", missing, count = missing)
+                tp!("settings.language.missing", missing)
             };
 
             options = options.child(self.language_option(
                 idx as u64 + 1,
                 &locale.id,
+                &selected,
                 SharedString::from(locale.native_name.clone()),
                 detail,
                 cx,
@@ -2574,12 +2570,13 @@ impl SettingsView {
         &self,
         index: u64,
         selection: &str,
+        selected: &str,
         title: SharedString,
         detail: SharedString,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = cx.colors();
-        let is_selected = self.selected_language == selection;
+        let is_selected = selected == selection;
         let selection = selection.to_string();
 
         div()

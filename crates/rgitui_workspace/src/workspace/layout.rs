@@ -253,19 +253,20 @@ impl Render for Workspace {
                 });
 
             let primary = configured.unwrap_or_else(|| "Lilex".to_string());
+            let locale_id = cx
+                .try_global::<rgitui_i18n::ActiveLanguage>()
+                .map(|language| language.locale().id.clone())
+                .unwrap_or_default();
 
-            if let Some((cached_name, cached_font)) = &self.cached_ui_font {
-                if cached_name == &primary {
-                    cached_font.clone()
-                } else {
-                    let f = Self::build_ui_font(primary.clone());
-                    self.cached_ui_font = Some((primary, f.clone()));
+            match &self.cached_ui_font {
+                Some((name, locale, font)) if *name == primary && *locale == locale_id => {
+                    font.clone()
+                }
+                _ => {
+                    let f = Self::build_ui_font(&primary, &locale_id);
+                    self.cached_ui_font = Some((primary, locale_id, f.clone()));
                     f
                 }
-            } else {
-                let f = Self::build_ui_font(primary.clone());
-                self.cached_ui_font = Some((primary, f.clone()));
-                f
             }
         };
 

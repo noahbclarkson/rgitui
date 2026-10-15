@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Added
+
+- **The interface can be shown in another language.** *Settings → Appearance →
+  Language* lists *Match system language* and every installed translation,
+  each written in its own script with a count of the strings it still leaves
+  in English. Switching applies at once, without a restart. New installs and
+  existing settings follow the OS language; a Traditional Chinese system stays
+  in English rather than being given Simplified characters. Simplified Chinese
+  ships first. Translations are JSON files under `assets/locales/`, and a file
+  in `<config>/rgitui/locales/` is layered over the shipped one, so a
+  translator can work against a release build. (#57)
+
 ## [0.5.0] - 2026-10-07
 
 A conflict-resolution and AI release. Conflicted files open in a three-way

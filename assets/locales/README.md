@@ -39,15 +39,16 @@ the language picker in **Settings → Appearance** lists whatever it finds.
   strings are still untranslated.
 - **Unknown keys fail the build.** A key that is not in `en.rs` is a typo or a
   leftover from a deleted message, and would never render.
-- **Placeholders must survive.** If the English string contains `{count}`, your
-  translation must contain `{count}` too. Placeholder names are not translated;
-  the text around them is, and may be reordered freely.
+- **Placeholders must match.** Your translation uses exactly the placeholders
+  the English string does: `{count}` in English means `{count}` in yours, and
+  no others. Placeholder names are not translated; the text around them is, and
+  may be reordered freely.
+- **Only the plural forms your rule selects.** Plural messages are a `.one` /
+  `.other` pair in English. Define `key.other` alone with `other_only`, both
+  with `one_other`; a `.one` form under `other_only` is an error, since it would
+  never be shown.
 - **Empty values count as untranslated**, so `""` is a safe placeholder for
   "not done yet" — it renders English rather than a blank label.
-
-Plural messages are a `.one` / `.other` pair. Only define the forms your
-`plural_rule` can select: with `other_only` just `key.other`, with `one_other`
-both.
 
 ## Testing without rebuilding
 
@@ -57,5 +58,8 @@ Drop a locale file in your config directory and restart the app:
 - macOS: `~/Library/Application Support/rgitui/locales/`
 - Windows: `%APPDATA%\rgitui\locales\`
 
-A file there replaces a shipped language with the same `id`, so you can iterate
-on a translation against a release build.
+A file there is layered over a shipped language with the same `id`: the
+strings it defines win, and everything else keeps the shipped translation. You
+can fix a handful of strings against a release build without copying the whole
+file. Keys English does not define are ignored and logged, as are files that
+are not valid locales.

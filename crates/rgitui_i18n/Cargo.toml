@@ -15,3 +15,6 @@ log.workspace = true
 dirs.workspace = true
 parking_lot.workspace = true
 sys-locale.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

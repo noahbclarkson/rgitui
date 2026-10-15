@@ -57,15 +57,38 @@ impl PluralRule {
         }
     }
 
-    /// Parse the `plural_rule` field of a locale JSON file. Unknown values fall
-    /// back to `one_other` so a typo degrades to English-style pluralization
-    /// rather than dropping the locale entirely.
-    pub fn from_name(name: &str) -> Self {
-        match name {
-            "zero_one_other" => PluralRule::ZeroOneOther,
-            "other_only" => PluralRule::OtherOnly,
-            _ => PluralRule::OneOther,
+    /// The categories [`PluralRule::select`] can return, which are the plural
+    /// forms a locale using this rule has to define.
+    pub fn categories(self) -> &'static [PluralCategory] {
+        match self {
+            PluralRule::OneOther | PluralRule::ZeroOneOther => {
+                &[PluralCategory::One, PluralCategory::Other]
+            }
+            PluralRule::OtherOnly => &[PluralCategory::Other],
         }
+    }
+
+    /// Parse the `plural_rule` field of a locale JSON file.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "one_other" => Some(PluralRule::OneOther),
+            "zero_one_other" => Some(PluralRule::ZeroOneOther),
+            "other_only" => Some(PluralRule::OtherOnly),
+            _ => None,
+        }
+    }
+}
+
+/// The plural category a key selects, if it is one form of a plural message:
+/// `files.count.one` is [`PluralCategory::One`]. English declares every plural
+/// message as a `.one`/`.other` pair, so the suffix is unambiguous.
+pub fn plural_category_of(key: &str) -> Option<PluralCategory> {
+    if key.ends_with(".one") {
+        Some(PluralCategory::One)
+    } else if key.ends_with(".other") {
+        Some(PluralCategory::Other)
+    } else {
+        None
     }
 }
 
@@ -91,7 +114,8 @@ impl Locale {
 
     /// Keys this locale defines that the reference locale does not. These are
     /// almost always typos or messages deleted from the source language, and
-    /// are reported by the `locale_files_have_no_unknown_keys` test.
+    /// are rejected for shipped locales by the `shipped_locales_have_no_unknown_keys`
+    /// test and logged for user locales.
     pub fn unknown_keys(&self, reference: &Locale) -> Vec<&str> {
         let mut keys: Vec<&str> = self
             .messages
@@ -182,9 +206,36 @@ mod tests {
     }
 
     #[test]
-    fn unknown_plural_rule_name_falls_back_to_one_other() {
-        assert_eq!(PluralRule::from_name("nonsense"), PluralRule::OneOther);
-        assert_eq!(PluralRule::from_name("other_only"), PluralRule::OtherOnly);
+    fn plural_rule_names_parse_and_unknown_ones_are_rejected() {
+        assert_eq!(
+            PluralRule::from_name("one_other"),
+            Some(PluralRule::OneOther)
+        );
+        assert_eq!(
+            PluralRule::from_name("zero_one_other"),
+            Some(PluralRule::ZeroOneOther)
+        );
+        assert_eq!(
+            PluralRule::from_name("other_only"),
+            Some(PluralRule::OtherOnly)
+        );
+        assert_eq!(PluralRule::from_name("nonsense"), None);
+    }
+
+    #[test]
+    fn other_only_needs_no_singular_form() {
+        assert_eq!(PluralRule::OtherOnly.categories(), &[PluralCategory::Other]);
+        assert_eq!(
+            PluralRule::OneOther.categories(),
+            &[PluralCategory::One, PluralCategory::Other]
+        );
+    }
+
+    #[test]
+    fn plural_keys_are_recognised_by_suffix() {
+        assert_eq!(plural_category_of("a.b.one"), Some(PluralCategory::One));
+        assert_eq!(plural_category_of("a.b.other"), Some(PluralCategory::Other));
+        assert_eq!(plural_category_of("a.b.none"), None);
     }
 
     #[test]

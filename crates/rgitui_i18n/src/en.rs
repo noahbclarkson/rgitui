@@ -7,9 +7,11 @@
 //! language can always fall back to it. Translations ship as JSON under
 //! `assets/locales/`; see that directory's README for how to add one.
 //!
-//! Keys are `area.component.element`, sorted alphabetically. Adding a string to
-//! the UI means adding it here first — `assets/locales/*.json` files are
-//! checked against this table by the tests in `lib.rs`.
+//! Keys are `area.component.element`, sorted byte-wise with no duplicates — the
+//! build fails otherwise, naming the first key out of place. Adding a string to
+//! the UI means adding it here first: [`crate::t!`] rejects a key that is not in
+//! this table at compile time, and `assets/locales/*.json` files are checked
+//! against it by the tests in `lib.rs`.
 //!
 //! Messages may contain `{name}` placeholders, filled in by [`crate::t!`].
 //! Count-dependent messages are declared as a `.one`/`.other` pair and selected
@@ -18,109 +20,42 @@
 pub const ENGLISH_ID: &str = "en";
 pub const ENGLISH_NAME: &str = "English";
 
-pub const ENGLISH_MESSAGES: &[(&str, &str)] = &[
-    (
-        "settings.appearance.mode.auto",
-        "Auto",
-    ),
-    (
-        "settings.appearance.mode.dark",
-        "Dark",
-    ),
-    (
-        "settings.appearance.mode.description",
-        "Choose whether to show light or dark themes, or auto-detect.",
-    ),
-    (
-        "settings.appearance.mode.label",
-        "Appearance Mode",
-    ),
-    (
-        "settings.appearance.mode.light",
-        "Light",
-    ),
-    (
-        "settings.appearance.subtitle",
-        "Customize the look and feel of the application.",
-    ),
-    (
-        "settings.appearance.theme.active",
-        "Active",
-    ),
-    (
-        "settings.appearance.theme.description",
-        "Select a theme to change all interface colors.",
-    ),
-    (
-        "settings.appearance.theme.label",
-        "Color Theme",
-    ),
-    (
-        "settings.appearance.theme_editor.button",
-        "Edit Theme",
-    ),
-    (
-        "settings.appearance.theme_editor.description",
-        "Edit colors, create custom themes, and export as JSON.",
-    ),
-    (
-        "settings.appearance.theme_editor.label",
-        "Custom Theme Editor",
-    ),
-    (
-        "settings.appearance.title",
-        "Appearance",
-    ),
-    (
-        "settings.language.complete",
-        "Fully translated",
-    ),
-    (
-        "settings.language.description",
-        "Choose the language used throughout the interface. Untranslated text falls back to English.",
-    ),
-    (
-        "settings.language.label",
-        "Language",
-    ),
-    (
-        "settings.language.missing.one",
-        "{count} string not translated",
-    ),
-    (
-        "settings.language.missing.other",
-        "{count} strings not translated",
-    ),
-    (
-        "settings.language.system",
-        "Match system language",
-    ),
-    (
-        "settings.language.system_detail",
-        "Detected: {language}",
-    ),
-    (
-        "settings.language.system_unknown",
-        "No system language detected — using English.",
-    ),
-    (
-        "settings.nav.ai",
-        "AI",
-    ),
-    (
-        "settings.nav.appearance",
-        "Appearance",
-    ),
-    (
-        "settings.nav.auth",
-        "Auth",
-    ),
-    (
-        "settings.nav.general",
-        "General",
-    ),
-    (
-        "settings.nav.preferences",
-        "Preferences",
-    ),
-];
+macro_rules! english_messages {
+    ($($key:literal => $message:literal,)*) => {
+        pub const ENGLISH_MESSAGES: &[(&str, &str)] = &[$(($key, $message)),*];
+    };
+}
+
+// Fails the build if the table is out of order or repeats a key; the panic
+// message is the first key out of place.
+const _: () = crate::keys::assert_sorted(ENGLISH_MESSAGES);
+
+english_messages! {
+    "settings.appearance.mode.auto" => "Auto",
+    "settings.appearance.mode.dark" => "Dark",
+    "settings.appearance.mode.description" => "Choose whether to show light or dark themes, or auto-detect.",
+    "settings.appearance.mode.label" => "Appearance Mode",
+    "settings.appearance.mode.light" => "Light",
+    "settings.appearance.subtitle" => "Customize the look and feel of the application.",
+    "settings.appearance.theme.active" => "Active",
+    "settings.appearance.theme.description" => "Select a theme to change all interface colors.",
+    "settings.appearance.theme.label" => "Color Theme",
+    "settings.appearance.theme_editor.button" => "Edit Theme",
+    "settings.appearance.theme_editor.description" => "Edit colors, create custom themes, and export as JSON.",
+    "settings.appearance.theme_editor.label" => "Custom Theme Editor",
+    "settings.appearance.title" => "Appearance",
+    "settings.language.complete" => "Fully translated",
+    "settings.language.description" => "Choose the language used throughout the interface. Untranslated text falls back to English.",
+    "settings.language.label" => "Language",
+    "settings.language.missing.one" => "{count} string not translated",
+    "settings.language.missing.other" => "{count} strings not translated",
+    "settings.language.system" => "Match system language",
+    "settings.language.system_detail" => "Detected: {language}",
+    "settings.language.system_unknown" => "No system language detected — using English.",
+    "settings.language.system_untranslated" => "Detected: {language}, which has no translation yet — using English.",
+    "settings.nav.ai" => "AI",
+    "settings.nav.appearance" => "Appearance",
+    "settings.nav.auth" => "Auth",
+    "settings.nav.general" => "General",
+    "settings.nav.preferences" => "Preferences",
+}

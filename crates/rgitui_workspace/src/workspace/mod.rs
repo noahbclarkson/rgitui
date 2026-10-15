@@ -343,7 +343,8 @@ pub struct Workspace {
     pub(super) status_message_gen: u64,
     pub(super) undo_stack: UndoStack,
     pub(super) layout_save_task: Option<gpui::Task<()>>,
-    pub(super) cached_ui_font: Option<(String, gpui::Font)>,
+    /// The UI font with the primary family and locale it was built for.
+    pub(super) cached_ui_font: Option<(String, String, gpui::Font)>,
     pub(super) update_notification: Option<UpdateNotification>,
     pub(super) settings_window: Option<WindowHandle<crate::SettingsWindow>>,
     pub(super) _settings_window_closed_subscription: Option<gpui::Subscription>,
@@ -975,36 +976,91 @@ impl Workspace {
         }
     }
 
-    pub(super) fn build_ui_font(primary: String) -> gpui::Font {
-        let candidates = [
-            "JetBrains Mono",
-            "JetBrainsMono Nerd Font",
-            "Lilex",
-            #[cfg(target_os = "windows")]
-            "Cascadia Code",
-            #[cfg(target_os = "macos")]
-            "SF Mono",
-            #[cfg(target_os = "macos")]
-            "Menlo",
-            #[cfg(target_os = "linux")]
-            "DejaVu Sans Mono",
-            "Courier New",
-        ];
-        let fallbacks: Vec<String> = candidates
-            .iter()
-            .filter(|c| **c != primary)
-            .map(|c| c.to_string())
+    pub(super) fn build_ui_font(primary: &str, locale_id: &str) -> gpui::Font {
+        let fallbacks: Vec<String> = ui_font_fallbacks(locale_id)
+            .into_iter()
+            .filter(|family| *family != primary)
+            .map(str::to_string)
             .collect();
 
-        let mut f = gpui::font(SharedString::from(primary));
+        let mut f = gpui::font(SharedString::from(primary.to_string()));
         f.fallbacks = Some(gpui::FontFallbacks::from_fonts(fallbacks));
         f
     }
 }
 
+/// Fallback families for the UI font.
+///
+/// The monospace families cover Latin text the configured font lacks. A
+/// Simplified Chinese UI adds that script's fonts at the end, so Han characters
+/// get Simplified glyph shapes rather than whatever the platform picks first.
+/// They are left out for every other language: the platform's own fallback
+/// chooses shapes for the user's language, and Japanese or Traditional Chinese
+/// text in an English UI must not be drawn with Simplified glyphs. Missing
+/// families are skipped, so listing fonts an install lacks is harmless.
+fn ui_font_fallbacks(locale_id: &str) -> Vec<&'static str> {
+    let mut families = vec![
+        "JetBrains Mono",
+        "JetBrainsMono Nerd Font",
+        "Lilex",
+        #[cfg(target_os = "windows")]
+        "Cascadia Code",
+        #[cfg(target_os = "macos")]
+        "SF Mono",
+        #[cfg(target_os = "macos")]
+        "Menlo",
+        #[cfg(target_os = "linux")]
+        "DejaVu Sans Mono",
+        "Courier New",
+    ];
+    if rgitui_i18n::locale_script(locale_id).as_deref() == Some("hans") {
+        families.extend([
+            #[cfg(target_os = "windows")]
+            "Microsoft YaHei UI",
+            #[cfg(target_os = "windows")]
+            "Microsoft YaHei",
+            #[cfg(target_os = "macos")]
+            "PingFang SC",
+            #[cfg(target_os = "macos")]
+            "Hiragino Sans GB",
+            "Noto Sans CJK SC",
+            "Noto Sans SC",
+            "Source Han Sans SC",
+            "WenQuanYi Micro Hei",
+            "WenQuanYi Zen Hei",
+            "Droid Sans Fallback",
+        ]);
+    }
+    families
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_font_fallbacks_add_chinese_fonts_only_for_a_simplified_chinese_ui() {
+        let english = ui_font_fallbacks("en");
+        assert!(!english.contains(&"Noto Sans CJK SC"));
+        assert_eq!(english.last(), Some(&"Courier New"));
+
+        let chinese = ui_font_fallbacks("zh-CN");
+        assert!(chinese.contains(&"Noto Sans CJK SC"));
+        assert!(chinese.starts_with(&english));
+
+        assert_eq!(ui_font_fallbacks("zh-TW"), english);
+        assert_eq!(ui_font_fallbacks("ja"), english);
+    }
+
+    #[test]
+    fn the_primary_font_is_not_its_own_fallback() {
+        let font = Workspace::build_ui_font("JetBrains Mono", "en");
+        let fallbacks = font.fallbacks.expect("fallbacks set");
+        assert!(!fallbacks
+            .fallback_list()
+            .iter()
+            .any(|f| f == "JetBrains Mono"));
+    }
 
     #[test]
     fn test_workspace_event_debug() {
