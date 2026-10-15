@@ -19,6 +19,7 @@ use rgitui_ai::catalog::{
     ToolSupport,
 };
 use rgitui_ai::CommitStyle;
+use rgitui_i18n::{t, tp};
 use rgitui_settings::{AiProvider, SettingsState};
 use rgitui_theme::{ActiveTheme, Color};
 use rgitui_ui::{
@@ -478,19 +479,17 @@ impl SettingsView {
 
         let mut footer = Vec::new();
         if let Some(source) = self.ai_catalog_source.get(&provider) {
-            footer.push(catalog_source_label(*source));
+            footer.push(catalog_source_label(*source).to_string());
         }
         // Say why a model the user knows exists is not listed.
         if hidden_for_tools > 0 {
-            footer.push(format!("{hidden_for_tools} without tool support hidden"));
+            footer.push(t!("settings.ai.hidden_for_tools", count = hidden_for_tools).to_string());
         }
         let footer = (!footer.is_empty()).then(|| SharedString::from(footer.join(" · ")));
-        let status = self.ai_catalog_error.get(&provider).map(|error| {
-            SharedString::from(format!(
-                "Couldn't refresh the model list — showing the last known {} models. {error}",
-                models.len()
-            ))
-        });
+        let status = self
+            .ai_catalog_error
+            .get(&provider)
+            .map(|error| tp!("settings.ai.refresh_failed", models.len(), error = error));
 
         self.ai_model_picker.update(cx, |picker, cx| {
             // Rows before chips: chip counts are taken against the rows in
@@ -523,14 +522,19 @@ impl SettingsView {
         let enabled = self.ai_enabled;
 
         let detail = if !enabled {
-            "AI is turned off. Nothing will be sent to any provider.".to_string()
+            t!("settings.ai.status_off").to_string()
         } else {
             match state {
                 ConnectionState::Connected => {
                     let verified = self
                         .ai_verified_at
                         .get(&provider)
-                        .map(|at| format!(" · verified {}", relative_age(at.elapsed())))
+                        .map(|at| {
+                            format!(
+                                " · {}",
+                                t!("settings.ai.verified", age = relative_age(at.elapsed()))
+                            )
+                        })
                         .unwrap_or_default();
                     format!(
                         "{} · {}{}",
@@ -539,15 +543,27 @@ impl SettingsView {
                         verified
                     )
                 }
-                ConnectionState::Testing => format!("Testing {}…", provider.display_name()),
+                ConnectionState::Testing => t!(
+                    "settings.ai.status_testing",
+                    provider = provider.display_name()
+                )
+                .to_string(),
                 ConnectionState::Failed => self
                     .ai_connection_error
                     .get(&provider)
                     .cloned()
-                    .unwrap_or_else(|| format!("{} rejected this key.", provider.display_name())),
-                ConnectionState::Unconfigured => {
-                    format!("Add a {} API key to get started.", provider.display_name())
-                }
+                    .unwrap_or_else(|| {
+                        t!(
+                            "settings.ai.status_rejected",
+                            provider = provider.display_name()
+                        )
+                        .to_string()
+                    }),
+                ConnectionState::Unconfigured => t!(
+                    "settings.ai.status_add_key",
+                    provider = provider.display_name()
+                )
+                .to_string(),
             }
         };
 
@@ -569,7 +585,7 @@ impl SettingsView {
                         } else {
                             ConnectionState::Unconfigured
                         },
-                        "AI Commit Messages",
+                        t!("settings.ai.status.title"),
                     )
                     .detail(detail),
                 ),
@@ -589,7 +605,7 @@ impl SettingsView {
                         this.save_settings(cx);
                     }))
                     .child(
-                        Label::new("Enabled")
+                        Label::new(t!("settings.ai.enabled"))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     )
@@ -607,14 +623,16 @@ impl SettingsView {
     /// The AI page body.
     pub(super) fn render_ai_section(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut section = div().flex().flex_col().w_full().min_w_0().gap(px(16.));
-        section = section.child(Self::section_label_row("CONNECTION"));
+        section = section.child(Self::section_label_row(t!(
+            "settings.ai.section_connection"
+        )));
         section = section.child(self.render_provider_accordion(cx));
-        section = section.child(Self::section_label_row("BEHAVIOUR"));
+        section = section.child(Self::section_label_row(t!("settings.ai.section_behaviour")));
         section = section.child(self.render_behaviour_card(cx));
         section
     }
 
-    fn section_label_row(text: &'static str) -> impl IntoElement {
+    fn section_label_row(text: SharedString) -> impl IntoElement {
         div().w_full().child(
             Label::new(text)
                 .size(LabelSize::XSmall)
@@ -790,12 +808,12 @@ impl SettingsView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("Connect an AI provider")
+                        Label::new(t!("settings.ai.connect.title"))
                             .size(LabelSize::Default)
                             .weight(FontWeight::SEMIBOLD),
                     )
                     .child(
-                        Label::new("rgitui writes commit messages from your staged diff.")
+                        Label::new(t!("settings.ai.connect.description"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
@@ -806,45 +824,38 @@ impl SettingsView {
 
         // Status line under the field: what the app actually knows.
         let status_line: Option<SharedString> = match state {
-            ConnectionState::Connected if self.provider_has_key(provider) => Some(
-                match self.ai_verified_at.get(&provider) {
-                    Some(at) => format!(
-                        "Verified {} · stored in {}",
-                        relative_age(at.elapsed()),
-                        credential_store_name()
+            ConnectionState::Connected if self.provider_has_key(provider) => {
+                Some(match self.ai_verified_at.get(&provider) {
+                    Some(at) => t!(
+                        "settings.ai.key_verified",
+                        age = relative_age(at.elapsed()),
+                        store = credential_store_name()
                     ),
-                    None => format!(
-                        "Key stored in {}. Test it to confirm it works.",
-                        credential_store_name()
+                    None => t!(
+                        "settings.ai.key_stored_hint",
+                        store = credential_store_name()
                     ),
-                }
-                .into(),
-            ),
+                })
+            }
             // A keyless custom endpoint is configured without a stored key,
             // so it needs its own line rather than the "add a key" default.
-            ConnectionState::Connected if configured => Some(
-                format!(
-                    "No API key needed — requests go to {}.",
-                    rgitui_ai::effective_host(provider, &self.ai_base_url_override)
-                )
-                .into(),
-            ),
-            ConnectionState::Testing => {
-                Some(format!("Testing {}…", provider.display_name()).into())
-            }
+            ConnectionState::Connected if configured => Some(t!(
+                "settings.ai.no_key_hint",
+                host = rgitui_ai::effective_host(provider, &self.ai_base_url_override)
+            )),
+            ConnectionState::Testing => Some(t!(
+                "settings.ai.status_testing",
+                provider = provider.display_name()
+            )),
             ConnectionState::Failed => self
                 .ai_connection_error
                 .get(&provider)
                 .cloned()
                 .map(SharedString::from),
-            _ => Some(
-                format!(
-                    "Keys are stored in {}, never in settings.json, and are only read when a \
-                     request is sent.",
-                    credential_store_name()
-                )
-                .into(),
-            ),
+            _ => Some(t!(
+                "settings.ai.keys_stored_note",
+                store = credential_store_name()
+            )),
         };
         if let Some(line) = status_line {
             body = body.child(Label::new(line).size(LabelSize::XSmall).color(match state {
@@ -897,7 +908,7 @@ impl SettingsView {
                     .items_center()
                     .gap(px(8.))
                     .child(
-                        Label::new("API key")
+                        Label::new(t!("settings.ai.api_key"))
                             .size(LabelSize::Small)
                             .weight(FontWeight::SEMIBOLD),
                     )
@@ -914,7 +925,7 @@ impl SettingsView {
                     .child(
                         Button::new(
                             ElementId::Name(format!("ai-key-url-{}", provider.id()).into()),
-                            "Get a key",
+                            t!("settings.ai.get_key"),
                         )
                         .style(ButtonStyle::Subtle)
                         .size(ButtonSize::Compact)
@@ -948,7 +959,7 @@ impl SettingsView {
                         )
                         .size(ButtonSize::Compact)
                         .color(Color::Muted)
-                        .tooltip("Paste from clipboard")
+                        .tooltip(t!("settings.ai.paste.tooltip"))
                         .tab_index(tab_base + 1)
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {
@@ -968,7 +979,11 @@ impl SettingsView {
                         )
                         .size(ButtonSize::Compact)
                         .color(Color::Muted)
-                        .tooltip(if unmasked { "Hide" } else { "Show" })
+                        .tooltip(if unmasked {
+                            t!("settings.ai.hide.tooltip")
+                        } else {
+                            t!("settings.ai.show.tooltip")
+                        })
                         .tab_index(tab_base + 2)
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {
@@ -1012,7 +1027,7 @@ impl SettingsView {
             .w_full()
             .gap(px(4.))
             .child(
-                Label::new("Model")
+                Label::new(t!("settings.ai.model"))
                     .size(LabelSize::Small)
                     .weight(FontWeight::SEMIBOLD),
             )
@@ -1069,9 +1084,10 @@ impl SettingsView {
         match &status {
             PinnedModelStatus::Missing { suggestion } => {
                 let mut warning = div().flex().flex_row().items_center().gap(px(6.)).child(
-                    Label::new(format!(
-                        "`{pinned}` is not in {}'s current model list. It may have been retired.",
-                        provider.display_name()
+                    Label::new(t!(
+                        "settings.ai.model_missing",
+                        model = pinned,
+                        provider = provider.display_name()
                     ))
                     .size(LabelSize::XSmall)
                     .color(Color::Warning),
@@ -1082,7 +1098,7 @@ impl SettingsView {
                             ElementId::Name(
                                 format!("ai-model-suggestion-{}", provider.id()).into(),
                             ),
-                            format!("Use {suggestion}"),
+                            t!("settings.ai.use_suggestion", model = suggestion),
                         )
                         .style(ButtonStyle::Subtle)
                         .size(ButtonSize::Compact)
@@ -1120,10 +1136,10 @@ impl SettingsView {
                 .items_center()
                 .gap(px(8.))
                 .child(
-                    Label::new(format!(
-                        "{} models · {}",
+                    Label::new(tp!(
+                        "settings.ai.model_count",
                         models.len(),
-                        catalog_source_label(source)
+                        source = catalog_source_label(source)
                     ))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
@@ -1133,9 +1149,9 @@ impl SettingsView {
                     Button::new(
                         ElementId::Name(format!("ai-model-refresh-{}", provider.id()).into()),
                         if refreshing {
-                            "Refreshing…"
+                            t!("settings.ai.refreshing")
                         } else {
-                            "Refresh"
+                            t!("settings.ai.refresh")
                         },
                     )
                     .style(ButtonStyle::Subtle)
@@ -1186,7 +1202,7 @@ impl SettingsView {
                 .child(
                     Button::new(
                         ElementId::Name(format!("ai-connect-{}", provider.id()).into()),
-                        "Connect",
+                        t!("settings.ai.connect"),
                     )
                     .style(ButtonStyle::Filled)
                     .size(ButtonSize::Compact)
@@ -1209,7 +1225,7 @@ impl SettingsView {
             row = row.child(
                 Button::new(
                     ElementId::Name(format!("ai-use-{}", provider.id()).into()),
-                    "Use this provider",
+                    t!("settings.ai.use_provider"),
                 )
                 .style(ButtonStyle::Filled)
                 .size(ButtonSize::Compact)
@@ -1225,7 +1241,11 @@ impl SettingsView {
         row.child(
             Button::new(
                 ElementId::Name(format!("ai-test-{}", provider.id()).into()),
-                if testing { "Testing…" } else { "Test" },
+                if testing {
+                    t!("settings.ai.testing")
+                } else {
+                    t!("settings.ai.test")
+                },
             )
             .style(ButtonStyle::Outlined)
             .size(ButtonSize::Compact)
@@ -1240,7 +1260,7 @@ impl SettingsView {
         .child(
             Button::new(
                 ElementId::Name(format!("ai-remove-{}", provider.id()).into()),
-                "Remove key",
+                t!("settings.ai.remove_key"),
             )
             .style(ButtonStyle::Subtle)
             .size(ButtonSize::Compact)
@@ -1278,7 +1298,7 @@ impl SettingsView {
         let mut column = div().flex().flex_col().w_full().gap(px(6.)).child(
             Disclosure::new(
                 ElementId::Name(format!("ai-advanced-{}", provider.id()).into()),
-                "Advanced",
+                t!("settings.ai.advanced"),
                 open,
             )
             .tab_index(tab_base + 9)
@@ -1297,7 +1317,7 @@ impl SettingsView {
 
         column = column
             .child(
-                Label::new("Base URL")
+                Label::new(t!("settings.ai.base_url"))
                     .size(LabelSize::Small)
                     .weight(FontWeight::SEMIBOLD),
             )
@@ -1306,14 +1326,15 @@ impl SettingsView {
                 Label::new(if overridden {
                     // Say plainly where the key goes. A user pointing this at
                     // a third-party gateway should see that stated.
-                    format!(
-                        "Requests go to {host} instead of {}. Your API key is sent to that host.",
-                        provider.default_host()
+                    t!(
+                        "settings.ai.base_url_overridden",
+                        host = host,
+                        default_host = provider.default_host()
                     )
                 } else {
-                    format!(
-                        "Empty means use {}. Only OpenAI-compatible providers honour an override.",
-                        provider.default_host()
+                    t!(
+                        "settings.ai.base_url_empty",
+                        default_host = provider.default_host()
                     )
                 })
                 .size(LabelSize::XSmall)
@@ -1351,14 +1372,14 @@ impl SettingsView {
                         div()
                             .flex()
                             .flex_col()
-                            .child(Label::new("Send attribution headers").size(LabelSize::Small))
                             .child(
-                                Label::new(
-                                    "Adds HTTP-Referer and X-Title so rgitui appears on \
-                                     OpenRouter's public leaderboard. Never functional.",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
+                                Label::new(t!("settings.ai.attribution.title"))
+                                    .size(LabelSize::Small),
+                            )
+                            .child(
+                                Label::new(t!("settings.ai.attribution.description"))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
                             ),
                     ),
             );
@@ -1369,19 +1390,22 @@ impl SettingsView {
 
     fn render_behaviour_card(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let style = CommitStyle::from_id(&self.ai_commit_style).unwrap_or_default();
-        let ids: Vec<&str> = CommitStyle::ALL.iter().map(|style| style.id()).collect();
+        let options: Vec<(CommitStyle, SharedString)> = CommitStyle::ALL
+            .iter()
+            .map(|style| (*style, SharedString::new_static(style.id())))
+            .collect();
 
         Self::setting_card(cx)
             .child(Self::setting_label(
-                "Commit style",
-                "How the AI should format commit messages.",
+                t!("settings.ai.commit_style.title"),
+                t!("settings.ai.commit_style.description"),
             ))
             .child(self.pill_group(
                 "commit-style",
-                &ids,
-                &self.ai_commit_style,
+                &options,
+                style,
                 |this, value, cx| {
-                    this.ai_commit_style = value;
+                    this.ai_commit_style = value.id().to_string();
                     this.save_settings(cx);
                 },
                 cx,
@@ -1397,9 +1421,8 @@ impl SettingsView {
             .child(self.render_behaviour_toggle(
                 BehaviourToggle {
                     id: "ai-inject-ctx",
-                    title: "Include project context",
-                    detail:
-                        "Adds README.md, CLAUDE.md and AGENTS.md to the prompt. ~4k extra tokens per request.",
+                    title: t!("settings.ai.project_context.title"),
+                    detail: t!("settings.ai.project_context.description"),
                     checked: self.ai_inject_project_context,
                     tab_index: SETTINGS_TAB_INDEX_BASE + 80,
                 },
@@ -1412,9 +1435,8 @@ impl SettingsView {
             .child(self.render_behaviour_toggle(
                 BehaviourToggle {
                     id: "ai-use-tools",
-                    title: "Let the model read files",
-                    detail: "The model may request file contents and commit history. Slower and \
-                             more expensive; usually a better message.",
+                    title: t!("settings.ai.tools.title"),
+                    detail: t!("settings.ai.tools.description"),
                     checked: self.ai_use_tools,
                     tab_index: SETTINGS_TAB_INDEX_BASE + 81,
                 },
@@ -1493,9 +1515,9 @@ impl SettingsView {
 /// read.
 struct BehaviourToggle {
     id: &'static str,
-    title: &'static str,
+    title: SharedString,
     /// What the setting costs, in the user's terms.
-    detail: &'static str,
+    detail: SharedString,
     checked: bool,
     tab_index: isize,
 }
@@ -1595,17 +1617,17 @@ fn model_row(model: &ModelInfo) -> PickerRow {
 
 /// How the catalogue on screen was obtained, so "three weeks old" is
 /// distinguishable from "shipped with the app".
-fn catalog_source_label(source: CatalogSource) -> String {
+fn catalog_source_label(source: CatalogSource) -> SharedString {
     match source {
-        CatalogSource::Live => "updated just now".to_string(),
+        CatalogSource::Live => t!("settings.ai.catalog.live"),
         CatalogSource::Cache { fetched_at } => {
             let age = catalog::now_unix().saturating_sub(fetched_at).max(0) as u64;
-            format!(
-                "updated {}",
-                relative_age(std::time::Duration::from_secs(age))
+            t!(
+                "settings.ai.catalog.cached",
+                age = relative_age(std::time::Duration::from_secs(age))
             )
         }
-        CatalogSource::Bundled => "shipped with rgitui".to_string(),
+        CatalogSource::Bundled => t!("settings.ai.catalog.bundled"),
     }
 }
 

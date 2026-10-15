@@ -20,6 +20,7 @@ log.workspace = true
 chrono.workspace = true
 smol.workspace = true
 rgitui_perf = { workspace = true, optional = true }
+rgitui_i18n.workspace = true
 
 [features]
 default = []

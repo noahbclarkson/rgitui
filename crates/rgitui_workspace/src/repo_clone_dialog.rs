@@ -4,6 +4,7 @@ use gpui::prelude::*;
 use gpui::{
     div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, FontWeight, Render, Window,
 };
+use rgitui_i18n::{key, t};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent,
@@ -39,12 +40,12 @@ impl RepoCloneDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let url_editor = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Repository URL (e.g. https://github.com/user/repo.git)");
+            input.set_placeholder_message(key!("clone_dialog.url.placeholder"));
             input
         });
         let path_editor = cx.new(|cx| {
             let mut input = TextInput::new(cx);
-            input.set_placeholder("Destination Path");
+            input.set_placeholder_message(key!("clone_dialog.path.placeholder"));
             input
         });
 
@@ -269,7 +270,7 @@ impl Render for RepoCloneDialog {
                         ),
                 )
                 .child(
-                    Label::new("Clone Repository")
+                    Label::new(t!("clone_dialog.title"))
                         .size(LabelSize::Large)
                         .weight(FontWeight::BOLD),
                 ),
@@ -280,7 +281,7 @@ impl Render for RepoCloneDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("URL")
+                    Label::new(t!("clone_dialog.url"))
                         .size(LabelSize::Small)
                         .weight(FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -293,7 +294,7 @@ impl Render for RepoCloneDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("Path")
+                    Label::new(t!("clone_dialog.path"))
                         .size(LabelSize::Small)
                         .weight(FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -305,7 +306,7 @@ impl Render for RepoCloneDialog {
                         .items_center()
                         .child(div().flex_1().child(self.path_editor.clone()))
                         .child(
-                            Button::new("browse-path", "Browse")
+                            Button::new("browse-path", t!("common.browse"))
                                 .style(ButtonStyle::Subtle)
                                 .icon(IconName::Folder)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -317,7 +318,7 @@ impl Render for RepoCloneDialog {
 
         if !can_clone {
             modal = modal.child(
-                Label::new("Enter a repository URL and a destination path to clone.")
+                Label::new(t!("clone_dialog.hint"))
                     .size(LabelSize::XSmall)
                     .color(Color::Placeholder),
             );
@@ -340,20 +341,27 @@ impl Render for RepoCloneDialog {
                 .justify_end()
                 .gap(px(8.))
                 .child(
-                    Button::new("cancel", "Cancel")
+                    Button::new("cancel", t!("common.cancel"))
                         .style(ButtonStyle::Subtle)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.hide(cx);
                         })),
                 )
                 .child(
-                    Button::new("clone", if self.cloning { "Cloning…" } else { "Clone" })
-                        .style(ButtonStyle::Filled)
-                        .color(Color::Accent)
-                        .disabled(!can_clone || self.cloning)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.clone_repo(cx);
-                        })),
+                    Button::new(
+                        "clone",
+                        if self.cloning {
+                            t!("clone_dialog.cloning")
+                        } else {
+                            t!("common.clone")
+                        },
+                    )
+                    .style(ButtonStyle::Filled)
+                    .color(Color::Accent)
+                    .disabled(!can_clone || self.cloning)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.clone_repo(cx);
+                    })),
                 ),
         );
 

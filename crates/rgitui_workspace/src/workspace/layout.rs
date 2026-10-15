@@ -4,6 +4,7 @@ use gpui::{
     MouseDownEvent, Render, SharedString, Window,
 };
 use rgitui_git::GitOperationState;
+use rgitui_i18n::{t, tp};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconButton, IconName, IconSize, Label, LabelSize,
@@ -344,17 +345,19 @@ impl Render for Workspace {
         // worktree updates the banner instead of freezing the old branch there.
         let inspecting_banner_label: Option<SharedString> =
             active_tab.inspecting_worktree.as_ref().map(|inspecting| {
-                let head = inspected.and_then(|worktree| {
-                    worktree
-                        .branch
-                        .clone()
-                        .or_else(|| worktree.head_detached.then(|| "detached HEAD".to_string()))
-                });
-                match head {
-                    Some(head) => format!("Inspecting worktree: {} ({})", inspecting.name, head),
-                    None => format!("Inspecting worktree: {}", inspecting.name),
+                let name = &inspecting.name;
+                match inspected {
+                    Some(worktree) => match &worktree.branch {
+                        Some(branch) => {
+                            t!("workspace.inspecting.branch", name = name, branch = branch)
+                        }
+                        None if worktree.head_detached => {
+                            t!("workspace.inspecting.detached", name = name)
+                        }
+                        None => t!("workspace.inspecting.plain", name = name),
+                    },
+                    None => t!("workspace.inspecting.plain", name = name),
                 }
-                .into()
             });
         // A conflicted merge inside a linked worktree records itself under
         // `.git/worktrees/<name>/`, so the project's own state stays clean and
@@ -570,7 +573,7 @@ impl Render for Workspace {
                     .when(is_failure && update.retryable, |el| {
                         let retry_update = update.clone();
                         el.child(
-                            Button::new("operation-retry", "Retry")
+                            Button::new("operation-retry", t!("common.retry"))
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Filled)
                                 .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
@@ -635,15 +638,10 @@ impl Render for Workspace {
             .when(!repo_state.is_clean(), |el| {
                 let has_conflicts = conflict_count > 0;
                 let state_label: SharedString = repo_state.label().into();
-                let detail_msg: SharedString = if has_conflicts {
-                    format!(
-                        "{} file{} with conflicts -- resolve before continuing",
-                        conflict_count,
-                        if conflict_count == 1 { "" } else { "s" }
-                    )
-                    .into()
+                let detail_msg = if has_conflicts {
+                    tp!("workspace.conflict.files", conflict_count)
                 } else {
-                    "All conflicts resolved -- ready to continue".into()
+                    t!("workspace.conflict.resolved")
                 };
 
                 el.child(
@@ -702,7 +700,7 @@ impl Render for Workspace {
                         // than one that can only report why it did nothing.
                         .when(repo_state.continue_subcommand().is_some(), |el| {
                             el.child(
-                                Button::new("conflict-continue", "Continue")
+                                Button::new("conflict-continue", t!("workspace.conflict.continue"))
                                     .size(ButtonSize::Compact)
                                     .style(ButtonStyle::Filled)
                                     .color(Color::Success)
@@ -713,7 +711,7 @@ impl Render for Workspace {
                             )
                         })
                         .child(
-                            Button::new("conflict-abort", "Abort")
+                            Button::new("conflict-abort", t!("common.abort"))
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Subtle)
                                 .color(Color::Error)
@@ -752,7 +750,7 @@ impl Render for Workspace {
                             // Not "back to main": leaving inspection returns to
                             // whichever checkout rgitui was opened on, which may
                             // be on any branch — or be a linked worktree itself.
-                            Button::new("exit-worktree-inspection", "Exit Worktree")
+                            Button::new("exit-worktree-inspection", t!("workspace.worktree.exit"))
                                 .size(ButtonSize::Compact)
                                 .style(ButtonStyle::Subtle)
                                 .color(Color::Warning)
@@ -923,7 +921,7 @@ impl Render for Workspace {
                                             op.label.clone()
                                         }
                                     })
-                                    .unwrap_or_else(|| "Loading...".into());
+                                    .unwrap_or_else(|| t!("workspace.loading"));
 
                                 el.child(
                                     div()
@@ -991,13 +989,12 @@ impl Render for Workspace {
 
                                 let make_tab =
                                     |id: &'static str,
-                                     label: &'static str,
+                                     label: SharedString,
                                      mode: BottomPanelMode,
                                      current: BottomPanelMode,
                                      enabled: bool,
-                                     tooltip: &'static str| {
+                                     tooltip: SharedString| {
                                         let active = mode == current;
-                                        let label: SharedString = label.into();
                                         div()
                                             .id(SharedString::from(id))
                                             .h(px(24.))
@@ -1031,19 +1028,27 @@ impl Render for Workspace {
                                 let history_enabled =
                                     history_availability == ViewAvailability::Available;
                                 let history_tooltip = match history_availability {
-                                    ViewAvailability::Loading => "Preparing file history...",
-                                    ViewAvailability::Available => "Show file history (h)",
+                                    ViewAvailability::Loading => {
+                                        t!("workspace.bottom.history_loading")
+                                    }
+                                    ViewAvailability::Available => {
+                                        t!("workspace.bottom.history.tooltip")
+                                    }
                                     ViewAvailability::Unavailable => {
-                                        "No committed history is available for this file"
+                                        t!("workspace.bottom.history_unavailable")
                                     }
                                 };
                                 let blame_enabled =
                                     blame_availability == ViewAvailability::Available;
                                 let blame_tooltip = match blame_availability {
-                                    ViewAvailability::Loading => "Preparing blame...",
-                                    ViewAvailability::Available => "Show blame (b)",
+                                    ViewAvailability::Loading => {
+                                        t!("workspace.bottom.blame_loading")
+                                    }
+                                    ViewAvailability::Available => {
+                                        t!("workspace.bottom.blame.tooltip")
+                                    }
                                     ViewAvailability::Unavailable => {
-                                        "Blame is unavailable for this file at the selected commit"
+                                        t!("workspace.bottom.blame_unavailable")
                                     }
                                 };
 
@@ -1063,9 +1068,9 @@ impl Render for Workspace {
                                     .color(Color::Muted)
                                     .tooltip_fn(keymap::command_tooltip(
                                         if graph_hidden {
-                                            "Show commit graph"
+                                            t!("workspace.graph.show.tooltip")
                                         } else {
-                                            "Hide commit graph"
+                                            t!("workspace.graph.hide.tooltip")
                                         },
                                         CommandId::ToggleGraph,
                                     ))
@@ -1094,11 +1099,11 @@ impl Render for Workspace {
                                     .child(
                                         make_tab(
                                             "bottom-tab-diff",
-                                            "Diff",
+                                            t!("workspace.bottom.diff"),
                                             BottomPanelMode::Diff,
                                             bottom_panel_mode,
                                             true,
-                                            "Show diff (d)",
+                                            t!("workspace.bottom.diff.tooltip"),
                                         )
                                         .on_click(
                                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
@@ -1118,7 +1123,7 @@ impl Render for Workspace {
                                     .child(
                                         make_tab(
                                             "bottom-tab-history",
-                                            "History",
+                                            t!("workspace.bottom.history"),
                                             BottomPanelMode::FileHistory,
                                             bottom_panel_mode,
                                             history_enabled,
@@ -1158,7 +1163,7 @@ impl Render for Workspace {
                                     .child(
                                         make_tab(
                                             "bottom-tab-blame",
-                                            "Blame",
+                                            t!("common.blame"),
                                             BottomPanelMode::Blame,
                                             bottom_panel_mode,
                                             blame_enabled,
@@ -1322,7 +1327,7 @@ impl Render for Workspace {
                                                     .ok();
                                             })
                                             .child(
-                                                Label::new("Details")
+                                                Label::new(t!("common.details"))
                                                     .size(LabelSize::XSmall)
                                                     .weight(gpui::FontWeight::SEMIBOLD)
                                                     .color(if is_details {
@@ -1366,7 +1371,7 @@ impl Render for Workspace {
                                                     .ok();
                                             })
                                             .child(
-                                                Label::new("Issues")
+                                                Label::new(t!("common.issues"))
                                                     .size(LabelSize::XSmall)
                                                     .weight(gpui::FontWeight::SEMIBOLD)
                                                     .color(if is_issues {
@@ -1410,7 +1415,7 @@ impl Render for Workspace {
                                                     .ok();
                                             })
                                             .child(
-                                                Label::new("PRs")
+                                                Label::new(t!("workspace.prs_tab"))
                                                     .size(LabelSize::XSmall)
                                                     .weight(gpui::FontWeight::SEMIBOLD)
                                                     .color(if is_prs {
@@ -1446,7 +1451,7 @@ impl Render for Workspace {
                                                     .ok();
                                             })
                                             .child(
-                                                Label::new("Branch Health")
+                                                Label::new(t!("workspace.branch_health_tab"))
                                                     .size(LabelSize::XSmall)
                                                     .weight(gpui::FontWeight::SEMIBOLD)
                                                     .color(if is_bh {
@@ -1609,29 +1614,32 @@ impl Workspace {
         head: DetachedHead,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let title: SharedString = format!("HEAD is detached at {}", head.commit).into();
-        let consequence = "Commits made here belong to no branch";
+        let title = t!("workspace.detached.title", commit = head.commit);
+        let consequence = t!("workspace.detached.consequence");
         let detail: SharedString = match head.summary {
             Some(summary) => format!("{summary} · {consequence}").into(),
-            None => consequence.into(),
+            None => consequence,
         };
         let way_back = match head.previous_branch {
-            Some(branch) => Button::new("detached-head-return", format!("Return to {branch}"))
-                .tooltip(format!(
-                    "Check out '{branch}', the branch HEAD was on before"
-                ))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.switch_to_previous_branch(cx);
-                })),
-            None => Button::new("detached-head-switch", "Switch Branch…").on_click(cx.listener(
-                |this, _: &ClickEvent, window, cx| {
-                    if let Some(tab) = this.tabs.get(this.active_tab) {
-                        tab.sidebar.update(cx, |sidebar, cx| {
-                            sidebar.ensure_branches_visible(window, cx)
-                        });
-                    }
-                },
-            )),
+            Some(branch) => Button::new(
+                "detached-head-return",
+                t!("workspace.detached.return", branch = branch),
+            )
+            .tooltip(t!("workspace.detached.return.tooltip", branch = branch))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.switch_to_previous_branch(cx);
+            })),
+            None => Button::new(
+                "detached-head-switch",
+                t!("workspace.detached.switch_branch"),
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                if let Some(tab) = this.tabs.get(this.active_tab) {
+                    tab.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.ensure_branches_visible(window, cx)
+                    });
+                }
+            })),
         }
         .size(ButtonSize::Compact)
         .style(ButtonStyle::Filled)
@@ -1673,7 +1681,7 @@ impl Workspace {
                     ),
             )
             .child(
-                Button::new("detached-head-show", "Show in Graph")
+                Button::new("detached-head-show", t!("workspace.detached.show_in_graph"))
                     .size(ButtonSize::Compact)
                     .style(ButtonStyle::Subtle)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -1692,11 +1700,11 @@ impl Workspace {
         let accent = cx.status().info;
         let bg = cx.status().info_background;
         let release_url = SharedString::from(update.release_url.clone());
-        let message: SharedString = format!(
-            "rgitui {} is available (you have {})",
-            update.latest_version, update.current_version
-        )
-        .into();
+        let message = t!(
+            "workspace.update.available",
+            latest = update.latest_version,
+            current = update.current_version
+        );
 
         let url_for_open = update.release_url.clone();
 
@@ -1736,7 +1744,7 @@ impl Workspace {
                         ),
                 )
                 .child(
-                    Button::new("update-download", "Download")
+                    Button::new("update-download", t!("workspace.update.download"))
                         .size(ButtonSize::Compact)
                         .style(ButtonStyle::Filled)
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
@@ -1798,7 +1806,7 @@ impl Workspace {
                     .weight(gpui::FontWeight::BOLD),
             )
             .child(
-                Label::new("A workspace-oriented desktop Git client")
+                Label::new(t!("workspace.home.slogan"))
                     .color(Color::Muted)
                     .size(LabelSize::Small),
             )
@@ -1808,7 +1816,7 @@ impl Workspace {
                     .gap_2()
                     .mt(px(4.))
                     .child(
-                        Button::new("workspace-home-open-repo", "Open Repository")
+                        Button::new("workspace-home-open-repo", t!("common.open_repository"))
                             .style(ButtonStyle::Filled)
                             .icon(IconName::Folder)
                             .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
@@ -1818,7 +1826,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("workspace-home-new", "New Workspace")
+                        Button::new("workspace-home-new", t!("workspace.home.new_workspace"))
                             .style(ButtonStyle::Outlined)
                             .icon(IconName::Plus)
                             .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
@@ -1830,19 +1838,24 @@ impl Workspace {
                     )
                     .when(!recent_workspaces.is_empty(), |buttons| {
                         buttons.child(
-                            Button::new("workspace-home-restore", "Restore Last")
-                                .style(ButtonStyle::Subtle)
-                                .icon(IconName::Clock)
-                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                            Button::new(
+                                "workspace-home-restore",
+                                t!("workspace.home.restore_last"),
+                            )
+                            .style(ButtonStyle::Subtle)
+                            .icon(IconName::Clock)
+                            .on_click(cx.listener(
+                                |this, _: &gpui::ClickEvent, _, cx| {
                                     this.restore_last_workspace(cx);
-                                })),
+                                },
+                            )),
                         )
                     }),
             );
 
         if !recent_workspaces.is_empty() {
             let mut workspaces_list = div().v_flex().w_full().mt(px(4.)).gap(px(8.)).child(
-                Label::new("Recent Workspaces")
+                Label::new(t!("workspace.home.recent_workspaces"))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Muted),
@@ -1851,15 +1864,14 @@ impl Workspace {
             for (i, workspace) in recent_workspaces.iter().enumerate() {
                 let workspace_id = workspace.id.clone();
                 let workspace_name: SharedString = workspace.name.clone().into();
-                let summary: SharedString = format!(
-                    "{} repositories | updated {}",
+                let summary = tp!(
+                    "workspace.home.workspace_summary",
                     workspace.repos.len(),
-                    workspace
+                    updated = workspace
                         .last_opened_at
                         .with_timezone(&chrono::Local)
                         .format("%Y-%m-%d %H:%M")
-                )
-                .into();
+                );
                 let repo_preview: SharedString = workspace
                     .repos
                     .iter()
@@ -1934,7 +1946,7 @@ impl Workspace {
 
         if !recent_repos.is_empty() {
             let mut repos_list = div().v_flex().w_full().mt(px(4.)).gap(px(8.)).child(
-                Label::new("Recent Repositories")
+                Label::new(t!("common.recent_repositories"))
                     .size(LabelSize::XSmall)
                     .weight(gpui::FontWeight::SEMIBOLD)
                     .color(Color::Muted),

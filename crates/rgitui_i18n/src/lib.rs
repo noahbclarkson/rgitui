@@ -24,9 +24,10 @@
 //! English.
 //!
 //! [`set_language`] refreshes every window, so anything translated in `render`
-//! updates on its own. Text kept outside `render` — an input's placeholder, a
-//! label cached in an entity — has to be rebuilt when the language changes;
-//! observe the [`ActiveLanguage`] global for that.
+//! updates on its own, as do input placeholders given a key with
+//! `TextInput::set_placeholder_message`. Text cached in an entity has to be
+//! rebuilt when the language changes; observe the [`ActiveLanguage`] global for
+//! that.
 
 mod catalog;
 mod en;

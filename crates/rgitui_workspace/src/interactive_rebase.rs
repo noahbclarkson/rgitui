@@ -4,6 +4,7 @@ use gpui::{
     FocusHandle, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render,
     SharedString, WeakEntity, Window,
 };
+use rgitui_i18n::{key, t, tp};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Button, ButtonSize, ButtonStyle, Label, LabelSize, TextInput, Tooltip};
 
@@ -21,14 +22,14 @@ pub enum RebaseAction {
 }
 
 impl RebaseAction {
-    /// Short display label for the action.
-    fn label(&self) -> &'static str {
+    /// Short display label for the action, in the active language.
+    fn label(&self) -> SharedString {
         match self {
-            RebaseAction::Pick => "Pick",
-            RebaseAction::Reword(_) => "Reword",
-            RebaseAction::Squash => "Squash",
-            RebaseAction::Fixup => "Fixup",
-            RebaseAction::Drop => "Drop",
+            RebaseAction::Pick => t!("rebase.pick"),
+            RebaseAction::Reword(_) => t!("rebase.reword"),
+            RebaseAction::Squash => t!("rebase.squash"),
+            RebaseAction::Fixup => t!("rebase.fixup"),
+            RebaseAction::Drop => t!("rebase.drop"),
         }
     }
 
@@ -127,7 +128,7 @@ impl InteractiveRebase {
             editing_reword: None,
             reword_editor: cx.new(|cx| {
                 let mut input = TextInput::new(cx);
-                input.set_placeholder("Enter new commit message...");
+                input.set_placeholder_message(key!("rebase.message.placeholder"));
                 input
             }),
             focus_handle: cx.focus_handle(),
@@ -479,8 +480,7 @@ impl Render for InteractiveRebase {
         }
 
         let entry_count = self.entries.len();
-        let header_text: SharedString =
-            format!("Rebasing {} commits onto {}", entry_count, self.target_ref).into();
+        let header_text = tp!("rebase.header", entry_count, target = self.target_ref);
 
         // Bounds tracker for the entries container
         let bounds_tracker = cx.weak_entity();
@@ -538,7 +538,7 @@ impl Render for InteractiveRebase {
             let oid_short: SharedString =
                 SharedString::from(entry.oid[..7.min(entry.oid.len())].to_string());
 
-            let action_label: SharedString = entry.action.label().into();
+            let action_label = entry.action.label();
             let action_color = entry.action.color();
             let is_dropped = matches!(entry.action, RebaseAction::Drop);
 
@@ -639,7 +639,7 @@ impl Render for InteractiveRebase {
                     .items_center()
                     .justify_center()
                     .cursor_grab()
-                    .tooltip(Tooltip::text("Drag to reorder"))
+                    .tooltip(Tooltip::text(t!("rebase.drag.tooltip")))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         move |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
@@ -751,7 +751,7 @@ impl Render for InteractiveRebase {
             .gap_3()
             // Title
             .child(
-                Label::new("Interactive Rebase")
+                Label::new(t!("common.interactive_rebase"))
                     .size(LabelSize::Large)
                     .weight(FontWeight::BOLD)
                     .color(Color::Default),
@@ -771,27 +771,27 @@ impl Render for InteractiveRebase {
                     .gap_3()
                     .pt_1()
                     .child(
-                        Label::new("j/k Navigate")
+                        Label::new(t!("rebase.hint.navigate"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Ctrl+Up/Down Reorder")
+                        Label::new(t!("rebase.hint.reorder"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("p/r/s/f/d Set action")
+                        Label::new(t!("rebase.hint.set_action"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Enter Start")
+                        Label::new(t!("rebase.hint.start"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Esc Cancel")
+                        Label::new(t!("rebase.hint.cancel"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
@@ -805,7 +805,7 @@ impl Render for InteractiveRebase {
                     .gap_2()
                     .pt_2()
                     .child(
-                        Button::new("rebase-cancel", "Cancel")
+                        Button::new("rebase-cancel", t!("common.cancel"))
                             .size(ButtonSize::Default)
                             .style(ButtonStyle::Subtle)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -813,7 +813,7 @@ impl Render for InteractiveRebase {
                             })),
                     )
                     .child(
-                        Button::new("rebase-start", "Start Rebase")
+                        Button::new("rebase-start", t!("rebase.start"))
                             .size(ButtonSize::Default)
                             .style(ButtonStyle::Filled)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -890,27 +890,30 @@ mod tests {
 
     #[test]
     fn rebase_action_label_pick() {
-        assert_eq!(RebaseAction::Pick.label(), "Pick");
+        assert_eq!(RebaseAction::Pick.label().as_ref(), "Pick");
     }
 
     #[test]
     fn rebase_action_label_reword() {
-        assert_eq!(RebaseAction::Reword("fix bug".into()).label(), "Reword");
+        assert_eq!(
+            RebaseAction::Reword("fix bug".into()).label().as_ref(),
+            "Reword"
+        );
     }
 
     #[test]
     fn rebase_action_label_squash() {
-        assert_eq!(RebaseAction::Squash.label(), "Squash");
+        assert_eq!(RebaseAction::Squash.label().as_ref(), "Squash");
     }
 
     #[test]
     fn rebase_action_label_fixup() {
-        assert_eq!(RebaseAction::Fixup.label(), "Fixup");
+        assert_eq!(RebaseAction::Fixup.label().as_ref(), "Fixup");
     }
 
     #[test]
     fn rebase_action_label_drop() {
-        assert_eq!(RebaseAction::Drop.label(), "Drop");
+        assert_eq!(RebaseAction::Drop.label().as_ref(), "Drop");
     }
 
     // ── RebaseAction::next ─────────────────────────────────────────

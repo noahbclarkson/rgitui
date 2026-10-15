@@ -13,6 +13,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::{BranchInfo, GitProject, GitProjectEvent};
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Badge, Icon, IconName, IconSize, Label, LabelSize};
 
@@ -160,10 +161,20 @@ impl Render for BranchHealthPanel {
                     .py_2()
                     .gap_2()
                     .flex_wrap()
-                    .child(self.stat_badge("Total", total, Color::Default, cx))
-                    .child(self.stat_badge("Unmerged", unmerged, Color::Warning, cx))
-                    .child(self.stat_badge("Stale", stale, Color::Muted, cx))
-                    .child(self.stat_badge("Diverged", diverged, Color::Accent, cx)),
+                    .child(self.stat_badge(t!("branch_health.total"), total, Color::Default, cx))
+                    .child(self.stat_badge(
+                        t!("branch_health.unmerged"),
+                        unmerged,
+                        Color::Warning,
+                        cx,
+                    ))
+                    .child(self.stat_badge(t!("branch_health.stale"), stale, Color::Muted, cx))
+                    .child(self.stat_badge(
+                        t!("branch_health.diverged"),
+                        diverged,
+                        Color::Accent,
+                        cx,
+                    )),
             )
             .child(
                 div()
@@ -190,7 +201,7 @@ impl Render for BranchHealthPanel {
                                 let upstream = branch.upstream.clone();
                                 let relative = last_time.map(format_relative_time_full);
                                 let relative_str: SharedString =
-                                    relative.unwrap_or_else(|| "unknown".into()).into();
+                                    relative.unwrap_or_else(|| t!("branch_health.unknown_age"));
 
                                 let row_bg = if is_head {
                                     colors.ghost_element_selected
@@ -233,17 +244,25 @@ impl Render for BranchHealthPanel {
                                 // Merged badge
                                 if !is_head {
                                     if is_merged == Some(true) {
-                                        row = row.child(Badge::new("Merged").color(Color::Muted));
+                                        row = row.child(
+                                            Badge::new(t!("branch_health.merged"))
+                                                .color(Color::Muted),
+                                        );
                                     } else if is_merged == Some(false) {
-                                        row =
-                                            row.child(Badge::new("Unmerged").color(Color::Warning));
+                                        row = row.child(
+                                            Badge::new(t!("branch_health.unmerged"))
+                                                .color(Color::Warning),
+                                        );
                                     }
                                 }
 
                                 // Stale badge
                                 if let Some(time) = last_time {
                                     if (now - time) > STALE_SECONDS && !is_head {
-                                        row = row.child(Badge::new("Stale").color(Color::Muted));
+                                        row = row.child(
+                                            Badge::new(t!("branch_health.stale"))
+                                                .color(Color::Muted),
+                                        );
                                     }
                                 }
 
@@ -396,7 +415,12 @@ impl BranchHealthPanel {
             .border_color(colors.border_variant)
             .children(filters.into_iter().map(|f| {
                 let active = self.filter == f;
-                let label: SharedString = f.label().into();
+                let label = match f {
+                    BranchHealthFilter::All => t!("common.filter.all"),
+                    BranchHealthFilter::Unmerged => t!("branch_health.unmerged"),
+                    BranchHealthFilter::Stale => t!("branch_health.stale"),
+                    BranchHealthFilter::Diverged => t!("branch_health.diverged"),
+                };
                 let filter_name = f.label();
                 div()
                     .id(ElementId::Name(format!("bh-filter-{}", filter_name).into()))
@@ -434,14 +458,13 @@ impl BranchHealthPanel {
 
     fn stat_badge(
         &self,
-        label: &'static str,
+        label: SharedString,
         count: usize,
         color: Color,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.colors();
         let count_str: SharedString = format!("{}", count).into();
-        let label_str: SharedString = label.into();
 
         div()
             .id(ElementId::Name(format!("bh-stat-{}", label).into()))
@@ -459,7 +482,7 @@ impl BranchHealthPanel {
                     .color(color),
             )
             .child(
-                Label::new(label_str)
+                Label::new(label)
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             )

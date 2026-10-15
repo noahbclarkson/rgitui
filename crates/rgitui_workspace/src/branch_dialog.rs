@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::{
     div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, SharedString, Window,
 };
+use rgitui_i18n::{key, t};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
@@ -37,7 +38,7 @@ impl BranchDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Enter branch name...");
+            ti.set_placeholder_message(key!("branch_dialog.name.placeholder"));
             ti
         });
         cx.subscribe(
@@ -185,6 +186,7 @@ impl Render for BranchDialog {
         }
 
         let colors = cx.colors().clone();
+
         let branch_name = self.editor.read(cx).text().to_string();
         let has_error = self.error_message.is_some();
         let can_create = !branch_name.is_empty() && !has_error;
@@ -232,7 +234,7 @@ impl Render for BranchDialog {
                         ),
                 )
                 .child(
-                    Label::new("Create Branch")
+                    Label::new(t!("branch_dialog.title"))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -243,7 +245,7 @@ impl Render for BranchDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("Branch name")
+                    Label::new(t!("branch_dialog.name"))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -268,7 +270,7 @@ impl Render for BranchDialog {
                 .gap(px(8.))
                 .items_center()
                 .child(
-                    Label::new("Based on")
+                    Label::new(t!("branch_dialog.based_on"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -326,7 +328,7 @@ impl Render for BranchDialog {
                 // dialog-footer component (parameterised by verb/modifier) so all
                 // dialogs share one style; cross-file refactor, deferred.
                 .child(
-                    Label::new("Enter to create | Esc to cancel")
+                    Label::new(t!("common.create_hint"))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -338,7 +340,7 @@ impl Render for BranchDialog {
                         .justify_end()
                         .w_full()
                         .child(
-                            Button::new("cancel-branch", "Cancel")
+                            Button::new("cancel-branch", t!("common.cancel"))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -346,7 +348,7 @@ impl Render for BranchDialog {
                                 })),
                         )
                         .child(
-                            Button::new("create-branch", "Create Branch")
+                            Button::new("create-branch", t!("branch_dialog.title"))
                                 .icon(IconName::GitBranch)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)

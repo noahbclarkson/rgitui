@@ -5566,6 +5566,7 @@ dependencies = [
  "gpui",
  "log",
  "rgitui_git",
+ "rgitui_i18n",
  "rgitui_perf",
  "rgitui_settings",
  "rgitui_test_support",
@@ -5609,6 +5610,7 @@ dependencies = [
  "gpui",
  "log",
  "rgitui_git",
+ "rgitui_i18n",
  "rgitui_perf",
  "rgitui_settings",
  "rgitui_theme",
@@ -5694,6 +5696,7 @@ version = "0.5.0"
 dependencies = [
  "gpui",
  "log",
+ "rgitui_i18n",
  "rgitui_perf",
  "rgitui_settings",
  "rgitui_test_support",

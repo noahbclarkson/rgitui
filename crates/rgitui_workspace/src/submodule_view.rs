@@ -8,6 +8,7 @@ use gpui::{
     WeakEntity, Window,
 };
 use rgitui_git::SubmoduleInfo;
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
 
@@ -134,7 +135,7 @@ impl SubmoduleView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Submodules")
+                        Label::new(t!("submodules.title"))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -156,12 +157,12 @@ impl SubmoduleView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("No submodules found")
+                            Label::new(t!("submodules.empty"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Add submodules to your repository")
+                            Label::new(t!("submodules.empty_hint"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -383,7 +384,7 @@ impl Render for SubmoduleView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("Submodules")
+                        Label::new(t!("submodules.title"))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Default),

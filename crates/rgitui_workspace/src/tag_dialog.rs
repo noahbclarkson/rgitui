@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::{
     div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, SharedString, Window,
 };
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
@@ -179,6 +180,7 @@ impl Render for TagDialog {
 
         let colors = cx.colors().clone();
         let tag_name = self.editor.read(cx).text().to_string();
+
         let has_error = self.error_message.is_some();
         let can_create = !tag_name.is_empty() && !has_error;
 
@@ -223,7 +225,7 @@ impl Render for TagDialog {
                         ),
                 )
                 .child(
-                    Label::new("Create Tag")
+                    Label::new(t!("tag_dialog.title"))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -234,7 +236,7 @@ impl Render for TagDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("Tag name")
+                    Label::new(t!("tag_dialog.name"))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -259,7 +261,7 @@ impl Render for TagDialog {
                 .gap(px(8.))
                 .items_center()
                 .child(
-                    Label::new("At commit")
+                    Label::new(t!("tag_dialog.at_commit"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -314,7 +316,7 @@ impl Render for TagDialog {
                 .w_full()
                 .gap_2()
                 .child(
-                    Label::new("Enter to create | Esc to cancel")
+                    Label::new(t!("common.create_hint"))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -326,7 +328,7 @@ impl Render for TagDialog {
                         .justify_end()
                         .w_full()
                         .child(
-                            Button::new("cancel-tag", "Cancel")
+                            Button::new("cancel-tag", t!("common.cancel"))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -334,7 +336,7 @@ impl Render for TagDialog {
                                 })),
                         )
                         .child(
-                            Button::new("create-tag", "Create Tag")
+                            Button::new("create-tag", t!("tag_dialog.title"))
                                 .icon(IconName::Tag)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)

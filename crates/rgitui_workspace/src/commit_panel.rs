@@ -4,6 +4,7 @@ use gpui::{
     SharedString, Window,
 };
 use rgitui_ai::CommitStyle;
+use rgitui_i18n::{key, t, tp};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, IconButton, IconName, Label, LabelSize,
@@ -175,23 +176,23 @@ impl CommitPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let summary_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Commit summary...");
+            ti.set_placeholder_message(key!("commit.summary.placeholder"));
             ti
         });
         let description_editor = cx.new(|cx| {
             let mut ti = TextInput::new(cx).multiline();
-            ti.set_placeholder("Optional extended description...");
+            ti.set_placeholder_message(key!("commit.description.placeholder"));
             ti.set_font_size(px(12.0));
             ti
         });
         let new_author_name = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Co-author name...");
+            ti.set_placeholder_message(key!("commit.co_author_name.placeholder"));
             ti
         });
         let new_author_email = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Co-author email...");
+            ti.set_placeholder_message(key!("commit.co_author_email.placeholder"));
             ti
         });
 
@@ -417,15 +418,15 @@ impl CommitPanel {
         self.focus_handle.contains_focused(window, cx)
     }
 
-    fn commit_button_label(&self, summary_empty: bool) -> &'static str {
+    fn commit_button_label(&self, summary_empty: bool) -> SharedString {
         if self.staged_count == 0 {
-            "No Staged Changes"
+            t!("commit.no_staged")
         } else if summary_empty {
-            "No Message"
+            t!("commit.no_message")
         } else if self.amend {
-            "Amend Commit"
+            t!("commit.amend_commit")
         } else {
-            "Commit"
+            t!("commit.commit")
         }
     }
 
@@ -724,15 +725,10 @@ impl Render for CommitPanel {
             self.description_editor.read(cx).text().lines().count()
         };
 
-        let staged_label: SharedString = if self.staged_count > 0 {
-            format!(
-                "{} file{} staged",
-                self.staged_count,
-                if self.staged_count == 1 { "" } else { "s" }
-            )
-            .into()
+        let staged_label = if self.staged_count > 0 {
+            tp!("commit.staged_files", self.staged_count)
         } else {
-            "No files staged".into()
+            t!("commit.staged_none")
         };
 
         // Conventional commits: 50 chars is the recommended limit, 72 is the hard wrap limit.
@@ -746,15 +742,12 @@ impl Render for CommitPanel {
             Color::Muted
         };
 
-        let desc_count_label: SharedString = if description_len > 0 {
-            format!(
-                "{} char{}, {} line{}",
-                description_len,
-                if description_len == 1 { "" } else { "s" },
-                description_lines,
-                if description_lines == 1 { "" } else { "s" },
+        let desc_count_label = if description_len > 0 {
+            t!(
+                "commit.description_count",
+                chars = tp!("commit.description_chars", description_len),
+                lines = tp!("commit.description_lines", description_lines)
             )
-            .into()
         } else {
             SharedString::default()
         };
@@ -822,9 +815,9 @@ impl Render for CommitPanel {
                                 .size(ButtonSize::Compact)
                                 .color(Color::Muted)
                                 .tooltip(if self.collapsed {
-                                    "Expand commit panel"
+                                    t!("commit.expand_commit.tooltip")
                                 } else {
-                                    "Collapse commit panel"
+                                    t!("commit.collapse_commit.tooltip")
                                 })
                                 .on_click(cx.listener(
                                     |this, _: &ClickEvent, _, cx| {
@@ -834,7 +827,7 @@ impl Render for CommitPanel {
                                 )),
                             )
                             .child(
-                                Label::new("Commit")
+                                Label::new(t!("commit.commit"))
                                     .size(LabelSize::XSmall)
                                     .weight(gpui::FontWeight::SEMIBOLD)
                                     .color(Color::Muted),
@@ -893,7 +886,7 @@ impl Render for CommitPanel {
                                             .h_flex()
                                             .items_center()
                                             .child(
-                                                Label::new("Summary")
+                                                Label::new(t!("commit.summary"))
                                                     .size(LabelSize::XSmall)
                                                     .color(Color::Muted)
                                                     .weight(gpui::FontWeight::MEDIUM),
@@ -920,7 +913,7 @@ impl Render for CommitPanel {
                                             .h_flex()
                                             .items_center()
                                             .child(
-                                                Label::new("Description")
+                                                Label::new(t!("common.description"))
                                                     .size(LabelSize::XSmall)
                                                     .color(Color::Muted)
                                                     .weight(gpui::FontWeight::MEDIUM),
@@ -951,7 +944,7 @@ impl Render for CommitPanel {
                                             .w_full()
                                             .items_center()
                                             .child(
-                                                Label::new("Co-Authors")
+                                                Label::new(t!("commit.co_authors"))
                                                     .size(LabelSize::XSmall)
                                                     .color(Color::Muted)
                                                     .weight(gpui::FontWeight::MEDIUM),
@@ -1120,7 +1113,7 @@ impl Render for CommitPanel {
                                         },
                                     ))
                                     .child(
-                                        Label::new("Amend")
+                                        Label::new(t!("commit.amend"))
                                             .size(LabelSize::XSmall)
                                             .color(Color::Muted),
                                     ),
@@ -1129,7 +1122,7 @@ impl Render for CommitPanel {
                                 !summary_empty || !self.description_editor.read(cx).is_empty(),
                                 |el| {
                                     el.child(
-                                        Button::new("clear-btn", "Clear")
+                                        Button::new("clear-btn", t!("common.clear"))
                                             .icon(IconName::X)
                                             .size(ButtonSize::Compact)
                                             .style(ButtonStyle::Subtle)
@@ -1155,7 +1148,7 @@ impl Render for CommitPanel {
                             .child(div().flex_1())
                             .when(self.staged_count == 0, |el| {
                                 el.child(
-                                    Label::new("No staged changes")
+                                    Label::new(t!("commit.no_staged_hint"))
                                         .size(LabelSize::XSmall)
                                         .color(Color::Warning),
                                 )

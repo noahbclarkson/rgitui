@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::{
     div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, SharedString, Window,
 };
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
@@ -178,6 +179,7 @@ impl Render for RenameDialog {
         }
 
         let colors = cx.colors().clone();
+
         let new_name = self.editor.read(cx).text().to_string();
         let is_empty = new_name.is_empty();
         let has_error = self.error_message.is_some();
@@ -227,7 +229,7 @@ impl Render for RenameDialog {
                         ),
                 )
                 .child(
-                    Label::new("Rename Branch")
+                    Label::new(t!("rename_dialog.title"))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -239,7 +241,7 @@ impl Render for RenameDialog {
                 .gap(px(8.))
                 .items_center()
                 .child(
-                    Label::new("Current name")
+                    Label::new(t!("rename_dialog.current"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -271,7 +273,7 @@ impl Render for RenameDialog {
                 .v_flex()
                 .gap(px(6.))
                 .child(
-                    Label::new("New name")
+                    Label::new(t!("rename_dialog.new"))
                         .size(LabelSize::Small)
                         .weight(gpui::FontWeight::MEDIUM)
                         .color(Color::Muted),
@@ -318,7 +320,7 @@ impl Render for RenameDialog {
                 .justify_between()
                 .items_center()
                 .child(
-                    Label::new("Enter to rename | Esc to cancel")
+                    Label::new(t!("rename_dialog.hint"))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -327,7 +329,7 @@ impl Render for RenameDialog {
                         .h_flex()
                         .gap_2()
                         .child(
-                            Button::new("cancel-rename", "Cancel")
+                            Button::new("cancel-rename", t!("common.cancel"))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -335,7 +337,7 @@ impl Render for RenameDialog {
                                 })),
                         )
                         .child(
-                            Button::new("do-rename", "Rename")
+                            Button::new("do-rename", t!("rename_dialog.rename"))
                                 .icon(IconName::Edit)
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Filled)

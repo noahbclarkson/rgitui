@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{canvas, div, point, px, App, Bounds, Context, PathBuilder, Pixels, Render, Window};
+use rgitui_i18n::t;
 use rgitui_theme::{lane_color, ActiveTheme, StyledExt};
 
 // ─── Pre-computed trig ──────────────────────────────────────────────
@@ -391,6 +392,8 @@ impl Render for SplashScreen {
         let subtitle_t = ((elapsed.as_secs_f32() - 0.3).max(0.0) / 0.5).min(1.0);
 
         let colors = cx.colors();
+        // The splash can paint before settings finish loading, so fall
+        // back to English rather than requiring the global.
         let text_color = colors.text;
         let muted = colors.text_muted;
         let accent = colors.text_accent;
@@ -409,7 +412,7 @@ impl Render for SplashScreen {
         let subtitle = div()
             .text_size(px(11.))
             .child(typewriter_text(
-                "GPU-accelerated Git",
+                &t!("splash.subtitle"),
                 subtitle_t,
                 muted,
                 hidden,
@@ -436,7 +439,7 @@ impl Render for SplashScreen {
         let loading = div()
             .text_size(px(10.))
             .child(typewriter_text(
-                "Loading workspace\u{2026}",
+                &t!("splash.loading"),
                 loading_t,
                 accent,
                 hidden,

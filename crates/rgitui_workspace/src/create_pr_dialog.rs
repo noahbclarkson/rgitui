@@ -7,6 +7,7 @@ use gpui::{
     div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, SharedString, Window,
 };
 use http_client::HttpClient;
+use rgitui_i18n::{key, t};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, CheckState, Checkbox, Icon, IconName, IconSize, Label,
@@ -53,13 +54,13 @@ impl CreatePrDialog {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let title_input = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Pull request title");
+            ti.set_placeholder_message(key!("create_pr.pr_title.placeholder"));
             ti
         });
 
         let body_input = cx.new(|cx| {
             let mut ti = TextInput::new(cx).multiline();
-            ti.set_placeholder("Add a description (optional)");
+            ti.set_placeholder_message(key!("create_pr.description.placeholder"));
             ti
         });
 
@@ -329,7 +330,7 @@ impl Render for CreatePrDialog {
                                     ),
                             )
                             .child(
-                                Label::new("New Pull Request")
+                                Label::new(t!("create_pr.title"))
                                     .size(LabelSize::Large)
                                     .weight(gpui::FontWeight::BOLD),
                             ),
@@ -355,7 +356,7 @@ impl Render for CreatePrDialog {
                                     .color(Color::Accent),
                             )
                             .child(
-                                Label::new("into")
+                                Label::new(t!("create_pr.into"))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             )
@@ -368,7 +369,7 @@ impl Render for CreatePrDialog {
                     // Title input
                     .child(
                         div().v_flex().gap_1().child(
-                            Label::new("Title")
+                            Label::new(t!("create_pr.pr_title"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -388,7 +389,7 @@ impl Render for CreatePrDialog {
                     // Body input
                     .child(
                         div().v_flex().gap_1().child(
-                            Label::new("Description")
+                            Label::new(t!("common.description"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
@@ -429,7 +430,7 @@ impl Render for CreatePrDialog {
                                 )),
                             )
                             .child(
-                                Label::new("Create as draft pull request")
+                                Label::new(t!("create_pr.draft_toggle"))
                                     .size(LabelSize::Small)
                                     .color(Color::Muted),
                             ),
@@ -470,11 +471,9 @@ impl Render for CreatePrDialog {
                             .w_full()
                             .gap_2()
                             .child(
-                                Label::new(
-                                    "Enter for a new line | Shift+Enter to create | Esc to cancel",
-                                )
-                                .size(LabelSize::XSmall)
-                                .color(Color::Placeholder),
+                                Label::new(t!("create_pr.hint"))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Placeholder),
                             )
                             .child(
                                 div()
@@ -485,7 +484,7 @@ impl Render for CreatePrDialog {
                                     .w_full()
                                     .pr(px(4.))
                                     .child(
-                                        Button::new("create-pr-cancel", "Cancel")
+                                        Button::new("create-pr-cancel", t!("common.cancel"))
                                             .size(ButtonSize::Default)
                                             .style(ButtonStyle::Subtle)
                                             .on_click(cx.listener(
@@ -495,7 +494,7 @@ impl Render for CreatePrDialog {
                                             )),
                                     )
                                     .child(
-                                        Button::new("create-pr-submit", "Create pull request")
+                                        Button::new("create-pr-submit", t!("create_pr.submit"))
                                             .icon(IconName::GitPullRequest)
                                             .size(ButtonSize::Default)
                                             .style(if self.is_loading {
@@ -546,7 +545,7 @@ impl Render for CreatePrDialog {
                                                 .color(Color::Accent),
                                         )
                                         .child(
-                                            Label::new("Creating pull request...")
+                                            Label::new(t!("create_pr.creating"))
                                                 .size(LabelSize::Small)
                                                 .color(Color::Default),
                                         ),

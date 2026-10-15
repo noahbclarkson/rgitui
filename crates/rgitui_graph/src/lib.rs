@@ -17,6 +17,7 @@ use gpui::{
 use rgitui_git::{
     compact_ref_labels, compute_graph, CommitInfo, FileChangeKind, GraphEdge, GraphRow, RefLabel,
 };
+use rgitui_i18n::{key, t};
 use rgitui_settings::{GraphStyle, SettingsState};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
@@ -86,7 +87,7 @@ enum GraphMenuAction {
 
 /// One row of the commit graph context menu.
 struct GraphMenuItem {
-    /// Row label.
+    /// Row label: a message key, translated at render time.
     label: &'static str,
     /// Leading icon.
     icon: IconName,
@@ -130,39 +131,51 @@ impl GraphMenuItem {
 /// by hand.
 const GRAPH_MENU_ITEMS: &[GraphMenuItem] = &[
     GraphMenuItem::new(
-        "Cherry-pick commit",
+        key!("graph.menu.cherry_pick"),
         IconName::GitCommit,
         GraphMenuAction::CherryPick,
     ),
-    GraphMenuItem::new("Revert commit", IconName::Undo, GraphMenuAction::Revert),
     GraphMenuItem::new(
-        "Checkout commit",
+        key!("graph.menu.revert"),
+        IconName::Undo,
+        GraphMenuAction::Revert,
+    ),
+    GraphMenuItem::new(
+        key!("graph.menu.checkout"),
         IconName::Check,
         GraphMenuAction::Checkout,
     ),
     GraphMenuItem::new(
-        "Create branch here",
+        key!("graph.menu.create_branch"),
         IconName::GitBranch,
         GraphMenuAction::CreateBranch,
     ),
-    GraphMenuItem::new("Create tag here", IconName::Tag, GraphMenuAction::CreateTag),
     GraphMenuItem::new(
-        "Mark as good (bisect)",
+        key!("graph.menu.create_tag"),
+        IconName::Tag,
+        GraphMenuAction::CreateTag,
+    ),
+    GraphMenuItem::new(
+        key!("graph.menu.bisect_good"),
         IconName::Check,
         GraphMenuAction::BisectGood,
     )
     .grouped(),
     GraphMenuItem::new(
-        "Mark as bad (bisect)",
+        key!("graph.menu.bisect_bad"),
         IconName::X,
         GraphMenuAction::BisectBad,
     )
     .destructive(),
-    GraphMenuItem::new("Reset to here", IconName::Trash, GraphMenuAction::Reset)
-        .grouped()
-        .destructive(),
     GraphMenuItem::new(
-        "Interactive Rebase",
+        key!("graph.menu.reset"),
+        IconName::Trash,
+        GraphMenuAction::Reset,
+    )
+    .grouped()
+    .destructive(),
+    GraphMenuItem::new(
+        key!("common.interactive_rebase"),
         IconName::GitMerge,
         GraphMenuAction::InteractiveRebase,
     )
@@ -170,24 +183,33 @@ const GRAPH_MENU_ITEMS: &[GraphMenuItem] = &[
     // Only offered while the selection could actually be squashed — see
     // `GraphView::context_menu_items`.
     GraphMenuItem::new(
-        "Squash selected commits",
+        key!("graph.menu.squash"),
         IconName::GitMerge,
         GraphMenuAction::SquashSelected,
     ),
-    GraphMenuItem::new("Copy SHA", IconName::Copy, GraphMenuAction::CopySha).grouped(),
     GraphMenuItem::new(
-        "Copy commit message",
+        key!("graph.menu.copy_sha"),
+        IconName::Copy,
+        GraphMenuAction::CopySha,
+    )
+    .grouped(),
+    GraphMenuItem::new(
+        key!("graph.menu.copy_msg"),
         IconName::Edit,
         GraphMenuAction::CopyMessage,
     ),
     GraphMenuItem::new(
-        "Copy author name",
+        key!("graph.menu.copy_author"),
         IconName::User,
         GraphMenuAction::CopyAuthor,
     ),
-    GraphMenuItem::new("Copy date", IconName::Clock, GraphMenuAction::CopyDate),
     GraphMenuItem::new(
-        "View on GitHub",
+        key!("graph.menu.copy_date"),
+        IconName::Clock,
+        GraphMenuAction::CopyDate,
+    ),
+    GraphMenuItem::new(
+        key!("graph.menu.view_github"),
         IconName::ExternalLink,
         GraphMenuAction::ViewOnGithub,
     ),
@@ -783,7 +805,7 @@ impl GraphView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let search_editor = cx.new(|cx| {
             let mut ti = rgitui_ui::TextInput::new(cx);
-            ti.set_placeholder("Search commits...");
+            ti.set_placeholder_message(key!("graph.search.placeholder"));
             ti
         });
 
@@ -1772,7 +1794,7 @@ impl Render for GraphView {
             self.graph_rows.len(),
             self.selected_index
         );
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
 
         if self.total_list_items() == 0 {
             return div()
@@ -1799,7 +1821,7 @@ impl Render for GraphView {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Graph")
+                            Label::new(t!("graph.title"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted)
                                 .weight(gpui::FontWeight::SEMIBOLD),
@@ -1817,7 +1839,7 @@ impl Render for GraphView {
                                     .color(Color::Muted),
                             )
                             .child(
-                                Label::new("No commits to display")
+                                Label::new(t!("graph.empty"))
                                     .color(Color::Muted)
                                     .size(LabelSize::Small),
                             ),
@@ -1862,9 +1884,9 @@ impl Render for GraphView {
             ..head_color
         };
         let head_badge_text = if head_detached {
-            "HEAD (detached)"
+            t!("graph.head_detached")
         } else {
-            "HEAD"
+            SharedString::new_static("HEAD")
         };
         let working_tree_bg = gpui::Hsla {
             a: 0.06,
@@ -1979,7 +2001,7 @@ impl Render for GraphView {
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Graph")
+                            Label::new(t!("graph.title"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted)
                                 .weight(gpui::FontWeight::SEMIBOLD),
@@ -1991,7 +2013,7 @@ impl Render for GraphView {
             .child(div().w(px(16.)).flex_shrink_0())
             .child(
                 div().w(px(80.)).flex_shrink_0().child(
-                    Label::new("Hash")
+                    Label::new(t!("graph.column.hash"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted)
                         .weight(gpui::FontWeight::SEMIBOLD),
@@ -2000,7 +2022,7 @@ impl Render for GraphView {
             .when(show_subject_column, |el| {
                 el.child(
                     div().flex_1().child(
-                        Label::new("Message")
+                        Label::new(t!("graph.column.message"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .weight(gpui::FontWeight::SEMIBOLD),
@@ -2030,7 +2052,7 @@ impl Render for GraphView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Author")
+                        Label::new(t!("graph.column.author"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .weight(gpui::FontWeight::SEMIBOLD),
@@ -2072,7 +2094,7 @@ impl Render for GraphView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Date")
+                        Label::new(t!("graph.column.date"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .weight(gpui::FontWeight::SEMIBOLD),
@@ -2103,9 +2125,9 @@ impl Render for GraphView {
         };
 
         let my_commits_tooltip: SharedString = if my_commits_active {
-            "Showing only your commits. Click to show all commits.".into()
+            t!("graph.my_commits.on")
         } else {
-            "Show only your commits. Click to filter by current user.".into()
+            t!("graph.my_commits.off")
         };
 
         header = header
@@ -2332,7 +2354,7 @@ impl Render for GraphView {
                             compact_ref_labels(&commit.refs).into_iter().enumerate()
                         {
                             let badge = match &compact_ref.label {
-                                RefLabel::Head => Badge::new(head_badge_text)
+                                RefLabel::Head => Badge::new(head_badge_text.clone())
                                     .prefix("→")
                                     .color(Color::Warning)
                                     .bold(),
@@ -2381,7 +2403,7 @@ impl Render for GraphView {
                         let time_str: SharedString = if show_absolute_dates {
                             commit.time.format("%b %d").to_string().into()
                         } else {
-                            format_relative_time(&commit.time, now_utc).into()
+                            format_relative_time(&commit.time, now_utc)
                         };
 
                         // Clone only the edges vec for canvas closure (not the entire GraphRow)
@@ -2760,7 +2782,7 @@ impl Render for GraphView {
                         let is_dragging_this = dragging_oid == Some(oid);
                         // Opacity: dim when dragging this row; subtle when not dragging; hidden when not.
                         let grip_opacity = if is_dragging_this { 0.3 } else { 0.0 };
-                        let grip_tooltip = Tooltip::text("Drag to rebase");
+                        let grip_tooltip = Tooltip::text(t!("graph.drag_to_rebase"));
                         let entity_for_grip = view.clone();
                         let oid_for_grip = oid;
                         row = row.child(
@@ -2817,7 +2839,7 @@ impl Render for GraphView {
                                 message_col = message_col.child(
                                     div()
                                         .flex_shrink_0()
-                                        .child(Badge::new("✓ Signed").color(Color::Success).bold()),
+                                        .child(Badge::new(t!("graph.signed")).color(Color::Success).bold()),
                                 );
                             }
 
@@ -2991,7 +3013,7 @@ impl Render for GraphView {
             let match_count_text: SharedString = if self.search_editor.read(cx).is_empty() {
                 String::new().into()
             } else if no_matches {
-                "No matches".into()
+                t!("graph.no_matches")
             } else {
                 format!("{}/{}", self.current_match + 1, self.filter_matches.len()).into()
             };
@@ -3125,7 +3147,7 @@ impl Render for GraphView {
                                     .color(Color::Muted),
                             )
                             .child(
-                                Label::new("Load more commits")
+                                Label::new(t!("graph.load_more"))
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
                             ),
@@ -3237,7 +3259,7 @@ impl Render for GraphView {
                                     .color(icon_color),
                             )
                             .child(
-                                Label::new(SharedString::from(item.label))
+                                Label::new(rgitui_i18n::translate(item.label))
                                     .size(LabelSize::XSmall)
                                     .color(label_color),
                             ),
@@ -3271,9 +3293,9 @@ impl Render for GraphView {
             let view_ref_badges = cx.weak_entity();
 
             let sha_length_label: SharedString = match self.sha_display_length {
-                0 => "Short (7)".into(),
-                40 => "Full (40)".into(),
-                n => format!("{} chars", n).into(),
+                0 => t!("graph.display.sha_short"),
+                40 => t!("graph.display.sha_full"),
+                n => t!("graph.display.sha_chars", length = n),
             };
             let subject_state = if cx.global::<SettingsState>().settings().show_subject_column {
                 CheckState::Checked
@@ -3341,7 +3363,7 @@ impl Render for GraphView {
                 })
                 .child(
                     div().px(px(10.)).py(px(4.)).child(
-                        Label::new("Display Settings")
+                        Label::new(t!("graph.display.title"))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .weight(gpui::FontWeight::SEMIBOLD),
@@ -3386,7 +3408,7 @@ impl Render for GraphView {
                                 .size(IconSize::XSmall)
                                 .color(Color::Muted),
                         )
-                        .child(Label::new("SHA length:").size(LabelSize::XSmall))
+                        .child(Label::new(t!("graph.display.sha_length")).size(LabelSize::XSmall))
                         .child(
                             Label::new(sha_length_label)
                                 .size(LabelSize::XSmall)
@@ -3418,7 +3440,9 @@ impl Render for GraphView {
                                 .ok();
                         })
                         .child(Checkbox::new("cb-subject-col", subject_state))
-                        .child(Label::new("Show subject column").size(LabelSize::XSmall)),
+                        .child(
+                            Label::new(t!("graph.display.subject_column")).size(LabelSize::XSmall),
+                        ),
                 )
                 .child(
                     div()
@@ -3441,7 +3465,9 @@ impl Render for GraphView {
                                 .ok();
                         })
                         .child(Checkbox::new("cb-author-col", author_state))
-                        .child(Label::new("Show author column").size(LabelSize::XSmall)),
+                        .child(
+                            Label::new(t!("graph.display.author_column")).size(LabelSize::XSmall),
+                        ),
                 )
                 .child(
                     div()
@@ -3465,7 +3491,9 @@ impl Render for GraphView {
                                 .ok();
                         })
                         .child(Checkbox::new("cb-author-email", author_email_state))
-                        .child(Label::new("Show author email").size(LabelSize::XSmall)),
+                        .child(
+                            Label::new(t!("graph.display.author_email")).size(LabelSize::XSmall),
+                        ),
                 )
                 .child(
                     div()
@@ -3488,7 +3516,7 @@ impl Render for GraphView {
                                 .ok();
                         })
                         .child(Checkbox::new("cb-date-col", date_state))
-                        .child(Label::new("Show date column").size(LabelSize::XSmall)),
+                        .child(Label::new(t!("graph.display.date_column")).size(LabelSize::XSmall)),
                 )
                 .child(
                     div()
@@ -3511,7 +3539,9 @@ impl Render for GraphView {
                                 .ok();
                         })
                         .child(Checkbox::new("cb-absolute-dates", absolute_dates_state))
-                        .child(Label::new("Absolute dates").size(LabelSize::XSmall)),
+                        .child(
+                            Label::new(t!("graph.display.absolute_dates")).size(LabelSize::XSmall),
+                        ),
                 )
                 .child(
                     div()
@@ -3534,7 +3564,7 @@ impl Render for GraphView {
                                 .ok();
                         })
                         .child(Checkbox::new("cb-avatars", avatars_state))
-                        .child(Label::new("Show avatars").size(LabelSize::XSmall)),
+                        .child(Label::new(t!("graph.display.avatars")).size(LabelSize::XSmall)),
                 )
                 .child(
                     div()
@@ -3564,7 +3594,7 @@ impl Render for GraphView {
                                 .ok();
                         })
                         .child(Checkbox::new("cb-graph-lanes", graph_lanes_state))
-                        .child(Label::new("Show graph lanes").size(LabelSize::XSmall)),
+                        .child(Label::new(t!("graph.display.lanes")).size(LabelSize::XSmall)),
                 )
                 .child(
                     div()
@@ -3587,7 +3617,7 @@ impl Render for GraphView {
                                 .ok();
                         })
                         .child(Checkbox::new("cb-ref-badges", ref_badges_state))
-                        .child(Label::new("Show branch/tag badges").size(LabelSize::XSmall)),
+                        .child(Label::new(t!("graph.display.badges")).size(LabelSize::XSmall)),
                 );
 
             container = container.child(popover);
@@ -3732,18 +3762,14 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
     // A detached HEAD has no branch to name, but saying so beats saying nothing:
     // the row would otherwise read identically to a worktree whose branch simply
     // failed to load.
-    let head_label = branch_name
-        .filter(|branch| !branch.is_empty())
-        .or_else(|| head_detached.then(|| "detached HEAD".to_string()));
-    let row_title = if is_orphan_worktree {
-        head_label
-            .clone()
-            .map(|label| format!("{label} (no commits)"))
-            .unwrap_or_else(|| "No commits yet".to_string())
-    } else if let Some(label) = head_label.clone() {
-        format!("Pending changes on {label}")
-    } else {
-        "Pending changes".to_string()
+    let branch_name = branch_name.filter(|branch| !branch.is_empty());
+    let row_title = match (is_orphan_worktree, branch_name, head_detached) {
+        (true, Some(branch), _) => t!("graph.no_commits_on", branch = branch),
+        (true, None, true) => t!("graph.no_commits_detached"),
+        (true, None, false) => t!("graph.no_commits_yet"),
+        (false, Some(branch), _) => t!("graph.pending_on", branch = branch),
+        (false, None, true) => t!("graph.pending_on_detached"),
+        (false, None, false) => t!("graph.pending_changes"),
     };
     let row_badge_color = if is_current_worktree || is_orphan_worktree {
         Color::Warning
@@ -3751,9 +3777,9 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
         Color::Accent
     };
     let hash_label = if is_orphan_worktree {
-        "new".to_string()
+        t!("graph.working_tree.new")
     } else {
-        "working".to_string()
+        t!("graph.working_tree.working")
     };
 
     let view_click = view.clone();
@@ -3996,7 +4022,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 message_col = message_col.child(
                     div()
                         .flex_shrink_0()
-                        .child(Badge::new("New branch").color(Color::Warning)),
+                        .child(Badge::new(t!("graph.new_branch")).color(Color::Warning)),
                 );
             }
 
@@ -4010,7 +4036,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 if staged_count > 0 {
                     message_col = message_col.child(
                         div().flex_shrink_0().child(
-                            Badge::new(SharedString::from(format!("{} staged", staged_count)))
+                            Badge::new(t!("graph.working_tree.staged", count = staged_count))
                                 .color(Color::Success),
                         ),
                     );
@@ -4018,7 +4044,7 @@ fn render_working_tree_row(params: WorkingTreeRowParams) -> gpui::AnyElement {
                 if unstaged_count > 0 {
                     message_col = message_col.child(
                         div().flex_shrink_0().child(
-                            Badge::new(SharedString::from(format!("{} unstaged", unstaged_count)))
+                            Badge::new(t!("graph.working_tree.unstaged", count = unstaged_count))
                                 .color(Color::Warning),
                         ),
                     );
@@ -4092,23 +4118,23 @@ pub fn compute_breakdown(files: &[rgitui_git::FileStatus]) -> HashMap<FileChange
 fn format_relative_time(
     time: &chrono::DateTime<chrono::Utc>,
     now: chrono::DateTime<chrono::Utc>,
-) -> String {
+) -> SharedString {
     let duration = now.signed_duration_since(*time);
 
     if duration.num_minutes() < 1 {
-        "just now".to_string()
+        t!("time.just_now")
     } else if duration.num_minutes() < 60 {
-        format!("{}m ago", duration.num_minutes())
+        t!("time.minutes_short", count = duration.num_minutes())
     } else if duration.num_hours() < 24 {
-        format!("{}h ago", duration.num_hours())
+        t!("time.hours_short", count = duration.num_hours())
     } else if duration.num_days() < 7 {
-        format!("{}d ago", duration.num_days())
+        t!("time.days_short", count = duration.num_days())
     } else if duration.num_weeks() < 4 {
-        format!("{}w ago", duration.num_weeks())
+        t!("time.weeks_short", count = duration.num_weeks())
     } else if duration.num_days() < 365 {
-        format!("{}mo ago", duration.num_days() / 30)
+        t!("time.months_short", count = duration.num_days() / 30)
     } else {
-        format!("{}y ago", duration.num_days() / 365)
+        t!("time.years_short", count = duration.num_days() / 365)
     }
 }
 
@@ -4177,7 +4203,6 @@ mod tests {
     fn every_menu_row_is_distinct_and_no_group_starts_the_menu() {
         let mut seen: Vec<GraphMenuAction> = Vec::new();
         for item in GRAPH_MENU_ITEMS {
-            assert!(!item.label.is_empty());
             assert!(
                 !seen.contains(&item.action),
                 "{:?} appears twice in the menu",

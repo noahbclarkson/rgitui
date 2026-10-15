@@ -8,6 +8,7 @@ use gpui::{
     ScrollHandle, SharedString, Window,
 };
 use rgitui_git::SearchResult;
+use rgitui_i18n::{key, t, tp};
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, TextInput, TextInputEvent};
 
@@ -104,7 +105,7 @@ impl GlobalSearchView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let query_input = cx.new(|cx| {
             let mut ti = TextInput::new(cx);
-            ti.set_placeholder("Search across all files... (press Enter)");
+            ti.set_placeholder_message(key!("search.placeholder"));
             ti
         });
 
@@ -332,7 +333,7 @@ impl Render for GlobalSearchView {
             return div().id("global-search-view").into_any_element();
         }
 
-        let colors = cx.colors();
+        let colors = cx.colors().clone();
         let query = self.query.clone();
         let loading = self.loading;
         let error = self.error.clone();
@@ -405,7 +406,7 @@ impl GlobalSearchView {
                     .child(self.query_input.clone())
             })
             .child(
-                Label::new(format!("{} results", result_count))
+                Label::new(tp!("search.results", result_count))
                     .size(LabelSize::XSmall)
                     .color(Color::Muted),
             )
@@ -467,12 +468,12 @@ impl GlobalSearchView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("Type to search across all files")
+                            Label::new(t!("search.empty"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Press Enter to search | j/k to navigate")
+                            Label::new(t!("search.hint"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),

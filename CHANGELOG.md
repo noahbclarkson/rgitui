@@ -11,6 +11,10 @@
   ships first. Translations are JSON files under `assets/locales/`, and a file
   in `<config>/rgitui/locales/` is layered over the shipped one, so a
   translator can work against a release build. (#57)
+- **Simplified Chinese covers the interface.** The toolbar, sidebar, commit
+  graph, commit panel, detail and diff panels, settings, dialogs, the pull
+  request and issue panels, interactive rebase, bisect, blame and history are
+  translated, along with relative dates. Translation by @VedaChen. (#89)
 
 ## [0.5.0] - 2026-10-07
 

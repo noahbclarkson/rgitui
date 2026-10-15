@@ -1,70 +1,43 @@
 //! Shared time formatting utilities.
 
+use gpui::SharedString;
+use rgitui_i18n::{t, tp};
+
 /// Formats a Unix timestamp as a relative time string using abbreviated units.
 /// Example: "1m ago", "2h ago", "3d ago"
-pub(crate) fn format_relative_time_abbreviated(timestamp: i64) -> String {
+pub(crate) fn format_relative_time_abbreviated(timestamp: i64) -> SharedString {
     let now = chrono::Utc::now().timestamp();
     let diff = now - timestamp;
     if diff < 0 {
-        return "in the future".to_string();
+        return t!("time.future");
     }
     let diff = diff as u64;
     match diff {
-        0..=59 => "just now".to_string(),
-        60..=3599 => {
-            let mins = diff / 60;
-            format!("{}m ago", mins)
-        }
-        3600..=86399 => {
-            let hours = diff / 3600;
-            format!("{}h ago", hours)
-        }
-        86400..=2591999 => {
-            let days = diff / 86400;
-            format!("{}d ago", days)
-        }
-        2592000..=31535999 => {
-            let months = diff / 2592000;
-            format!("{}mo ago", months)
-        }
-        _ => {
-            let years = diff / 31536000;
-            format!("{}y ago", years)
-        }
+        0..=59 => t!("time.just_now"),
+        60..=3599 => t!("time.minutes_short", count = diff / 60),
+        3600..=86399 => t!("time.hours_short", count = diff / 3600),
+        86400..=2591999 => t!("time.days_short", count = diff / 86400),
+        2592000..=31535999 => t!("time.months_short", count = diff / 2592000),
+        _ => t!("time.years_short", count = diff / 31536000),
     }
 }
 
 /// Formats a Unix timestamp as a relative time string using full unit names.
 /// Example: "1 min ago", "2 hours ago", "3 days ago"
-pub(crate) fn format_relative_time_full(timestamp: i64) -> String {
+pub(crate) fn format_relative_time_full(timestamp: i64) -> SharedString {
     let now = chrono::Utc::now().timestamp();
     let diff = now - timestamp;
     if diff < 0 {
-        return "in the future".to_string();
+        return t!("time.future");
     }
     let diff = diff as u64;
     match diff {
-        0..=59 => "just now".to_string(),
-        60..=3599 => {
-            let mins = diff / 60;
-            format!("{} min{} ago", mins, if mins == 1 { "" } else { "s" })
-        }
-        3600..=86399 => {
-            let hours = diff / 3600;
-            format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-        }
-        86400..=2591999 => {
-            let days = diff / 86400;
-            format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
-        }
-        2592000..=31535999 => {
-            let months = diff / 2592000;
-            format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
-        }
-        _ => {
-            let years = diff / 31536000;
-            format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
-        }
+        0..=59 => t!("time.just_now"),
+        60..=3599 => tp!("time.minutes", diff / 60),
+        3600..=86399 => tp!("time.hours", diff / 3600),
+        86400..=2591999 => tp!("time.days", diff / 86400),
+        2592000..=31535999 => tp!("time.months", diff / 2592000),
+        _ => tp!("time.years", diff / 31536000),
     }
 }
 

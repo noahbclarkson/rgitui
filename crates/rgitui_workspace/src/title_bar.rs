@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, ClickEvent, Decorations, SharedString, Window};
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Icon, IconName, IconSize, Label, LabelSize, Tooltip, WindowControl, WindowControlType,
@@ -113,6 +114,8 @@ impl TitleBar {
 impl RenderOnce for TitleBar {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.colors().clone();
+        // The title bar can paint before settings finish loading, so fall
+        // back to English rather than requiring the global.
 
         let branch_color = if self.head_detached {
             Color::Warning
@@ -122,8 +125,8 @@ impl RenderOnce for TitleBar {
 
         let hover_bg = colors.ghost_element_active;
         let branch_bg = colors.ghost_element_hover;
-        let tooltip: SharedString = if self.head_detached {
-            format!("HEAD is detached at {}", self.branch_name).into()
+        let tooltip = if self.head_detached {
+            t!("workspace.detached.title", commit = self.branch_name)
         } else {
             self.branch_name.clone()
         };
@@ -154,7 +157,7 @@ impl RenderOnce for TitleBar {
             )
             .when(self.head_detached, |el| {
                 el.child(
-                    Label::new("(detached)")
+                    Label::new(t!("title_bar.detached"))
                         .size(LabelSize::XSmall)
                         .color(Color::Warning),
                 )

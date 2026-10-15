@@ -9,6 +9,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use rgitui_git::BlameLine;
+use rgitui_i18n::t;
 use rgitui_settings::SettingsState;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{Icon, IconName, IconSize, Label, LabelSize, Tooltip};
@@ -167,7 +168,7 @@ impl BlameView {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Blame")
+                        Label::new(t!("common.blame"))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Muted),
@@ -189,12 +190,12 @@ impl BlameView {
                                 .color(Color::Placeholder),
                         )
                         .child(
-                            Label::new("Select a file to view blame")
+                            Label::new(t!("blame.empty"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
-                            Label::new("Press 'b' on a file to see line-by-line attribution")
+                            Label::new(t!("blame.empty_hint"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Placeholder),
                         ),
@@ -285,7 +286,6 @@ impl Render for BlameView {
                             crate::time::format_relative_time_abbreviated(
                                 line.entry.time.timestamp(),
                             )
-                            .into()
                         } else {
                             SharedString::default()
                         };
@@ -462,7 +462,7 @@ impl Render for BlameView {
                             .color(Color::Accent),
                     )
                     .child(
-                        Label::new("Blame")
+                        Label::new(t!("common.blame"))
                             .size(LabelSize::XSmall)
                             .weight(gpui::FontWeight::SEMIBOLD)
                             .color(Color::Default),

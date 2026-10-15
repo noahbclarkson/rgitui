@@ -5,6 +5,7 @@
 
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Render, Window};
+use rgitui_i18n::t;
 use rgitui_theme::{ActiveTheme, Color, StyledExt};
 use rgitui_ui::{
     Button, ButtonSize, ButtonStyle, Icon, IconName, IconSize, Label, LabelSize, TextInput,
@@ -215,7 +216,7 @@ impl Render for StashSaveDialog {
                         ),
                 )
                 .child(
-                    Label::new("Create Stash")
+                    Label::new(t!("stash_dialog.title"))
                         .size(LabelSize::Large)
                         .weight(gpui::FontWeight::BOLD),
                 ),
@@ -228,13 +229,13 @@ impl Render for StashSaveDialog {
                 .v_flex()
                 .gap_1()
                 .child(
-                    Label::new("Message (optional)")
+                    Label::new(t!("stash_dialog.message"))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
                 .child(self.editor.clone())
                 .child(
-                    Label::new("Leave empty for default: \"WIP on <branch>\"")
+                    Label::new(t!("stash_dialog.message_hint"))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 ),
@@ -260,7 +261,7 @@ impl Render for StashSaveDialog {
                 .w_full()
                 .gap_4()
                 .child(
-                    Label::new("Enter to confirm | Esc to cancel")
+                    Label::new(t!("common.confirm_hint"))
                         .size(LabelSize::XSmall)
                         .color(Color::Placeholder),
                 )
@@ -272,7 +273,7 @@ impl Render for StashSaveDialog {
                         .justify_end()
                         .w_full()
                         .child(
-                            Button::new("stash-save-cancel", "Cancel")
+                            Button::new("stash-save-cancel", t!("common.cancel"))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Subtle)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -280,7 +281,7 @@ impl Render for StashSaveDialog {
                                 })),
                         )
                         .child(
-                            Button::new("stash-save-confirm", "Create Stash")
+                            Button::new("stash-save-confirm", t!("stash_dialog.title"))
                                 .size(ButtonSize::Default)
                                 .style(ButtonStyle::Tinted(TintColor::Accent))
                                 .disabled(self.error_message.is_some())
