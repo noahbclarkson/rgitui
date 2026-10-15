@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Fixed
+
+- **Retrying a failed force push pushed without `--force`.** The retry decided
+  whether to force by looking for "force push" in the failure message, which
+  never contained it, so the retry was a plain push that the remote rejected.
+  A force push is now its own kind of operation and its retry repeats it.
+- **Conflicts, auth failures and up-to-date pulls were missed when git speaks
+  another language.** rgitui recognises these by git's English output, and a
+  localized git translates them; ahead/behind counts were lost the same way.
+  git is now run with `LC_MESSAGES=C`, so its messages are always English
+  while dates, sorting and encodings stay as the user has them.
+
 ## [0.5.0] - 2026-10-07
 
 A conflict-resolution and AI release. Conflicted files open in a three-way
