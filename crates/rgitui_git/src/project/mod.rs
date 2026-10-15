@@ -21,6 +21,7 @@ use anyhow::{Context as _, Result};
 use git2::{Repository, StatusOptions};
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,18 +53,66 @@ pub fn normalize_repo_path(path: PathBuf) -> PathBuf {
 
 /// Create a `git` [`Command`] with `CREATE_NO_WINDOW` set on Windows so that
 /// spawning it from a GUI application never flashes a visible console window.
+///
+/// git's messages are forced to English (see [`english_messages_env`]) because
+/// callers recognise outcomes by matching its output.
 pub fn git_command() -> Command {
     #[cfg(target_os = "windows")]
-    {
+    let mut cmd = {
         use std::os::windows::process::CommandExt;
         let mut cmd = Command::new("git");
         cmd.creation_flags(0x08000000);
         cmd
-    }
+    };
     #[cfg(not(target_os = "windows"))]
-    {
-        Command::new("git")
+    let mut cmd = Command::new("git");
+
+    for change in english_messages_env(std::env::vars_os()) {
+        match change {
+            EnvChange::Set(key, value) => cmd.env(key, value),
+            EnvChange::Remove(key) => cmd.env_remove(key),
+        };
     }
+    cmd
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EnvChange {
+    Set(OsString, OsString),
+    Remove(OsString),
+}
+
+/// The environment changes that make git print its messages in English while
+/// leaving every other locale category as the user has it.
+///
+/// Outcomes are recognised by matching git's output — `CONFLICT`,
+/// `Already up to date.`, `Permission denied (publickey)`, the
+/// `[ahead N, behind M]` of `%(upstream:track)` — and a localized git
+/// translates all of those. Setting `LC_MESSAGES` is not enough on its own when
+/// `LC_ALL` is set, since `LC_ALL` overrides every category. In that case its
+/// value moves to `LANG` and the per-category variables it was overriding are
+/// removed, which leaves every other category resolving exactly as before.
+fn english_messages_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<EnvChange> {
+    let mut lc_all = None;
+    let mut categories = Vec::new();
+    for (key, value) in vars {
+        if key == "LC_ALL" {
+            if !value.is_empty() {
+                lc_all = Some(value);
+            }
+        } else if key.to_str().is_some_and(|k| k.starts_with("LC_")) {
+            categories.push(key);
+        }
+    }
+
+    let mut changes = Vec::new();
+    if let Some(lc_all) = lc_all {
+        changes.push(EnvChange::Remove("LC_ALL".into()));
+        changes.extend(categories.into_iter().map(EnvChange::Remove));
+        changes.push(EnvChange::Set("LANG".into(), lc_all));
+    }
+    changes.push(EnvChange::Set("LC_MESSAGES".into(), "C".into()));
+    changes
 }
 
 pub use bisect::{compute_bisect_log, is_bisect_in_progress, BisectDecision, BisectLogEntry};
@@ -1631,6 +1680,62 @@ mod carry_forward_tests {
 
         assert_eq!(after[0].is_merged_into_main, None);
         assert_eq!(after[0].is_merged_into_head, None);
+    }
+}
+
+#[cfg(test)]
+mod english_messages_env_tests {
+    use super::{english_messages_env, EnvChange};
+    use std::ffi::OsString;
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Iterator<Item = (OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    fn set(key: &str, value: &str) -> EnvChange {
+        EnvChange::Set(key.into(), value.into())
+    }
+
+    fn remove(key: &str) -> EnvChange {
+        EnvChange::Remove(key.into())
+    }
+
+    #[test]
+    fn without_lc_all_only_messages_change() {
+        assert_eq!(
+            english_messages_env(vars(&[("LANG", "zh_CN.UTF-8"), ("LC_TIME", "de_DE")])),
+            vec![set("LC_MESSAGES", "C")]
+        );
+    }
+
+    #[test]
+    fn lc_all_moves_to_lang_so_only_messages_change() {
+        assert_eq!(
+            english_messages_env(vars(&[
+                ("LANG", "en_US.UTF-8"),
+                ("LC_ALL", "zh_CN.UTF-8"),
+                ("LC_TIME", "de_DE"),
+                ("PATH", "/usr/bin"),
+            ])),
+            vec![
+                remove("LC_ALL"),
+                remove("LC_TIME"),
+                set("LANG", "zh_CN.UTF-8"),
+                set("LC_MESSAGES", "C"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_lc_all_counts_as_unset() {
+        assert_eq!(
+            english_messages_env(vars(&[("LC_ALL", ""), ("LC_TIME", "de_DE")])),
+            vec![set("LC_MESSAGES", "C")]
+        );
     }
 }
 
