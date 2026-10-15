@@ -12,6 +12,7 @@ members = [
     "crates/rgitui_settings",
     "crates/rgitui_perf",
     "crates/rgitui_test_support",
+    "crates/rgitui_i18n",
 ]
 default-members = ["crates/rgitui"]
 
@@ -43,6 +44,7 @@ rgitui_ai = { path = "crates/rgitui_ai" }
 rgitui_settings = { path = "crates/rgitui_settings" }
 rgitui_perf = { path = "crates/rgitui_perf" }
 rgitui_test_support = { path = "crates/rgitui_test_support" }
+rgitui_i18n = { path = "crates/rgitui_i18n" }
 
 # Core
 anyhow = "1"
@@ -76,6 +78,8 @@ notify = "8"
 
 # Testing
 tempfile = "3.27"
+# Localization
+sys-locale = "0.3.2"
 
 # Utils
 same-file = "1"
